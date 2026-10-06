@@ -81,7 +81,7 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -6302,15 +6302,15 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { hostPath, restart } = await c.req.json<{ hostPath: string; restart?: boolean }>()
-    if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
+    const { type, config, restart } = await c.req.json<{ type: string; config: unknown; restart?: boolean }>()
 
     let mount
     try {
-      mount = await addMount(agentSlug, hostPath)
+      mount = await addMount(agentSlug, type, config)
     } catch (err: any) {
       return c.json({ error: err.message || 'Invalid path' }, 400)
     }
+    const summary = volumeSummary(mount)
 
     if (restart) {
       const cachedInfo = agentRegistry.get(agentSlug).container.status()
@@ -6319,8 +6319,8 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       }
     }
 
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { hostPath } })
-    return c.json(mount, 201)
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
+    return c.json(summary, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)
     return c.json({ error: 'Failed to add mount' }, 500)

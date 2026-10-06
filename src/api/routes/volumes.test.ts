@@ -10,18 +10,18 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 
 // A test can stand in its own volume; otherwise the real lookup runs.
-const mockVolume = vi.hoisted(() => ({ ops: null as VolumeOps | null }))
-vi.mock('@shared/lib/volumes/volumes', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@shared/lib/volumes/volumes')>()
+const mockVolume = vi.hoisted(() => ({ ops: null as BaseMountableVolume<unknown> | null }))
+vi.mock('@shared/lib/services/mount-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/services/mount-service')>()
   return { ...actual, resolveVolume: (agentSlug: string, volumeId: string) => mockVolume.ops ?? actual.resolveVolume(agentSlug, volumeId) }
 })
 
 import { addMount } from '@shared/lib/services/mount-service'
-import type { VolumeFile, VolumeOps } from '@shared/lib/volumes/volumes'
+import type { BaseMountableVolume, VolumeFile } from '@shared/lib/volumes/volumes'
 import volumes from './volumes'
 
-function volumeReading(file: VolumeFile): VolumeOps {
-  return { list: vi.fn(), stat: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
+function volumeReading(file: VolumeFile): BaseMountableVolume<unknown> {
+  return { id: 'stand-in', name: 'stand-in', type: 'stand-in', config: null, mountPath: '/mounts/stand-in', hostPath: null, list: vi.fn(), stat: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
 }
 
 function request(url: string, init: RequestInit & { headers?: Record<string, string> } = {}) {
@@ -44,7 +44,7 @@ describe('/api/volumes', () => {
     folder = path.join(tmpDir, 'notes')
     fs.mkdirSync(folder)
     fs.writeFileSync(path.join(folder, 'a.txt'), 'hello world')
-    volumeId = (await addMount('agent-a', folder)).id
+    volumeId = (await addMount('agent-a', 'local', { path: folder })).id
     mockValidateProxyToken.mockResolvedValue('agent-a')
   })
 
@@ -57,6 +57,12 @@ describe('/api/volumes', () => {
     expect((await request(`${volumeId}/`, { method: 'PROPFIND', headers: { Authorization: '', Depth: '0' } })).status).toBe(401)
     mockValidateProxyToken.mockResolvedValue('agent-b')
     expect((await request(`${volumeId}/`, { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)
+  })
+
+  it('403s a row of the agent that this app cannot build', async () => {
+    const file = path.join(tmpDir, 'agents', 'agent-a', 'mounts.json')
+    fs.writeFileSync(file, JSON.stringify([...JSON.parse(fs.readFileSync(file, 'utf-8')), { id: 'drive', name: 'drive', type: 'not-a-type', config: {} }]))
+    expect((await request('drive/', { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)
   })
 
   it('lists the folder with PROPFIND and reads a file whole and by range', async () => {

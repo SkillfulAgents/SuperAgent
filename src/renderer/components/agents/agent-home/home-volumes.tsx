@@ -25,7 +25,7 @@ import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeStatusBadge } from '../volume-status-badge'
-import type { AgentMountWithHealth } from '@shared/lib/types/mount'
+import type { VolumeSummaryWithHealth } from '@shared/lib/types/mount'
 
 interface HomeVolumesProps {
   agentSlug: string
@@ -114,7 +114,7 @@ function getFileManagerLabel(): string {
 }
 
 interface VolumeRowProps {
-  mount: AgentMountWithHealth
+  mount: VolumeSummaryWithHealth
   onRemove: () => void
   isRemovingMount: boolean
 }
@@ -126,15 +126,16 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
   // `hostPath` is a path on whichever machine runs the agent. Opening it in the
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
-  const canOpenInFileManager = canUseHostFeatures()
+  const { hostPath } = mount
+  const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
     if (!canOpenInFileManager) return
-    void window.electronAPI?.showInFolder(mount.hostPath)
+    void window.electronAPI?.showInFolder(hostPath)
   }
 
   const handleCopyPath = () => {
-    void navigator.clipboard.writeText(mount.hostPath)
+    if (hostPath) void navigator.clipboard.writeText(hostPath)
   }
 
   const handleDelete = () => {
@@ -166,12 +167,14 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
       >
         <div className="flex items-center gap-2">
           <Folder className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <span className="text-xs font-medium truncate">{mount.folderName}</span>
+          <span className="text-xs font-medium truncate">{mount.name}</span>
           <VolumeStatusBadge health={mount.health} />
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={mount.hostPath}>
-          {mount.hostPath}
-        </div>
+        {hostPath && (
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={hostPath}>
+            {hostPath}
+          </div>
+        )}
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
@@ -200,17 +203,19 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
                   Open in {fileManagerLabel}
                 </button>
               )}
-              <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleCopyPath()
-                  setMenuOpen(false)
-                }}
-              >
-                <Copy className="h-3.5 w-3.5" />
-                Copy path
-              </button>
+              {hostPath && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleCopyPath()
+                    setMenuOpen(false)
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy path
+                </button>
+              )}
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => {
@@ -232,7 +237,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Mount</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to unmount &quot;{mount.folderName}&quot;? The agent will lose access to this folder after restarting.
+              Are you sure you want to unmount &quot;{mount.name}&quot;? The agent will lose access to this folder after restarting.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

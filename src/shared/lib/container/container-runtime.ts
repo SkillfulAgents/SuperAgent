@@ -34,6 +34,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { captureException } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
+import { mountPathOf } from '@shared/lib/volumes/volumes'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -610,8 +611,10 @@ export class ContainerRuntime {
 
     envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-    // Load mounts and build volume flags for healthy ones
-    const mountsWithHealth = await getMountsWithHealth(slug)
+    // Load the volumes that are host folders and build bind flags for healthy ones
+    const mountsWithHealth = (await getMountsWithHealth(slug)).flatMap((m) =>
+      m.hostPath === null ? [] : [{ folderName: m.name, hostPath: m.hostPath, containerPath: mountPathOf(m.name), health: m.health }]
+    )
     const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
     const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
 

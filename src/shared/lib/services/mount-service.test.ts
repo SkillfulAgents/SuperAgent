@@ -38,66 +38,51 @@ describe('mount-service', () => {
   })
 
   describe('addMount', () => {
-    it('creates mounts.json and returns mount with correct fields', async () => {
+    it('creates mounts.json and returns a local volume named by the folder', async () => {
       const { addMount } = await importService()
       const hostPath = makeHostDir('myapp')
-      const mount = await addMount('test-agent', hostPath)
+      const mount = await addMount('test-agent', 'local', { path: hostPath })
 
-      expect(mount.id).toBeDefined()
-      expect(mount.hostPath).toBe(hostPath)
-      expect(mount.containerPath).toBe('/mounts/myapp')
-      expect(mount.folderName).toBe('myapp')
-      expect(mount.addedAt).toBeDefined()
-      expect(new Date(mount.addedAt).getTime()).not.toBeNaN()
+      expect(mount).toEqual({ id: expect.any(String), name: 'myapp', type: 'local', config: { path: hostPath } })
     })
 
-    it('picks /mounts/{basename} as containerPath', async () => {
-      const { addMount } = await importService()
-      const hostPath = makeHostDir('src')
-      const mount = await addMount('test-agent', hostPath)
-      expect(mount.containerPath).toBe('/mounts/src')
-    })
-
-    it('appends -2, -3 on container path collision', async () => {
+    it('appends -2, -3 on name collision', async () => {
       const { addMount } = await importService()
       const dir1 = makeHostDir('a/project')
       const dir2 = makeHostDir('b/project')
       const dir3 = makeHostDir('c/project')
-      const m1 = await addMount('test-agent', dir1)
-      const m2 = await addMount('test-agent', dir2)
-      const m3 = await addMount('test-agent', dir3)
+      const m1 = await addMount('test-agent', 'local', { path: dir1 })
+      const m2 = await addMount('test-agent', 'local', { path: dir2 })
+      const m3 = await addMount('test-agent', 'local', { path: dir3 })
 
-      expect(m1.containerPath).toBe('/mounts/project')
-      expect(m2.containerPath).toBe('/mounts/project-2')
-      expect(m3.containerPath).toBe('/mounts/project-3')
+      expect([m1.name, m2.name, m3.name]).toEqual(['project', 'project-2', 'project-3'])
     })
 
     it('persists mounts to disk', async () => {
       const { addMount, getMounts } = await importService()
-      await addMount('test-agent', makeHostDir('folder-a'))
-      await addMount('test-agent', makeHostDir('folder-b'))
+      await addMount('test-agent', 'local', { path: makeHostDir('folder-a') })
+      await addMount('test-agent', 'local', { path: makeHostDir('folder-b') })
 
       const mounts = await getMounts('test-agent')
       expect(mounts).toHaveLength(2)
-      expect(mounts[0].folderName).toBe('folder-a')
-      expect(mounts[1].folderName).toBe('folder-b')
+      expect(mounts.map((m) => m.name)).toEqual(['folder-a', 'folder-b'])
     })
 
     it('rejects relative paths', async () => {
       const { addMount } = await importService()
-      await expect(addMount('test-agent', 'relative/path')).rejects.toThrow('absolute path')
+      await expect(addMount('test-agent', 'local', { path: 'relative/path' })).rejects.toThrow('absolute path')
     })
 
     it('rejects non-existent paths', async () => {
       const { addMount } = await importService()
-      await expect(addMount('test-agent', '/non/existent/path/xyz')).rejects.toThrow()
+      await expect(addMount('test-agent', 'local', { path: '/non/existent/path/xyz' })).rejects.toThrow()
     })
 
     it('rejects files (non-directories)', async () => {
       const { addMount } = await importService()
       const filePath = path.join(tmpDir, 'a-file.txt')
       fs.writeFileSync(filePath, 'content')
-      await expect(addMount('test-agent', filePath)).rejects.toThrow('directory')
+      await expect(addMount('test-agent', 'local', { path: filePath })).rejects.toThrow('directory')
     })
 
     it('resolves symlinks', async () => {
@@ -106,40 +91,43 @@ describe('mount-service', () => {
       const linkPath = path.join(tmpDir, 'host-dirs', 'link-dir')
       fs.symlinkSync(realDir, linkPath)
 
-      const mount = await addMount('test-agent', linkPath)
+      const mount = await addMount('test-agent', 'local', { path: linkPath })
       // hostPath should be the resolved real path (use realpathSync for comparison
       // since macOS /tmp -> /private/var/... resolution)
-      expect(mount.hostPath).toBe(fs.realpathSync(realDir))
+      expect(mount.config).toEqual({ path: fs.realpathSync(realDir) })
     })
 
     it.runIf(process.platform === 'darwin')('rejects iCloud Drive (Mobile Documents) paths', async () => {
       const { addMount } = await importService()
       const cloudDir = path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'proj')
       // Path need not exist — the prefix check fires before any fs access.
-      await expect(addMount('test-agent', cloudDir)).rejects.toThrow(/cloud-synced|iCloud/i)
+      await expect(addMount('test-agent', 'local', { path: cloudDir })).rejects.toThrow(/cloud-synced|iCloud/i)
     })
 
     it.runIf(process.platform === 'darwin')('rejects File Provider (CloudStorage) paths like Dropbox', async () => {
       const { addMount } = await importService()
       const cloudDir = path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'work')
-      await expect(addMount('test-agent', cloudDir)).rejects.toThrow(/cloud-synced|iCloud/i)
+      await expect(addMount('test-agent', 'local', { path: cloudDir })).rejects.toThrow(/cloud-synced|iCloud/i)
     })
   })
 
-  describe('isCloudStoragePath', () => {
-    it.runIf(process.platform === 'darwin')('flags iCloud and CloudStorage prefixes, not regular folders', async () => {
-      const { isCloudStoragePath } = await importService()
-      expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'x'))).toBe(true)
-      expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'Mobile Documents', 'x'))).toBe(true)
-      expect(isCloudStoragePath(path.join(os.homedir(), 'Projects', 'x'))).toBe(false)
+  describe('addMount by type', () => {
+    it('adds only a type it knows, with a config that type accepts, and answers with no config', async () => {
+      const { addMount, volumeSummary } = await importService()
+      await expect(addMount('test-agent', 'gdrive', {})).rejects.toThrow('Unknown volume type')
+      await expect(addMount('test-agent', 'toString', {})).rejects.toThrow('Unknown volume type')
+      await expect(addMount('test-agent', 'local', { folder: makeHostDir('x') })).rejects.toThrow('Invalid volume config')
+
+      const mount = await addMount('test-agent', 'local', { path: makeHostDir('y') })
+      expect(volumeSummary(mount)).toEqual({ id: mount.id, name: 'y', type: 'local', hostPath: makeHostDir('y') })
     })
   })
 
   describe('removeMount', () => {
     it('removes entry by id, preserving others', async () => {
       const { addMount, removeMount, getMounts } = await importService()
-      const m1 = await addMount('test-agent', makeHostDir('keep'))
-      const m2 = await addMount('test-agent', makeHostDir('remove'))
+      const m1 = await addMount('test-agent', 'local', { path: makeHostDir('keep') })
+      const m2 = await addMount('test-agent', 'local', { path: makeHostDir('remove') })
 
       await removeMount('test-agent', m2.id)
 
@@ -150,7 +138,7 @@ describe('mount-service', () => {
 
     it('is a no-op for non-existent mount id', async () => {
       const { addMount, removeMount, getMounts } = await importService()
-      await addMount('test-agent', makeHostDir('keep'))
+      await addMount('test-agent', 'local', { path: makeHostDir('keep') })
 
       await removeMount('test-agent', 'non-existent-id')
 
@@ -161,17 +149,27 @@ describe('mount-service', () => {
   describe('getMountsWithHealth', () => {
     it('returns ok for existing host paths', async () => {
       const { addMount, getMountsWithHealth } = await importService()
-      await addMount('test-agent', makeHostDir('exists'))
+      const dir = makeHostDir('exists')
+      await addMount('test-agent', 'local', { path: dir })
 
       const mounts = await getMountsWithHealth('test-agent')
-      expect(mounts).toHaveLength(1)
-      expect(mounts[0].health).toBe('ok')
+      expect(mounts).toEqual([{ id: expect.any(String), name: 'exists', type: 'local', health: 'ok', hostPath: dir }])
+    })
+
+    it('returns missing when the folder is replaced by a link', async () => {
+      const { addMount, getMountsWithHealth } = await importService()
+      const dir = makeHostDir('replaced')
+      await addMount('test-agent', 'local', { path: dir })
+      fs.renameSync(dir, `${dir}-real`)
+      fs.symlinkSync(`${dir}-real`, dir)
+
+      expect((await getMountsWithHealth('test-agent'))[0].health).toBe('missing')
     })
 
     it('returns missing when host path is later deleted', async () => {
       const { addMount, getMountsWithHealth } = await importService()
       const dir = makeHostDir('will-delete')
-      await addMount('test-agent', dir)
+      await addMount('test-agent', 'local', { path: dir })
 
       // Delete the directory after adding mount
       fs.rmSync(dir, { recursive: true })
@@ -182,12 +180,56 @@ describe('mount-service', () => {
     })
   })
 
+  describe('stored rows', () => {
+    function writeRows(rows: unknown[]) {
+      const file = path.join(tmpDir, 'agents', 'test-agent', 'mounts.json')
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(rows))
+      return file
+    }
+
+    it('reads a row from before volumes had a type as a local folder named by its container path, and saves the new shape on the next write', async () => {
+      const { addMount, getMounts } = await importService()
+      const hostPath = makeHostDir('notes')
+      const file = writeRows([{ id: 'old', hostPath, containerPath: '/mounts/notes-2', folderName: 'notes', addedAt: '2026-01-01T00:00:00.000Z' }])
+      const old = { id: 'old', name: 'notes-2', type: 'local', config: { path: hostPath } }
+
+      expect(await getMounts('test-agent')).toEqual([old])
+      await addMount('test-agent', 'local', { path: makeHostDir('more') })
+      expect(JSON.parse(fs.readFileSync(file, 'utf-8'))[0]).toEqual(old)
+    })
+
+    it('lists a row it cannot build as missing, and still removes it', async () => {
+      const { getMountsWithHealth, removeMount, getMounts } = await importService()
+      writeRows([{ id: 'drive', name: 'drive', type: 'not-a-type', config: {} }])
+
+      expect((await getMountsWithHealth('test-agent')).map(({ health, hostPath }) => ({ health, hostPath }))).toEqual([{ health: 'missing', hostPath: null }])
+      await removeMount('test-agent', 'drive')
+      expect(await getMounts('test-agent')).toEqual([])
+    })
+  })
+
+  describe('resolveVolume', () => {
+    it("resolves an agent's own volume, and nothing for another agent's or an unknown id", async () => {
+      const { addMount, resolveVolume } = await importService()
+      const folder = makeHostDir('notes')
+      fs.writeFileSync(path.join(folder, 'a.txt'), 'a')
+      const mount = await addMount('agent-a', 'local', { path: folder })
+
+      const volume = await resolveVolume('agent-a', mount.id)
+      if (!volume) throw new Error('expected the volume to resolve')
+      expect((await volume.list('')).map((entry) => entry.name)).toEqual(['a.txt'])
+      expect(await resolveVolume('agent-b', mount.id)).toBeNull()
+      expect(await resolveVolume('agent-a', 'unknown')).toBeNull()
+    })
+  })
+
   describe('CRUD roundtrip', () => {
     it('add/remove cycles produce consistent state', async () => {
       const { addMount, removeMount, getMounts } = await importService()
-      const m1 = await addMount('test-agent', makeHostDir('a'))
-      const m2 = await addMount('test-agent', makeHostDir('b'))
-      const m3 = await addMount('test-agent', makeHostDir('c'))
+      const m1 = await addMount('test-agent', 'local', { path: makeHostDir('a') })
+      const m2 = await addMount('test-agent', 'local', { path: makeHostDir('b') })
+      const m3 = await addMount('test-agent', 'local', { path: makeHostDir('c') })
 
       await removeMount('test-agent', m2.id)
       expect(await getMounts('test-agent')).toHaveLength(2)

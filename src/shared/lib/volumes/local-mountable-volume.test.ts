@@ -3,7 +3,7 @@ import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { ClientFolderOps } from './client-folder-ops'
+import { LocalMountableVolume, isCloudStoragePath } from './local-mountable-volume'
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -19,11 +19,11 @@ async function text(stream: ReadableStream<Uint8Array>): Promise<string> {
   return new Response(stream).text()
 }
 
-describe('ClientFolderOps', () => {
+describe('LocalMountableVolume', () => {
   let parent: string
   let folder: string
   let outside: string
-  let volume: ClientFolderOps
+  let volume: LocalMountableVolume
 
   beforeEach(async () => {
     parent = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'client-folder-ops-')))
@@ -32,7 +32,7 @@ describe('ClientFolderOps', () => {
     await fs.promises.mkdir(folder)
     await fs.promises.mkdir(outside)
     await fs.promises.writeFile(path.join(outside, 'secret.txt'), 'secret')
-    volume = new ClientFolderOps(folder)
+    volume = new LocalMountableVolume('volume', 'folder', { path: folder })
   })
 
   afterEach(async () => {
@@ -241,10 +241,37 @@ describe('ClientFolderOps', () => {
     expect(order).toEqual(['move', 'list'])
   })
 
+  it.runIf(process.platform === 'darwin')('flags iCloud and CloudStorage prefixes, not regular folders', () => {
+    expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'x'))).toBe(true)
+    expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'Mobile Documents', 'x'))).toBe(true)
+    expect(isCloudStoragePath(path.join(os.homedir(), 'Projects', 'x'))).toBe(false)
+  })
+
+  it('answers a stat of the root without waiting behind a move, in its own volume or an enclosing one', async () => {
+    await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
+    let finish: () => void = () => {}
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('x'))
+        finish = () => controller.close()
+      },
+    })
+    await fs.promises.mkdir(path.join(folder, 'sub'))
+    const inner = new LocalMountableVolume('inner', 'sub', { path: path.join(folder, 'sub') })
+    const writing = volume.write('b.txt', body)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const moving = volume.move('a.txt', 'c.txt')
+    expect((await volume.stat('')).kind).toBe('directory')
+    expect((await inner.stat('')).kind).toBe('directory')
+    finish()
+    await writing
+    await moving
+  })
+
   it('runs a move only once the operations running in a volume inside its folder finish, and that volume\'s later operations after it', async () => {
     await fs.promises.mkdir(path.join(folder, 'sub'))
     await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
-    const inner = new ClientFolderOps(path.join(folder, 'sub'))
+    const inner = new LocalMountableVolume('inner', 'sub', { path: path.join(folder, 'sub') })
     let finish: () => void = () => {}
     const body = new ReadableStream<Uint8Array>({
       start(controller) {

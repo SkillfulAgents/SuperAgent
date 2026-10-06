@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono'
 import { IsAgent } from '../middleware/auth'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { servedRange } from '@shared/lib/utils/http-range'
-import { resolveVolume } from '@shared/lib/volumes/volumes'
+import { resolveVolume } from '@shared/lib/services/mount-service'
 import { depthOf, destinationOf, multistatus, statusOf, volumePathOf } from '@shared/lib/volumes/webdav'
 
 type Env = { Variables: { agentSlug: string } }

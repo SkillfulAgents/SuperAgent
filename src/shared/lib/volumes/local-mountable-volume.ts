@@ -1,9 +1,11 @@
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
+import { z } from 'zod'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
-import type { VolumeEntry, VolumeFile, VolumeOps } from './volumes'
+import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './volumes'
 
 /**
  * An entry as a listing reports it, never following a link: a link shows as an
@@ -46,23 +48,90 @@ function refuseRoot(volumePath: string): void {
   if (volumePath === '') throw new WorkspaceFileError('invalid-path', 'The volume root cannot be made, replaced, removed or moved')
 }
 
+/** A local volume's folder, by its real path. */
+export const localVolumeConfigSchema = z.object({ path: z.string() })
+export type LocalVolumeConfig = z.infer<typeof localVolumeConfigSchema>
+
 /**
- * A volume backed by a folder on the client, named by its real path. Every folder a path passes through
+ * Cloud-synced directories that macOS File Providers manage (iCloud Drive,
+ * Dropbox, OneDrive, Google Drive, etc.). The Electron app can read these
+ * because it has the user's TCC grant, but the Lima VM helper process does
+ * NOT — macOS denies it with EPERM when the container runtime stats the path,
+ * so the mount can't be shared into the agent sandbox. A host accessSync still
+ * passes for the app, so we detect these by path prefix instead.
+ */
+function getCloudStoragePrefixes(): string[] {
+  const home = os.homedir()
+  return [
+    // iCloud Drive
+    path.join(home, 'Library', 'Mobile Documents'),
+    // Third-party File Provider storage (Dropbox, OneDrive, Google Drive, …)
+    path.join(home, 'Library', 'CloudStorage'),
+  ]
+}
+
+/**
+ * Detect whether a host path lives inside a cloud-synced directory that can't
+ * be shared into the agent sandbox. Returns true on macOS for iCloud Drive and
+ * `~/Library/CloudStorage/...` File Provider paths.
+ */
+export function isCloudStoragePath(hostPath: string): boolean {
+  if (process.platform !== 'darwin') return false
+  const normalized = path.resolve(hostPath)
+  return getCloudStoragePrefixes().some((prefix) => isPathWithinDir(prefix, normalized))
+}
+
+/** User-facing message shown when a cloud-synced folder is rejected as a mount. */
+export const CLOUD_MOUNT_MESSAGE =
+  'This folder is in iCloud Drive or a cloud-synced location (Dropbox, OneDrive, Google Drive), ' +
+  'which can’t be shared into the agent sandbox. Please copy it to a regular local folder ' +
+  '(e.g. somewhere under your home directory) and mount that instead.'
+
+/** Checks a folder picked for a new local volume, and names the volume after it. */
+export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
+  if (!path.isAbsolute(folder)) {
+    throw new Error('The folder path must be an absolute path')
+  }
+  // Reject cloud-synced folders before the user hits a cryptic run-time failure:
+  // the Lima VM helper can't stat File Provider paths even though the app can.
+  // Check the user-supplied path AND its realpath — iCloud aliases can resolve
+  // out of the cloud prefix, but the cloud prefix itself is the reliable signal.
+  if (isCloudStoragePath(folder)) {
+    throw new Error(CLOUD_MOUNT_MESSAGE)
+  }
+  const resolved = await fs.promises.realpath(folder)
+  if (isCloudStoragePath(resolved)) {
+    throw new Error(CLOUD_MOUNT_MESSAGE)
+  }
+  if (!(await fs.promises.stat(resolved)).isDirectory()) {
+    throw new Error('The folder path must be a directory')
+  }
+  return { name: path.basename(resolved), config: { path: resolved } }
+}
+
+/**
+ * A volume backed by a folder on the client. Every folder a path passes through
  * must be a real folder inside it, never a link, and a link in the folder is
  * never followed, so removing a folder never reaches what its links point at.
  */
-export class ClientFolderOps implements VolumeOps {
+export class LocalMountableVolume extends BaseMountableVolume<LocalVolumeConfig> {
+  readonly type = 'local'
   private readonly files: LocalFileOps
 
-  constructor(private readonly folder: string) {
-    this.files = new LocalFileOps(() => folder)
+  constructor(id: string, name: string, config: LocalVolumeConfig) {
+    super(id, name, config)
+    this.files = new LocalFileOps(() => config.path)
+  }
+
+  override get hostPath(): string {
+    return this.config.path
   }
 
   /** The entry itself, under a parent checked to lead where its name says. Delete and move act on a link as a link. */
   private async entry(volumePath: string): Promise<string> {
     // The folder is stored by its real path. One that now resolves elsewhere was replaced by a link: it is gone.
-    const root = await fs.promises.realpath(this.folder).catch(fromFsError)
-    if (root !== this.folder) throw new WorkspaceFileError('not-found')
+    const root = await fs.promises.realpath(this.config.path).catch(fromFsError)
+    if (root !== this.config.path) throw new WorkspaceFileError('not-found')
     const parent = path.posix.dirname(volumePath)
     if (parent === '.') {
       // A root replaced by a file is a gone folder too.
@@ -77,7 +146,7 @@ export class ClientFolderOps implements VolumeOps {
   }
 
   list(volumePath: string): Promise<VolumeEntry[]> {
-    return gated(this.folder, false, async () => {
+    return gated(this.config.path, false, async () => {
       const abs = await this.entry(volumePath)
       if (!(await fs.promises.lstat(abs).catch(fromFsError)).isDirectory()) throw new WorkspaceFileError('not-a-directory')
       const names = await fs.promises.readdir(abs).catch(fromFsError)
@@ -94,16 +163,19 @@ export class ClientFolderOps implements VolumeOps {
   }
 
   stat(volumePath: string): Promise<VolumeEntry> {
-    return gated(this.folder, false, async () => {
+    const op = async () => {
       const stat = await fs.promises.lstat(await this.entry(volumePath)).catch(fromFsError)
       const entry = entryOf(path.posix.basename(volumePath), stat)
       if (!entry) throw new WorkspaceFileError('not-found')
       return entry
-    })
+    }
+    // A stat of the root only reads a snapshot (the health check), and every operation on its contents
+    // checks the path again under the gate, so it never waits behind a move.
+    return volumePath === '' ? op() : gated(this.config.path, false, op)
   }
 
   read(volumePath: string): Promise<VolumeFile> {
-    return gated(this.folder, false, async () => {
+    return gated(this.config.path, false, async () => {
       if ((await fs.promises.lstat(await this.entry(volumePath)).catch(fromFsError)).isSymbolicLink()) {
         throw new WorkspaceFileError('not-accessible', 'A link cannot be read')
       }
@@ -120,7 +192,7 @@ export class ClientFolderOps implements VolumeOps {
 
   async write(volumePath: string, body: ReadableStream<Uint8Array>): Promise<void> {
     try {
-      await gated(this.folder, false, async () => {
+      await gated(this.config.path, false, async () => {
         await this.entry(volumePath)
         refuseRoot(volumePath)
         // The atomic rename replaces a link at the target with the file, as a move onto it does, never what it points at.
@@ -133,7 +205,7 @@ export class ClientFolderOps implements VolumeOps {
   }
 
   delete(volumePath: string): Promise<void> {
-    return gated(this.folder, false, async () => {
+    return gated(this.config.path, false, async () => {
       const abs = await this.entry(volumePath)
       refuseRoot(volumePath)
       const stat = await fs.promises.lstat(abs).catch(fromFsError)
@@ -142,7 +214,7 @@ export class ClientFolderOps implements VolumeOps {
   }
 
   mkdir(volumePath: string): Promise<void> {
-    return gated(this.folder, false, async () => {
+    return gated(this.config.path, false, async () => {
       const abs = await this.entry(volumePath)
       refuseRoot(volumePath)
       await fs.promises.mkdir(abs).catch(fromFsError)
@@ -150,7 +222,7 @@ export class ClientFolderOps implements VolumeOps {
   }
 
   move(from: string, to: string): Promise<void> {
-    return gated(this.folder, true, async () => {
+    return gated(this.config.path, true, async () => {
       const source = await this.entry(from)
       refuseRoot(from)
       // A missing source, or one under a file, is a miss: rename's ENOTDIR then only means a folder onto a file.

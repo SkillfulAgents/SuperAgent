@@ -6,6 +6,7 @@ import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { mountPathOf } from '@shared/lib/volumes/volumes'
 import { type FolderGroup } from '@renderer/lib/file-utils'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
@@ -297,7 +298,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
         for (const a of mounts) {
           try {
             const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
-            mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
+            mountResults.push({ containerPath: mountPathOf(result.name), hostPath: a.hostPath })
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Mount failed. Please try again.'
             setAttachmentError(a.id, message)
