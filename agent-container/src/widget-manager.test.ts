@@ -342,21 +342,37 @@ describe('widgetManager', () => {
     expect(spawned.filter((c) => c[1] === 'run')).toHaveLength(2)
   })
 
-  it('installs into an empty node_modules older than package.json before the script runs', async () => {
+  it('installs into an empty node_modules before the script runs', async () => {
     const dir = seedArtifact('woken', { script: 'bun run widget.ts', html: '<p/>', dependencies: { dayjs: '^1' } })
-    // A cloud VM wakes with an empty local node_modules stamped at epoch.
+    // A cloud VM wakes with an empty local node_modules and no install stamp.
     fs.mkdirSync(path.join(dir, 'node_modules'))
-    fs.utimesSync(path.join(dir, 'node_modules'), 0, 0)
     const spawned: string[][] = []
     spawnHolder.impl = (command, args) => {
       spawned.push([command, ...args])
-      if (args[0] === 'install') {
-        return fakeProcess(0, { onSpawn: () => fs.utimesSync(path.join(dir, 'node_modules'), new Date(), new Date()) })
-      }
+      if (args[0] === 'install') return fakeProcess(0)
       return scriptWriting(dir, '<p>x</p>', { validUntil: null })()
     }
     await widgetManager.refreshWidget('woken')
     expect(spawned.map((c) => c[1])).toEqual(['install', 'run'])
+  })
+
+  it('reinstalls once after a package.json edit, not on every refresh', async () => {
+    const dir = seedArtifact('edited', { script: 'bun run widget.ts', html: '<p/>', dependencies: { dayjs: '^1' } })
+    const spawned: string[][] = []
+    spawnHolder.impl = (command, args) => {
+      spawned.push([command, ...args])
+      if (args[0] === 'install') return fakeProcess(0)
+      return scriptWriting(dir, '<p>x</p>', { validUntil: null })()
+    }
+    await widgetManager.refreshWidget('edited')
+    const pkgPath = path.join(dir, 'package.json')
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+    pkg.gamut.widget.size = 'small'
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg))
+    await widgetManager.refreshWidget('edited')
+    await widgetManager.refreshWidget('edited')
+    expect(spawned.filter((c) => c[1] === 'install')).toHaveLength(2)
+    expect(spawned.filter((c) => c[1] === 'run')).toHaveLength(3)
   })
 
   it('a scriptless widget never expires', async () => {

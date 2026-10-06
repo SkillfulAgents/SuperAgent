@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process'
+import { createHash } from 'crypto'
 import { readFileTail } from './file-tail'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -120,15 +121,46 @@ export function newestMtimeMs(
   return newest
 }
 
-// Cloud VMs wake with an empty node_modules stamped older than package.json,
-// so this reads as stale there even though the directory exists.
+// Written after a successful install. The node_modules dir mtime is not a
+// usable signal: bun leaves it untouched when no top-level entry changes.
+const INSTALL_STAMP_FILENAME = '.gamut-installed'
+
+function dependencyInputsHash(dir: string): string {
+  const hash = createHash('sha256')
+  for (const file of ['package.json', 'bun.lock', 'bun.lockb']) {
+    const filePath = path.join(dir, file)
+    if (fs.existsSync(filePath)) hash.update(file).update(fs.readFileSync(filePath))
+  }
+  return hash.digest('hex')
+}
+
 export function nodeModulesUpToDate(dir: string): boolean {
   try {
-    const nmStat = fs.statSync(path.join(dir, 'node_modules'))
-    const pkgStat = fs.statSync(path.join(dir, 'package.json'))
-    return nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs
+    const stamp = fs.readFileSync(path.join(dir, 'node_modules', INSTALL_STAMP_FILENAME), 'utf-8')
+    return stamp === dependencyInputsHash(dir)
   } catch {
     return false
+  }
+}
+
+export function writeInstallStamp(dir: string): void {
+  const nodeModules = path.join(dir, 'node_modules')
+  fs.mkdirSync(nodeModules, { recursive: true })
+  fs.writeFileSync(path.join(nodeModules, INSTALL_STAMP_FILENAME), dependencyInputsHash(dir))
+}
+
+const installsInFlight = new Map<string, Promise<unknown>>()
+
+// Dashboard and widget installs share an artifact dir; two concurrent bun
+// installs there can leave node_modules half-written.
+export async function withInstallLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const previous = installsInFlight.get(dir) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(fn)
+  installsInFlight.set(dir, run)
+  try {
+    return await run
+  } finally {
+    if (installsInFlight.get(dir) === run) installsInFlight.delete(dir)
   }
 }
 
@@ -342,7 +374,16 @@ class DashboardManager {
     const port = existing?.port ?? this.nextPort++
     const dashboardDir = path.join(ARTIFACTS_DIR, slug)
     const logPath = path.join(dashboardDir, 'dashboard.log')
-    const firstRun = !fs.existsSync(path.join(dashboardDir, 'node_modules'))
+    // Boot/crash-restart path: sources only change through agent-initiated
+    // starts (which pass forceInstall and always run the full start script),
+    // so a fresh dist/ can serve directly and skip the template's
+    // unconditional Vite rebuild.
+    const skipBuild = !forceInstall && this.canSkipTemplateBuild(dashboardDir)
+    // The stock serve.js only imports Node built-ins and a sibling file, so it
+    // needs no deps. Cloud VMs wake with an empty node_modules, where this
+    // install was the whole wait. An edited serve.js may import packages.
+    const skipInstall = skipBuild && this.servesTemplateServeJs(dashboardDir)
+    const firstRun = !skipInstall && !fs.existsSync(path.join(dashboardDir, 'node_modules'))
 
     const info: DashboardInfo = {
       slug,
@@ -373,17 +414,7 @@ class DashboardManager {
         console.error(`[DashboardManager] Log stream error for ${slug}:`, error)
       })
 
-      // Boot/crash-restart path: sources only change through agent-initiated
-      // starts (which pass forceInstall and always run the full start script),
-      // so a fresh dist/ can serve directly and skip the template's
-      // unconditional Vite rebuild.
-      const skipBuild = !forceInstall && this.canSkipTemplateBuild(dashboardDir)
-      // The template's serve.js only needs Node built-ins, so a skipped build
-      // needs no deps either. Cloud VMs wake with an empty node_modules, where
-      // this install was the whole wait. After a recent crash, install anyway:
-      // an agent-edited serve.js may import packages.
-      const recentlyCrashed = info.restartTimestamps.length > 0
-      if (skipBuild && !recentlyCrashed) {
+      if (skipInstall) {
         info.logStream?.write('[DashboardManager] dist up-to-date, skipping install and build (bun run serve.js)\n')
       } else {
         // Run bun install: always when forced (deps may have changed), else
@@ -452,7 +483,7 @@ class DashboardManager {
       console.log(`[DashboardManager] Starting dashboard ${slug} on port ${port}, waiting for port...`)
 
       // Wait for the server to actually be listening on the port
-      const ready = await this.waitForPort(port, 30000)
+      const ready = await this.waitForPort(port, 30000, proc)
       if (ready && info.status === 'starting') {
         info.status = 'running'
         console.log(`[DashboardManager] Dashboard ${slug} is now running on port ${port}`)
@@ -480,6 +511,18 @@ class DashboardManager {
   }
 
   private async runBunInstallIfNeeded(
+    dir: string,
+    logStream: fs.WriteStream | undefined,
+    force: boolean,
+    onInstallStart: () => void,
+  ): Promise<void> {
+    return withInstallLock(dir, async () => {
+      await this.runBunInstallUnlocked(dir, logStream, force, onInstallStart)
+      writeInstallStamp(dir)
+    })
+  }
+
+  private async runBunInstallUnlocked(
     dir: string,
     logStream: fs.WriteStream | undefined,
     force: boolean,
@@ -532,6 +575,15 @@ class DashboardManager {
     }
   }
 
+  private servesTemplateServeJs(dir: string): boolean {
+    try {
+      const templateServeJs = gamutSkillPath('dashboards', 'templates', 'react-vite', 'serve.js')
+      return fs.readFileSync(path.join(dir, 'serve.js')).equals(fs.readFileSync(templateServeJs))
+    } catch {
+      return false
+    }
+  }
+
   private hasLockfile(dir: string): boolean {
     return (
       fs.existsSync(path.join(dir, 'bun.lock')) ||
@@ -578,23 +630,32 @@ class DashboardManager {
     })
   }
 
-  private async waitForPort(port: number, timeoutMs: number): Promise<boolean> {
+  private async waitForPort(port: number, timeoutMs: number, proc: ChildProcess): Promise<boolean> {
     const start = Date.now()
     const interval = 100
-    while (Date.now() - start < timeoutMs) {
-      try {
-        const response = await fetch(`http://localhost:${port}/`, {
-          method: 'HEAD',
-          signal: AbortSignal.timeout(1000),
-        })
-        // Any response (even 404) means the server is listening
-        if (response) return true
-      } catch {
-        // Not ready yet
+    // A process that exits before listening is handled by the exit handler
+    // (crash restart); polling on would hold up the boot queue until timeout.
+    let exited = false
+    const onExit = () => { exited = true }
+    proc.once('exit', onExit)
+    try {
+      while (!exited && Date.now() - start < timeoutMs) {
+        try {
+          const response = await fetch(`http://localhost:${port}/`, {
+            method: 'HEAD',
+            signal: AbortSignal.timeout(1000),
+          })
+          // Any response (even 404) means the server is listening
+          if (response) return true
+        } catch {
+          // Not ready yet
+        }
+        await new Promise((resolve) => setTimeout(resolve, interval))
       }
-      await new Promise((resolve) => setTimeout(resolve, interval))
+      return false
+    } finally {
+      proc.off('exit', onExit)
     }
-    return false
   }
 
   private handleCrash(slug: string): void {

@@ -2,7 +2,7 @@ import { spawn } from 'child_process'
 import { createHash } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { ARTIFACTS_DIR, validateSlug, truncateOversizedLog, BUN_INSTALL_NETWORK_CONCURRENCY, nodeModulesUpToDate } from './dashboard-manager'
+import { ARTIFACTS_DIR, validateSlug, truncateOversizedLog, BUN_INSTALL_NETWORK_CONCURRENCY, nodeModulesUpToDate, withInstallLock, writeInstallStamp } from './dashboard-manager'
 import { readArtifactShapeSync, type ArtifactShape } from './artifact-kind'
 import { notifyWidgetSnapshotReady } from './host-events'
 import { rasterizeWidget } from './widget-rasterizer'
@@ -214,8 +214,13 @@ class WidgetManager {
         // had them installed by a dashboard start, and a dashboard woken with a
         // fresh dist/ serves without installing.
         if (manifest.hasDependencies && !nodeModulesUpToDate(dir)) {
-          const install = await this.runProcess(dir, slug, ['bun', 'install', `--network-concurrency=${BUN_INSTALL_NETWORK_CONCURRENCY}`], 120, log)
-          if (!install.ok) error = `bun install failed before the refresh script: ${install.error}`
+          error = await withInstallLock(dir, async () => {
+            if (nodeModulesUpToDate(dir)) return null
+            const install = await this.runProcess(dir, slug, ['bun', 'install', `--network-concurrency=${BUN_INSTALL_NETWORK_CONCURRENCY}`], 120, log)
+            if (!install.ok) return `bun install failed before the refresh script: ${install.error}`
+            writeInstallStamp(dir)
+            return null
+          })
         }
         if (!error) {
           // The script's sidecar is what tells us how long its output stays
