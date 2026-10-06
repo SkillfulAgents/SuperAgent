@@ -17,7 +17,7 @@ describe('SavedLoginPicker', () => {
   it('says other members of a shared agent can use the login', () => {
     render(<SavedLoginPicker savedLogins={savedLogins} otherMembers={1} />)
     expect(screen.getByTestId('saved-login-shared-notice')).toHaveTextContent(
-      '1 other member can use this agent. It will stay signed in to linkedin.com with your account.',
+      '1 other member can use this agent. It will stay signed in to linkedin.com with your account, and to any other site you signed in to on the way, such as Google.',
     )
   })
 
