@@ -79,3 +79,26 @@ describe('VideoRenderer keys', () => {
     expect(video.currentTime).toBeCloseTo(1 + 1 / 30, 6)
   })
 })
+
+describe('VideoRenderer volume', () => {
+  it('mutes, unmutes and sets the volume on the video element', () => {
+    render(<VideoRenderer url="/clip.mp4" filePath="/workspace/clip.mp4" agentSlug="test-agent" />)
+    const video = screen.getByTestId('video-element') as HTMLVideoElement
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mute' }))
+    expect(video.muted).toBe(true)
+    expect(screen.getByLabelText('Volume')).toHaveValue('0')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute' }))
+    expect(video.muted).toBe(false)
+
+    fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '0.4' } })
+    expect(video.volume).toBeCloseTo(0.4)
+
+    fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '0' } })
+    expect(video.muted).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute' }))
+    expect(video.muted).toBe(false)
+    expect(video.volume).toBe(1)
+  })
+})

@@ -5,6 +5,7 @@ import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
 import { frameSeconds, useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
+import { VolumeControl } from './volume-control'
 import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
 
 interface VideoRendererProps {
@@ -264,6 +265,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
+          <VolumeControl mediaRef={videoRef} />
           {commentsEnabled && (
             <button
               type="button"

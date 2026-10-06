@@ -6,6 +6,7 @@ import { formatCommentTime, formatMediaTime } from '../comments/format-media-tim
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
 import { useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
+import { VolumeControl } from './volume-control'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface AudioRendererProps {
@@ -367,6 +368,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
+          <VolumeControl mediaRef={audioRef} />
           {commentsEnabled && (
             <button
               type="button"
