@@ -75,4 +75,29 @@ describe('requestConnectedAccountTool', () => {
     expect(result.content[0].text).toContain('"amazon" is not supported by us')
     expect(inputManager.hasPending(toolUseId)).toBe(false)
   })
+
+  it('parks a request for an unlisted platform toolkit so an existing account can be assigned', async () => {
+    const originalMode = process.env.COMPOSIO_PLATFORM_MODE
+    process.env.COMPOSIO_PLATFORM_MODE = 'true'
+    try {
+      const toolUseId = `ca-test-${Date.now()}-5`
+      const resultPromise = invokeTool(toolUseId, 'shopify')
+
+      await vi.waitFor(() => expect(inputManager.hasPending(toolUseId)).toBe(true))
+      inputManager.resolve(toolUseId, 'granted')
+      const result = await resultPromise
+      expect(result.isError).toBeUndefined()
+    } finally {
+      if (originalMode === undefined) delete process.env.COMPOSIO_PLATFORM_MODE
+      else process.env.COMPOSIO_PLATFORM_MODE = originalMode
+    }
+  })
+
+  it('rejects an unlisted platform toolkit outside platform mode', async () => {
+    const toolUseId = `ca-test-${Date.now()}-6`
+    const result = await invokeTool(toolUseId, 'shopify')
+
+    expect(result.isError).toBe(true)
+    expect(inputManager.hasPending(toolUseId)).toBe(false)
+  })
 })

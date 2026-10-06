@@ -9,7 +9,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { inputManager } from '../input-manager'
-import { SERVICES } from './search-connected-account-services'
+import { isRequestableToolkit } from './search-connected-account-services'
 
 export const requestConnectedAccountTool = tool(
   'request_connected_account',
@@ -60,7 +60,7 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
       }
     }
 
-    if (!SERVICES.some((s) => s.slug === toolkitLower)) {
+    if (!isRequestableToolkit(toolkitLower)) {
       return {
         content: [
           {

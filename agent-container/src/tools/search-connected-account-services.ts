@@ -80,6 +80,14 @@ export const SERVICES: ServiceInfo[] = [
 ]
 if (process.env.COMPOSIO_PLATFORM_MODE === 'true') SERVICES.push(...GAMUT_PLATFORM_ACCOUNTS)
 
+// Unlisted on the host: never offered in search, but an account the user already has can still be assigned.
+const UNLISTED_PLATFORM_SLUGS = ['shopify']
+
+export function isRequestableToolkit(slug: string): boolean {
+  if (SERVICES.some((s) => s.slug === slug)) return true
+  return process.env.COMPOSIO_PLATFORM_MODE === 'true' && UNLISTED_PLATFORM_SLUGS.includes(slug)
+}
+
 export const searchConnectedAccountServicesTool = tool(
   'search_connected_account_services',
   `Search for available OAuth services that can be connected via the request_connected_account tool. Call with no search term to list all services, or provide a search term to filter by name, category, or description.`,
