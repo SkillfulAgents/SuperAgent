@@ -4,7 +4,7 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import type { AppSettings } from '@shared/lib/config/settings'
 
-/** The container refused an operation because the session is mid-turn (HTTP 409). */
+/** The container refused to fork a running session (HTTP 409). Only images that predate mid-turn fork do this. */
 export class ContainerConflictError extends Error {
   readonly code = 'session_busy'
   constructor(message: string) {
@@ -334,7 +334,7 @@ export interface ContainerClient {
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws
   // ContainerNotFoundError when the session is gone (JSON 404),
-  // ContainerConflictError when the source is mid-turn.
+  // ContainerConflictError when an older image refuses a running source.
   forkSession(sessionId: string): Promise<{ id: string } | null>
   // Ask the container to resume this session's CLI ahead of its next message
   // (it may have been evicted while idle). Best-effort and never throws:
