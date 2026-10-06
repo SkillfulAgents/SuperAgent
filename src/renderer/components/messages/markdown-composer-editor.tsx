@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import MarkdownIt from 'markdown-it'
-import { baseKeymap, chainCommands, exitCode, newlineInCode, toggleMark } from 'prosemirror-commands'
+import type Token from 'markdown-it/lib/token.mjs'
+import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
 import { history, redo, undo } from 'prosemirror-history'
 import {
   InputRule,
@@ -17,7 +18,7 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode } from 'prosemirror-model'
+import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
@@ -62,10 +63,37 @@ const markdownSchema = new Schema({
   }),
 })
 
+/**
+ * A setext heading that spans several lines (YAML frontmatter is the common
+ * case) holds line breaks, which the heading schema rejects, so the parser
+ * would drop the whole heading. Keep those lines as a paragraph instead, with
+ * the underline as its last line.
+ */
+export function demoteMultilineSetextHeadings(tokens: Token[], src: string): void {
+  let lines: string[] | undefined
+  for (let i = 0; i < tokens.length - 2; i++) {
+    const open = tokens[i]
+    const inline = tokens[i + 1]
+    if (open.type !== 'heading_open' || (open.markup !== '-' && open.markup !== '=')) continue
+    if (!inline.content.includes('\n') || !open.map) continue
+    lines ??= src.split('\n')
+    // Drop any quote or list indentation prefix from the source line.
+    inline.content += `\n${lines[open.map[1] - 1].replace(/^[\s>]*/, '').trimEnd()}`
+    for (const token of [open, tokens[i + 2]]) {
+      token.type = token.nesting === 1 ? 'paragraph_open' : 'paragraph_close'
+      token.tag = 'p'
+      token.markup = ''
+    }
+  }
+}
+
 const markdownTokenizer = new MarkdownIt('commonmark', {
   html: false,
   linkify: true,
 }).enable('strikethrough')
+markdownTokenizer.core.ruler.after('block', 'demote_multiline_setext', (state) => {
+  demoteMultilineSetextHeadings(state.tokens, state.src)
+})
 
 const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   ...defaultMarkdownParser.tokens,
@@ -73,10 +101,41 @@ const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   s: { mark: 'strike' },
 })
 
+/**
+ * Escapes the markers that would start a block at the start of a line, so the
+ * line reads back as text. A paragraph's first line can start any list, quote,
+ * heading or divider. A continuation line can only be interrupted by a
+ * non-empty bullet or "1." item, a quote, a heading, or a setext underline.
+ */
+export function escapeLineStart(text: string, paragraphStart = false): string {
+  if (paragraphStart) {
+    return text
+      .replace(/^([ \t]*)([->]|\+(?=[ \t]|$)|#{1,6}(?=[ \t]|$))/, '$1\\$2')
+      .replace(/^([ \t]*\d{1,9})([.)])(?=[ \t]|$)/, '$1\\$2')
+  }
+  return text
+    .replace(/^([ \t]*)([-+](?=[ \t]+\S)|-[- \t]*$|=+[ \t]*$|>|#{1,6}(?=[ \t]|$))/, '$1\\$2')
+    .replace(/^([ \t]*0{0,8}1)([.)])(?=[ \t]+\S)/, '$1\\$2')
+}
+
 const markdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
     soft_break: (state) => state.write('\n'),
+    // Unmarked text that starts a source line, where block syntax would re-read as structure.
+    text: (state, node, parent, index) => {
+      const previous = index > 0 ? parent.child(index - 1).type.name : parent.type.name
+      if (parent.type.name === 'heading' && index === parent.childCount - 1 && node.marks.length === 0) {
+        // A trailing " #" would re-read as the heading's optional closing sequence and disappear.
+        state.text(state.esc(node.text ?? '').replace(/(^|[ \t])(#+[ \t]*)$/, '$1\\$2'), false)
+        return
+      }
+      if (node.marks.length > 0 || !['paragraph', 'soft_break', 'hard_break'].includes(previous)) {
+        defaultMarkdownSerializer.nodes.text(state, node, parent, index)
+        return
+      }
+      state.text(escapeLineStart(state.esc(node.text ?? ''), previous === 'paragraph'), false)
+    },
   },
   {
     ...defaultMarkdownSerializer.marks,
@@ -354,6 +413,63 @@ const removeTrailingSoftBreak: Command = (state, dispatch) => {
   return true
 }
 
+/** Replaces the code block around the cursor with a paragraph, keeping each code line as a line break, and puts the cursor at its start. */
+function codeBlockToText(state: EditorState, $from: ResolvedPos): Transaction {
+  const { nodes } = state.schema
+  // setBlockType would collapse the lines into spaces. Paragraphs drop leading whitespace on re-read.
+  const lines = $from.parent.textContent.replace(/\n+$/, '').split('\n').map((line) => line.replace(/^[ \t]+/, ''))
+  const content = lines.flatMap((line, i) => [...(i > 0 ? [nodes.soft_break.create()] : []), ...(line ? [state.schema.text(line)] : [])])
+  const tr = state.tr.replaceWith($from.before(), $from.after(), nodes.paragraph.create(null, content))
+  return tr.setSelection(TextSelection.create(tr.doc, $from.before() + 1))
+}
+
+/** Enter on an empty last line leaves a code block; in an empty block, it turns it into text. */
+const exitCodeBlockOnEmptyLine: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  const block = $from.parent
+  if (!empty || !block.type.spec.code || $from.parentOffset !== block.content.size) return false
+  const text = block.textContent
+  const blank = /^\n*$/.test(text)
+  if (!blank && !text.endsWith('\n')) return false
+  if (!dispatch) return true
+  if (blank) {
+    dispatch(codeBlockToText(state, $from).scrollIntoView())
+    return true
+  }
+  const { paragraph } = state.schema.nodes
+  const tr = state.tr.delete($from.pos - 1, $from.pos)
+  const after = $from.after() - 1
+  if (tr.doc.resolve(after).nodeAfter?.type !== paragraph) tr.insert(after, paragraph.create())
+  dispatch(tr.setSelection(TextSelection.create(tr.doc, after + 1)).scrollIntoView())
+  return true
+}
+
+/** Backspace at the start of a heading or code block, or of a quote's or list item's first paragraph, turns it into plain text. */
+const removeFormattingAtBlockStart: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  if (!empty || $from.parentOffset !== 0) return false
+  const { nodes } = state.schema
+  if ($from.parent.type === nodes.heading) return setBlockType(nodes.paragraph)(state, dispatch)
+  if ($from.parent.type.spec.code) {
+    if (dispatch) dispatch(codeBlockToText(state, $from).scrollIntoView())
+    return true
+  }
+  if ($from.index(-1) !== 0) return false
+  const container = $from.node(-1).type
+  if (container === nodes.list_item) return liftListItem(nodes.list_item)(state, dispatch)
+  if (container === nodes.blockquote) return lift(state, dispatch)
+  return false
+}
+
+/** Backspace on an empty paragraph below a list joins it into the text above instead of adding an item. */
+const returnUpFromEmptyLine: Command = (state, dispatch, view) => {
+  const { $from } = state.selection
+  if ($from.parent.type !== state.schema.nodes.paragraph || $from.parent.content.size > 0) return false
+  const before = $from.node(-1).maybeChild($from.index(-1) - 1)
+  if (!before || before.isTextblock) return false
+  return joinTextblockBackward(state, dispatch, view)
+}
+
 function buildCaretSentinelPlugin(): Plugin {
   return new Plugin({
     appendTransaction: (transactions, _oldState, newState) => {
@@ -435,8 +551,8 @@ function buildInputRules() {
 function buildKeymap() {
   const { nodes, marks } = markdownSchema
   return keymap({
-    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule),
-    Enter: chainCommands(codeFenceCommand, splitListItem(nodes.list_item)),
+    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule, removeFormattingAtBlockStart, returnUpFromEmptyLine),
+    Enter: chainCommands(codeFenceCommand, exitCodeBlockOnEmptyLine, newlineInCode, splitListItem(nodes.list_item)),
     'Shift-Enter': chainCommands(newlineInCode, insertSoftBreak),
     Tab: sinkListItem(nodes.list_item),
     'Shift-Tab': liftListItem(nodes.list_item),
