@@ -199,12 +199,29 @@ describe('mount-service', () => {
       expect(JSON.parse(fs.readFileSync(file, 'utf-8'))[0]).toEqual(old)
     })
 
-    it('lists a row it cannot build as missing, and still removes it', async () => {
+    it('skips a row of a type this version does not know, keeps it and its name on the next write, and removes it by id', async () => {
+      const { addMount, getMountsWithHealth, removeMount } = await importService()
+      const unknown = { id: 'drive', name: 'notes', type: 'not-a-type', config: { folderId: 'x' } }
+      const file = writeRows([unknown])
+
+      expect(await getMountsWithHealth('test-agent')).toEqual([])
+      expect((await addMount('test-agent', 'local', { path: makeHostDir('notes') })).name).toBe('notes-2')
+      const rows = JSON.parse(fs.readFileSync(file, 'utf-8'))
+      expect(rows[0]).toEqual(unknown)
+      expect(rows).toHaveLength(2)
+      const added = JSON.parse(fs.readFileSync(file, 'utf-8'))[1].id
+      await removeMount('test-agent', added)
+      expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual([unknown])
+      await removeMount('test-agent', 'drive')
+      expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual([])
+    })
+
+    it('lists a row of a known type whose config is not that type\'s as missing, and still removes it', async () => {
       const { getMountsWithHealth, removeMount, getMounts } = await importService()
-      writeRows([{ id: 'drive', name: 'drive', type: 'not-a-type', config: {} }])
+      writeRows([{ id: 'bad', name: 'bad', type: 'local', config: { folder: '/x' } }])
 
       expect((await getMountsWithHealth('test-agent')).map(({ health, hostPath }) => ({ health, hostPath }))).toEqual([{ health: 'missing', hostPath: null }])
-      await removeMount('test-agent', 'drive')
+      await removeMount('test-agent', 'bad')
       expect(await getMounts('test-agent')).toEqual([])
     })
   })

@@ -786,6 +786,15 @@ export interface AtomicWriteOptions {
    * dominant cost.
    */
   fsync?: boolean
+  /**
+   * A caller's lock, held around the final publish (`beforePublish`, the check that the
+   * temp file is still this write's, the claim, then the rename) and around a failed
+   * write's cleanup, which then removes the temp file only while it is still this
+   * write's. Not held while the content is written. Passing it turns those checks on.
+   */
+  lock?: (fn: () => Promise<void>) => Promise<void>
+  /** Called under `lock` just before `filePath` is published; throwing refuses the publish. */
+  beforePublish?: (filePath: string) => Promise<void>
 }
 
 /**
@@ -868,10 +877,15 @@ async function writeFileAtomicWith(
     }
   }
   let claimed = false
+  // A caller that publishes under its own lock may share the folder with writers that can take the
+  // temp file's name, so its publish and cleanup act only on the temp file this write opened.
+  let staged: fs.Stats | undefined
+  const lock = options?.lock
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
+      if (lock) staged = await handle.stat()
       await options?.validate?.(handle, tmpPath)
       await writeContent(handle)
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
@@ -888,17 +902,37 @@ async function writeFileAtomicWith(
     } finally {
       await handle.close()
     }
-    if (options?.overwrite === false) {
-      // Claim the name with an exclusive create (EEXIST when taken), then the
-      // rename replaces that empty claim. This needs no hard link, which S3
-      // Files refuses. A writer that writes the name between claim and rename
-      // is replaced.
-      await fs.promises.writeFile(filePath, '', { flag: 'wx' })
-      claimed = true
+    const publish = async () => {
+      await options?.beforePublish?.(filePath)
+      if (staged) {
+        // Publish only the file this write made, never what took its name, a link included.
+        const current = await fs.promises.lstat(tmpPath)
+        if (!current.isFile() || current.ino !== staged.ino || current.dev !== staged.dev) {
+          throw Object.assign(new Error(`The staged file for ${filePath} was replaced before it was published`), { code: 'ENOENT' })
+        }
+      }
+      if (options?.overwrite === false) {
+        // Claim the name with an exclusive create (EEXIST when taken), then the
+        // rename replaces that empty claim. This needs no hard link, which S3
+        // Files refuses. A writer that writes the name between claim and rename
+        // is replaced.
+        await fs.promises.writeFile(filePath, '', { flag: 'wx' })
+        claimed = true
+      }
+      await renameWithRetry(tmpPath, filePath)
     }
-    await renameWithRetry(tmpPath, filePath)
+    await (lock ? lock(publish) : publish())
   } catch (err) {
-    await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
+    if (lock) {
+      // Under the lock, so nothing takes the name between the check and the removal: whatever
+      // was moved onto it stays.
+      await lock(async () => {
+        const left = await fs.promises.lstat(tmpPath).catch(() => null)
+        if (left && staged && left.ino === staged.ino && left.dev === staged.dev) await fs.promises.rm(tmpPath, { force: true })
+      }).catch(() => {})
+    } else {
+      await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
+    }
     // Remove the claim only while it is still empty.
     const claim = claimed ? await fs.promises.lstat(filePath).catch(() => null) : null
     if (claim?.size === 0) await fs.promises.rm(filePath, { force: true }).catch(() => {})

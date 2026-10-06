@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
-import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './volumes'
+import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 
 /**
  * An entry as a listing reports it, never following a link: a link shows as an
@@ -20,9 +20,12 @@ function entryOf(name: string, stat: fs.Stats): VolumeEntry | null {
   return { name, kind: stat.isDirectory() ? 'directory' : 'file', size: stat.size, mtimeMs: stat.mtimeMs }
 }
 
-// A move is the only operation that can put a link where a checked folder was. It waits for every
-// earlier operation on a folder overlapping its own (one inside the other), and later operations on
-// those folders wait for it, so nothing runs between a check and its act while a move lands.
+// A move is the only operation that can put a link where a checked folder was. Every operation is
+// keyed by its volume's root, so a move waits for every earlier operation in its volume, or in a
+// volume nested in or around it, and later ones wait for the move: nothing runs between a check and
+// its act while a move lands. An upload streams outside the gate and holds it, alone like a move
+// (the `move` flag means alone), only to publish, where its destination is resolved again, or to
+// clean up a failed one.
 type Running = { folder: string; move: boolean; done: Promise<unknown> }
 const running = new Set<Running>()
 
@@ -192,12 +195,21 @@ export class LocalMountableVolume extends BaseMountableVolume<LocalVolumeConfig>
 
   async write(volumePath: string, body: ReadableStream<Uint8Array>): Promise<void> {
     try {
-      await gated(this.config.path, false, async () => {
-        await this.entry(volumePath)
-        refuseRoot(volumePath)
-        // The atomic rename replaces a link at the target with the file, as a move onto it does, never what it points at.
-        // A parent deleted since the check above stays deleted: the write answers a miss instead of making it again.
-        await this.files.write(volumePath, body, { confined: true, existingParent: true })
+      // An early refusal only: the publish below checks again under the gate.
+      await this.entry(volumePath)
+      refuseRoot(volumePath)
+      // The body streams in outside the gate, so a slow upload never holds up a move. The publish is
+      // gated, and refused unless the path, checked again, still leads where the file was staged. The
+      // atomic rename replaces a link at the target with the file, as a move onto it does, never what
+      // it points at. A parent deleted meanwhile stays deleted.
+      await this.files.write(volumePath, body, {
+        confined: true,
+        existingParent: true,
+        exactRoot: true,
+        lock: (fn) => gated(this.config.path, true, fn),
+        beforePublish: async (destination) => {
+          if ((await this.entry(volumePath)) !== destination) throw new WorkspaceFileError('not-accessible', 'The folder changed during the upload')
+        },
       })
     } catch (error) {
       await body.cancel().catch(() => {})
