@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
 import * as path from 'path';
 import { promisify } from 'util';
 import { z } from 'zod';
@@ -19,7 +20,7 @@ const volumesEnvSchema = z.array(
 
 type ContainerMount = z.infer<typeof volumesEnvSchema>[number];
 
-let mounted: ContainerMount[] = [];
+let mounted: (ContainerMount & { rclone: ChildProcess })[] = [];
 
 export function parseVolumes(raw: string | undefined): ContainerMount[] {
   if (!raw) return [];
@@ -31,6 +32,10 @@ export function parseVolumes(raw: string | undefined): ContainerMount[] {
   }
 }
 
+function controlSocket(volumeId: string): string {
+  return `/tmp/rclone-${volumeId}.sock`;
+}
+
 export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string): string[] {
   return [
     'mount', ':webdav:', mountPath,
@@ -40,6 +45,9 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     '--dir-cache-time', '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
+    // Shutdown asks this socket which uploads are still running. Any claude process can use it, including to quit
+    // rclone, which claude can already do by killing it.
+    '--rc', '--rc-addr', `unix://${controlSocket(volumeId)}`, '--rc-no-auth',
   ];
 }
 
@@ -52,7 +60,7 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
   await fs.promises.readdir(mountPath);
 }
 
-async function mountVolume({ volumeId, name }: ContainerMount): Promise<boolean> {
+async function mountVolume({ volumeId, name }: ContainerMount): Promise<ChildProcess | undefined> {
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -73,12 +81,12 @@ async function mountVolume({ volumeId, name }: ContainerMount): Promise<boolean>
         timer = setTimeout(() => reject(new Error('mount timed out')), MOUNT_TIMEOUT_MS);
       }),
     ]);
-    return true;
+    return child;
   } catch (error) {
     console.error(`[volumes] Leaving out ${mountPath}:`, error);
     rclone?.kill();
     await execFileAsync('fusermount3', ['-uz', mountPath]).catch(() => {});
-    return false;
+    return undefined;
   } finally {
     settled = true;
     clearTimeout(timer);
@@ -86,8 +94,48 @@ async function mountVolume({ volumeId, name }: ContainerMount): Promise<boolean>
 }
 
 export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
-  const ok = await Promise.all(mounts.map(mountVolume));
-  mounted = mounts.filter((_, i) => ok[i]);
+  const processes = await Promise.all(mounts.map(mountVolume));
+  mounted = mounts.flatMap((m, i) => {
+    const rclone = processes[i];
+    return rclone ? [{ ...m, rclone }] : [];
+  });
+}
+
+function uploadsRunning(volumeId: string): Promise<string[]> {
+  return new Promise((resolve) => {
+    const req = http.request({ socketPath: controlSocket(volumeId), path: '/core/stats', method: 'POST' }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve((JSON.parse(body).transferring ?? []).map((t: { name: string }) => t.name)));
+    });
+    // No answer means rclone is gone, so nothing is uploading.
+    req.on('error', () => resolve([]));
+    req.end();
+  });
+}
+
+// A closed file keeps uploading in the background, and rclone drops that upload when stopped.
+// Returns what was still uploading once the deadline passes.
+export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number): Promise<string[]> {
+  let pending: string[] = [];
+  while (Date.now() < deadline) {
+    // A just-closed file shows up as a transfer a few ms later, so an answer right away can miss it.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    pending = await uploads();
+    if (pending.length === 0) return [];
+  }
+  return pending;
+}
+
+export async function unmountVolumes(deadline: number): Promise<void> {
+  await Promise.all(mounted.map(async ({ volumeId, name, rclone }) => {
+    const pending = await waitForUploads(() => uploadsRunning(volumeId), deadline);
+    if (pending.length > 0) console.error(`[volumes] Unmounting /mounts/${name} with uploads unfinished:`, pending);
+    // SIGTERM makes rclone unmount.
+    const exited = new Promise((resolve) => rclone.once('exit', resolve));
+    rclone.kill();
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now())))]);
+  }));
 }
 
 export function mountedVolumePaths(): string[] {

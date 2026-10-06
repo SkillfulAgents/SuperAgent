@@ -52,7 +52,7 @@ import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-pro
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
-import { mountVolumes, mountedVolumeIds, parseVolumes } from './volume-mounts';
+import { mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -3347,6 +3347,8 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true;
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
+  // The host stops containers with a 5s grace, then kills them.
+  const uploadDeadline = Date.now() + 4_000;
 
   // Close the browser even if an automated session released its ownership lock.
   if (browserState.location) {
@@ -3372,6 +3374,9 @@ async function gracefulShutdown(signal: string) {
   } catch (error) {
     console.error('Error stopping sessions:', error);
   }
+
+  // After sessions stop, so nothing is still writing to a volume.
+  await unmountVolumes(uploadDeadline);
 
   // Close WebSocket servers
   browserWss.close(() => {

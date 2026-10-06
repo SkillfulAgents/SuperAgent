@@ -9,6 +9,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -29,10 +31,10 @@ function sh(container: string, script: string): string {
 // Starts the agent through the image's start script after a 1s head start for
 // `server` (a shell command for the test's app on :8080). As root, /dev/fuse is
 // first made root-only, as on Apple Container, and the script opens it and drops to claude.
-function startAgent(server: string, volumes: { volumeId: string; name: string }[], user = 'claude'): string {
+function startAgent(server: string, volumes: { volumeId: string; name: string }[], user = 'claude', runArgs: string[] = []): string {
   const rootOnlyDevice = user === 'root' ? 'chmod 600 /dev/fuse; ' : '';
   const container = docker(
-    'run', '-d', '--user', user, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN',
+    'run', '-d', '--user', user, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN', ...runArgs,
     '-e', `SUPERAGENT_VOLUMES=${JSON.stringify(volumes)}`,
     '-e', 'SUPERAGENT_HOST_API_URL=http://127.0.0.1:8080/api',
     '-e', 'PROXY_TOKEN=test-token',
@@ -124,5 +126,29 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     const started = Date.now();
     docker('rm', '-f', container);
     expect(Date.now() - started).toBeLessThan(5_000);
+  }, 60_000);
+
+  it('finishes an upload still running when the host stops the container', async () => {
+    // The source lives on the host, so it outlives the container. The app is slowed so the upload outlasts the write.
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
+    fs.chmodSync(source, 0o777);
+    const container = startAgent(
+      'rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes --bwlimit 20M',
+      [{ volumeId: 'v_slow', name: 'docs' }],
+      'claude',
+      ['-v', `${source}:/srv/v_slow`],
+    );
+    await healthUntilOk(container);
+    sh(container, 'head -c 40000000 /dev/urandom > /mounts/docs/big.bin');
+    const uploaded = path.join(source, 'big.bin');
+    expect(fs.existsSync(uploaded) ? fs.statSync(uploaded).size : 0).toBeLessThan(40_000_000);
+
+    // As the host stops it: 5s to exit, then removed.
+    docker('stop', '-t', '5', container);
+    // 0, not 137: shutdown finished on its own rather than being killed at 5s.
+    expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
+    docker('rm', container);
+    expect(fs.statSync(uploaded).size).toBe(40_000_000);
+    fs.rmSync(source, { recursive: true });
   }, 60_000);
 });
