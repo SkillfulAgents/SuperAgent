@@ -196,7 +196,8 @@ export class LocalMountableVolume extends BaseMountableVolume<LocalVolumeConfig>
         await this.entry(volumePath)
         refuseRoot(volumePath)
         // The atomic rename replaces a link at the target with the file, as a move onto it does, never what it points at.
-        await this.files.write(volumePath, body, { confined: true })
+        // A parent deleted since the check above stays deleted: the write answers a miss instead of making it again.
+        await this.files.write(volumePath, body, { confined: true, existingParent: true })
       })
     } catch (error) {
       await body.cancel().catch(() => {})

@@ -64,6 +64,12 @@ describe('LocalFileOps — links and host files', () => {
     expect(await files.resolve('never/made/missing.jsonl')).toBeNull()
   })
 
+  it('a confined write with existingParent refuses a missing parent instead of making it', async () => {
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('x')); controller.close() } })
+    expect(await codeOf(files.write('gone/x.txt', body, { confined: true, existingParent: true }))).toBe('not-found')
+    expect(fs.existsSync(path.join(root, 'gone'))).toBe(false)
+  })
+
   it('resolve reports where a link leads inside the workspace', async () => {
     await fs.promises.mkdir(path.join(root, 'real'))
     await fs.promises.writeFile(path.join(root, 'real', 'x.txt'), 'x')

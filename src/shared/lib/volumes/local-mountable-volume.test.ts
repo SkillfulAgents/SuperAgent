@@ -1,7 +1,8 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { LocalMountableVolume, isCloudStoragePath } from './local-mountable-volume'
 
@@ -245,6 +246,21 @@ describe('LocalMountableVolume', () => {
     expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'x'))).toBe(true)
     expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'Mobile Documents', 'x'))).toBe(true)
     expect(isCloudStoragePath(path.join(os.homedir(), 'Projects', 'x'))).toBe(false)
+  })
+
+  it('never makes again a folder deleted between an upload\'s check and its write', async () => {
+    await fs.promises.mkdir(path.join(folder, 'd'))
+    const write = LocalFileOps.prototype.write
+    const spy = vi.spyOn(LocalFileOps.prototype, 'write').mockImplementation(async function (this: LocalFileOps, ...args) {
+      await fs.promises.rmdir(path.join(folder, 'd'))
+      return write.apply(this, args)
+    })
+    try {
+      expect(await codeOf(volume.write('d/x.txt', new Blob(['x']).stream()))).toBe('not-found')
+      expect(fs.existsSync(path.join(folder, 'd'))).toBe(false)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('answers a stat of the root without waiting behind a move, in its own volume or an enclosing one', async () => {

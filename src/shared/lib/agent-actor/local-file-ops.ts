@@ -237,15 +237,15 @@ export class LocalFileOps implements FileOps {
   }
 
   /** Canonical destination parents are checked before creating each child. */
-  private async confinedDestination(workspacePath: string): Promise<{ rel: string; abs: string; root: string }> {
+  private async confinedDestination(workspacePath: string, existingParent = false): Promise<{ rel: string; abs: string; root: string }> {
     const { rel, root } = this.absolute(workspacePath)
     if (!rel) throw new WorkspaceFileError('invalid-path')
     const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
     let parent = canonicalRoot
     for (const segment of path.posix.dirname(rel).split('/').filter((part) => part !== '.')) {
       const candidate = path.join(parent, segment)
-      await fs.promises.mkdir(candidate).catch((error) => { if (errnoCode(error) !== 'EEXIST') throw error })
-      parent = await fs.promises.realpath(candidate)
+      if (!existingParent) await fs.promises.mkdir(candidate).catch((error) => { if (errnoCode(error) !== 'EEXIST') throw error })
+      parent = await fs.promises.realpath(candidate).catch(fromFsError)
       if (!isPathWithinDir(canonicalRoot, parent)) throw new WorkspaceFileError('outside-workspace')
     }
     return { rel, abs: path.join(parent, path.posix.basename(rel)), root: canonicalRoot }
@@ -446,7 +446,7 @@ export class LocalFileOps implements FileOps {
   ): Promise<{ size: number }> {
     let target: { rel: string; abs: string; root?: string }
     try {
-      target = options?.confined ? await this.confinedDestination(workspacePath) : this.forWrite(workspacePath)
+      target = options?.confined ? await this.confinedDestination(workspacePath, options.existingParent) : this.forWrite(workspacePath)
     } catch (error) {
       // The caller may already hold the source open; a refused destination
       // must not leave it dangling.

@@ -626,6 +626,8 @@ export interface ByteRange {
 export interface WriteOptions {
   /** Refuse symlink escapes; used when sharing files across agents. */
   confined?: boolean
+  /** With `confined`: refuse a missing parent folder instead of creating it. */
+  existingParent?: boolean
   /** Publish only if no destination exists, including racing writers. */
   overwrite?: boolean
   signal?: AbortSignal
