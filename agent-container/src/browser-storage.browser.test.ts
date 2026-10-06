@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import { chromium, type BrowserContext } from 'playwright-core'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { captureSiteStorage, connectCdp, restoreSiteStorage, type CdpClient } from './browser-storage'
+import { captureSiteStorage, connectCdp, restoreSiteStorage, runBrowserStorage, type CdpClient } from './browser-storage'
 import type { SiteStorageBundle } from './browser-storage-bundle'
 import { WRITE_ORIGIN_STORAGE_FUNCTION } from './browser-storage-script'
 import { resolveChromiumExecutable } from './dashboard-screenshot'
@@ -287,5 +287,86 @@ describe('replacement and rollback scope', () => {
     expect(await evaluate(app, `[localStorage.getItem('token'), document.cookie]`)).toEqual([null, ''])
     const fresh = await openTab(`fresh.${SITE}`)
     expect(await evaluate(fresh, `localStorage.getItem('token')`)).toBeNull()
+  })
+
+  it('puts back each tab\'s own sessionStorage when a write fails', async () => {
+    const first = await openTab(`app.${SITE}`)
+    const second = await openTab(`app.${SITE}`)
+    await evaluate(first, `sessionStorage.setItem('flow', 'first-flow')`)
+    await evaluate(second, `sessionStorage.setItem('flow', 'second-flow')`)
+    const incoming = bundleFor([
+      localToken(`fresh.${SITE}`, 'account-b'),
+      { ...localToken(`app.${SITE}`, 'account-b'), sessionStorage: [['flow', 'account-b-flow']] },
+    ])
+
+    await expect(restoreSiteStorage(failingWrites(2, 2), incoming)).rejects.toThrow('injected write failure; the previous state was put back')
+
+    expect(await evaluate(first, `sessionStorage.getItem('flow')`)).toBe('first-flow')
+    expect(await evaluate(second, `sessionStorage.getItem('flow')`)).toBe('second-flow')
+  })
+
+  it.each([
+    ['a database left out for size', `'x'.repeat(5_100_000)`],
+    ['a value that cannot leave the browser', `await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt'])`],
+  ])('clears the site instead of reporting success when the backup holds %s', async (_case, extraValue) => {
+    const app = await openTab(`app.${SITE}`)
+    await evaluate(app, `(async () => {
+      localStorage.setItem('token', 'account-a');
+      const db = await new Promise((resolve) => { const r = indexedDB.open('auth', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => resolve(r.result) });
+      const extra = ${extraValue};
+      await new Promise((resolve) => { const tx = db.transaction('kv', 'readwrite'); const s = tx.objectStore('kv'); s.put('account-a', 'user'); s.put(extra, 'extra'); tx.oncomplete = resolve });
+      db.close();
+    })()`)
+    const incoming = bundleFor([
+      {
+        ...localToken(`app.${SITE}`, 'account-b'),
+        indexedDB: [{ name: 'auth', version: 1, stores: [{ name: 'kv', keyPath: null, autoIncrement: false, indexes: [], records: [{ key: 'user', value: 'account-b' }] }] }],
+      },
+      localToken(`fresh.${SITE}`, 'account-b'),
+    ])
+
+    await expect(restoreSiteStorage(failingWrites(2, 2), incoming))
+      .rejects.toThrow('injected write failure; the previous state could not be fully backed up, so the site was cleared')
+
+    expect(await evaluate(app, `(async () => [localStorage.getItem('token'), (await indexedDB.databases()).map((db) => db.name)])()`))
+      .toEqual([null, []])
+  })
+
+  it('puts back cookies of other sites that the bundle replaced', async () => {
+    const idpCookie = (name: string, value: string) => ({ name, value, domain: 'idp.localhost', path: '/', httpOnly: false, secure: false })
+    await cdp.send('Storage.setCookies', { cookies: [idpCookie('sid', 'idp-a')] })
+    const incoming = bundleFor(
+      [localToken(`fresh.${SITE}`, 'account-b'), localToken(`app.${SITE}`, 'account-b')],
+      [idpCookie('sid', 'idp-b'), idpCookie('device', 'idp-b')],
+    )
+
+    await expect(restoreSiteStorage(failingWrites(2, 2), incoming)).rejects.toThrow('the previous state was put back')
+
+    const { cookies } = await cdp.send<{ cookies: Array<{ name: string; value: string; domain: string }> }>('Storage.getCookies')
+    expect(cookies.filter((cookie) => cookie.domain === 'idp.localhost').map((cookie) => [cookie.name, cookie.value]))
+      .toEqual([['sid', 'idp-a']])
+  })
+})
+
+describe('sign-in baseline', () => {
+  const options = { validateSession: () => null, isBrowserActive: () => true, connect: async () => ({ ...cdp, close: () => {} }) }
+  const setCookie = (name: string, value: string, domain: string) =>
+    cdp.send('Storage.setCookies', { cookies: [{ name, value, domain, path: '/', httpOnly: false, secure: false }] })
+
+  it('captures cookies of other sites that changed after the sign-in started', async () => {
+    await setCookie('prefs', 'unchanged', 'idp.localhost')
+    await setCookie('sid', 'before', 'idp.localhost')
+    expect(await runBrowserStorage('baseline', { sessionId: 'session', site: SITE }, options)).toMatchObject({ success: true })
+    await setCookie('sid', 'after', 'idp.localhost')
+    await setCookie('device', 'new', 'idp.localhost')
+    await setCookie('auth', 'account-a', `app.${SITE}`)
+
+    const captured = await runBrowserStorage('capture', { sessionId: 'session', site: SITE }, options)
+    const again = await runBrowserStorage('capture', { sessionId: 'session', site: SITE }, options)
+
+    const names = (result: typeof captured) => (result as { body: SiteStorageBundle }).body.cookies.map((cookie) => `${cookie.domain} ${cookie.name}`).sort()
+    expect(names(captured)).toEqual([`app.${SITE} auth`, 'idp.localhost device', 'idp.localhost sid'])
+    // Capture consumes the baseline, so a later save is back to the site alone.
+    expect(names(again)).toEqual([`app.${SITE} auth`])
   })
 })

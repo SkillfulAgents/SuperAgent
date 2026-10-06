@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import WebSocket from 'ws'
 import { z } from 'zod'
 import {
@@ -103,6 +104,15 @@ export function toStorageCookie(cookie: CdpCookie): StorageCookie {
     ...(cookie.sourcePort !== undefined ? { sourcePort: cookie.sourcePort } : {}),
     ...(cookie.partitionKey ? { partitionKey: cookie.partitionKey } : {}),
   }
+}
+
+/** What identifies a cookie in the browser's jar; setting a cookie with the same key replaces it. */
+function cookieKey(cookie: Pick<StorageCookie, 'name' | 'domain' | 'path' | 'partitionKey'>): string {
+  return JSON.stringify([cookie.domain, cookie.path, cookie.name, cookie.partitionKey?.topLevelSite ?? null, cookie.partitionKey?.hasCrossSiteAncestor ?? null])
+}
+
+function cookieFingerprint(cookie: StorageCookie): string {
+  return createHash('sha256').update(cookieKey(cookie)).update('\0').update(cookie.value).digest('base64')
 }
 
 /** An already-expired copy of a cookie; setting it deletes the original. */
@@ -265,30 +275,38 @@ async function listPages(cdp: CdpClient): Promise<Array<{ targetId: string; url:
   return targetInfos.filter((target) => target.type === 'page')
 }
 
+/** Run a sessionStorage page function in one tab; it gets `origin` first and returns null if the tab left it. */
+async function inTab<T>(cdp: CdpClient, targetId: string, origin: string, functionDeclaration: string, args: unknown[] = []): Promise<T | null> {
+  const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })
+  try {
+    return await callInPage<T | null>(cdp, sessionId, functionDeclaration, [origin, ...args])
+  } finally {
+    await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+  }
+}
+
 /**
  * Run a sessionStorage page function in every open tab listed on `origin`;
- * sessionStorage only exists per tab. The function receives the origin and
- * returns null if the tab has since navigated elsewhere. Returns the results
- * of tabs still on the origin.
+ * sessionStorage only exists per tab. Returns the results of tabs still on
+ * the origin.
  */
 async function inOpenTabs<T>(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>, origin: string, functionDeclaration: string, args: unknown[] = []): Promise<T[]> {
   const results: T[] = []
   for (const page of pages) {
     if (originOf(page.url) !== origin || page.url.endsWith(STUB_PATH)) continue
-    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
-    try {
-      const result = await callInPage<T | null>(cdp, sessionId, functionDeclaration, [origin, ...args])
-      if (result !== null) results.push(result)
-    } finally {
-      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
-    }
+    const result = await inTab<T>(cdp, page.targetId, origin, functionDeclaration, args)
+    if (result !== null) results.push(result)
   }
   return results
 }
 
-async function siteCookies(cdp: CdpClient, site: string): Promise<StorageCookie[]> {
+async function allCookies(cdp: CdpClient): Promise<StorageCookie[]> {
   const { cookies } = await cdp.send<{ cookies: CdpCookie[] }>('Storage.getCookies')
-  return cookies.filter((cookie) => hostBelongsToSite(cookie.domain, site)).map(toStorageCookie)
+  return cookies.map(toStorageCookie)
+}
+
+async function siteCookies(cdp: CdpClient, site: string): Promise<StorageCookie[]> {
+  return (await allCookies(cdp)).filter((cookie) => hostBelongsToSite(cookie.domain, site))
 }
 
 interface ReadOriginResult {
@@ -323,8 +341,44 @@ async function visitedUrls(cdp: CdpClient, pages: Array<{ targetId: string; url:
   return [...pages.map((page) => page.url), ...await historyUrls(cdp, pages)]
 }
 
-export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrigins: string[] = []): Promise<SiteStorageBundle> {
-  const cookies = await siteCookies(cdp, site)
+// A sign-in can depend on cookies of another site (e.g. an identity provider
+// on its own domain). Chrome lists every cookie, so the jar is fingerprinted
+// when a sign-in starts, and capture adds other sites' cookies that changed
+// since. Web storage of other sites cannot be listed, so it is not captured.
+const LOGIN_BASELINE_TTL_MS = 30 * 60_000
+const loginBaselines = new Map<string, { recordedAt: number; fingerprints: Set<string> }>()
+
+const baselineKey = (sessionId: string, site: string) => `${sessionId}\0${site}`
+
+/**
+ * Fingerprint the cookie jar before a sign-in to `site`. A fresh baseline
+ * already recorded for the same sign-in (e.g. its 2FA step) is kept, so
+ * cookies set by an earlier step still count as changed.
+ */
+export async function recordLoginBaseline(cdp: CdpClient, sessionId: string, site: string, now = Date.now()): Promise<void> {
+  for (const [key, baseline] of loginBaselines) {
+    if (now - baseline.recordedAt > LOGIN_BASELINE_TTL_MS) loginBaselines.delete(key)
+  }
+  const key = baselineKey(sessionId, site)
+  if (loginBaselines.has(key)) return
+  const fingerprints = new Set((await allCookies(cdp)).map(cookieFingerprint))
+  loginBaselines.set(key, { recordedAt: now, fingerprints })
+}
+
+function takeLoginBaseline(sessionId: string, site: string, now = Date.now()): Set<string> | undefined {
+  const key = baselineKey(sessionId, site)
+  const baseline = loginBaselines.get(key)
+  loginBaselines.delete(key)
+  return baseline && now - baseline.recordedAt <= LOGIN_BASELINE_TTL_MS ? baseline.fingerprints : undefined
+}
+
+/**
+ * Read the site's cookies and web storage. With a `baseline`, cookies of
+ * other sites that are new or changed since it was recorded are kept too.
+ */
+export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrigins: string[] = [], baseline?: Set<string>): Promise<SiteStorageBundle> {
+  const cookies = (await allCookies(cdp)).filter((cookie) =>
+    hostBelongsToSite(cookie.domain, site) || (baseline !== undefined && !baseline.has(cookieFingerprint(cookie))))
   const pages = await listPages(cdp)
   const origins: OriginStorage[] = []
   for (const origin of candidateOrigins(site, cookies, await visitedUrls(cdp, pages), extraOrigins)) {
@@ -396,28 +450,71 @@ async function writeSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle, extra
   return { cookies: bundle.cookies.length, origins, sessionStorageSkipped }
 }
 
+interface Rollback {
+  backup: SiteStorageBundle
+  /** Each open tab's own sessionStorage; the bundle keeps only one tab's per origin. */
+  tabs: Array<{ targetId: string; origin: string; entries: Array<[string, string]> }>
+  /** The bundle's cookies outside the site, and the cookies they replace. */
+  crossSiteCookies: StorageCookie[]
+  replacedCookies: StorageCookie[]
+}
+
 /**
  * Restore `bundle` as one unit. The site's current state, including the
  * bundle's origins even when they are empty now, is captured first; if the
- * write fails it is put back, and if that fails too the site is cleared so
- * the browser never keeps a mix of two logins. The thrown error says which.
+ * write fails it is put back, and if that fails too, or the backup could not
+ * hold all of it, the site is cleared so the browser never keeps a mix of two
+ * logins. The thrown error says which.
  */
 export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle): Promise<RestoreResult> {
   const backup = await captureSiteStorage(cdp, bundle.site, bundle.origins.map((origin) => origin.origin))
+  const scope = new Set(backup.origins.map((origin) => origin.origin))
+  const tabs: Rollback['tabs'] = []
+  for (const page of await listPages(cdp)) {
+    const origin = originOf(page.url)
+    if (!origin || !scope.has(origin) || page.url.endsWith(STUB_PATH)) continue
+    const entries = await inTab<Array<[string, string]>>(cdp, page.targetId, origin, READ_SESSION_STORAGE_FUNCTION)
+    if (entries) tabs.push({ targetId: page.targetId, origin, entries })
+  }
+  const crossSiteCookies = bundle.cookies.filter((cookie) => !hostBelongsToSite(cookie.domain, bundle.site))
+  const crossSiteKeys = new Set(crossSiteCookies.map(cookieKey))
+  const replacedCookies = crossSiteCookies.length > 0
+    ? (await allCookies(cdp)).filter((cookie) => crossSiteKeys.has(cookieKey(cookie)))
+    : []
   try {
     return await writeSiteStorage(cdp, bundle)
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'unknown error'
-    throw new Error(`${reason}; ${await recover(cdp, backup)}`)
+    throw new Error(`${reason}; ${await recover(cdp, { backup, tabs, crossSiteCookies, replacedCookies })}`)
   }
 }
 
-async function recover(cdp: CdpClient, backup: SiteStorageBundle): Promise<string> {
+/** Databases left out for size or values that cannot leave the browser mean the backup cannot put the site back as it was. */
+function isLossy(backup: SiteStorageBundle): boolean {
+  return backup.origins.some((origin) => (origin.oversizedDatabases?.length ?? 0) > 0 || origin.unsupported.length > 0)
+}
+
+async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
+  const { backup, tabs, crossSiteCookies, replacedCookies } = rollback
   const scope = backup.origins.map((origin) => origin.origin)
-  const succeeded = (write: Promise<unknown>) => write.then(() => true, () => false)
-  if (await succeeded(writeSiteStorage(cdp, backup, scope))) return 'the previous state was put back'
-  if (await succeeded(writeSiteStorage(cdp, { ...backup, cookies: [], origins: [] }, scope))) {
-    return 'the previous state could not be put back, so the site was cleared'
+  const putBackCrossSiteCookies = async () => {
+    if (crossSiteCookies.length > 0) await cdp.send('Storage.setCookies', { cookies: crossSiteCookies.map(expiredCookie) })
+    if (replacedCookies.length > 0) await cdp.send('Storage.setCookies', { cookies: replacedCookies })
+  }
+  const succeeded = (write: () => Promise<unknown>) => write().then(() => true, () => false)
+  const lossy = isLossy(backup)
+  if (!lossy && await succeeded(async () => {
+    await writeSiteStorage(cdp, backup, scope)
+    for (const tab of tabs) await inTab(cdp, tab.targetId, tab.origin, WRITE_SESSION_STORAGE_FUNCTION, [tab.entries])
+    await putBackCrossSiteCookies()
+  })) return 'the previous state was put back'
+  if (await succeeded(async () => {
+    await writeSiteStorage(cdp, { ...backup, cookies: [], origins: [] }, scope)
+    await putBackCrossSiteCookies()
+  })) {
+    return lossy
+      ? 'the previous state could not be fully backed up, so the site was cleared'
+      : 'the previous state could not be put back, so the site was cleared'
   }
   return 'the previous state could not be put back or cleared'
 }
@@ -437,7 +534,7 @@ const restoreRequestSchema = z.object({
   bundle: siteStorageBundleSchema,
 }).strict()
 
-export type BrowserStorageAction = 'capture' | 'restore'
+export type BrowserStorageAction = 'baseline' | 'capture' | 'restore'
 
 export interface BrowserStorageOptions {
   validateSession: (sessionId: string) => string | null
@@ -475,5 +572,11 @@ export async function runBrowserStorage(
   const parsed = siteRequestSchema.safeParse(rawBody)
   if (!parsed.success) return invalid
   const { sessionId, site, origins } = parsed.data
-  return run(sessionId, (cdp) => captureSiteStorage(cdp, site, origins))
+  if (action === 'baseline') {
+    return run(sessionId, async (cdp) => {
+      await recordLoginBaseline(cdp, sessionId, site)
+      return {}
+    })
+  }
+  return run(sessionId, (cdp) => captureSiteStorage(cdp, site, origins, takeLoginBaseline(sessionId, site)))
 }
