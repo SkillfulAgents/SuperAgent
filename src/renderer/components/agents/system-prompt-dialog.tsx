@@ -9,7 +9,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { CodeEditor } from '@renderer/components/ui/code-editor'
-import { MarkdownEditor } from '@renderer/components/ui/markdown-editor'
+import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -59,11 +59,13 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
               <TabsTrigger value="source" data-testid="system-prompt-tab-source">Source</TabsTrigger>
             </TabsList>
             <TabsContent value="preview">
-              <MarkdownEditor
+              <MarkdownComposerEditor
                 value={instructions}
                 onChange={setInstructions}
-                readOnly={locked}
-                className="h-[400px] overflow-y-auto rounded-md border px-4 py-2"
+                placeholder="Enter custom instructions for this agent..."
+                disabled={locked}
+                dataTestId="system-prompt-preview-editor"
+                className="h-[400px] rounded-md border px-4 py-2"
               />
             </TabsContent>
             <TabsContent value="source">
