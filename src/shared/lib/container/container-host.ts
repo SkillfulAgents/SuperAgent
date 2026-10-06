@@ -122,7 +122,7 @@ export class ContainerHost {
 
   /**
    * The agent's directory on this machine, above its workspace. Host-only, for
-   * the one thing kept there: the host folders bind-mounted into the container.
+   * the one thing kept there: the agent's volumes file.
    */
   agentHostPath(slug: string): string {
     return path.join(getAgentsDataDir(), slug)

@@ -1,5 +1,5 @@
 import os from 'os'
-import { BaseContainerClient, checkCommandAvailable, execWithPath } from './base-container-client'
+import { BaseContainerClient, FUSE_RUN_FLAGS, checkCommandAvailable, execWithPath } from './base-container-client'
 import type { ContainerConfig } from './types'
 
 /**
@@ -10,6 +10,11 @@ export class DockerContainerClient extends BaseContainerClient {
 
   constructor(config: ContainerConfig) {
     super(config)
+  }
+
+  public volumeRunFlags(): string {
+    // Docker's default AppArmor profile denies mount, and the daemon's host may run AppArmor whatever the app's OS.
+    return `${FUSE_RUN_FLAGS} --security-opt apparmor=unconfined`
   }
 
   protected getRunnerCommand(): string {

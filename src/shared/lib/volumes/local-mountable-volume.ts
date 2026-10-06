@@ -1,5 +1,4 @@
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { z } from 'zod'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
@@ -55,59 +54,18 @@ function refuseRoot(volumePath: string): void {
 export const localVolumeConfigSchema = z.object({ path: z.string() })
 export type LocalVolumeConfig = z.infer<typeof localVolumeConfigSchema>
 
-/**
- * Cloud-synced directories that macOS File Providers manage (iCloud Drive,
- * Dropbox, OneDrive, Google Drive, etc.). The Electron app can read these
- * because it has the user's TCC grant, but the Lima VM helper process does
- * NOT — macOS denies it with EPERM when the container runtime stats the path,
- * so the mount can't be shared into the agent sandbox. A host accessSync still
- * passes for the app, so we detect these by path prefix instead.
- */
-function getCloudStoragePrefixes(): string[] {
-  const home = os.homedir()
-  return [
-    // iCloud Drive
-    path.join(home, 'Library', 'Mobile Documents'),
-    // Third-party File Provider storage (Dropbox, OneDrive, Google Drive, …)
-    path.join(home, 'Library', 'CloudStorage'),
-  ]
-}
-
-/**
- * Detect whether a host path lives inside a cloud-synced directory that can't
- * be shared into the agent sandbox. Returns true on macOS for iCloud Drive and
- * `~/Library/CloudStorage/...` File Provider paths.
- */
-export function isCloudStoragePath(hostPath: string): boolean {
-  if (process.platform !== 'darwin') return false
-  const normalized = path.resolve(hostPath)
-  return getCloudStoragePrefixes().some((prefix) => isPathWithinDir(prefix, normalized))
-}
-
-/** User-facing message shown when a cloud-synced folder is rejected as a mount. */
-export const CLOUD_MOUNT_MESSAGE =
-  'This folder is in iCloud Drive or a cloud-synced location (Dropbox, OneDrive, Google Drive), ' +
-  'which can’t be shared into the agent sandbox. Please copy it to a regular local folder ' +
-  '(e.g. somewhere under your home directory) and mount that instead.'
-
 /** Checks a folder picked for a new local volume, and names the volume after it. */
 export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
   if (!path.isAbsolute(folder)) {
     throw new Error('The folder path must be an absolute path')
   }
-  // Reject cloud-synced folders before the user hits a cryptic run-time failure:
-  // the Lima VM helper can't stat File Provider paths even though the app can.
-  // Check the user-supplied path AND its realpath — iCloud aliases can resolve
-  // out of the cloud prefix, but the cloud prefix itself is the reliable signal.
-  if (isCloudStoragePath(folder)) {
-    throw new Error(CLOUD_MOUNT_MESSAGE)
-  }
   const resolved = await fs.promises.realpath(folder)
-  if (isCloudStoragePath(resolved)) {
-    throw new Error(CLOUD_MOUNT_MESSAGE)
-  }
   if (!(await fs.promises.stat(resolved)).isDirectory()) {
     throw new Error('The folder path must be a directory')
+  }
+  // The name becomes /mounts/<name>, and the filesystem root has none.
+  if (!path.basename(resolved)) {
+    throw new Error('The folder must have a name')
   }
   return { name: path.basename(resolved), config: { path: resolved } }
 }

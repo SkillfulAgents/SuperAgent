@@ -4,7 +4,7 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { LocalMountableVolume, isCloudStoragePath } from './local-mountable-volume'
+import { LocalMountableVolume } from './local-mountable-volume'
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -243,12 +243,6 @@ describe('LocalMountableVolume', () => {
   })
 
   // A move is the only operation that can put a link where a checked folder was.
-  it.runIf(process.platform === 'darwin')('flags iCloud and CloudStorage prefixes, not regular folders', () => {
-    expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'x'))).toBe(true)
-    expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'Mobile Documents', 'x'))).toBe(true)
-    expect(isCloudStoragePath(path.join(os.homedir(), 'Projects', 'x'))).toBe(false)
-  })
-
   it('never makes again a folder deleted between an upload\'s check and its write', async () => {
     await fs.promises.mkdir(path.join(folder, 'd'))
     const write = LocalFileOps.prototype.write

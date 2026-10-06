@@ -15,9 +15,6 @@ const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
-const mockBuildVolumeFlag = vi.fn(
-  (hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`
-)
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -32,7 +29,6 @@ vi.mock('./client-factory', () => ({
     getRuntimeGenerationId: () => null,
     fetch: vi.fn(),
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
-    buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...(args as [string, string])),
   }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
@@ -159,9 +155,8 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: () => 'America/New_York',
 }))
 
-const mockGetMountsWithHealth = vi.fn()
 vi.mock('@shared/lib/services/mount-service', () => ({
-  getMountsWithHealth: (...args: unknown[]) => mockGetMountsWithHealth(...args),
+  listVolumes: async () => ({ volumes: [], notMounted: [] }),
 }))
 
 import { containerHost } from './container-host'
@@ -174,7 +169,6 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
     mockGetAppPort.mockReturnValue(3000)
-    mockGetMountsWithHealth.mockReturnValue([])
 
     containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
     mockStart.mockResolvedValue(undefined)
