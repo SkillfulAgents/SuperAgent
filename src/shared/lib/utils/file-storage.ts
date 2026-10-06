@@ -758,7 +758,7 @@ function renameWithRetrySync(from: string, to: string, attempts = 10): void {
  *   3. rename temp → target (atomic on the same filesystem)
  *   4. fsync the parent directory (the rename itself is durable)
  *
- * On failure the temp file is removed while its name still holds this write's file, and the existing target is left exactly
+ * On ANY error the temp file is removed (with `lock`, only while its name still holds this write's file) and the existing target is left exactly
  * as it was — a failed/interrupted write never replaces a good file.
  *
  * The parent directory must already exist (callers ensure this), matching the
@@ -876,13 +876,15 @@ async function writeFileAtomicWith(
     }
   }
   let claimed = false
+  // A caller that publishes under its own lock may share the folder with writers that can take the
+  // temp file's name, so its publish and cleanup act only on the temp file this write opened.
   let staged: fs.Stats | undefined
-  const locked = options?.lock ?? ((fn: () => Promise<void>) => fn())
+  const lock = options?.lock
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
-      staged = await handle.stat()
+      if (lock) staged = await handle.stat()
       await options?.validate?.(handle, tmpPath)
       await writeContent(handle)
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
@@ -899,13 +901,14 @@ async function writeFileAtomicWith(
     } finally {
       await handle.close()
     }
-    await locked(async () => {
+    const publish = async () => {
       await options?.beforePublish?.(filePath)
-      // The temp file sits beside the target, so something else may have replaced it, a link
-      // included: publish only the file this write made, never what took its name.
-      const current = await fs.promises.lstat(tmpPath)
-      if (!current.isFile() || current.ino !== staged?.ino || current.dev !== staged.dev) {
-        throw Object.assign(new Error(`The staged file for ${filePath} was replaced before it was published`), { code: 'ENOENT' })
+      if (staged) {
+        // Publish only the file this write made, never what took its name, a link included.
+        const current = await fs.promises.lstat(tmpPath)
+        if (!current.isFile() || current.ino !== staged.ino || current.dev !== staged.dev) {
+          throw Object.assign(new Error(`The staged file for ${filePath} was replaced before it was published`), { code: 'ENOENT' })
+        }
       }
       if (options?.overwrite === false) {
         // Claim the name with an exclusive create (EEXIST when taken), then the
@@ -916,14 +919,19 @@ async function writeFileAtomicWith(
         claimed = true
       }
       await renameWithRetry(tmpPath, filePath)
-    })
+    }
+    await (lock ? lock(publish) : publish())
   } catch (err) {
-    // Remove the temp file only while it is still the one this write made, under the caller's lock so
-    // nothing can take its name between the check and the removal: whatever was moved onto it stays.
-    await locked(async () => {
-      const left = await fs.promises.lstat(tmpPath).catch(() => null)
-      if (left && staged && left.ino === staged.ino && left.dev === staged.dev) await fs.promises.rm(tmpPath, { force: true })
-    }).catch(() => {})
+    if (lock) {
+      // Under the lock, so nothing takes the name between the check and the removal: whatever
+      // was moved onto it stays.
+      await lock(async () => {
+        const left = await fs.promises.lstat(tmpPath).catch(() => null)
+        if (left && staged && left.ino === staged.ino && left.dev === staged.dev) await fs.promises.rm(tmpPath, { force: true })
+      }).catch(() => {})
+    } else {
+      await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
+    }
     // Remove the claim only while it is still empty.
     const claim = claimed ? await fs.promises.lstat(filePath).catch(() => null) : null
     if (claim?.size === 0) await fs.promises.rm(filePath, { force: true }).catch(() => {})

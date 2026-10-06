@@ -117,6 +117,7 @@ describe('LocalFileOps — links and host files', () => {
     const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('new')); controller.close() } })
     const write = files.write('a.txt', body, {
       confined: true,
+      lock: (fn) => fn(),
       beforePublish: async () => {
         const staged = fs.readdirSync(root).find((name) => name.endsWith('.tmp'))
         if (!staged) throw new Error('expected a staged file')
@@ -134,6 +135,7 @@ describe('LocalFileOps — links and host files', () => {
     let staged = ''
     const write = files.write('a.txt', body, {
       confined: true,
+      lock: (fn) => fn(),
       beforePublish: async () => {
         staged = fs.readdirSync(root).find((name) => name.endsWith('.tmp')) ?? ''
         fs.renameSync(path.join(root, 'a.txt'), path.join(root, staged))
