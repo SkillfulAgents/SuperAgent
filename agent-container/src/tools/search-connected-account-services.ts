@@ -8,6 +8,8 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 
+import { accountAccessHint } from './preferred-access'
+
 interface ServiceInfo {
   slug: string
   displayName: string
@@ -125,7 +127,7 @@ export const searchConnectedAccountServicesTool = tool(
     for (const [category, services] of Object.entries(grouped)) {
       lines.push(`## ${category}`)
       for (const s of services) {
-        lines.push(`- ${s.slug} (${s.displayName}) - ${s.description}`)
+        lines.push(`- ${s.slug} (${s.displayName}) - ${s.description}${accountAccessHint(s.slug)}`)
       }
       lines.push('')
     }

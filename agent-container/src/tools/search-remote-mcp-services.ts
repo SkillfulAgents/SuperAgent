@@ -9,6 +9,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 
 import { MCP_SERVICES, type McpServiceInfo } from './mcp-service-catalog'
+import { mcpAccessHint } from './preferred-access'
 
 
 const PARTIAL_LIST_NOTE = `\nNote: This is a partial list of well-known MCP servers. Many more exist — if you don't find what you need here, search the web for "<service name> MCP server" to find additional endpoints.`
@@ -90,7 +91,7 @@ export const searchRemoteMcpServicesTool = tool(
       lines.push(`## ${category}`)
       for (const s of services) {
         const setupFlag = s.requiresOwnOAuthApp ? ' [setup required]' : ''
-        lines.push(`- **${s.displayName}** (${s.url}) [${s.authType}]${setupFlag} — ${s.description}`)
+        lines.push(`- **${s.displayName}** (${s.url}) [${s.authType}]${setupFlag} — ${s.description}${mcpAccessHint(s.slug)}`)
       }
       lines.push('')
     }
