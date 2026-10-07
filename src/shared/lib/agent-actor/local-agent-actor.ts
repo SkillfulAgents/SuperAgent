@@ -226,8 +226,8 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, state: AgentStat
       deps.containerHost.runtime(slug).noteSessionActivity()
       deps.messagePersister.markSessionIdle(slug, sessionId)
     },
-    markInterrupted: async (sessionId, options) => {
-      await deps.messagePersister.markSessionInterrupted(slug, sessionId, options)
+    markInterrupted: async (sessionId, ...rest) => {
+      await deps.messagePersister.markSessionInterrupted(slug, sessionId, ...rest)
       settleStoppedSession(state, sessionId)
     },
     turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
