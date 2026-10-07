@@ -63,7 +63,7 @@ export function SessionChatColumn({
   pendingWakeTaskId,
   pendingWakeNote,
 }: SessionChatColumnProps) {
-  const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
+  const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug, ['isActive', 'browserActive', 'isWaitingBackground'])
   const voiceModeActive = useIsVoiceModeActive(sessionId)
   // Keep the phone awake (PWA only) while this session is actively working.
   useScreenWakeLock(isActive || isWaitingBackground)

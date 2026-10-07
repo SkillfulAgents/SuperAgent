@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import type { SessionUsage } from '@shared/lib/types/agent'
@@ -1531,78 +1531,93 @@ export function clearBrowserActive(sessionId: string): void {
   }
 }
 
-export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
-  const [state, setState] = useState<StreamState>(EMPTY_STREAM_STATE)
-  const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
-  const [thinking, setThinking] = useState<ThinkingState>(EMPTY_THINKING)
-  const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
-  const [autoApprovedComputerUseIds, setAutoApprovedComputerUseIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
-  const [workflows, setWorkflows] = useState<WorkflowRunLive[]>(EMPTY_WORKFLOWS)
+const EMPTY_SLASH_COMMANDS: SlashCommandInfo[] = []
+
+export interface MessageStreamValue extends StreamState {
+  slashCommands: SlashCommandInfo[]
+  autoApprovedScriptRunIds: ReadonlySet<string>
+  autoApprovedComputerUseIds: ReadonlySet<string>
+  workflows: WorkflowRunLive[]
+  isThinking: boolean
+  thinkingBlocks: ThinkingBlock[]
+}
+
+export type MessageStreamField = keyof MessageStreamValue
+
+const EMPTY_MESSAGE_STREAM_VALUE: MessageStreamValue = {
+  ...EMPTY_STREAM_STATE,
+  slashCommands: EMPTY_SLASH_COMMANDS,
+  autoApprovedScriptRunIds: EMPTY_AUTO_APPROVED_SET,
+  autoApprovedComputerUseIds: EMPTY_AUTO_APPROVED_SET,
+  workflows: EMPTY_WORKFLOWS,
+  isThinking: EMPTY_THINKING.isThinking,
+  thinkingBlocks: EMPTY_THINKING.blocks,
+}
+
+// The global sets are mutated in place, so reuse the previous snapshot when the contents match.
+function snapshotIdSet(prev: ReadonlySet<string>, current: Set<string> | undefined): ReadonlySet<string> {
+  if (!current || current.size === 0) return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
+  if (prev.size === current.size) {
+    let identical = true
+    for (const id of current) {
+      if (!prev.has(id)) { identical = false; break }
+    }
+    if (identical) return prev
+  }
+  return new Set(current)
+}
+
+function readMessageStream(sessionId: string, prev: MessageStreamValue): MessageStreamValue {
+  const thinking = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+  return {
+    ...(streamStates.get(sessionId) ?? prev),
+    slashCommands: sessionSlashCommands.get(sessionId) ?? EMPTY_SLASH_COMMANDS,
+    autoApprovedScriptRunIds: snapshotIdSet(prev.autoApprovedScriptRunIds, sessionAutoApprovedScriptRunIds.get(sessionId)),
+    autoApprovedComputerUseIds: snapshotIdSet(prev.autoApprovedComputerUseIds, sessionAutoApprovedComputerUseIds.get(sessionId)),
+    workflows: sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS,
+    isThinking: thinking.isThinking,
+    thinkingBlocks: thinking.blocks,
+  }
+}
+
+function sameFields(prev: MessageStreamValue, next: MessageStreamValue, fields: readonly MessageStreamField[]): boolean {
+  return fields.every((field) => Object.is(prev[field], next[field]))
+}
+
+const ALL_MESSAGE_STREAM_FIELDS = Object.keys(EMPTY_MESSAGE_STREAM_VALUE) as MessageStreamField[]
+
+/**
+ * Pass `fields` to re-render only when one of them changes. Without it the
+ * caller re-renders on every stream event, including each streamed token.
+ */
+export function useMessageStream<K extends MessageStreamField = MessageStreamField>(
+  sessionId: string | null,
+  agentSlug: string | null,
+  fields?: readonly K[],
+): Pick<MessageStreamValue, K> {
+  const [value, setValue] = useState<MessageStreamValue>(EMPTY_MESSAGE_STREAM_VALUE)
+  const valueRef = useRef(value)
+  const fieldsRef = useRef<readonly MessageStreamField[]>(fields ?? ALL_MESSAGE_STREAM_FIELDS)
+  fieldsRef.current = fields ?? ALL_MESSAGE_STREAM_FIELDS
   const queryClient = useQueryClient()
+
+  const commit = useCallback((next: MessageStreamValue) => {
+    if (sameFields(valueRef.current, next, fieldsRef.current)) return
+    valueRef.current = next
+    setValue(next)
+  }, [])
 
   // Update local state when global state changes
   const updateState = useCallback(() => {
-    if (sessionId) {
-      const globalState = streamStates.get(sessionId)
-      if (globalState) {
-        setState(globalState)
-      }
-      setSlashCommands(sessionSlashCommands.get(sessionId) ?? [])
-      // Mirror the thinking side-map into React state. The map's value is replaced
-      // wholesale on every thinking event, so a reference check is enough to
-      // preserve referential stability when nothing changed.
-      const t = sessionThinking.get(sessionId)
-      setThinking((prev) => {
-        if (!t) return prev === EMPTY_THINKING ? prev : EMPTY_THINKING
-        if (prev.blocks === t.blocks && prev.isThinking === t.isThinking) return prev
-        return t
-      })
-      const approved = sessionAutoApprovedScriptRunIds.get(sessionId)
-      // Hand back a fresh snapshot when the contents changed so React re-renders consumers.
-      setAutoApprovedScriptRunIds((prev) => {
-        if (!approved || approved.size === 0) {
-          return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
-        }
-        if (prev.size === approved.size) {
-          let identical = true
-          for (const id of approved) {
-            if (!prev.has(id)) { identical = false; break }
-          }
-          if (identical) return prev
-        }
-        return new Set(approved)
-      })
-      const approvedComputerUse = sessionAutoApprovedComputerUseIds.get(sessionId)
-      setAutoApprovedComputerUseIds((prev) => {
-        if (!approvedComputerUse || approvedComputerUse.size === 0) {
-          return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
-        }
-        if (prev.size === approvedComputerUse.size) {
-          let identical = true
-          for (const id of approvedComputerUse) {
-            if (!prev.has(id)) { identical = false; break }
-          }
-          if (identical) return prev
-        }
-        return new Set(approvedComputerUse)
-      })
-      // Workflows are stored as immutable arrays (a new ref only on workflow events),
-      // so a plain ref-equal set bails out of re-render on every other event.
-      setWorkflows(sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS)
-    }
-  }, [sessionId])
+    if (sessionId) commit(readMessageStream(sessionId, valueRef.current))
+  }, [sessionId, commit])
 
   useEffect(() => {
     if (!sessionId || !agentSlug) {
       // Reset local state so a previous subscription's values (e.g. isStreaming=true)
       // don't leak after the caller stops passing a sessionId — otherwise an unselected
       // session row can get stuck in a "working" state after the stream finishes.
-      setState(EMPTY_STREAM_STATE)
-      setSlashCommands([])
-      setThinking(EMPTY_THINKING)
-      setAutoApprovedScriptRunIds(EMPTY_AUTO_APPROVED_SET)
-      setAutoApprovedComputerUseIds(EMPTY_AUTO_APPROVED_SET)
-      setWorkflows(EMPTY_WORKFLOWS)
+      commit(EMPTY_MESSAGE_STREAM_VALUE)
       return
     }
 
@@ -1630,7 +1645,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       }
       releaseEventSource(sessionId)
     }
-  }, [sessionId, agentSlug, updateState, queryClient])
+  }, [sessionId, agentSlug, updateState, commit, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds, autoApprovedComputerUseIds, workflows, isThinking: thinking.isThinking, thinkingBlocks: thinking.blocks }
+  return value
 }

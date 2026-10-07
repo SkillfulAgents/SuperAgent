@@ -305,6 +305,46 @@ describe('useMessageStream', () => {
     expect(result.current.streamingMessage).toBe('Hello world!')
   })
 
+  it('re-renders a caller that selects fields only when one of them changes', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    let fullRenders = 0
+    let selectedRenders = 0
+    const full = renderHook(() => {
+      fullRenders++
+      return useMessageStream('session-1', 'agent-1')
+    }, { wrapper })
+    const selected = renderHook(() => {
+      selectedRenders++
+      return useMessageStream('session-1', 'agent-1', ['isStreaming', 'slashCommands'])
+    }, { wrapper })
+    const es = MockEventSource.instances[0]
+
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'session_active' })
+      es.simulateMessage({ type: 'stream_start' })
+    })
+    expect(selected.result.current.isStreaming).toBe(true)
+    const fullBefore = fullRenders
+    const selectedBefore = selectedRenders
+
+    for (const text of ['Hello ', 'there, ', 'world!']) {
+      act(() => {
+        es.simulateMessage({ type: 'stream_delta', text })
+      })
+    }
+    expect(full.result.current.streamingMessage).toBe('Hello there, world!')
+    expect(fullRenders - fullBefore).toBe(3)
+    expect(selectedRenders).toBe(selectedBefore)
+
+    act(() => {
+      es.simulateMessage({ type: 'stream_end' })
+    })
+    expect(selected.result.current.isStreaming).toBe(false)
+    expect(selectedRenders).toBe(selectedBefore + 1)
+  })
+
   it('handles session_idle event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

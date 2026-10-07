@@ -198,7 +198,7 @@ function SessionSubItem({
   const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
   const routeAgentId = useRouteAgentId()
   const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
-  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
+  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications

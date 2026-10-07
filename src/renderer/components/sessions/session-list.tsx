@@ -25,7 +25,7 @@ function SessionTab({
   onClick: () => void
 }) {
   // Use SSE to get real-time streaming state for the selected session
-  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
+  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
 
   // Show as active if API says so OR if we're currently streaming
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput

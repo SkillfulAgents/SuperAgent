@@ -193,7 +193,7 @@ function WorkflowProgressBar({
 
 export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowTrayContentProps) {
   const { openWorkflows, selectedRunId, selectWorkflow, expandedAgentId, setExpandedAgent } = useWorkflow()
-  const { workflows } = useMessageStream(sessionId, agentSlug)
+  const { workflows } = useMessageStream(sessionId, agentSlug, ['workflows'])
 
   const liveRun = workflows.find((w) => w.runId === selectedRunId)
   const isActive = !!liveRun && liveRun.completedAt === undefined

@@ -582,7 +582,7 @@ export function usePendingRequests({
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
-  } = useMessageStream(sessionId, agentSlug)
+  } = useMessageStream(sessionId, agentSlug, ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
 
   // The snapshot is the only source for reviews and capability reviews, and
   // the primary one for every other kind. The streaming/message-history

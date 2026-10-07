@@ -109,7 +109,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug, ['isActive', 'slashCommands', 'isWaitingBackground', 'backgroundTasks'])
   // The Stop dialog names what is running; the launching tool calls in the
   // transcript carry the names.
   const { data: messages } = useMessages(sessionId, agentSlug)
