@@ -16,9 +16,14 @@ function getSummary(input: unknown): string | null {
 }
 
 export const requestBrowserInputDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Browser Input',
   rendererDisplayName: 'Request Browser Input',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('needs your browser input') },
+  request: {
+    kind: 'browser_input',
+    getNotification: waitingInputNotification('needs your browser input'),
+  },
 } as const

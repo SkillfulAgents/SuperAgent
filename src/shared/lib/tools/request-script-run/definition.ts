@@ -24,8 +24,14 @@ function getSummary(input: unknown): string | null {
 }
 
 export const requestScriptRunDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Run Script',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('wants to run a script on your machine') },
+  request: {
+    kind: 'script_run',
+    syncsAwaitingItself: true,
+    getNotification: waitingInputNotification('wants to run a script on your machine'),
+  },
 } as const

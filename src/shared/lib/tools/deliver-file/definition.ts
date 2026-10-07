@@ -81,4 +81,10 @@ export function getDeliveredFileSize(result: unknown): number | undefined {
   return getDeliveredFileMetadata(result)?.sizeBytes
 }
 
-export const deliverFileDef = { displayName: 'Deliver File', parseInput, getSummary } as const
+export const deliverFileDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
+  displayName: 'Deliver File',
+  parseInput,
+  getSummary,
+} as const

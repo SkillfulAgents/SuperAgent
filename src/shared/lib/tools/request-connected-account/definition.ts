@@ -19,8 +19,13 @@ function getSummary(input: unknown): string | null {
 }
 
 export const requestConnectedAccountDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Request Connected Account',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('needs account access') },
+  request: {
+    kind: 'connected_account',
+    getNotification: waitingInputNotification('needs account access'),
+  },
 } as const

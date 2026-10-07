@@ -201,6 +201,15 @@ export type PendingUserInputRequestInput = z.input<typeof pendingUserInputReques
  */
 export type UserInputRequestStore = 'stream' | 'computer_use' | 'review'
 
+export type StreamRequestKind = Exclude<
+  UserInputRequestKind,
+  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
+>
+
+export function isStreamRequestKind(kind: UserInputRequestKind): kind is StreamRequestKind {
+  return storeForKind(kind) === 'stream'
+}
+
 /**
  * Whether a request may be sent to clients (wire events, snapshots). Entries
  * synthesized by transcript recovery carry no renderable payload — sending one

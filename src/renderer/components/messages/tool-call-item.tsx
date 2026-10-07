@@ -2,6 +2,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { Check, X, Ban, ChevronDown, ChevronRight, FileText, ImageOff, Loader2, Search } from 'lucide-react'
 import { useState, useRef, useMemo, useEffect, memo } from 'react'
+import { getToolPresentation } from '@shared/lib/tools/registry'
 import { getToolRenderer } from '@shared/lib/tools/renderers'
 import {
   parseToolResult,
@@ -42,10 +43,6 @@ function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallSt
   }
   if (toolCall.isError) return 'error'
   return 'success'
-}
-
-function isUserInputTool(name: string): boolean {
-  return name === 'AskUserQuestion' || name.startsWith('mcp__user-input__')
 }
 
 function ToolNameWithSummary({ name, summary, active = false }: { name: string; summary?: string | null; active?: boolean }) {
@@ -276,7 +273,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
-  const isPendingUserInput = status === 'running' && isUserInputTool(toolCall.name)
+  const isPendingUserInput = status === 'running' && getToolPresentation(toolCall.name).showWaitingForInput
   const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
   const ToolIcon = renderer?.icon || Search
 

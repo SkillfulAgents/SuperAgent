@@ -14,8 +14,13 @@ function getSummary(input: unknown): string | null {
 }
 
 export const requestFileDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Request File',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('needs a file from you') },
+  request: {
+    kind: 'file',
+    getNotification: waitingInputNotification('needs a file from you'),
+  },
 } as const

@@ -166,23 +166,34 @@ export function getRegisteredDefinitionNames(): string[] {
   return Object.keys(definitions)
 }
 
-/** Every request kind has shared metadata, including requests without a tool call. */
-const requestDefinitions = {
-  secret: requestSecretDef.request,
-  connected_account: requestConnectedAccountDef.request,
-  question: askUserQuestionDef.request,
-  file: requestFileDef.request,
-  remote_mcp: requestRemoteMcpDef.request,
-  browser_input: requestBrowserInputDef.request,
-  script_run: requestScriptRunDef.request,
-  computer_use: computerUseRequestDef,
-  capability_review: capabilityReviewRequestDef,
-  proxy_review: proxyReviewRequestDef,
-  x_agent_review: xAgentReviewRequestDef,
-  account_reauth_required: accountReauthRequestDef,
-  mcp_reauth_required: mcpReauthRequestDef,
-} satisfies Record<UserInputRequestKind, RequestDefinition>
+export function getToolPresentation(toolName: string) {
+  const definition = getToolDefinition(toolName)
+  return {
+    hideToolStatusInChat: definition?.hideToolStatusInChat === true,
+    // Older and generic user-input tools have no custom definition. Keep their
+    // existing transcript label; this fallback does not create blocking waits.
+    showWaitingForInput: definition?.showWaitingForInput ?? toolName.startsWith('mcp__user-input__'),
+  }
+}
 
-export function getRequestDefinition(kind: UserInputRequestKind): RequestDefinition {
-  return requestDefinitions[kind]
+/** Tool aliases share the same request object; standalone requests register here too. */
+const requestDefinitions = new Map<UserInputRequestKind, RequestDefinition>()
+for (const request of [
+  ...new Set(Object.values(definitions).flatMap(definition => definition.request ? [definition.request] : [])),
+  computerUseRequestDef,
+  capabilityReviewRequestDef,
+  proxyReviewRequestDef,
+  xAgentReviewRequestDef,
+  accountReauthRequestDef,
+  mcpReauthRequestDef,
+]) {
+  if (requestDefinitions.has(request.kind)) throw new Error(`Duplicate request definition: ${request.kind}`)
+  requestDefinitions.set(request.kind, request)
+}
+
+export function getRequestDefinition<K extends UserInputRequestKind>(kind: K): RequestDefinition<K> {
+  const definition = requestDefinitions.get(kind)
+  if (!definition) throw new Error(`Missing request definition: ${kind}`)
+  // Entries are indexed by their own discriminant above.
+  return definition as RequestDefinition<K>
 }

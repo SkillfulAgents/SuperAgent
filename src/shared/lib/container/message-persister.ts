@@ -11,12 +11,13 @@ import type { RequestConnectedAccountInput } from '@shared/lib/tools/request-con
 import type { RequestRemoteMcpInput } from '@shared/lib/tools/request-remote-mcp/definition'
 import type { RequestBrowserInputInput } from '@shared/lib/tools/request-browser-input/definition'
 import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run/definition'
-import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
+import { getToolDefinition } from '@shared/lib/tools/registry'
+import { getBlockingUserInputRequestKind } from '@shared/lib/tools/user-input-tools'
 import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/tools/requests/request-manager'
 import {
   isReplayableUserInputRequest,
   type PendingUserInputRequest,
-  type UserInputRequestKind,
+  type StreamRequestKind,
   type UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import { classifyResult } from './result-classification'
@@ -176,15 +177,13 @@ export interface ActiveSubagentSnapshot {
   status: 'running' | 'completed'
 }
 
-/**
- * The kinds whose lifecycle is the turn (`storeForKind` → 'stream'). Computer
- * use and reviews register through their own paths with their own clearing
- * rules, so the persister's stream-request helper excludes them by type.
- */
-type StreamRequestKind = Exclude<
-  UserInputRequestKind,
-  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
->
+type StreamRequestHandler = (
+  sessionId: string,
+  toolUseId: string,
+  toolInput: string,
+  agentSlug: string,
+  parentToolUseId?: string,
+) => void
 
 // ---------------------------------------------------------------------------
 // Session keys
@@ -1980,6 +1979,18 @@ class MessagePersister {
     })
   }
 
+  private readonly streamRequestHandlers = {
+    question: this.handleAskUserQuestionTool,
+    secret: this.handleSecretRequestTool,
+    connected_account: this.handleConnectedAccountRequestTool,
+    file: this.handleFileRequestTool,
+    remote_mcp: this.handleRemoteMcpRequestTool,
+    browser_input: this.handleBrowserInputRequestTool,
+    // These retain their specialized permission/auto-approval paths.
+    script_run: null,
+    capability_review: null,
+  } satisfies Record<StreamRequestKind, StreamRequestHandler | null>
+
   // Surface host-blocking user-input tools (main + sidechain). script_run /
   // computer-use / capability-review keep their own handlers (conditional await).
   // First delivery wins: stream stop and complete-assistant can both carry the same tool_use.
@@ -1991,6 +2002,11 @@ class MessagePersister {
     agentSlug: string,
     parentToolUseId?: string,
   ): void {
+    const kind = getBlockingUserInputRequestKind(toolName)
+    if (!kind) return
+    const handler = this.streamRequestHandlers[kind]
+    if (!handler) return
+
     // A recovered stub does NOT dedupe: transcript recovery can synthesize a
     // payload-less entry before the real delivery lands, and that delivery must
     // go through to upgrade the registry entry (register() replaces recovered
@@ -1998,40 +2014,9 @@ class MessagePersister {
     const existing = userInputRequestManager.getOpenRequest(toolUseId, agentSlug)
     if (existing && isReplayableUserInputRequest(existing)) return
 
-    if (toolName === 'AskUserQuestion') {
-      this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
-    } else if (toolName === 'mcp__user-input__request_secret') {
-      this.handleSecretRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
-    } else if (toolName === 'mcp__user-input__request_connected_account') {
-      this.handleConnectedAccountRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
-    } else if (toolName === 'mcp__user-input__request_file') {
-      this.handleFileRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
-    } else if (toolName === 'mcp__user-input__request_remote_mcp') {
-      this.handleRemoteMcpRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
-    } else if (toolName === 'mcp__user-input__request_browser_input') {
-      this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
-    }
-
-    // Only tools with 'request_' prefix actually block waiting for user response
-    // (schedule_task, deliver_file, search_* resolve immediately and don't block).
-    // computer-use AND request_script_run sync awaiting in their own handlers.
-    // The handler above already broadcast the request event, which registered
-    // it — the sync just picks the new entry up.
-    if (isBlockingUserInputToolName(toolName)) {
-      this.syncSessionAwaiting(agentSlug, sessionId)
-    }
-  }
-
-  // Blocking user-input tool name → the request kind its handler registers.
-  // Recovery synthesizes registry envelopes of that kind when the original
-  // delivery was missed. Keep in sync with dispatchBlockingUserInputTool.
-  private static readonly REQUEST_KIND_BY_TOOL_NAME: Record<string, StreamRequestKind> = {
-    AskUserQuestion: 'question',
-    'mcp__user-input__request_secret': 'secret',
-    'mcp__user-input__request_connected_account': 'connected_account',
-    'mcp__user-input__request_file': 'file',
-    'mcp__user-input__request_remote_mcp': 'remote_mcp',
-    'mcp__user-input__request_browser_input': 'browser_input',
+    handler.call(this, sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    // The handler registered the request; awaiting is the store's projection.
+    this.syncSessionAwaiting(agentSlug, sessionId)
   }
 
   // Recover awaiting-input state from persisted messages when the one-shot
@@ -2054,7 +2039,7 @@ class MessagePersister {
       state.agentSlug = agentSlug
     }
     for (const { toolUseId, toolName } of unresolved) {
-      const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
+      const kind = getBlockingUserInputRequestKind(toolName)
       if (!kind || userInputRequestManager.getOpenRequest(toolUseId, agentSlug)) continue
       this.registerStreamRequest(
         sessionId,
@@ -3396,7 +3381,7 @@ class MessagePersister {
               state.agentSlug,
               parentToolId,
             )
-            if (block.name === 'mcp__user-input__request_script_run') {
+            if (getToolDefinition(block.name)?.request?.kind === 'script_run') {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
             if (block.name.startsWith('mcp__computer-use__')) {
@@ -3872,7 +3857,7 @@ class MessagePersister {
             parentToolId,
           )
 
-          if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
+          if (getToolDefinition(sub.currentToolUse.name)?.request?.kind === 'script_run') {
             this.handleScriptRunRequestTool(
               sessionId,
               sub.currentToolUse.id,
@@ -4166,7 +4151,7 @@ class MessagePersister {
             )
           }
 
-          if (state.currentToolUse.name === 'mcp__user-input__request_script_run') {
+          if (getToolDefinition(state.currentToolUse.name)?.request?.kind === 'script_run') {
             this.handleScriptRunRequestTool(
               sessionId,
               state.currentToolUse.id,

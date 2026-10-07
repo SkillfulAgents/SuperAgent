@@ -5,20 +5,29 @@ vi.mock('react', () => { throw new Error('Shared registry imported React') })
 vi.mock('react/jsx-runtime', () => { throw new Error('Shared registry imported JSX') })
 vi.mock('lucide-react', () => { throw new Error('Shared registry imported icons') })
 
-import { getRequestDefinition, getToolDefinition } from './registry'
+import { getRequestDefinition, getToolDefinition, getRegisteredDefinitionNames, getToolPresentation } from './registry'
 import { USER_INPUT_REQUEST_KINDS, type UserInputRequestKind } from './requests/request-schema'
 
 describe('server-safe request registry', () => {
   it('covers every wire request kind', () => {
     for (const kind of USER_INPUT_REQUEST_KINDS) {
+      expect(getRequestDefinition(kind).kind).toBe(kind)
       expect(getRequestDefinition(kind).getNotification).toBeTypeOf('function')
     }
   })
 
-  it('uses the same definition for a tool and its request', () => {
-    expect(getRequestDefinition('secret')).toBe(
-      getToolDefinition('mcp__user-input__request_secret')?.request,
-    )
+  it('indexes every tool request by the kind on its definition', () => {
+    for (const name of getRegisteredDefinitionNames()) {
+      const request = getToolDefinition(name)?.request
+      if (request) expect(getRequestDefinition(request.kind)).toBe(request)
+    }
+  })
+
+  it('keeps file delivery presentation separate from blocking requests', () => {
+    expect(getToolDefinition('mcp__user-input__deliver_file')?.request).toBeUndefined()
+    expect(getToolPresentation('mcp__user-input__deliver_file')).toEqual({
+      hideToolStatusInChat: true, showWaitingForInput: true,
+    })
   })
 
   const waitingCases: [UserInputRequestKind, Record<string, unknown>, string][] = [

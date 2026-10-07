@@ -19,4 +19,9 @@ function getSummary(input: unknown): string | null {
   return null
 }
 
-export const scheduleResumeDef = { displayName: 'Schedule Resume', parseInput, getSummary } as const
+export const scheduleResumeDef = {
+  showWaitingForInput: true,
+  displayName: 'Schedule Resume',
+  parseInput,
+  getSummary,
+} as const

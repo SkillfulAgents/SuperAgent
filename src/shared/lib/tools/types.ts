@@ -9,6 +9,10 @@ import type { RequestDefinition } from './requests/definition'
 
 export interface ToolDefinition {
   request?: RequestDefinition
+  /** A request card or file delivery already supplies the chat presentation. */
+  hideToolStatusInChat?: boolean
+  /** Preserve the transcript's waiting label independently of request blocking. */
+  showWaitingForInput?: boolean
   displayName: string
   /** Existing transcript-specific wording, when it differs from other surfaces. */
   rendererDisplayName?: string

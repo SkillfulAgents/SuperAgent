@@ -14,8 +14,13 @@ function getSummary(input: unknown): string | null {
 }
 
 export const requestSecretDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Request Secret',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('needs a secret value') },
+  request: {
+    kind: 'secret',
+    getNotification: waitingInputNotification('needs a secret value'),
+  },
 } as const

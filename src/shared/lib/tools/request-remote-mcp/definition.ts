@@ -19,8 +19,13 @@ function getSummary(input: unknown): string | null {
 }
 
 export const requestRemoteMcpDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Request MCP Server',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('needs access to an MCP server') },
+  request: {
+    kind: 'remote_mcp',
+    getNotification: waitingInputNotification('needs access to an MCP server'),
+  },
 } as const

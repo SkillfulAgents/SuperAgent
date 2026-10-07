@@ -1,3 +1,4 @@
+import { getToolDefinition } from '../registry'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
 import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -104,8 +105,9 @@ function normalizePendingQuestions(input: Record<string, unknown>): Question[] {
 
 function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall: RequestToolCall) {
   const input = recordFromInput(toolCall.input)
+  const kind = getToolDefinition(toolCall.name)?.request?.kind
 
-  if (toolCall.name === 'mcp__user-input__request_secret') {
+  if (kind === 'secret') {
     if (typeof input.secretName === 'string') {
       buckets.secretRequests.push({
         toolUseId: toolCall.id,
@@ -113,7 +115,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         reason: typeof input.reason === 'string' ? input.reason : undefined,
       })
     }
-  } else if (toolCall.name === 'mcp__user-input__request_connected_account') {
+  } else if (kind === 'connected_account') {
     if (typeof input.toolkit === 'string') {
       buckets.connectedAccountRequests.push({
         toolUseId: toolCall.id,
@@ -121,7 +123,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         reason: typeof input.reason === 'string' ? input.reason : undefined,
       })
     }
-  } else if (toolCall.name === 'AskUserQuestion') {
+  } else if (kind === 'question') {
     const questions = normalizePendingQuestions(input)
     if (questions.length) {
       buckets.questionRequests.push({
@@ -129,7 +131,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         questions,
       })
     }
-  } else if (toolCall.name === 'mcp__user-input__request_remote_mcp') {
+  } else if (kind === 'remote_mcp') {
     if (typeof input.url === 'string') {
       buckets.remoteMcpRequests.push({
         toolUseId: toolCall.id,
@@ -141,7 +143,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         clientName: typeof input.clientName === 'string' ? input.clientName : undefined,
       })
     }
-  } else if (toolCall.name === 'mcp__user-input__request_file') {
+  } else if (kind === 'file') {
     if (typeof input.description === 'string') {
       buckets.fileRequests.push({
         toolUseId: toolCall.id,
@@ -149,7 +151,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         fileTypes: typeof input.fileTypes === 'string' ? input.fileTypes : undefined,
       })
     }
-  } else if (toolCall.name === 'mcp__user-input__request_browser_input') {
+  } else if (kind === 'browser_input') {
     if (typeof input.message === 'string') {
       buckets.browserInputRequests.push({
         toolUseId: toolCall.id,
@@ -160,7 +162,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         requirements: Array.isArray(input.requirements) ? input.requirements : [],
       })
     }
-  } else if (toolCall.name === 'mcp__user-input__request_script_run') {
+  } else if (kind === 'script_run') {
     if (typeof input.script === 'string' && isScriptType(input.scriptType)) {
       buckets.scriptRunRequests.push({
         toolUseId: toolCall.id,

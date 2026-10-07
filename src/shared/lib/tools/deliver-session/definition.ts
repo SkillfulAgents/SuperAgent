@@ -20,6 +20,7 @@ function getSummary(_input: unknown): string | null {
 }
 
 export const deliverSessionDef = {
+  showWaitingForInput: true,
   displayName: 'Deliver Session',
   parseInput,
   getSummary,

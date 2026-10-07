@@ -221,6 +221,7 @@ import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-mem
 attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
+import * as toolRegistry from '@shared/lib/tools/registry'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { attribution } from '@shared/lib/platform-attribution'
 
@@ -4076,6 +4077,39 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
 
       globalCleanup()
+    })
+
+    it('dispatches and recovers request tools by their registered kind, including aliases', () => {
+      const originalLookup = toolRegistry.getToolDefinition
+      const definition = originalLookup('mcp__user-input__request_secret')
+      const lookup = vi.spyOn(toolRegistry, 'getToolDefinition').mockImplementation((name) =>
+        name === 'SecretAlias' ? definition : originalLookup(name),
+      )
+      try {
+        simulateToolUse('SecretAlias', 'alias-live', { secretName: 'API_KEY' })
+        expect(requestCards('secret')).toHaveLength(1)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+        messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
+          { toolUseId: 'alias-recovered', toolName: 'SecretAlias' },
+        ])
+        expect(userInputRequestManager.getOpenRequest('alias-recovered', AGENT_SLUG)).toMatchObject({
+          kind: 'secret', payload: { recovered: true },
+        })
+      } finally {
+        lookup.mockRestore()
+      }
+    })
+
+    it('does not recover script approvals or delivery tools as unconditional waits', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
+        { toolUseId: 'script-recovery', toolName: 'mcp__user-input__request_script_run' },
+        { toolUseId: 'file-recovery', toolName: 'mcp__user-input__deliver_file' },
+      ])
+      expect(userInputRequestManager.getOpenRequest('script-recovery', AGENT_SLUG)).toBeNull()
+      expect(userInputRequestManager.getOpenRequest('file-recovery', AGENT_SLUG)).toBeNull()
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('does not recover awaiting input for an inactive session', () => {

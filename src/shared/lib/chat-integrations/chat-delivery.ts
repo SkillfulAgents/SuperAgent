@@ -3,7 +3,7 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
-import { getToolDefinition } from '@shared/lib/tools/registry'
+import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/registry'
 import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
@@ -282,9 +282,9 @@ export async function processSSEEvent(
       // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
       // below), not off the streamed input — so we never read a host-side path
       // before the in-container tool has validated the file exists. It falls
-      // through to isUserRequestTool() here, which just resets the tool input.
+      // through to shouldHideToolStatusInChat() here, which just resets the tool input.
 
-      if (isUserRequestTool(toolName)) {
+      if (shouldHideToolStatusInChat(toolName)) {
         managed.currentToolInput = ''
         break
       }
@@ -481,19 +481,8 @@ async function sendDeliveredFile(
 
 // ── Exported pure functions (testable) ────────────────────────────────
 
-const USER_REQUEST_TOOLS = new Set([
-  'AskUserQuestion',
-  'mcp__user-input__request_secret',
-  'mcp__user-input__request_file',
-  'mcp__user-input__deliver_file',
-  'mcp__user-input__request_connected_account',
-  'mcp__user-input__request_remote_mcp',
-  'mcp__user-input__request_browser_input',
-  'mcp__user-input__request_script_run',
-])
-
-export function isUserRequestTool(toolName: string): boolean {
-  return USER_REQUEST_TOOLS.has(toolName)
+export function shouldHideToolStatusInChat(toolName: string): boolean {
+  return getToolPresentation(toolName).hideToolStatusInChat
 }
 
 /**

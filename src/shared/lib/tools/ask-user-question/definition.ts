@@ -43,8 +43,13 @@ function getSummary(input: unknown): string | null {
 }
 
 export const askUserQuestionDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
   displayName: 'Question',
   parseInput,
   getSummary,
-  request: { getNotification: waitingInputNotification('has a question for you') },
+  request: {
+    kind: 'question',
+    getNotification: waitingInputNotification('has a question for you'),
+  },
 } as const
