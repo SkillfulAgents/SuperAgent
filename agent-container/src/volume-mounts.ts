@@ -44,6 +44,10 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     // same-size edit on the host is missed. The rclone vendor setting reads modification times. The app ignores the
     // X-OC-Mtime header it adds to uploads.
     '--webdav-vendor', 'rclone',
+    // rclone waits 10ms between WebDAV requests by default, while the app answers in about 1ms, so git on a mount
+    // ran 15x slower than through a bind mount. Not 0, so retries after a server error still back off. Retries
+    // back off from that 1ms, so 13 of them ride out an app restart as long as the default 10 did from 10ms.
+    '--webdav-pacer-min-sleep', '1ms', '--low-level-retries', '13',
     '--vfs-cache-mode', 'writes',
     // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
     // downloading the new contents.
