@@ -525,41 +525,24 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
 /**
  * The browser tray's view of open browser_input requests.
  *
- * Reads the same unified snapshot the in-chat cards project from, so a request
- * the registry recovered — or one settled on another surface — reaches the tray
- * too. The tradeoff is timing: the overlay appears one snapshot refetch after
- * the created event rather than synchronously with it.
+ * Selects from the same projection as the thread, including streaming and
+ * transcript recovery when the snapshot has not arrived or has no payload.
  */
 export function usePendingBrowserInputRequests(
   sessionId: string,
   agentSlug: string,
-  isActive: boolean,
 ): {
   requests: PendingRequestBuckets['browserInputRequests']
   dismiss: (toolUseId: string) => void
 } {
-  const { data } = usePendingUserRequests(agentSlug, sessionId)
-  // Local dismissal, same reason as the request stack's: answering in the tray
-  // must drop the overlay now, not one server round trip later.
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
+  const { items } = usePendingRequests({ sessionId, agentSlug })
+  const requests = useMemo(
+    () => items.filter((item) => item.kind === 'browser_input'),
+    [items],
+  )
   const dismiss = useCallback((toolUseId: string) => {
-    setDismissed((prev) => new Set(prev).add(toolUseId))
-  }, [])
-
-  const prevIsActive = useRef(isActive)
-  useEffect(() => {
-    if (prevIsActive.current && !isActive) setDismissed(new Set())
-    prevIsActive.current = isActive
-  }, [isActive])
-
-  const requests = useMemo(() => {
-    // Session-scoped waits die with the turn, matching the array this replaced
-    // (session_idle and session_error both emptied it).
-    if (!isActive) return []
-    return projectUnifiedRequests(data ?? []).buckets.browserInputRequests.filter(
-      (r) => !dismissed.has(r.toolUseId),
-    )
-  }, [data, isActive, dismissed])
+    requests.find((request) => request.toolUseId === toolUseId)?.onComplete()
+  }, [requests])
 
   return { requests, dismiss }
 }
