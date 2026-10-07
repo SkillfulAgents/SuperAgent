@@ -1,6 +1,8 @@
 import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
 import type { ProviderErrorPresentation } from './error-presentation'
 
+const RECONNECT_CARD_MESSAGE = 'Provider sign-in expired or was revoked. [Reconnect in Settings → Model Providers](/settings/llm).'
+
 export type CredentialRefreshErrorCode = 'provider_reconnect_required' | 'provider_refresh_unavailable'
 
 /** Session start/send wrap the refresh failure (e.g. MessageNotAcceptedError), so walk `cause`. */
@@ -24,7 +26,7 @@ export function credentialRefreshErrorBody(error: CredentialRefreshError): {
     code: reconnect ? 'provider_reconnect_required' : 'provider_refresh_unavailable',
     errorPresentation: {
       severity: reconnect ? 'error' : 'warning',
-      message: error.message,
+      message: reconnect ? RECONNECT_CARD_MESSAGE : error.message,
       icon: reconnect ? 'info' : 'triangle-alert',
     },
   }

@@ -4,6 +4,8 @@ import { fireEvent, render, screen } from '@testing-library/react'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 
+import { DialogContext } from '@renderer/context/dialog-context'
+
 import { ProviderErrorCard, ProviderErrorView } from './provider-error-card'
 
 const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
@@ -46,6 +48,32 @@ describe('ProviderErrorView', () => {
     expect(card).toHaveAttribute('data-severity', 'error')
     expect(card).toHaveClass('bg-red-50', 'dark:bg-red-950')
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('opens an in-app settings link in Settings, not the browser', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
+      openExternal,
+    }
+    const openSettings = vi.fn()
+
+    render(
+      <DialogContext.Provider value={{ openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }}>
+        <ProviderErrorView
+          presentation={{
+            severity: 'error',
+            message: 'Provider sign-in expired or was revoked. [Reconnect in Settings → Model Providers](/settings/llm).',
+            icon: 'info',
+          }}
+        />
+      </DialogContext.Provider>,
+    )
+
+    const link = screen.getByRole('link', { name: /reconnect in settings/i })
+    expect(link).not.toHaveAttribute('target')
+    fireEvent.click(link)
+    expect(openSettings).toHaveBeenCalledWith('llm')
+    expect(openExternal).not.toHaveBeenCalled()
   })
 })
 

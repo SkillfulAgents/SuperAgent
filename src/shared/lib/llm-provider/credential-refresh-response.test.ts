@@ -22,7 +22,11 @@ describe('credentialRefreshErrorBody', () => {
     expect(credentialRefreshErrorBody(error)).toEqual({
       error: error.message,
       code: 'provider_reconnect_required',
-      errorPresentation: { severity: 'error', message: error.message, icon: 'info' },
+      errorPresentation: {
+        severity: 'error',
+        message: 'Provider sign-in expired or was revoked. [Reconnect in Settings → Model Providers](/settings/llm).',
+        icon: 'info',
+      },
     })
     expect(credentialRefreshUserStatus(error)).toBe(424)
   })
