@@ -41,8 +41,8 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
     '--vfs-cache-mode', 'writes',
-    // At 0s the upload starts while close() is still running, and a rename right after it (as git and editors do)
-    // is lost: the file reaches the app under its old name. 1s lets the rename land first.
+    // At 0s rclone uploads inside close(), outside its upload queue. A rename right after close (as git and editors
+    // do) then only renames the cache, and the file reaches the app under its old name. Queued uploads follow renames.
     '--vfs-write-back', '1s',
     '--dir-cache-time', '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
@@ -103,18 +103,24 @@ export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
   });
 }
 
-// Both uploads waiting out the write-back delay and uploads running.
-function uploadsPending(volumeId: string): Promise<string[]> {
+function rc(volumeId: string, command: string, params: object = {}): Promise<any> {
   return new Promise((resolve) => {
-    const req = http.request({ socketPath: controlSocket(volumeId), path: '/vfs/queue', method: 'POST' }, (res) => {
+    const req = http.request({ socketPath: controlSocket(volumeId), path: `/${command}`, method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => resolve((JSON.parse(body).queue ?? []).map((t: { name: string }) => t.name)));
+      res.on('end', () => resolve(JSON.parse(body)));
     });
-    // No answer means rclone is gone, so nothing is uploading.
-    req.on('error', () => resolve([]));
-    req.end();
+    // No answer means rclone is gone, so nothing is queued.
+    req.on('error', () => resolve({}));
+    req.end(JSON.stringify(params));
   });
+}
+
+// Starts every queued upload now rather than after the write-back delay, and returns all still queued or uploading.
+async function startQueuedUploads(volumeId: string): Promise<string[]> {
+  const queue: { id: number; name: string; uploading: boolean }[] = (await rc(volumeId, 'vfs/queue')).queue ?? [];
+  await Promise.all(queue.filter((u) => !u.uploading).map((u) => rc(volumeId, 'vfs/queue-set-expiry', { id: u.id, expiry: 0 })));
+  return queue.map((u) => u.name);
 }
 
 // A closed file uploads in the background, and rclone drops that upload when stopped.
@@ -132,7 +138,7 @@ export async function waitForUploads(uploads: () => Promise<string[]>, deadline:
 
 export async function unmountVolumes(deadline: number): Promise<void> {
   await Promise.all(mounted.map(async ({ volumeId, name, rclone }) => {
-    const pending = await waitForUploads(() => uploadsPending(volumeId), deadline);
+    const pending = await waitForUploads(() => startQueuedUploads(volumeId), deadline);
     if (pending.length > 0) console.error(`[volumes] Unmounting /mounts/${name} with uploads unfinished:`, pending);
     // SIGTERM makes rclone unmount.
     const exited = new Promise((resolve) => rclone.once('exit', resolve));
