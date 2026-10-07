@@ -125,10 +125,14 @@ export function useCreateSession() {
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
-      const inputMode = variables.inputMode
+      // Onboarding auto-sends are neither typed nor spoken, so they stay unstamped.
+      const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
       track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
       // A voice-started session's first message is the entry marker, not something the person said.
-      track('message_sent', { origin, ...(inputMode ? { input_mode: 'voice_notice' } : {}) })
+      track('message_sent', {
+        origin,
+        ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
+      })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
       // Seed the caches from the response so the sidebar row and the session
       // view render immediately instead of waiting a refetch round-trip. The
