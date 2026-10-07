@@ -18,6 +18,7 @@ import { byBoardOrder, positionAfterDrop, type TodoColumn } from '@shared/lib/to
 import { Button } from '@renderer/components/ui/button'
 import { useMoveTodo, useStartingTodoIds, useTodos, type TodoView } from '@renderer/hooks/use-todos'
 import { TodoBoardCard } from './todo-board-card'
+import { TodoCardMenu, TodoRenameDialog } from './todo-card-menu'
 import { TodoDraftDialog, type TodoDraftTarget } from './todo-draft-dialog'
 import { archiveDraftAction, cardActionFor, useTodoActionRunners } from './todo-card-action'
 import { ShortcutTooltip, ShortcutsDialog, usePlainKeys } from './todo-shortcuts'
@@ -284,6 +285,7 @@ export function TodoBoard() {
   }
   const [showArchived, setShowArchived] = useState(false)
   const [draft, setDraft] = useState<TodoDraftTarget | null>(null)
+  const [renaming, setRenaming] = useState<TodoView | null>(null)
   // The card shortcuts act on. Arrow keys move it; hovering a card sets it.
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -409,21 +411,23 @@ export function TodoBoard() {
       return true
     }
     return false
-  }, !draft && !shortcutsOpen)
+  }, !draft && !renaming && !shortcutsOpen)
 
   const cards = (list: TodoView[]) => (
     <SortableContext items={list.map((todo) => todo.id)} strategy={verticalListSortingStrategy}>
       {list.map((todo) => (
         <SortableCard key={todo.id} todo={todo}>
-          <TodoBoardCard
-            todo={todo}
-            agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}
-            action={cardActionFor(todo, runners, open)}
-            starting={starting.has(todo.id)}
-            onOpen={open}
-            selected={todo.id === selectedId}
-            onHover={(t) => setSelectedId(t.id)}
-          />
+          <TodoCardMenu todo={todo} onRename={setRenaming}>
+            <TodoBoardCard
+              todo={todo}
+              agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}
+              action={cardActionFor(todo, runners, open)}
+              starting={starting.has(todo.id)}
+              onOpen={open}
+              selected={todo.id === selectedId}
+              onHover={(t) => setSelectedId(t.id)}
+            />
+          </TodoCardMenu>
         </SortableCard>
       ))}
     </SortableContext>
@@ -498,6 +502,7 @@ export function TodoBoard() {
       </div>
 
       <TodoDraftDialog target={draft} onClose={closeDraft} />
+      {renaming && <TodoRenameDialog key={renaming.id} todo={renaming} onClose={() => setRenaming(null)} />}
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   )

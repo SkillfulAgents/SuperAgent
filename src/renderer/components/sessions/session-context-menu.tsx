@@ -38,6 +38,7 @@ import { Trash2, ClipboardCopy, Download, Pencil, Eye, Split, Minimize2, Loader2
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
+import { AddSessionToTodoItem } from '@renderer/components/todo/todo-add-session-item'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
 type UsageState =
@@ -294,6 +295,7 @@ export function SessionContextMenu({
               </ContextMenuSubContent>
             </ContextMenuSub>
           )}
+          <AddSessionToTodoItem agentSlug={agentSlug} sessionId={sessionId} sessionName={sessionName} />
           {/* Not permission-gated, unlike rename/delete: a mark is scoped to
               the acting user, so it is only ever a note to yourself. */}
           {!hideUnread && (

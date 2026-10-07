@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   move: vi.fn(),
   update: vi.fn(),
   start: vi.fn(),
+  rename: vi.fn(),
   starting: new Set<string>(),
 }))
 
@@ -31,6 +32,7 @@ vi.mock('@renderer/hooks/use-todos', () => ({
   useCreateTodo: () => ({ mutateAsync: vi.fn() }),
   useUpdateTodo: () => ({ mutateAsync: state.update }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
+  useRenameTodo: () => ({ mutateAsync: state.rename, isPending: false }),
 }))
 
 import { TodoBoard } from './todo-board'
@@ -61,6 +63,7 @@ beforeEach(() => {
   state.move.mockReset()
   state.update.mockReset()
   state.start.mockReset()
+  state.rename.mockReset().mockResolvedValue(undefined)
   state.starting = new Set()
 })
 
@@ -117,6 +120,39 @@ describe('TodoBoard', () => {
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'analyst', sessionId: 'session-b' },
     })
+  })
+
+  it('renames started work from its right-click menu; drafts have no such menu', async () => {
+    state.todos = [todo({ id: 'a', column: 'drafts' }), todo({ id: 'b', column: 'has_updates', title: 'Summarize the weekly sales numbers' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Task a'))
+    expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
+
+    fireEvent.contextMenu(screen.getByText('Summarize the weekly sales numbers'))
+    fireEvent.click(await screen.findByTestId('todo-rename-item'))
+    const input = await screen.findByTestId('todo-rename-input')
+    expect(input).toHaveValue('Summarize the weekly sales numbers')
+    fireEvent.change(input, { target: { value: 'Weekly sales summary' } })
+    fireEvent.click(screen.getByTestId('todo-rename-submit'))
+    await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
+    expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it.each(['has_updates', 'needs_input'] as const)('keeps an unsaved rename when working moves to %s', async (column) => {
+    state.todos = [todo({ id: 'b', column: 'working', title: 'Quarterly report' })]
+    const { rerender } = renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Quarterly report'))
+    fireEvent.click(await screen.findByTestId('todo-rename-item'))
+    fireEvent.change(await screen.findByTestId('todo-rename-input'), { target: { value: 'Weekly sales summary' } })
+
+    state.todos = state.todos.map((item) => ({ ...item, column }))
+    rerender(<TodoBoard />)
+    expect(screen.getByTestId('todo-card')).toHaveAttribute('data-column', column)
+    expect(screen.getByTestId('todo-rename-input')).toHaveValue('Weekly sales summary')
+    fireEvent.click(screen.getByTestId('todo-rename-submit'))
+    await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
+    await waitFor(() => expect(screen.queryByTestId('todo-rename-input')).not.toBeInTheDocument())
+    expect(state.navigate).not.toHaveBeenCalled()
   })
 
   it('opens a draft in the draft dialog', () => {

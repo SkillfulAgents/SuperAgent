@@ -6,7 +6,8 @@
  * Starting is two calls from the client: it creates the session through
  * POST /api/agents/:id/sessions (which checks it may use the agent, and
  * takes the same path as the composer), then links it here with
- * POST /api/todos/:id/start.
+ * POST /api/todos/:id/start. A session started some other way joins the
+ * board through POST /api/todos/sessions.
  *
  * Everything 404s for someone who has not turned the experiment on.
  */
@@ -17,6 +18,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
+  addSessionTodo,
   claimStart,
   createTodo,
   deleteTodo,
@@ -24,6 +26,7 @@ import {
   listTodos,
   moveTodo,
   releaseStart,
+  renameTodo,
   setTodoStatus,
   startClaimHeld,
   startTodo,
@@ -32,9 +35,11 @@ import {
 } from '@shared/lib/services/todo-service'
 import { isExperimentEnabled } from '@shared/lib/services/user-settings-service'
 import {
+  addSessionTodoSchema,
   createTodoSchema,
   moveTodoSchema,
   releaseStartSchema,
+  renameTodoSchema,
   startTodoSchema,
   todoAskFor,
   todoColumn,
@@ -125,6 +130,21 @@ todosRouter.post('/', async (c) => {
   return c.json(await viewOf(c, row), 201)
 })
 
+// POST /api/todos/sessions — put a session that already exists on the board,
+// whether it is working right now or not. 200 with the existing item if the
+// session is already on it.
+todosRouter.post('/sessions', async (c) => {
+  const input = await parseBody(c, addSessionTodoSchema)
+  if (!input) return c.json({ error: 'Invalid todo' }, 400)
+  const readable = await getReadableAgentIds(c, [input.agentSlug])
+  if (!readable.has(input.agentSlug) || !(await agentRegistry.get(input.agentSlug).sessions.isKnown(input.sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+  const result = await addSessionTodo(getCurrentUserId(c), input)
+  if (!result) return c.json({ error: 'The todo has changed; reload and try again' }, 409)
+  return c.json(toView(result.todo, readable), result.created ? 201 : 200)
+})
+
 // PATCH /api/todos/:id — edit a draft.
 todosRouter.patch('/:id', async (c) => {
   const patch = await parseBody(c, updateTodoSchema)
@@ -187,6 +207,13 @@ todosRouter.post('/:id/status', async (c) => {
   const input = await parseBody(c, todoStatusChangeSchema)
   if (!input) return c.json({ error: 'Invalid status' }, 400)
   return respond(c, await setTodoStatus(getCurrentUserId(c), c.req.param('id'), input.status))
+})
+
+// POST /api/todos/:id/title — rename started work. Drafts are edited with PATCH.
+todosRouter.post('/:id/title', async (c) => {
+  const input = await parseBody(c, renameTodoSchema)
+  if (!input) return c.json({ error: 'Invalid title' }, 400)
+  return respond(c, await renameTodo(getCurrentUserId(c), c.req.param('id'), input.title))
 })
 
 // POST /api/todos/:id/position — reorder within its column.

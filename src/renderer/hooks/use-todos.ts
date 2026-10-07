@@ -2,6 +2,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClie
 import { apiFetch } from '@renderer/lib/api'
 import { handleMutationError } from '@renderer/lib/query-client'
 import type {
+  AddSessionTodoInput,
   CreateTodoInput,
   TodoStatusChange,
   TodoView,
@@ -81,6 +82,16 @@ export function useCreateTodo() {
   })
 }
 
+/** Puts a session that already exists on the board; resolves with its item (the existing one if it was already there). */
+export function useAddSessionTodo() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: AddSessionTodoInput) => send<TodoView>('/api/todos/sessions', 'POST', input, 'Failed to add to Todo'),
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
+  })
+}
+
 export function useUpdateTodo() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -88,6 +99,16 @@ export function useUpdateTodo() {
     scope: { id: 'todo-draft-edits' },
     mutationFn: ({ id, ...patch }: UpdateTodoInput & { id: string }) =>
       send<TodoView>(`/api/todos/${id}`, 'PATCH', patch, 'Failed to save the draft'),
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
+  })
+}
+
+export function useRenameTodo() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      send<TodoView>(`/api/todos/${id}/title`, 'POST', { title }, 'Failed to rename the todo'),
     onSuccess: (todo) => putTodo(queryClient, todo),
     onError: () => refreshBoard(queryClient),
   })
