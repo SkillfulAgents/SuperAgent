@@ -8,6 +8,13 @@ describe('userSettingsSchema voice', () => {
       .toEqual({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 })
   })
 
+  it('stores the hold-sound and user-music choices and drops what it cannot read', () => {
+    expect(userSettingsSchema.parse({ voice: { holdSound: false, userMusic: false } }).voice).toEqual({ holdSound: false, userMusic: false })
+    expect(userSettingsSchema.parse({ voice: { userMusic: 'yes' } }).voice).toEqual({ userMusic: undefined })
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { userMusic: true } }).success).toBe(true)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { userMusic: 'yes' } }).success).toBe(false)
+  })
+
   it('keeps a voice id as stored: which ids exist is the provider\'s business, not the schema\'s', () => {
     expect(userSettingsSchema.parse({ voice: { ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 } }).voice)
       .toEqual({ ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 })

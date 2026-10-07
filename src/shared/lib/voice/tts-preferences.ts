@@ -38,3 +38,14 @@ export const DEFAULT_HOLD_SOUND = true
 export function resolveHoldSound(value: unknown): boolean {
   return typeof value === 'boolean' ? value : DEFAULT_HOLD_SOUND
 }
+
+/**
+ * The desktop app uses the person's own music player as the hold sound when
+ * one is already playing, unless turned off.
+ */
+export const DEFAULT_USER_MUSIC = true
+
+/** A stored user-music preference, or the default when there is none. */
+export function resolveUserMusic(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : DEFAULT_USER_MUSIC
+}
