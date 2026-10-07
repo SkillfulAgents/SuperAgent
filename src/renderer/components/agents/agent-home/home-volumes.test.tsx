@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -27,7 +28,7 @@ const { mockCanUseHostFeatures } = vi.hoisted(() => ({
 }))
 vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: mockCanUseHostFeatures }))
 
-import { render, screen, cleanup } from '@testing-library/react'
+import { render as renderComponent, screen, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
 
@@ -38,6 +39,12 @@ import { HomeVolumes } from './home-volumes'
 
 const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', type: 'local', hostPath: '/Users/joe/code' }
 
+const browse = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/api', () => ({ apiFetch: browse }))
+function render(ui: React.ReactNode) {
+  return renderComponent(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>)
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   volumes.mounts = [MOUNT]
@@ -47,6 +54,10 @@ beforeEach(() => {
   volumes.operationError = null
   volumes.pendingRestart = false
   mockCanUseHostFeatures.mockReturnValue(true)
+  browse.mockImplementation(async (url: string) => ({ ok: true, json: async () => ({
+    path: url.includes('?') ? '/srv/reports' : '/srv', parent: '/', locations: [{ name: 'Home', path: '/srv' }],
+    folders: url.includes('?') ? [] : [{ name: 'reports', path: '/srv/reports' }],
+  }) }))
   window.electronAPI = { platform: 'darwin', showInFolder: vi.fn(), openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
 })
 
@@ -89,13 +100,15 @@ describe('driving a cloud workspace', () => {
     mockCanUseHostFeatures.mockReturnValue(false)
   })
 
-  it('offers creation with a workspace path instead of browsing the wrong machine', async () => {
+  it('offers a workspace folder picker without a path field', async () => {
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Browse' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Folder')).not.toHaveAttribute('readonly')
-    expect(screen.getByText(/computer running this workspace/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select folder' })).toBeEnabled()
+    expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(await screen.findByRole('button', { name: 'Open reports' })).toBeInTheDocument()
+    expect(window.electronAPI!.openDirectory).not.toHaveBeenCalled()
   })
 
   it('still lists the mounts, which are real on whichever Superagent is driven', () => {
@@ -151,7 +164,10 @@ describe('saved volume picker', () => {
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
     await userEvent.click(screen.getByRole('menuitem', { name: /new volume/i }))
-    await userEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create and attach' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/new/folder')
     await userEvent.click(screen.getByRole('button', { name: 'Create and attach' }))
     expect(window.electronAPI!.openDirectory).toHaveBeenCalledOnce()
     expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'folder', path: '/new/folder', visibility: 'private' })
@@ -174,7 +190,10 @@ describe('saved volume picker', () => {
     expect(screen.getAllByRole('menuitem').at(-1)).toBe(create)
     await userEvent.click(create)
     await userEvent.type(screen.getByLabelText('Name'), 'Reports')
-    await userEvent.type(screen.getByLabelText('Folder'), '/srv/reports')
+    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Open reports' }))
+    await waitFor(() => expect(screen.getByTestId('volume-picker-location')).toHaveTextContent('/srv/reports'))
+    await userEvent.click(screen.getByRole('button', { name: 'Select this folder' }))
     await userEvent.click(screen.getByRole('button', { name: 'Create and attach' }))
     expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'Reports', path: '/srv/reports', visibility: 'private' })
     expect(volumes.handleAttach).not.toHaveBeenCalled()

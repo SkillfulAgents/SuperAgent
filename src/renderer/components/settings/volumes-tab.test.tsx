@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render as renderComponent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 
@@ -17,11 +18,21 @@ vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => state.
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 import { VolumesTab } from './volumes-tab'
 
+const browse = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/api', () => ({ apiFetch: browse }))
+function render(ui: React.ReactNode) {
+  return renderComponent(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider>)
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   state.host = true
   state.isAdmin = true
   state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok' }]
+  browse.mockImplementation(async (url: string) => ({ ok: true, json: async () => ({
+    path: url.includes('?') ? '/srv/reports' : '/srv', parent: '/', locations: [{ name: 'Home', path: '/srv' }],
+    folders: url.includes('?') ? [] : [{ name: 'reports', path: '/srv/reports' }],
+  }) }))
   window.electronAPI = { openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
 })
 afterEach(() => {
@@ -35,8 +46,9 @@ describe('volume settings', () => {
     render(<VolumesTab />)
     expect(screen.getByRole('button', { name: 'Delete Notes' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Edit Notes' }))
-    expect(screen.getByLabelText('Folder')).toHaveAttribute('readonly')
-    expect(screen.queryByRole('button', { name: 'Browse' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/notes')
+    expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
     expect(screen.getByRole('combobox')).toBeDisabled()
     await userEvent.clear(screen.getByLabelText('Name'))
     await userEvent.type(screen.getByLabelText('Name'), 'Team notes')
@@ -48,7 +60,11 @@ describe('volume settings', () => {
     state.isAdmin = false
     render(<VolumesTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Add volume' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create volume' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(window.electronAPI!.openDirectory).toHaveBeenCalledOnce()
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/new/folder')
     expect(screen.getByLabelText('Name')).toHaveValue('folder')
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.getByText('Only me')).toBeInTheDocument()
@@ -65,13 +81,18 @@ describe('volume settings', () => {
     expect(screen.queryByRole('button', { name: 'Delete Notes' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add volume' })).toBeInTheDocument()
   })
-  it('creates a volume from a server path in a browser', async () => {
+  it('selects a workspace folder in a browser without a path field', async () => {
     state.host = false
     render(<VolumesTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Add volume' }))
-    expect(screen.queryByRole('button', { name: 'Browse' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
     await userEvent.type(screen.getByLabelText('Name'), 'Reports')
-    await userEvent.type(screen.getByLabelText('Folder'), '/srv/reports')
+    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Open reports' }))
+    await waitFor(() => expect(screen.getByTestId('volume-picker-location')).toHaveTextContent('/srv/reports'))
+    await userEvent.click(screen.getByRole('button', { name: 'Select this folder' }))
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/srv/reports')
+    expect(window.electronAPI!.openDirectory).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
     expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'Reports', path: '/srv/reports', visibility: 'private' })
   })
