@@ -237,6 +237,18 @@ describe('AudioRenderer', () => {
     expect(screen.getByRole('button', { name: 'Seek to comment 1 at 0:12.00' })).toBeVisible()
   })
 
+  it('mutes and sets the volume on the audio element', () => {
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mute' }))
+    expect(audio.muted).toBe(true)
+
+    fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '0.6' } })
+    expect(audio.volume).toBeCloseTo(0.6)
+    expect(audio.muted).toBe(false)
+  })
+
   it('clears media state when switching between audio files', async () => {
     const user = userEvent.setup()
     const { rerender } = render(

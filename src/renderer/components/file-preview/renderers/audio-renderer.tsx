@@ -6,6 +6,7 @@ import { formatCommentTime, formatMediaTime } from '../comments/format-media-tim
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
 import { useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
+import { VolumeControl } from './volume-control'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface AudioRendererProps {
@@ -363,16 +364,17 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
           >
             {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
           </button>
-          <span className="text-xs tabular-nums text-muted-foreground">
+          <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
+          <VolumeControl mediaRef={audioRef} />
           {commentsEnabled && (
             <button
               type="button"
               onClick={() => commentAtPlayhead()}
               disabled={pending != null}
-              className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
+              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
               data-testid="audio-add-comment"
             >
               <MessageSquarePlus className="h-3.5 w-3.5" />
