@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature - agent successfully opened a browser, navigated to example.com, retrieved the page title \"Example Domain\", and reported the result.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing Gamut application with agent list.",
+    "Step 2: Clicked on \"QA-20261007-214200-ntfl\" agent in sidebar - Agent page opened successfully.",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message displayed in chat and sent to agent.",
+    "Step 4: Waited for response (waited up to 3 minutes) - Agent processed the request, completed work in 5 seconds with 3 tool calls and 149,682 tokens.",
+    "Step 5: Verified response mentions \"Example Domain\" and took screenshot - Response clearly states: \"The page title is \"Example Domain\". https://example.com loaded with HTTP 200. I've closed the browser.\" This confirms the browser successfully navigated to the URL, read the page title, and reported the correct result."
+  ],
+  "bugs": [],
+  "durationMs": 253439,
+  "sessionId": "bdedbde1-2a90-432a-9e88-f8333d3b9670",
+  "cost": {
+    "inputTokens": 424,
+    "outputTokens": 10500,
+    "cacheCreationTokens": 73814,
+    "cacheReadTokens": 1219687,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.26716
+  }
+}
