@@ -907,5 +907,21 @@ describe('MessageItem', () => {
       report(frame.contentWindow, 50_000)
       expect(frame.style.height).toBe('1200px')
     })
+
+    it('forwards wheel input the frame reports to the chat around it', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<p>Weekly spend</p>\n```' } })
+      const { container } = render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const wheels: number[] = []
+      container.addEventListener('wheel', (event) => wheels.push((event as WheelEvent).deltaY))
+      const report = (source: MessageEventSource | null, deltaY: number) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source, data: { type: 'superagent:html-block-wheel', deltaY } }))
+        })
+
+      report(window, 40)
+      report(frame.contentWindow, -120)
+      expect(wheels).toEqual([-120])
+    })
   })
 })

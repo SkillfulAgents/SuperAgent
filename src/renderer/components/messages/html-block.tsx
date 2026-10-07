@@ -7,22 +7,64 @@ const HTML_BLOCK_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
 
 const HEIGHT_MESSAGE = 'superagent:html-block-height'
+const WHEEL_MESSAGE = 'superagent:html-block-wheel'
 const INITIAL_HEIGHT = 160
 const MAX_HEIGHT = 1200
 
-const HEIGHT_REPORTER = `(() => {
-  const post = () => parent.postMessage({ type: '${HEIGHT_MESSAGE}', height: document.documentElement.scrollHeight }, '*')
-  new ResizeObserver(post).observe(document.documentElement)
+// Remembered per block so switching back to a session doesn't reflow from the initial height.
+const measuredHeights = new Map<string, number>()
+
+const THEME_TOKENS = [
+  'background', 'foreground', 'card', 'card-foreground', 'primary', 'primary-foreground',
+  'muted', 'muted-foreground', 'accent', 'destructive', 'border', 'ring', 'radius',
+  'chart-1', 'chart-2', 'chart-3', 'chart-4', 'chart-5',
+]
+
+/** The app's live theme tokens plus a base style, so authored HTML looks like the chat around it. */
+function themeStyle(): string {
+  const computed = getComputedStyle(document.documentElement)
+  const vars = THEME_TOKENS.map((name) => `--${name}:${computed.getPropertyValue(`--${name}`).trim()}`).join(';')
+  return (
+    `:root{${vars}}` +
+    'html{overflow:hidden;scrollbar-width:thin}' +
+    // flow-root keeps child margins inside body, so its height is the content height.
+    'body{display:flow-root}' +
+    "html,body{margin:0;background:transparent;color:hsl(var(--foreground));" +
+    "font:14px/1.5 'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}" +
+    // Focus rings follow the app's ring color; mouse clicks show none.
+    ':focus-visible{outline:2px solid hsl(var(--ring))!important;outline-offset:2px}' +
+    ':focus:not(:focus-visible){outline:none!important}'
+  )
+}
+
+// Reports the content height, and shows a scrollbar only past the cap. Wheel input the page
+// can't use scrolls the chat instead; the chat's scroll engine never sees it, so it's forwarded.
+const FRAME_SCRIPT = `(() => {
+  const root = document.documentElement
+  const post = () => {
+    const height = document.body ? document.body.scrollHeight : root.scrollHeight
+    root.style.overflowY = height > ${MAX_HEIGHT} ? 'auto' : 'hidden'
+    parent.postMessage({ type: '${HEIGHT_MESSAGE}', height }, '*')
+  }
+  const observer = new ResizeObserver(post)
+  observer.observe(root)
+  addEventListener('DOMContentLoaded', () => observer.observe(document.body))
   addEventListener('load', post)
+  // Non-passive: Chromium skips passive wheel listeners in a frame that can't scroll. Never prevented.
+  document.addEventListener('wheel', (event) => {
+    const canScroll = event.deltaY < 0 ? root.scrollTop > 0 : root.scrollTop < root.scrollHeight - root.clientHeight - 1
+    if (root.style.overflowY !== 'auto' || !canScroll) parent.postMessage({ type: '${WHEEL_MESSAGE}', deltaY: event.deltaY }, '*')
+  }, { passive: false })
 })()`
 
-/** The document as the chat renders it: policy, theme, and height reporter parsed before authored markup. */
+/** The document as the chat renders it: policy, theme, and frame script come before authored markup. */
 function renderHtmlBlockDocument(source: string, scheme: 'light' | 'dark'): string {
   return (
     `<!DOCTYPE html><html data-theme="${scheme}"><head>` +
     `<meta http-equiv="Content-Security-Policy" content="${HTML_BLOCK_CSP}">` +
     `<meta name="color-scheme" content="${scheme}">` +
-    `<script>${HEIGHT_REPORTER}</script>${source}`
+    `<style>${themeStyle()}</style>` +
+    `<script>${FRAME_SCRIPT}</script>${source}`
   )
 }
 
@@ -31,18 +73,25 @@ export function HtmlBlock({ source }: { source: string }) {
   const srcDoc = useMemo(() => renderHtmlBlockDocument(source, scheme), [source, scheme])
   const getSource = useCallback(() => source, [source])
   const frameRef = useRef<HTMLIFrameElement>(null)
-  const [height, setHeight] = useState(INITIAL_HEIGHT)
+  const [height, setHeight] = useState(() => measuredHeights.get(source) ?? INITIAL_HEIGHT)
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.source !== frameRef.current?.contentWindow) return
-      const data = event.data as { type?: unknown; height?: unknown } | null
+      const frame = frameRef.current
+      if (!frame || event.source !== frame.contentWindow) return
+      const data = event.data as { type?: unknown; height?: unknown; deltaY?: unknown } | null
+      if (data?.type === WHEEL_MESSAGE && typeof data.deltaY === 'number' && Number.isFinite(data.deltaY)) {
+        frame.dispatchEvent(new WheelEvent('wheel', { deltaY: data.deltaY, bubbles: true }))
+        return
+      }
       if (data?.type !== HEIGHT_MESSAGE || typeof data.height !== 'number' || !Number.isFinite(data.height)) return
-      setHeight(Math.min(Math.max(Math.ceil(data.height), 1), MAX_HEIGHT))
+      const next = Math.min(Math.max(Math.ceil(data.height), 1), MAX_HEIGHT)
+      measuredHeights.set(source, next)
+      setHeight(next)
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [])
+  }, [source])
 
   return (
     <div className="relative group my-3" data-testid="html-block">
@@ -54,7 +103,7 @@ export function HtmlBlock({ source }: { source: string }) {
         sandbox="allow-scripts"
         // Matching the document's color-scheme keeps the frame transparent instead of a default canvas.
         style={{ height, colorScheme: scheme }}
-        className="block w-full rounded-md border border-border/60 bg-transparent"
+        className="block w-full border-0 bg-transparent"
       />
       <CodeCopyButton getText={getSource} />
     </div>
