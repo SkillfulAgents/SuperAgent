@@ -10,7 +10,7 @@ import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 // --- Mocks ---
 
 const mockAddMount = {
-  mutateAsync: vi.fn().mockResolvedValue({ containerPath: '/mnt/folder' }),
+  mutateAsync: vi.fn().mockResolvedValue({ id: 'm', name: 'project-2', type: 'local' }),
 }
 
 vi.mock('@renderer/hooks/use-mounts', () => ({
@@ -351,6 +351,15 @@ describe('useMessageComposer', () => {
       const opts = defaultOptions()
       const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       expect(result.current.canSubmit).toBe(false)
+    })
+
+    it('submit names a mounted folder by the mount the app gave it', async () => {
+      mockAttachments.attachments = [{ type: 'mount', id: 'm', folderName: 'project', hostPath: '/home/u/project' }]
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('hi'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(opts.onSubmit.mock.calls[0][0]).toContain('/mounts/project-2')
     })
 
     it('submit sends the done paths in chip order without re-uploading', async () => {

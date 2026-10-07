@@ -626,6 +626,14 @@ export interface ByteRange {
 export interface WriteOptions {
   /** Refuse symlink escapes; used when sharing files across agents. */
   confined?: boolean
+  /** With `confined`: refuse a missing parent folder instead of creating it. */
+  existingParent?: boolean
+  /** With `confined`: refuse a root that no longer resolves to itself, so nothing is staged where a link leads. */
+  exactRoot?: boolean
+  /** Filesystem only: a lock held around the final publish and a failed write's cleanup, not while content is written. It also turns on the check that the staged file is still this write's. */
+  lock?: (fn: () => Promise<void>) => Promise<void>
+  /** Filesystem only: called under `lock` just before the destination is published; throwing refuses it. */
+  beforePublish?: (destination: string) => Promise<void>
   /** Publish only if no destination exists, including racing writers. */
   overwrite?: boolean
   signal?: AbortSignal

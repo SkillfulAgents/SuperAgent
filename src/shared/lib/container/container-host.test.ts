@@ -517,7 +517,7 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
 
   it('passes additionalVolumes from healthy mounts to client.start()', async () => {
     mockGetMountsWithHealth.mockReturnValue([
-      { id: 'm1', hostPath: '/host/project', containerPath: '/mounts/project', folderName: 'project', addedAt: '2025-01-01', health: 'ok' },
+      { id: 'm1', name: 'project', type: 'local', hostPath: '/host/project', health: 'ok' },
     ])
 
     await containerHost.runtime('test-agent').ensureRunning()
@@ -525,20 +525,21 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockStart).toHaveBeenCalledOnce()
     const opts = mockStart.mock.calls[0][0]
     expect(opts.additionalVolumes).toHaveLength(1)
-    // The volume flag is produced by buildVolumeFlag which we can't inspect exactly
-    // since the client is mocked, but it should be an array of strings
-    expect(typeof opts.additionalVolumes[0]).toBe('string')
+    expect(mockBuildVolumeFlag).toHaveBeenCalledWith('/host/project', '/mounts/project')
   })
 
   it('tells the agent about mounted folders through SUPERAGENT_MOUNTS, healthy ones only', async () => {
     mockGetMountsWithHealth.mockReturnValue([
-      { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },
-      { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01', health: 'missing' },
+      { id: 'm1', name: 'ok', type: 'local', hostPath: '/host/ok', health: 'ok' },
+      { id: 'm2', name: 'gone', type: 'local', hostPath: '/host/gone', health: 'missing' },
+      { id: 'm3', name: 'drive', type: 'gdrive', hostPath: null, health: 'ok' },
     ])
 
     await containerHost.runtime('test-agent').ensureRunning()
 
     const opts = mockStart.mock.calls[0][0]
+    // A volume with no host folder is never bind-mounted.
+    expect(opts.additionalVolumes).toHaveLength(1)
     expect(opts.envVars.SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/ok']))
   })
 
@@ -553,8 +554,8 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
 
   it('skips missing mounts and broadcasts warning', async () => {
     mockGetMountsWithHealth.mockReturnValue([
-      { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },
-      { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01', health: 'missing' },
+      { id: 'm1', name: 'ok', type: 'local', hostPath: '/host/ok', health: 'ok' },
+      { id: 'm2', name: 'gone', type: 'local', hostPath: '/host/gone', health: 'missing' },
     ])
 
     await containerHost.runtime('test-agent').ensureRunning()

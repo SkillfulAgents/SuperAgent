@@ -1,22 +1,21 @@
 import path from 'path'
-import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
 import {
   readJsonFileStrict,
   writeJsonFileAtomic,
   withFileLock,
-  directoryExists,
   CorruptFileError,
 } from '@shared/lib/utils/file-storage'
 import { containerHost } from '@shared/lib/agent-actor'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { captureException } from '@shared/lib/error-reporting'
-import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
-import { agentMountsSchema } from './mount-schema'
+import type { StoredVolume, VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
+import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
+import type { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
+import { mountsFileSchema, rowIdentitySchema, storedVolumeRowSchema } from './mount-schema'
 
-// Mounts are host folders bind-mounted into the container — a host-only feature,
-// so the file sits at the agent's host path (from the container host, not the actor).
+// The agent's volumes are host-only state, so the file sits at the agent's host
+// path (from the container host, not the actor).
 function getMountsFilePath(slug: string): string {
   return path.join(containerHost.agentHostPath(slug), 'mounts.json')
 }
@@ -27,9 +26,22 @@ function getMountsFilePath(slug: string): string {
  * aborts instead of clobbering the file with just the new/remaining mount (the
  * previous catch-all swallowed bad reads, so the next write dropped every prior
  * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
+ * A row this version cannot read, such as one of a type from a newer version,
+ * is left out of `volumes` and kept in `rows`, so a write puts it back as it was.
  */
-function readMountsStrict(slug: string): Promise<AgentMount[]> {
-  return readJsonFileStrict(getMountsFilePath(slug), agentMountsSchema, [])
+async function readMountsStrict(slug: string): Promise<{ rows: unknown[]; volumes: StoredVolume[] }> {
+  const rows = await readJsonFileStrict(getMountsFilePath(slug), mountsFileSchema, [])
+  return { rows, volumes: rows.flatMap((row) => storedVolumeRowSchema.safeParse(row).data ?? []) }
+}
+
+// A row this version reads is written in the current shape, and any other row as it was.
+function rowToWrite(row: unknown): unknown {
+  return storedVolumeRowSchema.safeParse(row).data ?? row
+}
+
+// A row's id and name, read or not: an unread row still holds its name and can still be removed.
+function rowIdentity(row: unknown): { id: string; name: string } | undefined {
+  return storedVolumeRowSchema.safeParse(row).data ?? rowIdentitySchema.safeParse(row).data
 }
 
 /**
@@ -41,9 +53,12 @@ function readMountsStrict(slug: string): Promise<AgentMount[]> {
  * writes go through addMount/removeMount, which use the strict read and abort on
  * corruption instead of overwriting.
  */
-export async function getMounts(slug: string): Promise<AgentMount[]> {
+export async function getMounts(slug: string): Promise<StoredVolume[]> {
   try {
-    return await readMountsStrict(slug)
+    const { rows, volumes } = await readMountsStrict(slug)
+    const skipped = rows.length - volumes.length
+    if (skipped > 0) console.warn(`mounts.json for agent ${slug} has ${skipped} row(s) this version cannot read; leaving them out and keeping them in the file`)
+    return volumes
   } catch (error) {
     if (error instanceof CorruptFileError) {
       console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
@@ -54,110 +69,77 @@ export async function getMounts(slug: string): Promise<AgentMount[]> {
   }
 }
 
-/**
- * Cloud-synced directories that macOS File Providers manage (iCloud Drive,
- * Dropbox, OneDrive, Google Drive, etc.). The Electron app can read these
- * because it has the user's TCC grant, but the Lima VM helper process does
- * NOT — macOS denies it with EPERM when the container runtime stats the path,
- * so the mount can't be shared into the agent sandbox. A host accessSync still
- * passes for the app, so we detect these by path prefix instead.
- */
-function getCloudStoragePrefixes(): string[] {
-  const home = os.homedir()
-  return [
-    // iCloud Drive
-    path.join(home, 'Library', 'Mobile Documents'),
-    // Third-party File Provider storage (Dropbox, OneDrive, Google Drive, …)
-    path.join(home, 'Library', 'CloudStorage'),
-  ]
-}
-
-/**
- * Detect whether a host path lives inside a cloud-synced directory that can't
- * be shared into the agent sandbox. Returns true on macOS for iCloud Drive and
- * `~/Library/CloudStorage/...` File Provider paths.
- */
-export function isCloudStoragePath(hostPath: string): boolean {
-  if (process.platform !== 'darwin') return false
-  const normalized = path.resolve(hostPath)
-  return getCloudStoragePrefixes().some((prefix) => isPathWithinDir(prefix, normalized))
-}
-
-/** User-facing message shown when a cloud-synced folder is rejected as a mount. */
-export const CLOUD_MOUNT_MESSAGE =
-  'This folder is in iCloud Drive or a cloud-synced location (Dropbox, OneDrive, Google Drive), ' +
-  'which can’t be shared into the agent sandbox. Please copy it to a regular local folder ' +
-  '(e.g. somewhere under your home directory) and mount that instead.'
-
-async function writeMounts(slug: string, mounts: AgentMount[]): Promise<void> {
+async function writeMounts(slug: string, rows: unknown[]): Promise<void> {
   const filePath = getMountsFilePath(slug)
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
   // Atomic temp-file + rename: an interrupted write can never truncate
   // mounts.json into the half-state the old reader would have swallowed.
-  await writeJsonFileAtomic(filePath, agentMountsSchema.parse(mounts))
+  await writeJsonFileAtomic(filePath, rows.map(rowToWrite))
 }
 
-export async function addMount(slug: string, hostPath: string): Promise<AgentMount> {
-  if (!path.isAbsolute(hostPath)) {
-    throw new Error('hostPath must be an absolute path')
-  }
-  // Reject cloud-synced folders before the user hits a cryptic run-time failure:
-  // the Lima VM helper can't stat File Provider paths even though the app can.
-  // Check the user-supplied path AND its realpath — iCloud aliases can resolve
-  // out of the cloud prefix, but the cloud prefix itself is the reliable signal.
-  if (isCloudStoragePath(hostPath)) {
-    throw new Error(CLOUD_MOUNT_MESSAGE)
-  }
-  const resolved = await fs.promises.realpath(hostPath)
-  if (isCloudStoragePath(resolved)) {
-    throw new Error(CLOUD_MOUNT_MESSAGE)
-  }
-  if (!(await fs.promises.stat(resolved)).isDirectory()) {
-    throw new Error('hostPath must be a directory')
-  }
+export async function addMount(slug: string, type: string, config: unknown): Promise<StoredVolume> {
+  const prepared = await prepareVolume(type, config)
 
   // The read-modify-write must not interleave with a concurrent add/remove for
   // the same agent (the old sync code got this for free by never yielding).
   return withFileLock(getMountsFilePath(slug), async () => {
-    const mounts = await readMountsStrict(slug)
-    const baseName = path.basename(resolved)
+    const { rows } = await readMountsStrict(slug)
 
-    // Pick container path, append -2, -3, etc. on collision
-    let containerName = baseName
+    // Pick the volume name, append -2, -3, etc. on collision
+    const taken = new Set(rows.map((row) => rowIdentity(row)?.name))
+    let name = prepared.name
     let suffix = 2
-    while (mounts.some((m) => m.containerPath === `/mounts/${containerName}`)) {
-      containerName = `${baseName}-${suffix}`
+    while (taken.has(name)) {
+      name = `${prepared.name}-${suffix}`
       suffix++
     }
 
-    const mount: AgentMount = {
-      id: crypto.randomUUID(),
-      hostPath: resolved,
-      containerPath: `/mounts/${containerName}`,
-      folderName: baseName,
-      addedAt: new Date().toISOString(),
-    }
+    const mount: StoredVolume = { id: crypto.randomUUID(), name, type: prepared.type, config: prepared.config }
 
-    mounts.push(mount)
-    await writeMounts(slug, mounts)
+    await writeMounts(slug, [...rows, mount])
     return mount
   })
 }
 
 export function removeMount(slug: string, mountId: string): Promise<void> {
   return withFileLock(getMountsFilePath(slug), async () => {
-    const mounts = await readMountsStrict(slug)
-    const filtered = mounts.filter((m) => m.id !== mountId)
-    await writeMounts(slug, filtered)
+    const { rows } = await readMountsStrict(slug)
+    await writeMounts(slug, rows.filter((row) => rowIdentity(row)?.id !== mountId))
   })
 }
 
-export async function getMountsWithHealth(slug: string): Promise<AgentMountWithHealth[]> {
+/**
+ * Each mounts.json row is one agent's volume and its id is the volume id, so a
+ * volume not attached to this agent resolves to nothing.
+ */
+export async function resolveVolume(slug: string, volumeId: string): Promise<BaseMountableVolume<unknown> | null> {
+  const row = (await getMounts(slug)).find((m) => m.id === volumeId)
+  return row ? instantiateVolume(row) : null
+}
+
+// A volume is ok when it can be built and its root is a folder now.
+async function isMountable(volume: BaseMountableVolume<unknown> | null): Promise<boolean> {
+  if (!volume) return false
+  try {
+    return (await volume.stat('')).kind === 'directory'
+  } catch {
+    return false
+  }
+}
+
+export function volumeSummary(row: StoredVolume, volume = instantiateVolume(row)): VolumeSummary {
+  return { id: row.id, name: row.name, type: row.type, hostPath: volume?.hostPath ?? null }
+}
+
+export async function getMountsWithHealth(slug: string): Promise<VolumeSummaryWithHealth[]> {
   const mounts = await getMounts(slug)
   return Promise.all(
-    mounts.map(async (m) => ({
-      ...m,
-      health: (await directoryExists(m.hostPath)) ? ('ok' as const) : ('missing' as const),
-    }))
+    mounts.map(async (m) => {
+      const volume = instantiateVolume(m)
+      return {
+        ...volumeSummary(m, volume),
+        health: (await isMountable(volume)) ? ('ok' as const) : ('missing' as const),
+      }
+    })
   )
 }

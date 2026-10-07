@@ -18,6 +18,7 @@ export type WorkspaceFileErrorCode =
   | 'not-a-file'
   | 'not-a-directory'
   | 'not-accessible'
+  | 'not-empty'
 
 const STATUS: Record<WorkspaceFileErrorCode, 400 | 403 | 404 | 409> = {
   'already-exists': 409,
@@ -27,6 +28,7 @@ const STATUS: Record<WorkspaceFileErrorCode, 400 | 403 | 404 | 409> = {
   'not-a-file': 404,
   'not-a-directory': 404,
   'not-accessible': 403,
+  'not-empty': 409,
 }
 
 const MESSAGE: Record<WorkspaceFileErrorCode, string> = {
@@ -37,6 +39,7 @@ const MESSAGE: Record<WorkspaceFileErrorCode, string> = {
   'not-a-file': 'Not a file',
   'not-a-directory': 'Not a directory',
   'not-accessible': 'File is not accessible',
+  'not-empty': 'Folder is not empty',
 }
 
 export class WorkspaceFileError extends Error {

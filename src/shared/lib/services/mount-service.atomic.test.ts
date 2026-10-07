@@ -69,7 +69,7 @@ describe('mounts.json reads — tolerant display, fail-closed writes', () => {
     const corrupt = '[ { "id": "old-mount", "hostPath": "/x"'
     fs.writeFileSync(mountsPath('agent'), corrupt)
 
-    await expect(addMount('agent', makeHostDir('newfolder'))).rejects.toThrow(CorruptFileError)
+    await expect(addMount('agent', 'local', { path: makeHostDir('newfolder') })).rejects.toThrow(CorruptFileError)
     // The unreadable file is left intact — NOT clobbered with just the new mount.
     expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(corrupt)
   })
@@ -79,8 +79,8 @@ describe('atomic mounts.json writes', () => {
   it('addMount writes atomically (no temp file left behind) and round-trips', async () => {
     const { addMount, getMounts } = await importService()
     makeAgentDir('agent')
-    await addMount('agent', makeHostDir('a'))
-    await addMount('agent', makeHostDir('b'))
+    await addMount('agent', 'local', { path: makeHostDir('a') })
+    await addMount('agent', 'local', { path: makeHostDir('b') })
 
     const dir = path.dirname(mountsPath('agent'))
     expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([])
@@ -95,7 +95,7 @@ describe('atomic mounts.json writes', () => {
     const { addMount, getMounts } = await importService()
     makeAgentDir('agent')
     const names = ['m0', 'm1', 'm2', 'm3', 'm4']
-    await Promise.all(names.map((n) => addMount('agent', makeHostDir(n))))
-    expect((await getMounts('agent')).map((m) => m.folderName).sort()).toEqual([...names].sort())
+    await Promise.all(names.map((n) => addMount('agent', 'local', { path: makeHostDir(n) })))
+    expect((await getMounts('agent')).map((m) => m.name).sort()).toEqual([...names].sort())
   })
 })

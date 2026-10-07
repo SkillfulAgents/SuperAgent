@@ -3,7 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
-import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
+import type { VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -15,7 +15,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 }
 
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<AgentMountWithHealth[]>({
+  return useQuery<VolumeSummaryWithHealth[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
@@ -37,10 +37,10 @@ export function useAddMount() {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hostPath: data.hostPath, restart: data.restart }),
+        body: JSON.stringify({ type: 'local', config: { path: data.hostPath }, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
-      return res.json() as Promise<AgentMount>
+      return res.json() as Promise<VolumeSummary>
     },
     onSuccess: () => {
       // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the

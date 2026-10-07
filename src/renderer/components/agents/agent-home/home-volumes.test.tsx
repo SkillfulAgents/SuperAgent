@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; folderName: string; hostPath: string; health?: unknown }[],
+  mounts: [] as { id: string; name: string; type: string; hostPath: string | null; health?: unknown }[],
   isLoading: false,
   pendingRestart: false,
   isRestarting: false,
@@ -32,7 +32,7 @@ import { HomeVolumes } from './home-volumes'
  * something only while the two are the same machine.
  */
 
-const MOUNT = { id: 'm1', folderName: 'code', hostPath: '/Users/joe/code' }
+const MOUNT = { id: 'm1', name: 'code', type: 'local', hostPath: '/Users/joe/code' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -61,6 +61,19 @@ describe('driving this computer', () => {
     await userEvent.click(screen.getByRole('button', { name: /open in finder/i }))
 
     expect(window.electronAPI!.showInFolder).toHaveBeenCalledWith('/Users/joe/code')
+  })
+})
+
+describe('a volume with no local folder', () => {
+  it('lists it by name, with no path, open or copy action', async () => {
+    volumes.mounts = [{ id: 'd1', name: 'drive', type: 'gdrive', hostPath: null }]
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText('drive')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+    expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /copy path/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /remove mount/i })).toBeInTheDocument()
   })
 })
 
