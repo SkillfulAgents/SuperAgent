@@ -38,6 +38,7 @@ import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -391,6 +392,7 @@ function createWindow() {
   // installPopupHandler routes external URLs through safeOpenExternal (scheme
   // validation — SUP-214) and is shared with the dashboard popout (SUP-219).
   installPopupHandler(mainWindow.webContents)
+  blockSrcdocFrameNavigation(mainWindow.webContents)
 
   // Load the app
   if (process.env.ELECTRON_RENDERER_URL) {

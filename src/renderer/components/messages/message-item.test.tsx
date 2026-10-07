@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
@@ -889,6 +889,26 @@ describe('MessageItem', () => {
 
       expect(screen.queryByTitle('HTML preview')).toBeNull()
       expect(container.querySelector('pre')).toHaveTextContent('<div>Source only</div>')
+    })
+
+    it('keeps html fences from users and integrations as code', () => {
+      const msg = createUserMessage({ content: { text: CHART } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('shows the source once the frame loads a page other than its own', () => {
+      const msg = createAssistantMessage({ content: { text: CHART } })
+      const { container } = render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview')
+
+      fireEvent.load(frame)
+      expect(screen.getByTitle('HTML preview')).toBe(frame)
+      fireEvent.load(frame)
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
     })
 
     it('sizes the frame from its own height reports only', () => {

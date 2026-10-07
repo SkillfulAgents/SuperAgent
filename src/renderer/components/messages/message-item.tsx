@@ -145,23 +145,24 @@ function fenceSource(pre: ElementContent | undefined, language: string): string 
 
 // Only settled blocks draw diagrams or run HTML: a fence still streaming in the
 // tail would re-render incomplete output on every delta, so it stays a code block.
-const SETTLED_MARKDOWN_COMPONENTS: Components = {
-  ...MARKDOWN_COMPONENTS,
-  pre: ({ children, node }) => {
-    const codeBlock = <CodeBlock>{children}</CodeBlock>
-    const html = fenceSource(node, 'html')
-    if (html !== null) return <HtmlBlock source={html} />
-    const source = fenceSource(node, 'mermaid')
-    if (source === null) return codeBlock
-    return (
-      <ErrorBoundary fallback={codeBlock}>
-        <Suspense fallback={codeBlock}>
-          <MermaidDiagram source={source} fallback={codeBlock} />
-        </Suspense>
-      </ErrorBoundary>
-    )
-  },
+const settledPre = (htmlPreview: boolean): Components['pre'] => ({ children, node }) => {
+  const codeBlock = <CodeBlock>{children}</CodeBlock>
+  const html = htmlPreview ? fenceSource(node, 'html') : null
+  if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />
+  const source = fenceSource(node, 'mermaid')
+  if (source === null) return codeBlock
+  return (
+    <ErrorBoundary fallback={codeBlock}>
+      <Suspense fallback={codeBlock}>
+        <MermaidDiagram source={source} fallback={codeBlock} />
+      </Suspense>
+    </ErrorBoundary>
+  )
 }
+
+const SETTLED_MARKDOWN_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, pre: settledPre(false) }
+// Only the agent's own replies run HTML: user, integration, and notification text can come from other people.
+const ASSISTANT_MARKDOWN_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, pre: settledPre(true) }
 
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
@@ -176,18 +177,20 @@ interface MarkdownBlockProps {
   spoken?: boolean
   /** Index of this block's first spoken word within the whole message (a reply rendered block by block). */
   spokenOffset?: number
+  /** Render settled ```html fences as live previews (assistant replies only). */
+  htmlPreview?: boolean
 }
 
 function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): MarkdownProps['rehypePlugins'] {
   return spoken ? [[rehypeSpokenWords, { offset: offset ?? 0 }]] : undefined
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview }: MarkdownBlockProps) {
   const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
     <Markdown
       rehypePlugins={rehypePlugins}
-      components={SETTLED_MARKDOWN_COMPONENTS}
+      components={htmlPreview ? ASSISTANT_MARKDOWN_COMPONENTS : SETTLED_MARKDOWN_COMPONENTS}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
     >
@@ -497,6 +500,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           agentSlug={agentSlug}
                           spoken={isBeingRead}
                           spokenOffset={spokenOffsets?.[i]}
+                          htmlPreview={isAssistant}
                         />
                       ))}
                       {streamingSplit.tail && (
@@ -516,6 +520,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
                       spoken={isBeingRead}
+                      htmlPreview={isAssistant}
                     />
                   )}
                   {isStreaming && (

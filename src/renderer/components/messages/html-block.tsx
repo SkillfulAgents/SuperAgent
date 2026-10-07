@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useIsDark } from '@renderer/hooks/use-theme'
 import { CodeCopyButton } from './code-copy-button'
 
@@ -74,12 +74,21 @@ function renderHtmlBlockDocument(source: string, scheme: 'light' | 'dark'): stri
   )
 }
 
-export function HtmlBlock({ source }: { source: string }) {
+export function HtmlBlock({ source, fallback }: { source: string; fallback: ReactNode }) {
   const scheme = useIsDark() ? 'dark' : 'light'
   const srcDoc = useMemo(() => renderHtmlBlockDocument(source, scheme), [source, scheme])
   const getSource = useCallback(() => source, [source])
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(() => measuredHeights.get(source) ?? INITIAL_HEIGHT)
+  const loadedDoc = useRef<string | null>(null)
+  const [navigatedAway, setNavigatedAway] = useState(false)
+
+  // The CSP can't stop the frame loading another page into itself, and that page has no CSP.
+  // A second load of the same document means it did, so show the source instead.
+  const onLoad = useCallback(() => {
+    if (loadedDoc.current === srcDoc) setNavigatedAway(true)
+    loadedDoc.current = srcDoc
+  }, [srcDoc])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -99,12 +108,15 @@ export function HtmlBlock({ source }: { source: string }) {
     return () => window.removeEventListener('message', onMessage)
   }, [source])
 
+  if (navigatedAway) return fallback
+
   return (
     <div className="relative group my-3" data-testid="html-block">
       <iframe
         ref={frameRef}
         srcDoc={srcDoc}
         title="HTML preview"
+        onLoad={onLoad}
         // Scripts run in an opaque origin: no app cookies, storage, or same-origin APIs.
         sandbox="allow-scripts"
         // Matching the document's color-scheme keeps the frame transparent instead of a default canvas.
