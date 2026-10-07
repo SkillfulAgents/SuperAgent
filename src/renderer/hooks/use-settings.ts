@@ -32,6 +32,22 @@ export function useSettings(options?: { enabled?: boolean }) {
   })
 }
 
+/**
+ * The global guidance appended to every agent's system prompt. Readable by
+ * every signed-in user (unlike `useSettings()`); admins write it through
+ * `useUpdateSettings()`, whose `['settings']` invalidation refreshes this.
+ */
+export function useGlobalInstructions() {
+  return useQuery<{ globalInstructions: string }>({
+    queryKey: ['settings', 'global-instructions'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/settings/global-instructions')
+      if (!res.ok) throw new Error('Failed to fetch global guidance')
+      return res.json()
+    },
+  })
+}
+
 /** Default-on preference; treat missing as enabled. */
 export function isWarmStartOnTypeEnabled(
   settings?: Pick<GlobalSettingsResponse, 'app'> | null,

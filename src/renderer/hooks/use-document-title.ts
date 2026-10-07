@@ -61,6 +61,7 @@ const SETTINGS_TAB_TITLES = {
   browser: 'Browser Use',
   web: 'Web Search',
   capabilities: 'Subagents',
+  'global-guidance': 'Global Guidance',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',

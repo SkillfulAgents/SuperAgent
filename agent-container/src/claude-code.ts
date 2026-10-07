@@ -347,6 +347,7 @@ export interface SystemPromptVars {
   envVars: string[];
   hasMounts: boolean;
   mountPathsJoined: string;
+  globalInstructions: string;
   userInstructions: string;
 }
 
@@ -364,6 +365,7 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
@@ -411,6 +413,7 @@ export function buildSystemPromptVars(
     // Each path is rendered as a JSON string literal. A folder name is user
     // bytes, and a raw newline or `#` in it would read as prompt structure.
     mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
+    globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };
 }
@@ -428,6 +431,7 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -437,6 +441,7 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    globalInstructions,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -532,6 +537,7 @@ export interface ClaudeCodeProcessOptions {
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  globalInstructions?: string;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -585,6 +591,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   private availableEnvVars: string[] | undefined;
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
+  // Org-wide guidance from host Settings. Tracked per message like the
+  // capability policies, so an edit reaches long-lived sessions too.
+  private globalInstructions: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -678,6 +687,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
+    this.globalInstructions = options.globalInstructions;
     this.refreshSystemPrompt();
   }
 
@@ -696,6 +706,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
+      this.globalInstructions,
     );
   }
 
@@ -1684,7 +1695,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }): Promise<void> {
     const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
       ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
@@ -1713,7 +1724,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     const connectedAccountsChanged =
       connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
     const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
-    if (connectedAccountsChanged || remoteMcpsChanged) {
+    // Absent means an older host that never sends it: keep what we have.
+    // Compared trimmed, the way the prompt renders it, so whitespace-only
+    // edits do not cost a re-query.
+    const nextGlobalInstructions = options?.globalInstructions;
+    const globalInstructionsChanged = nextGlobalInstructions !== undefined &&
+      nextGlobalInstructions.trim() !== (this.globalInstructions ?? '').trim();
+    if (nextGlobalInstructions !== undefined) this.globalInstructions = nextGlobalInstructions;
+    if (connectedAccountsChanged || remoteMcpsChanged || globalInstructionsChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
       this.refreshSystemPrompt();
@@ -1756,6 +1774,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          this.globalInstructions,
         );
       }
       this.reconcilePendingCapabilityReviews();
@@ -1792,6 +1811,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       speedChanged ||
       capabilityBlockChanged ||
       connectedAccountsChanged ||
+      globalInstructionsChanged ||
       contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -1808,6 +1828,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (connectedAccountsChanged) reasons.push('connected accounts changed');
+      if (globalInstructionsChanged) reasons.push('global instructions changed');
       if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
       if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);

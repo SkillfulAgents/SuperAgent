@@ -9,6 +9,7 @@ import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -271,6 +272,7 @@ app.post('/sessions/:id/messages', async (c) => {
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
+      globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
     });
 
     return c.json({ success: true }, 201);
@@ -2375,6 +2377,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
+        globalInstructions: globalInstructionsSchema.parse(payload.globalInstructions),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
