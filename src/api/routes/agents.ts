@@ -5765,7 +5765,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
 agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
     const skillsets = getConfiguredSkillsets()
-    await refreshAgentTemplates(skillsets)
+    await refreshAgentTemplates(skillsets, { background: c.req.query('background') === '1' })
     const slug = getAgentId(c)
     const status = await getAgentTemplateStatus(slug, skillsets)
     return c.json(status)
@@ -5781,7 +5781,7 @@ agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const skillsets = getConfiguredSkillsets()
-    await refreshAgentSkills(agentSlug, skillsets)
+    await refreshAgentSkills(agentSlug, skillsets, { background: c.req.query('background') === '1' })
     const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
     return c.json({ skills })
   } catch (error) {
