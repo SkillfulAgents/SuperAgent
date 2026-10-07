@@ -1,4 +1,4 @@
-import { waitingInputNotification } from '../requests/definition'
+import { waitingInputNotification, type RequestDefinition } from '../requests/definition'
 
 import type { Question } from '../types'
 
@@ -51,5 +51,6 @@ export const askUserQuestionDef = {
   request: {
     kind: 'question',
     getNotification: waitingInputNotification('has a question for you'),
-  },
+    describeVoice: (request) => `The agent needs answers in the question card: ${request.questions.map(q => q.question).join(' ')}`,
+  } satisfies RequestDefinition<'question'>,
 } as const

@@ -7,6 +7,7 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { PendingRequestDescriptor } from '@shared/lib/tools/requests/use-pending-requests'
 import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
+import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 // Mock children so we don't pull in the world; just mark them with testids.
 vi.mock('@renderer/components/messages/message-list', () => ({
@@ -15,7 +16,7 @@ vi.mock('@renderer/components/messages/message-list', () => ({
   ),
 }))
 vi.mock('@renderer/components/messages/message-input', () => ({
-  MessageInput: ({ suspended }: { suspended?: boolean }) => <div data-testid="message-input-mock" data-suspended={String(!!suspended)} />,
+  MessageInput: ({ suspended, inputRequests }: { suspended?: boolean; inputRequests?: readonly VoiceInputRequest[] }) => <div data-testid="message-input-mock" data-suspended={String(!!suspended)} data-requests={JSON.stringify(inputRequests)} />,
 }))
 vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => null,
@@ -136,6 +137,8 @@ describe('SessionChatColumn composer swap', () => {
     expect(screen.getByTestId('pending-request-slot')).toBeInTheDocument()
     expect(screen.getByTestId('pending-request-stack')).toBeInTheDocument()
     expect(screen.getByTestId('pending-secret')).toBeInTheDocument()
+    expect(screen.getByTestId('message-input-mock').getAttribute('data-requests')).toContain('secret:tu-1')
+    expect(screen.getByTestId('message-input-mock').getAttribute('data-requests')).toContain('secret A')
   })
 
   it('renders multiple descriptors inside the stack in arrival order', () => {

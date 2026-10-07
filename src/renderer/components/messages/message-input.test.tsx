@@ -262,8 +262,9 @@ describe('MessageInput', () => {
       expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
 
       // The agent asks for something: the column hides the composer behind the card.
-      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended />)
-      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))
+      const inputRequests = [{ id: 'question:1', message: 'Choose a database in the question card.' }]
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended inputRequests={inputRequests} />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true, inputRequests }))
       expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       // No "exited" notice: the person did not leave.

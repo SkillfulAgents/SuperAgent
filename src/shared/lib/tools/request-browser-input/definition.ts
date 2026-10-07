@@ -1,4 +1,4 @@
-import { waitingInputNotification } from '../requests/definition'
+import { waitingInputNotification, type RequestDefinition } from '../requests/definition'
 
 export interface RequestBrowserInputInput {
   message?: string
@@ -25,5 +25,6 @@ export const requestBrowserInputDef = {
   request: {
     kind: 'browser_input',
     getNotification: waitingInputNotification('needs your browser input'),
-  },
+    describeVoice: (request) => `The agent needs the user to complete an action in the browser: ${request.message}${request.requirements.length ? ` Requirements: ${request.requirements.join(', ')}.` : ''}`,
+  } satisfies RequestDefinition<'browser_input'>,
 } as const

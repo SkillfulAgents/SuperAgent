@@ -1,4 +1,4 @@
-import { waitingInputNotification } from '../requests/definition'
+import { waitingInputNotification, type RequestDefinition } from '../requests/definition'
 
 export interface RequestRemoteMcpInput {
   url?: string
@@ -27,5 +27,6 @@ export const requestRemoteMcpDef = {
   request: {
     kind: 'remote_mcp',
     getNotification: waitingInputNotification('needs access to an MCP server'),
-  },
+    describeVoice: (request) => `The agent needs the user to connect ${request.name || 'an MCP server'} through the application's connection card.${request.reason ? ` Reason: ${request.reason}` : ''}`,
+  } satisfies RequestDefinition<'remote_mcp'>,
 } as const

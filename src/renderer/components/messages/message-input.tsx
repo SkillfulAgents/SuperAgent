@@ -37,6 +37,7 @@ import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
+import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 interface MessageInputProps {
   sessionId: string
@@ -63,6 +64,7 @@ interface MessageInputProps {
    * person left.
    */
   suspended?: boolean
+  inputRequests?: readonly VoiceInputRequest[]
 }
 
 /**
@@ -79,7 +81,7 @@ function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): 
   return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -393,6 +395,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentSlug,
     active: voiceModeOn && !isViewOnly,
     paused: suspended,
+    inputRequests,
     send: (text) => {
       voiceSendRef.current = true
       return submitMessage(text).finally(() => { voiceSendRef.current = false })

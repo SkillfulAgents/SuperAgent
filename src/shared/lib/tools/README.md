@@ -1,7 +1,7 @@
 # Tools and input requests
 
 Each tool folder owns its `definition.ts` (shared name, input summary, and request
-notification text), `renderer.tsx` (transcript view), and, where applicable,
+notification text and voice description), `renderer.tsx` (transcript view), and, where applicable,
 `request.tsx` (interactive card). Tests live beside the code they cover. Requests
 without a tool call, such as API reviews and reauthentication, have their own
 definition and card folders too.
