@@ -115,6 +115,7 @@ describe('getProviderCatalog', () => {
   // Effort lists mirror what each serving path accepted live on 2026-09-18.
   it.each([
     ['claude-haiku-4-5', ['low', 'medium', 'high']],
+    ['claude-haiku-5-5', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-sonnet-4-6', ['low', 'medium', 'high', 'max']],
     ['claude-sonnet-5', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-sonnet-5-5', ['low', 'medium', 'high', 'xhigh', 'max']],
@@ -707,6 +708,12 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('claude-opus-4-7', 'anthropic', 'agent')).toBe('claude-opus-4-7')
   })
 
+  it('resolves the default haiku summarizer to Haiku 5.5 on every Claude-catalog provider', () => {
+    for (const provider of ['anthropic', 'claude-subscription', 'platform'] as const) {
+      expect(resolveModelForProvider('haiku', provider, 'summarizer')).toBe('claude-haiku-5-5')
+    }
+  })
+
   it('resolves a bare family alias to that family latest id', () => {
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5-5')
@@ -727,7 +734,7 @@ describe('resolveModelForProvider', () => {
     // Anthropic agent default is 'opus' → resolves to its latest concrete id.
     expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     // Summarizer default 'haiku' → latest haiku.
-    expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-4-5')
+    expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-5-5')
   })
 
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
@@ -835,7 +842,7 @@ describe('resolveModelForProvider', () => {
       llmProvider: 'anthropic',
       modelCatalog: {
         anthropic: {
-          overrides: [{ id: 'claude-haiku-4-5', disabled: true }],
+          overrides: [{ id: 'claude-haiku-5-5', disabled: true }],
         },
       },
     })

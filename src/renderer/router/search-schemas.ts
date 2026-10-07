@@ -117,6 +117,7 @@ export const SETTINGS_TABS = [
   'web',
   'volumes',
   'capabilities',
+  'global-guidance',
   'computer-use',
   'account-provider',
   'voice',

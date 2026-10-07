@@ -828,6 +828,14 @@ The following environment variables have been configured for this agent and are 
 
 You can access these using standard environment variable methods (e.g., `process.env.VAR_NAME` in Node.js, `os.environ['VAR_NAME']` in Python, `$VAR_NAME` in shell scripts).
 <%/hasEnvVars%>
+<%#globalInstructions%>
+
+## Global Guidance
+
+The following guidance is set in this workspace's settings and applies to every agent in it. Follow it alongside any agent-specific instructions below.
+
+<%.%>
+<%/globalInstructions%>
 <%#userInstructions%>
 
 ## Agent-Specific Instructions

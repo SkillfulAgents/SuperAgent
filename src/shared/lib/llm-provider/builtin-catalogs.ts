@@ -131,12 +131,22 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-haiku-4-5',
     label: 'Haiku 4.5',
+    family: 'haiku',
+    icon: ICON,
+    supportedEfforts: STANDARD_EFFORTS,
+    pricing: pricingFor('claude-haiku-4-5'),
+  },
+  {
+    id: 'claude-haiku-5-5',
+    label: 'Haiku 5.5',
     blurb: 'Fastest and most affordable',
     family: 'haiku',
     isLatest: true,
     icon: ICON,
-    supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-haiku-4-5'),
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-haiku-5-5'),
+    // Anthropic bills the whole request at 5x once the prompt passes 100K tokens.
+    longContextPriceCliff: { thresholdTokens: 100_000, inputMultiplier: 5, outputMultiplier: 5 },
   },
   {
     id: 'claude-sonnet-4-6',

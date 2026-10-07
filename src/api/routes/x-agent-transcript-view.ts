@@ -1,6 +1,6 @@
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
-import { deliverFileInputSchema } from '@shared/lib/tool-definitions/deliver-file-schema'
-import { getDeliveredFileMetadata } from '@shared/lib/tool-definitions/deliver-file'
+import { deliverFileInputSchema } from '@shared/lib/tools/deliver-file/schema'
+import { getDeliveredFileMetadata } from '@shared/lib/tools/deliver-file/definition'
 import { sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 

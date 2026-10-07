@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveDisplayName, isUserRequestTool, isDisplayNameFallback } from './chat-delivery'
+import { deriveDisplayName, shouldHideToolStatusInChat, isDisplayNameFallback } from './chat-delivery'
 import { buildSessionName } from './chat-policy'
 
 // ── deriveDisplayName ───────────────────────────────────────────────────
@@ -99,9 +99,9 @@ describe('isDisplayNameFallback', () => {
   })
 })
 
-// ── isUserRequestTool ───────────────────────────────────────────────────
+// ── shouldHideToolStatusInChat ───────────────────────────────────────────────────
 
-describe('isUserRequestTool', () => {
+describe('shouldHideToolStatusInChat', () => {
   const knownTools = [
     'AskUserQuestion',
     'mcp__user-input__request_secret',
@@ -115,29 +115,35 @@ describe('isUserRequestTool', () => {
 
   for (const tool of knownTools) {
     it(`recognizes ${tool}`, () => {
-      expect(isUserRequestTool(tool)).toBe(true)
+      expect(shouldHideToolStatusInChat(tool)).toBe(true)
     })
   }
 
   it('rejects regular tool names', () => {
-    expect(isUserRequestTool('Bash')).toBe(false)
-    expect(isUserRequestTool('Read')).toBe(false)
-    expect(isUserRequestTool('Edit')).toBe(false)
-    expect(isUserRequestTool('mcp__some-server__some_tool')).toBe(false)
+    expect(shouldHideToolStatusInChat('Bash')).toBe(false)
+    expect(shouldHideToolStatusInChat('Read')).toBe(false)
+    expect(shouldHideToolStatusInChat('Edit')).toBe(false)
+    expect(shouldHideToolStatusInChat('mcp__some-server__some_tool')).toBe(false)
   })
 
   it('rejects empty string', () => {
-    expect(isUserRequestTool('')).toBe(false)
+    expect(shouldHideToolStatusInChat('')).toBe(false)
   })
 
+  it.each(['schedule_task', 'schedule_resume', 'deliver_session', 'search_remote_mcp_services'])(
+    'keeps status lines for the non-request tool %s', (tool) => {
+      expect(shouldHideToolStatusInChat(`mcp__user-input__${tool}`)).toBe(false)
+    },
+  )
+
   it('rejects partial matches', () => {
-    expect(isUserRequestTool('AskUser')).toBe(false)
-    expect(isUserRequestTool('mcp__user-input__request')).toBe(false)
+    expect(shouldHideToolStatusInChat('AskUser')).toBe(false)
+    expect(shouldHideToolStatusInChat('mcp__user-input__request')).toBe(false)
   })
 
   it('is case-sensitive', () => {
-    expect(isUserRequestTool('askuserquestion')).toBe(false)
-    expect(isUserRequestTool('ASKUSERQUESTION')).toBe(false)
+    expect(shouldHideToolStatusInChat('askuserquestion')).toBe(false)
+    expect(shouldHideToolStatusInChat('ASKUSERQUESTION')).toBe(false)
   })
 })
 

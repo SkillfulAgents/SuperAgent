@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { pendingUserInputRequestSchema, userInputRequestKindSchema, userInputRequestOutcomeSchema } from '../user-input/request-schema'
+import { pendingUserInputRequestSchema, userInputRequestKindSchema, userInputRequestOutcomeSchema } from '@shared/lib/tools/requests/request-schema'
 
 /** Normalize host request notifications once, before any family sees them. */
 export const integrationRequestEventSchema = z.discriminatedUnion('type', [

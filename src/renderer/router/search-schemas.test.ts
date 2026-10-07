@@ -87,8 +87,9 @@ describe('settingsTabSchema', () => {
     expect(settingsTabSchema.safeParse('system-prompt').success).toBe(false)
     expect(settingsTabSchema.safeParse('secrets').success).toBe(false)
   })
-  it('includes the volume settings route', () => {
+  it('includes the volume and global guidance settings routes', () => {
     expect(SETTINGS_TABS).toContain('volumes')
+    expect(settingsTabSchema.safeParse('global-guidance').success).toBe(true)
     expect(settingsTabSchema.safeParse('capabilities').success).toBe(true)
   })
 })

@@ -9,7 +9,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 }))
 
 import { MCP_REAUTH_TIMEOUT_MS, McpReauthManager } from './mcp-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,

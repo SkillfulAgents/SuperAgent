@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow, FolderOpen } from 'lucide-react'
+import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -33,6 +33,7 @@ const AnalyticsTab = lazyRouteComponent(() => import('./analytics-tab'), 'Analyt
 const PlatformTab = lazyRouteComponent(() => import('./platform-tab'), 'PlatformTab')
 const ComputerUseTab = lazyRouteComponent(() => import('./computer-use-tab'), 'ComputerUseTab')
 const CapabilitiesTab = lazyRouteComponent(() => import('./capabilities-tab'), 'CapabilitiesTab')
+const GlobalInstructionsTab = lazyRouteComponent(() => import('./global-instructions-tab'), 'GlobalInstructionsTab')
 const AuditLogTab = lazyRouteComponent(() => import('./audit-log-tab'), 'AuditLogTab')
 const ExperimentsTab = lazyRouteComponent(() => import('./experiments-tab'), 'ExperimentsTab')
 const VolumesTab = lazyRouteComponent(() => import('./volumes-tab'), 'VolumesTab')
@@ -145,6 +146,9 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
         ]
       : []),
+    // Everyone: what every agent is told is visible to all; the editor is
+    // read-only for non-admins.
+    { id: 'global-guidance', label: 'Global Guidance', icon: <ScrollText className="h-4 w-4" />, render: () => deferredTab(<GlobalInstructionsTab />) },
     // Everyone: the tab carries each person's own read-aloud voice; the
     // provider and key sections inside it are admin-gated.
     { id: 'llm', label: 'Model Providers', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },

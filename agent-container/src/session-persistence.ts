@@ -170,6 +170,14 @@ export class SessionPersistence {
     }
   }
 
+  updateGlobalInstructions(sessionId: string, globalInstructions: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session && session.globalInstructions !== globalInstructions) {
+      session.globalInstructions = globalInstructions;
+      this.save();
+    }
+  }
+
   addSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): void {
     const session = this.sessions.get(sessionId);
     if (session && !session.sessionCapabilityGrants?.includes(capability)) {

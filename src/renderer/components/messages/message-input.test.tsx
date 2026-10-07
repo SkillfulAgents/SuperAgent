@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
-import { SecretRequestItem } from './secret-request-item'
+import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -262,8 +262,9 @@ describe('MessageInput', () => {
       expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
 
       // The agent asks for something: the column hides the composer behind the card.
-      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended />)
-      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))
+      const inputRequests = [{ id: 'question:1', message: 'Choose a database in the question card.' }]
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended inputRequests={inputRequests} />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true, inputRequests }))
       expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       // No "exited" notice: the person did not leave.

@@ -64,8 +64,8 @@ import type {
   PendingUserInputRequest,
   PendingUserInputRequestInput,
   UserInputRequestOutcome,
-} from '@shared/lib/user-input/request-schema'
-import type { SettledUserInputRequest } from '@shared/lib/user-input/agent-input-requests'
+} from '@shared/lib/tools/requests/request-schema'
+import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
 import type { ReviewDetails } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
