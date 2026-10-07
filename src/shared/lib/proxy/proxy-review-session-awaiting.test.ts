@@ -11,7 +11,7 @@ import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-m
 // The registry attaches the real stores; these tests drive the persister alone.
 messagePersister.attachSessionStores(createInMemorySessionStore)
 import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { ReviewManager } from './review-manager'
 
 // Likewise the actors' in-memory stores (requests, reviews), which the

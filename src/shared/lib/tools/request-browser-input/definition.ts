@@ -1,0 +1,29 @@
+import { waitingInputNotification } from '../requests/definition'
+
+export interface RequestBrowserInputInput {
+  message?: string
+  requirements?: string[]
+}
+
+function parseInput(input: unknown): RequestBrowserInputInput {
+  return typeof input === 'object' && input !== null ? (input as RequestBrowserInputInput) : {}
+}
+
+function getSummary(input: unknown): string | null {
+  const { message } = parseInput(input)
+  if (!message) return null
+  return message.length > 60 ? message.slice(0, 57) + '...' : message
+}
+
+export const requestBrowserInputDef = {
+  hideToolStatusInChat: true,
+  showWaitingForInput: true,
+  displayName: 'Browser Input',
+  rendererDisplayName: 'Request Browser Input',
+  parseInput,
+  getSummary,
+  request: {
+    kind: 'browser_input',
+    getNotification: waitingInputNotification('needs your browser input'),
+  },
+} as const

@@ -33,7 +33,7 @@ const registries: Array<{ evictAll(): void }> = []
 /** The backend as one module evaluation sees it. */
 async function load() {
   const { agentRegistry } = await import('./registry')
-  const { userInputRequestManager } = await import('@shared/lib/user-input/request-manager')
+  const { userInputRequestManager } = await import('@shared/lib/tools/requests/request-manager')
   const { reviewManager } = await import('@shared/lib/proxy/review-manager')
   const { accountReauthManager } = await import('@shared/lib/proxy/account-reauth-manager')
   registries.push(agentRegistry)

@@ -12,6 +12,8 @@
  *    delivers (deliberate v1 scope).
  */
 
+import { getRequestDefinition } from '@shared/lib/tools/registry'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
@@ -271,53 +273,18 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows',
+    request: Pick<PendingUserInputRequest, 'kind' | 'payload'>,
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    let waitingMessage: string
-    switch (waitingFor) {
-      case 'secret':
-        waitingMessage = 'needs a secret value'
-        break
-      case 'connected_account':
-        waitingMessage = 'needs account access'
-        break
-      case 'question':
-        waitingMessage = 'has a question for you'
-        break
-      case 'file':
-        waitingMessage = 'needs a file from you'
-        break
-      case 'remote_mcp':
-        waitingMessage = 'needs access to an MCP server'
-        break
-      case 'browser_input':
-        waitingMessage = 'needs your browser input'
-        break
-      case 'script_run':
-        waitingMessage = 'wants to run a script on your machine'
-        break
-      case 'computer_use':
-        waitingMessage = 'wants to control your computer'
-        break
-      // Mirror the review card's terminology ("Run this workflow?" /
-      // "Launch a subagent?") so the notification names what actually needs
-      // approving.
-      case 'capability_review_subagents':
-        waitingMessage = 'wants to launch a subagent'
-        break
-      case 'capability_review_workflows':
-        waitingMessage = 'wants to run a workflow'
-        break
-    }
+    const notification = getRequestDefinition(request.kind).getNotification(displayName, request.payload)
+    if (!notification) return
 
     await this.triggerNotification({
       type: 'session_waiting',
       sessionId,
       agentSlug,
-      title: 'Action Required',
-      body: `${displayName} ${waitingMessage}`,
+      ...notification,
     })
   }
 
@@ -339,7 +306,10 @@ class NotificationManager {
     kind: 'api_request' | 'agent_action' = 'api_request',
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    const titleSuffix = kind === 'agent_action' ? 'Agent Action Review' : 'API Request Review'
+    const notification = getRequestDefinition(
+      kind === 'agent_action' ? 'x_agent_review' : 'proxy_review',
+    ).getNotification(displayName, { displayText })
+    if (!notification) return
     // Decisions are index-aligned with `actions`. Carrying them in the
     // context decouples the renderer's dispatch from button order — see
     // notification-action-schema for the contract. (Review S6.)
@@ -349,8 +319,7 @@ class NotificationManager {
       type: 'session_waiting',
       sessionId,
       agentSlug,
-      title: `${displayName} — ${titleSuffix}`,
-      body: displayText,
+      ...notification,
       actions,
       actionContext: {
         kind: 'proxy_review',

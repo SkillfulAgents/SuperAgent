@@ -343,7 +343,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 // Import routers after all mocks are set up.
 import connectedAccountsRouter from './connected-accounts'
 import agents from './agents'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import platformAuthRoute from './platform-auth'
 
 // ---------------------------------------------------------------------------

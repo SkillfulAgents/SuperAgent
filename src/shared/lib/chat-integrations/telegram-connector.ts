@@ -10,7 +10,7 @@
 
 import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
   ChatAgentIntegration,

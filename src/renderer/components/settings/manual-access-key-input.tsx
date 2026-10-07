@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 
 export function ManualAccessKeyInput({

@@ -5,7 +5,7 @@ import { useEffect } from 'react'
 import { SessionChatColumn } from './session-chat-column'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
-import type { PendingRequestDescriptor } from '@renderer/components/messages/use-pending-requests'
+import type { PendingRequestDescriptor } from '@shared/lib/tools/requests/use-pending-requests'
 import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
 
 // Mock children so we don't pull in the world; just mark them with testids.
@@ -20,12 +20,12 @@ vi.mock('@renderer/components/messages/message-input', () => ({
 vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => null,
 }))
-vi.mock('@renderer/components/messages/pending-request-stack', () => ({
+vi.mock('@shared/lib/tools/requests/pending-request-stack', () => ({
   PendingRequestStack: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="pending-request-stack">{children}</div>
   ),
 }))
-vi.mock('@renderer/components/messages/pending-request-renderer', () => ({
+vi.mock('@shared/lib/tools/requests/pending-request-renderer', () => ({
   renderPendingRequest: (d: PendingRequestDescriptor) => (
     <div key={d.key} data-testid={`pending-${d.kind}`} data-key={d.key} />
   ),
@@ -40,7 +40,7 @@ const mockPendingResult = {
   items: [] as PendingRequestDescriptor[],
   count: 0,
 }
-vi.mock('@renderer/components/messages/use-pending-requests', () => ({
+vi.mock('@shared/lib/tools/requests/use-pending-requests', () => ({
   usePendingRequests: () => mockPendingResult,
 }))
 

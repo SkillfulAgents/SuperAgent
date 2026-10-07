@@ -7,7 +7,7 @@ import { formatToolName } from './tool-call-item'
 import { createToolCall } from '@renderer/test/factories'
 
 // Mock getToolRenderer to return null (generic display)
-vi.mock('./tool-renderers', () => ({
+vi.mock('@shared/lib/tools/renderers', () => ({
   getToolRenderer: () => null,
 }))
 
@@ -65,6 +65,24 @@ describe('formatToolName', () => {
 
 describe('ToolCallItem', () => {
   describe('status display', () => {
+    it.each([
+      'AskUserQuestion',
+      'mcp__user-input__request_secret',
+      'mcp__user-input__request_script_run',
+      'mcp__user-input__schedule_task',
+      'mcp__user-input__deliver_file',
+      'mcp__user-input__deliver_session',
+      'mcp__user-input__search_remote_mcp_services',
+    ])('preserves the waiting label for %s independently of blocking', (name) => {
+      render(<ToolCallItem
+        toolCall={createToolCall({ name, result: undefined })}
+        messageCreatedAt={new Date('2025-01-01T00:00:00Z')}
+        isSessionActive
+      />)
+      expect(screen.getByText('Waiting for input:')).toBeInTheDocument()
+      expect(screen.queryByText('5s')).not.toBeInTheDocument()
+    })
+
     it('renders success status for tool with result', () => {
       const tc = createToolCall({ result: 'output here' })
       render(<ToolCallItem toolCall={tc} />)

@@ -1,0 +1,150 @@
+import { defineToolRenderer } from '../renderer-types'
+import { useMemo } from 'react'
+import { Globe, Search } from 'lucide-react'
+import { Markdown } from '@renderer/components/ui/markdown'
+import { safeHref } from '@renderer/lib/markdown-url-transform'
+import { SiteFavicon, useVendorFavicon } from '@renderer/components/ui/site-favicon'
+import { TileStack } from '@renderer/components/ui/tile-stack'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { webSearchDef } from './definition'
+import { flattenSnippet, hostnameOf, parseSearchResult, stripLeadingTitle } from '../ui/web-result-parse'
+import { NO_MARKDOWN_IMAGES, SourceMeta } from '../ui/shared'
+import type { CollapsedContentProps, ToolRendererProps } from '../renderer-types'
+
+const MAX_COLLAPSED_ICONS = 5
+const PROSE = 'prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-xs prose-li:text-xs prose-headings:text-xs'
+
+function snippetOf(source: { title: string; snippet?: string }): string {
+  return source.snippet ? flattenSnippet(stripLeadingTitle(source.snippet, source.title)) : ''
+}
+
+/**
+ * What goes inside one collapsed-strip tile: the vetted favicon, or a globe for a source
+ * with no showable icon. The tile chrome comes from TileStack; the globe's gray is fixed
+ * because the tile stays light in both themes. The hostname rides a Radix tooltip, not a
+ * native `title` - this window doesn't reliably surface native tooltips. The trigger span
+ * fills the tile so the hover target is the whole 18px tile, not just the smaller icon.
+ */
+function SourceTileIcon({ src, host }: { src?: string; host: string | null }) {
+  const { href, onError } = useVendorFavicon(src)
+  const icon = href ? (
+    <img src={href} alt="" className="h-3 w-3 object-contain" onError={onError} />
+  ) : (
+    <Globe aria-hidden className="h-[11px] w-[11px] text-zinc-500" />
+  )
+  if (!host) return icon
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="flex h-full w-full items-center justify-center">{icon}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="px-2 py-1">
+        {host}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function SourceLink({ title, url }: { title: string; url: string }) {
+  // safeHref returns '' for blocked/hostile URLs (markdown-url-transform.ts:16-27);
+  // linkify.tsx:74-75 is the precedent for skipping empty hrefs.
+  const href = safeHref(url)
+  if (!href) return <span>{title}</span>
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+      {title}
+    </a>
+  )
+}
+
+function CollapsedContent({ result, isError }: CollapsedContentProps) {
+  const sources = useMemo(
+    () => (result && !isError ? parseSearchResult(result).sources : []),
+    [result, isError],
+  )
+  if (sources.length === 0) return null
+  const shown = sources.slice(0, MAX_COLLAPSED_ICONS)
+  return (
+    <TooltipProvider delayDuration={300}>
+      <TileStack
+        size="xs"
+        className="shrink-0"
+        overflowLabel={sources.length > shown.length ? `+${sources.length - shown.length}` : undefined}
+      >
+        {shown.map((s, i) => (
+          <SourceTileIcon key={`${i}-${s.url}`} src={s.favicon} host={hostnameOf(s.url)} />
+        ))}
+      </TileStack>
+    </TooltipProvider>
+  )
+}
+
+function ExpandedView({ input, result, isError }: ToolRendererProps) {
+  const { query } = webSearchDef.parseInput(input)
+  // Snippets are flattened at parse time, once per source, so the render below never
+  // re-derives them: `snippet` here is the display paragraph, not the parser's raw page text.
+  const { sources, leftover } = useMemo(() => {
+    const parsed = parseSearchResult(result ?? '')
+    return { ...parsed, sources: parsed.sources.map((s) => ({ ...s, snippet: snippetOf(s) })) }
+  }, [result])
+
+  if (isError || !result) {
+    return (
+      <div className="space-y-2">
+        {query && (
+          <div className="text-xs font-medium tracking-wider text-muted-foreground">
+            Query: <span className="font-mono">{query}</span>
+          </div>
+        )}
+        {result && (
+          <pre className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar">
+            {result}
+          </pre>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {sources.length > 0 && (
+        <div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
+            Sources ({sources.length})
+          </div>
+          <ul className="space-y-2">
+            {sources.map((s, i) => (
+              <li key={`${i}-${s.url}`} className="flex gap-2 text-xs">
+                <SiteFavicon src={s.favicon} className="h-4 w-4 mt-0.5" />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <SourceLink title={s.title} url={s.url} />
+                    <SourceMeta host={hostnameOf(s.url)} publishedDate={s.publishedDate} />
+                  </div>
+                  {s.snippet && (
+                    // One paragraph, with the title repeat dropped: the raw snippet is page text
+                    // that opens with the same title this row already links.
+                    <div className={`${PROSE} mt-0.5 text-muted-foreground`}>
+                      <Markdown components={NO_MARKDOWN_IMAGES}>{s.snippet}</Markdown>
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {leftover && (
+        <div className={PROSE}>
+          <Markdown components={NO_MARKDOWN_IMAGES}>{leftover}</Markdown>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export const webSearchRenderer = defineToolRenderer(webSearchDef, {
+  icon: Search,
+  ExpandedView,
+  CollapsedContent,
+})
