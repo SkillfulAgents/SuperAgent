@@ -592,6 +592,46 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
   })
 
   it.each([
+    ['no volumes', [], () => {}],
+    ['dropped volumes', [{ volumeId: 'm1', name: 'ok' }], (options: { onVolumesDropped?: () => void }) => options.onVolumesDropped?.()],
+  ])('rejects a start that a finished stop overtook during the container start, with %s, and caches and publishes nothing', async (_case, volumes, during) => {
+    mockListVolumes.mockResolvedValue({ volumes, notMounted: [] })
+    let release = () => {}
+    mockStart.mockImplementationOnce((options: { onVolumesDropped?: () => void }) => new Promise((resolve) => {
+      release = () => { during(options); resolve({ status: 'running', port: 3000 }) }
+    }))
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    const runtime = containerHost.runtime('test-agent')
+
+    const started = runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockStart).toHaveBeenCalled())
+    await runtime.stopContainer()
+    vi.mocked(messagePersister.broadcastGlobal).mockClear()
+    release()
+    await expect(started).rejects.toThrow(/overtook/)
+
+    expect(runtime.getCachedInfo().status).toBe('stopped')
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  // The stop left the container running, so the alarm is what tries again.
+  it('arms the idle alarm when a stop that could not finish overtakes a start', async () => {
+    mockListVolumes.mockResolvedValue({ volumes: [{ volumeId: 'm1', name: 'ok' }], notMounted: [] })
+    let answer: (report: unknown) => void = () => {}
+    mockHealth.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false })
+    const runtime = containerHost.runtime('test-agent')
+
+    const started = runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockHealth).toHaveBeenCalled())
+    await runtime.stopContainer()
+    answer({ status: 'ok', volumes: ['m1'] })
+    await expect(started).rejects.toThrow(/overtook/)
+
+    expect(runtime.idleAlarm.isArmed()).toBe(true)
+  })
+
+  it.each([
     ['during its report read', () => {
       let release = () => {}
       mockHealth.mockReturnValueOnce(new Promise((resolve) => { release = () => resolve({ status: 'ok', volumes: [] }) }))

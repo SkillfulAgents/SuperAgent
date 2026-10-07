@@ -245,6 +245,13 @@ export class ContainerRuntime {
     }
   }
 
+  // A stop, a later start, or a runner change since this start began owns the agent now.
+  private assertCurrent(lifecycle: number): void {
+    if (lifecycle !== this.lifecycle) {
+      throw new Error(`Cannot finish starting agent ${this.slug}: a stop or a later start overtook it`)
+    }
+  }
+
   // Single-flight restart used by runtime clients that tear down a dead generation.
   private async restartAgent(): Promise<void> {
     this.assertNotStopping('restart')
@@ -277,11 +284,9 @@ export class ContainerRuntime {
     try {
       await startPromise
     } finally {
-      // A stop and a later start may have replaced this start; that one is theirs to clear.
-      if (this.starting === startPromise) {
-        this.starting = null
-        this.idleAlarm.schedule()
-      }
+      // A later start that replaced this one clears and arms for itself when it settles.
+      if (this.starting === startPromise) this.starting = null
+      if (this.starting === null) this.idleAlarm.schedule()
     }
   }
 
@@ -665,6 +670,7 @@ export class ContainerRuntime {
     // return, which the ContainerClient contract still allows. (Can't use
     // syncAgentStatus here — it is guarded against updates during startup.)
     const info = startedInfo ?? await client.getInfoFromRuntime()
+    this.assertCurrent(lifecycle)
     this.updateCachedStatus(info.status, info.port)
 
     // The start is the first mark on the idle clock: it floors stale session
@@ -687,15 +693,14 @@ export class ContainerRuntime {
       failed = notMountedAll(volumes, 'start failed with folders')
     } else if (volumes.length > 0) {
       failed = await readUnmounted(client, volumes, info.port)
-      // A stop, a later start, or a runner change during the read owns the agent now, so this start did not succeed.
-      if (lifecycle !== this.lifecycle) throw new Error(`Cannot finish starting agent ${slug}: a stop or a later start overtook it`)
-      if (failed.length > 0) {
-        captureMessage('Agent container could not mount folders', {
-          level: 'warning',
-          tags: { component: 'volumes', operation: 'mount' },
-          extra: { agentId: slug, count: failed.length },
-        })
-      }
+    }
+    this.assertCurrent(lifecycle)
+    if (!volumesDropped && failed.length > 0) {
+      captureMessage('Agent container could not mount folders', {
+        level: 'warning',
+        tags: { component: 'volumes', operation: 'mount' },
+        extra: { agentId: slug, count: failed.length },
+      })
     }
     showNotMounted(slug, [...notMounted, ...failed])
 
