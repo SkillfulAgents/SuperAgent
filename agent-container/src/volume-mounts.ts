@@ -40,7 +40,14 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
   return [
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
+    // Plain WebDAV gives rclone no modification time, so a cached copy is checked against the app by size alone and a
+    // same-size edit on the host is missed. The rclone vendor setting reads modification times. The app ignores the
+    // X-OC-Mtime header it adds to uploads.
+    '--webdav-vendor', 'rclone',
     '--vfs-cache-mode', 'writes',
+    // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
+    // downloading the new contents.
+    '--vfs-handle-caching', '0',
     // Every upload goes through rclone's queue, so a rename made right after close (as git and editors do) carries onto it.
     '--vfs-write-back', '1s',
     '--dir-cache-time', '1s',

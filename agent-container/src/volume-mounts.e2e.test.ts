@@ -115,6 +115,29 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     await waitFor(() => sh(container, `cat ${mount}/new.txt 2>/dev/null || true`) === 'outside', 2_000);
   }, 60_000);
 
+  it('reads what the host wrote over a file the agent wrote, at the same size and after a resize', async () => {
+    // In a folder: the kernel keeps an entry rclone creates for 60s without asking again, unless its folder is reread.
+    const source = '/tmp/src/v_edit/sub';
+    const file = '/mounts/docs/sub/w.txt';
+    const container = startAgent(
+      `mkdir -p ${source} && chmod -R a+rwX /tmp/src && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes --dir-cache-time 0s`,
+      [{ volumeId: 'v_edit', name: 'docs' }],
+    );
+    await healthUntilOk(container);
+    sh(container, `echo AAAAAAAA > ${file}`);
+    await waitFor(() => sh(container, `cat ${source}/w.txt 2>/dev/null || true`) === 'AAAAAAAA', 5_000);
+    // Modification times have 1s precision, so the host edit lands in a later second than the upload.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    sh(container, `echo BBBBBBBB > ${source}/w.txt`);
+    await waitFor(() => sh(container, `cat ${file}`) === 'BBBBBBBB', 4_000);
+
+    // The read above closed the file, so this read reopens it within rclone's default 5s handle-caching window.
+    sh(container, `echo CCCCCCCCCCCCCC > ${source}/w.txt`);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(sh(container, `cat ${file}`)).toBe('CCCCCCCCCCCCCC');
+  }, 60_000);
+
   it('sends the token, leaves out a volume whose app never answers, and the container still removes at once', async () => {
     const booted = Date.now();
     const container = startAgent(

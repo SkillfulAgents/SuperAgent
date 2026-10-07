@@ -26,7 +26,8 @@ describe('rcloneMountArgs', () => {
     const args = rcloneMountArgs('v_17', '/mounts/docs', 'http://host.docker.internal:47891/api')
     expect(args).toEqual([
       'mount', ':webdav:', '/mounts/docs', '--webdav-url', 'http://host.docker.internal:47891/api/volumes/v_17',
-      '--vfs-cache-mode', 'writes', '--vfs-write-back', '1s', '--dir-cache-time', '1s',
+      '--webdav-vendor', 'rclone',
+      '--vfs-cache-mode', 'writes', '--vfs-handle-caching', '0', '--vfs-write-back', '1s', '--dir-cache-time', '1s',
       '--file-perms', '0777',
       '--rc', '--rc-addr', 'unix:///tmp/rclone-v_17.sock', '--rc-no-auth',
     ])
