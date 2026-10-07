@@ -1142,6 +1142,13 @@ describe('usePendingBrowserInputRequests', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUnified.data = []
+    mockMessagesData.data = []
+    Object.assign(mockStreamState, {
+      isActive: true,
+      streamingToolUses: [],
+      autoApprovedScriptRunIds: new Set<string>(),
+      autoApprovedComputerUseIds: new Set<string>(),
+    })
   })
 
   const browserInput = (id: string, message: string) =>
@@ -1154,7 +1161,7 @@ describe('usePendingBrowserInputRequests', () => {
     ]
 
     const { result } = renderHook(() =>
-      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+      usePendingBrowserInputRequests('s-1', 'agent-1'),
     )
 
     expect(result.current.requests).toHaveLength(1)
@@ -1166,10 +1173,11 @@ describe('usePendingBrowserInputRequests', () => {
   })
 
   it('shows nothing while the session is inactive', () => {
+    mockStreamState.isActive = false
     mockUnified.data = [browserInput('tu-bi-idle', 'Log in')]
 
     const { result } = renderHook(() =>
-      usePendingBrowserInputRequests('s-1', 'agent-1', false),
+      usePendingBrowserInputRequests('s-1', 'agent-1'),
     )
 
     expect(result.current.requests).toHaveLength(0)
@@ -1179,7 +1187,7 @@ describe('usePendingBrowserInputRequests', () => {
     mockUnified.data = [browserInput('tu-bi-2', 'Log in')]
 
     const { result } = renderHook(() =>
-      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+      usePendingBrowserInputRequests('s-1', 'agent-1'),
     )
     expect(result.current.requests).toHaveLength(1)
 
@@ -1194,17 +1202,58 @@ describe('usePendingBrowserInputRequests', () => {
     mockUnified.data = [browserInput('tu-bi-3', 'Log in')]
 
     const { result, rerender } = renderHook(
-      ({ isActive }: { isActive: boolean }) =>
-        usePendingBrowserInputRequests('s-1', 'agent-1', isActive),
-      { initialProps: { isActive: true } },
+      () => usePendingBrowserInputRequests('s-1', 'agent-1'),
     )
 
     act(() => result.current.dismiss('tu-bi-3'))
     expect(result.current.requests).toHaveLength(0)
 
-    rerender({ isActive: false })
-    rerender({ isActive: true })
+    mockStreamState.isActive = false
+    rerender()
+    mockStreamState.isActive = true
+    rerender()
 
     expect(result.current.requests).toHaveLength(1)
+  })
+
+  it.each(['main agent', 'subagent'])('selects the same %s request as the thread', (origin) => {
+    mockUnified.data = [{
+      ...browserInput('tu-bi-1', 'Log in'),
+      ...(origin === 'subagent' ? { parentToolUseId: 'task-1' } : {}),
+    }]
+    const { result } = renderHook(() => ({
+      thread: usePendingRequests(defaultArgs),
+      tray: usePendingBrowserInputRequests('s-1', 'agent-1'),
+    }))
+
+    expect(result.current.tray.requests.map((r) => r.toolUseId)).toEqual(
+      ofKind(result.current.thread.items, 'browser_input').map((r) => r.toolUseId),
+    )
+    expect(result.current.tray.requests[0].message).toBe('Log in')
+  })
+
+  it.each(['streaming', 'history'])('uses the thread\'s %s fallback before a snapshot is available', (source) => {
+    mockUnified.data = undefined
+    const input = { message: 'Finish signing in', requirements: ['Enter a code'] }
+    if (source === 'streaming') {
+      mockStreamState.streamingToolUses = [{
+        id: 'tu-recovered', name: 'mcp__user-input__request_browser_input',
+        partialInput: JSON.stringify(input), ready: true,
+      }]
+    } else {
+      mockMessagesData.data = [createAssistantMessage({
+        toolCalls: [createToolCall({
+          id: 'tu-recovered', name: 'mcp__user-input__request_browser_input', input, result: undefined,
+        })],
+      })]
+    }
+    const { result } = renderHook(() => ({
+      thread: usePendingRequests(defaultArgs),
+      tray: usePendingBrowserInputRequests('s-1', 'agent-1'),
+    }))
+
+    expect(result.current.tray.requests).toHaveLength(1)
+    expect(result.current.tray.requests[0]).toMatchObject({ toolUseId: 'tu-recovered', ...input })
+    expect(ofKind(result.current.thread.items, 'browser_input')[0]).toMatchObject({ toolUseId: 'tu-recovered', ...input })
   })
 })

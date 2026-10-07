@@ -31,6 +31,7 @@ export function BrowserInputRequestItem({
   const { status, submittingAction, error, complete, decline } = useBrowserInputActions({
     agentSlug,
     sessionId,
+    toolUseId,
     onResolved: onComplete,
   })
 
@@ -98,7 +99,7 @@ export function BrowserInputRequestItem({
 
       <RequestItemActions>
         <DeclineButton
-          onDecline={(reason) => decline(toolUseId, reason)}
+          onDecline={decline}
           disabled={status === 'submitting'}
           label="Decline"
           showIcon={false}
@@ -108,7 +109,7 @@ export function BrowserInputRequestItem({
         />
 
         <Button
-          onClick={() => complete(toolUseId)}
+          onClick={() => complete()}
           loading={submittingAction === 'completing'}
           disabled={status === 'submitting'}
           size="xs"

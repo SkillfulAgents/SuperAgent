@@ -61,7 +61,7 @@ export function useBrowserStream({
   const failedReconnectsRef = useRef(0)
 
   const { requests: pendingBrowserInputRequests, dismiss: dismissBrowserInputRequest } =
-    usePendingBrowserInputRequests(sessionId, agentSlug, isActive)
+    usePendingBrowserInputRequests(sessionId, agentSlug)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
   const latestRequestId = pendingBrowserInputRequests.length > 0
     ? pendingBrowserInputRequests[pendingBrowserInputRequests.length - 1].toolUseId
