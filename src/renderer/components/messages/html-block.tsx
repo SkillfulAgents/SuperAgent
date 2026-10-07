@@ -6,6 +6,7 @@ import { CodeCopyButton } from './code-copy-button'
 const APP_FONT_STYLESHEET = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap'
 
 // Scripts and styles are inline; only the app's Google font may load. Nothing else is fetched, posted, or framed.
+// CSP doesn't cover WebRTC, so a script can still reach a STUN host by peer connection.
 const HTML_BLOCK_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; img-src data:; font-src data: https://fonts.gstatic.com; form-action 'none'; base-uri 'none'"
 
@@ -33,6 +34,8 @@ function themeStyle(): string {
     'html{overflow:hidden;scrollbar-width:thin}' +
     // flow-root keeps child margins inside body, so its height is the content height.
     'body{display:flow-root}' +
+    // The frame's height follows its content, so viewport-sized html/body (100vh, 100%) would grow it to the cap.
+    'html,body{height:auto!important;min-height:0!important}' +
     "html,body{margin:0;background:transparent;color:hsl(var(--foreground));" +
     // Same size and line height as chat prose (prose-sm).
     `font:14px/1.7142857 ${fontFamily}}` +

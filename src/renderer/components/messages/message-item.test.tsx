@@ -875,6 +875,16 @@ describe('MessageItem', () => {
       expect(container.querySelector('pre')).toBeNull()
     })
 
+    it('sizes html and body to their content, not the frame', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<style>body{min-height:100vh;padding:24px}</style><p>Total</p>\n```' } })
+      render(<MessageItem message={msg} />)
+
+      const doc = screen.getByTitle('HTML preview').getAttribute('srcdoc')!
+      const reset = doc.indexOf('html,body{height:auto!important;min-height:0!important}')
+      expect(reset).toBeGreaterThan(-1)
+      expect(reset).toBeLessThan(doc.indexOf('min-height:100vh'))
+    })
+
     it('keeps the fence still streaming in as a code block', () => {
       const msg = createAssistantMessage({ content: { text: '```html\n<div>Draft' } })
       const { container } = render(<MessageItem message={msg} isStreaming />)
