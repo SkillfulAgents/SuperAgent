@@ -346,7 +346,7 @@ export interface SessionOps {
   markProvisionalActive(sessionId: string): () => void
   /** `messagePersister.markSessionIdle` */
   markIdle(sessionId: string): void
-  /** `messagePersister.markSessionInterrupted` */
+  /** `messagePersister.markSessionInterrupted`, then dismisses the calls parked on the session's own re-auth cards. */
   markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): Promise<void>
   /** `messagePersister.getTurnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
   turnGeneration(sessionId: string): number

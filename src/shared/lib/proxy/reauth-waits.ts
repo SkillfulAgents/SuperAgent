@@ -145,32 +145,38 @@ export class AgentReauthWaits<Details extends { callerSessionId?: string }> {
     this.syncAwaiting()
   }
 
+  /** The group holding a card key, if its card is still open; a group whose card was lost is rejected. */
+  private openGroup(key: string): ReauthGroup | undefined {
+    const entryId = this.entryIdByCard.get(key)
+    const group = entryId ? this.groups.get(entryId) : undefined
+    if (!group) {
+      if (entryId) this.entryIdByCard.delete(key)
+      return undefined
+    }
+    const entry = this.inputs.getOpenRequest(group.entryId)
+    if (entry && this.isOwnEntry(entry)) return group
+    this.settleGroup(group, 'cancelled', { type: 'reject', error: new Error(this.spec.messages.lost) })
+    return undefined
+  }
+
   /**
    * Park a request until the subject is re-authorized. Requests on the same
-   * subject from the same session share one card; completing the subject
+   * subject share the card their session shows; completing the subject
    * resumes all of them, in every session.
    */
   request(details: Details, signal?: AbortSignal): Promise<void> {
     const subject = this.spec.subjectOf(details)
-    const sessionId = this.cardSession(details.callerSessionId)
-    const key = cardKey(subject, sessionId)
-    const existingId = this.entryIdByCard.get(key)
-    let group = existingId ? this.groups.get(existingId) : undefined
+    // Join a card the calling session already shows for this subject: its own
+    // (even after its turn ended) or the agent-wide one. Only then open a new
+    // card, scoped by whether the session is running now.
+    let group =
+      (details.callerSessionId ? this.openGroup(cardKey(subject, details.callerSessionId)) : undefined) ??
+      this.openGroup(cardKey(subject, undefined))
     let isNewGroup = false
 
-    if (group) {
-      const entry = this.inputs.getOpenRequest(group.entryId)
-      if (!entry || !this.isOwnEntry(entry)) {
-        this.settleGroup(group, 'cancelled', {
-          type: 'reject',
-          error: new Error(this.spec.messages.lost),
-        })
-        group = undefined
-      }
-    }
-
     if (!group) {
-      if (existingId) this.entryIdByCard.delete(key)
+      const sessionId = this.cardSession(details.callerSessionId)
+      const key = cardKey(subject, sessionId)
       const entryId = crypto.randomUUID()
       group = { subject, sessionId, key, entryId, waiters: new Set() }
       this.groups.set(entryId, group)
@@ -262,11 +268,11 @@ export class AgentReauthWaits<Details extends { callerSessionId?: string }> {
     return true
   }
 
-  /** The session is gone: dismiss the calls parked on its own cards, which go with it. */
-  dropSession(sessionId: string): void {
+  /** The session was deleted or stopped: dismiss the calls parked on its own cards. */
+  dropSession(sessionId: string, reason = 'The session was deleted.'): void {
     for (const group of [...this.groups.values()]) {
       if (group.sessionId !== sessionId) continue
-      this.dismiss(group.entryId, 'The session was deleted.')
+      this.dismiss(group.entryId, reason)
     }
   }
 

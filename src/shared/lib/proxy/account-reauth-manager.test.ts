@@ -18,7 +18,7 @@ import {
   type InMemoryAgentStateDirectory,
 } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
 import { isReauthDismissed } from './reauth-dismissal'
-import { releaseSessionState } from '@shared/lib/agent-actor/agent-state'
+import { releaseSessionState, settleStoppedSession } from '@shared/lib/agent-actor/agent-state'
 import { getReplacementAccountId } from './account-replacement'
 
 const DETAILS = {
@@ -253,6 +253,39 @@ describe('AccountReauthManager', () => {
 
       expect(await Promise.all([first, other])).toEqual(['replacement', 'replacement'])
       expect(cards()).toHaveLength(0)
+    })
+
+    it("a call after the session's turn ended joins the card it already shows", async () => {
+      const first = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' })
+      runningSessions.delete('session-a')
+      const later = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' })
+
+      expect(cards().map((r) => r.scope)).toEqual([{ agentSlug: 'agent-1', sessionId: 'session-a' }])
+
+      expect(manager.completeAccount('account-1')).toBe(2)
+      await expect(Promise.all([first, later])).resolves.toEqual([undefined, undefined])
+    })
+
+    it('a running session joins an agent-wide card for the same account', async () => {
+      const background = manager.requestReauth({ ...DETAILS, callerSessionId: 'ended-session' })
+      const running = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' })
+
+      expect(cards().map((r) => r.scope)).toEqual([{ agentSlug: 'agent-1' }])
+
+      expect(manager.completeAccount('account-1')).toBe(2)
+      await expect(Promise.all([background, running])).resolves.toEqual([undefined, undefined])
+    })
+
+    it("stopping a session dismisses its parked calls and leaves the other session's", async () => {
+      const first = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' }).catch((error: unknown) => error)
+      const other = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-b' })
+
+      settleStoppedSession(agents.states.get('agent-1')!, 'session-a')
+
+      expect(isReauthDismissed(await first)).toBe(true)
+      expect(cards().map((r) => r.scope.sessionId)).toEqual(['session-b'])
+      manager.completeAccount('account-1')
+      await expect(other).resolves.toBeUndefined()
     })
 
     it("deleting a session dismisses its parked calls and leaves the other session's", async () => {

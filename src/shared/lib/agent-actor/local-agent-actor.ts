@@ -18,7 +18,7 @@ import type {
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
-import { createAgentState, releaseAgentState, releaseSessionState, type AgentState } from './agent-state'
+import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
@@ -226,7 +226,10 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, state: AgentStat
       deps.containerHost.runtime(slug).noteSessionActivity()
       deps.messagePersister.markSessionIdle(slug, sessionId)
     },
-    markInterrupted: (...args) => deps.messagePersister.markSessionInterrupted(slug, ...args),
+    markInterrupted: async (sessionId, options) => {
+      await deps.messagePersister.markSessionInterrupted(slug, sessionId, options)
+      settleStoppedSession(state, sessionId)
+    },
     turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
     isWaitingBackground: (sessionId) => deps.messagePersister.isSessionWaitingBackground(slug, sessionId),
     hasOnlyUntrackedBackgroundWork: (sessionId) =>

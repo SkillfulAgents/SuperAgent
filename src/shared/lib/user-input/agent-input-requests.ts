@@ -1,5 +1,6 @@
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import {
+  PARKED_CALL_KINDS,
   pendingUserInputRequestSchema,
   storeForKind,
   type PendingUserInputRequest,
@@ -388,6 +389,14 @@ export class AgentInputRequests {
     for (const request of this.requests.values()) {
       if (!this.isRealWait(request)) continue
       if (this.isForSession(request, sessionId) || request.scope.sessionId === undefined) return true
+    }
+    return false
+  }
+
+  /** Whether a call parked on a card scoped to this session is still waiting, whether or not its turn is running. */
+  hasParkedCall(sessionId: string): boolean {
+    for (const request of this.requests.values()) {
+      if (this.isRealWait(request) && this.isForSession(request, sessionId) && PARKED_CALL_KINDS.has(request.kind)) return true
     }
     return false
   }

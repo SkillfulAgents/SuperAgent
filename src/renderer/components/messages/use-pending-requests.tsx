@@ -8,7 +8,7 @@ import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-request
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { PARKED_CALL_KINDS, type PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 
 interface UsePendingRequestsArgs {
   sessionId: string
@@ -363,12 +363,6 @@ export function reviewFromEnvelope(
     ...(xAgent ? { xAgent } : {}),
   }
 }
-
-const PARKED_CALL_KINDS: ReadonlySet<PendingUserInputRequest['kind']> = new Set([
-  'proxy_review',
-  'account_reauth_required',
-  'mcp_reauth_required',
-])
 
 // Project unified registry envelopes onto the same per-kind shapes the legacy
 // SSE events carried, so the descriptor builder (and every card) is untouched

@@ -513,6 +513,34 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(agents?.[0].hasSessionsAwaitingInput).toBe(true)
   })
 
+  it('session_awaiting_input on an idle session raises awaiting without marking it working', () => {
+    queryClient.setQueryData(['sessions', 'my-agent'], [{
+      id: 'sess-1',
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      isActive: false,
+    }])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_awaiting_input',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    const [session] = queryClient.getQueryData<{ isActive?: boolean; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])!
+    expect(session.isAwaitingInput).toBe(true)
+    expect(session.isActive).toBe(false)
+  })
+
   it('session_idle optimistically clears working AND awaiting flags (teardown broadcasts no input_provided)', () => {
     const sessionBase = {
       agentSlug: 'my-agent',

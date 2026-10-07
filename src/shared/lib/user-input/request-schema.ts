@@ -192,6 +192,16 @@ export type PendingUserInputRequest = z.infer<typeof pendingUserInputRequestSche
 export type PendingUserInputRequestInput = z.input<typeof pendingUserInputRequestSchema>
 
 /**
+ * Kinds that hold a parked proxied call. One scoped to a session stays open
+ * after its turn ends, because a background script can still be waiting on it.
+ */
+export const PARKED_CALL_KINDS: ReadonlySet<PendingUserInputRequest['kind']> = new Set([
+  'proxy_review',
+  'account_reauth_required',
+  'mcp_reauth_required',
+])
+
+/**
  * The lifecycle class of a kind. The names come from the pre-registry stores,
  * but what they express is per-class clearing rules: the turn-boundary clear
  * wipes only 'stream' entries, 'computer_use' entries survive idle for replay

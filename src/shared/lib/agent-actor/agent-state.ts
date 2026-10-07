@@ -63,6 +63,15 @@ export function releaseSessionState(state: AgentState, sessionId: string): void 
 }
 
 /**
+ * The user stopped the session: dismiss the calls parked on its own re-auth
+ * cards, as the stop route denies its reviews.
+ */
+export function settleStoppedSession(state: AgentState, sessionId: string): void {
+  state.accountReauth.dropSession(sessionId, 'The session was stopped.')
+  state.mcpReauth.dropSession(sessionId, 'The session was stopped.')
+}
+
+/**
  * The agent is gone from this process: reject every parked call, settle
  * every open request so its listeners hear the end of it, and forget the
  * rest. The persisted computer-use grants are left where they are; they
