@@ -945,6 +945,91 @@ describe('oauth', () => {
       expect(result!.state).toHaveLength(32) // 16 bytes hex
     })
 
+    function setupNewServerDiscovery(authServerMetadata: Record<string, unknown>) {
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res"',
+          },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com',
+            authorization_servers: ['https://auth.example.com'],
+          }),
+          { status: 200 }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            ...authServerMetadata,
+          }),
+          { status: 200 }
+        )
+      )
+    }
+
+    const CIMD_URL = 'https://platform.example.com/oauth/superagent-desktop.json'
+
+    it('uses the CIMD URL as client_id when the server offers CIMD but no registration', async () => {
+      setupNewServerDiscovery({ client_id_metadata_document_supported: true })
+      // Authorize probe for the custom scheme: a login page, so the scheme is kept
+      mockFetch.mockResolvedValueOnce(new Response('<html>Sign in</html>', { status: 200 }))
+
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Tableau',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        'user-1',
+        undefined,
+        undefined,
+        undefined,
+        CIMD_URL,
+      )
+
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe(CIMD_URL)
+      expect(url.searchParams.get('redirect_uri')).toBe('superagent://mcp-oauth-callback')
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+      const probeUrl = new URL(String(mockFetch.mock.calls[3][0]))
+      expect(probeUrl.origin + probeUrl.pathname).toBe('https://auth.example.com/authorize')
+      expect(probeUrl.searchParams.get('client_id')).toBe(CIMD_URL)
+    })
+
+    it('keeps dynamic registration when the server offers both CIMD and registration', async () => {
+      setupNewServerDiscovery({
+        client_id_metadata_document_supported: true,
+        registration_endpoint: 'https://auth.example.com/register',
+      })
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: 'dyn-client-abc' }), { status: 200 })
+      )
+
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Linear',
+        ['http://localhost/callback'],
+        false,
+        'user-1',
+        undefined,
+        undefined,
+        undefined,
+        CIMD_URL,
+      )
+
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('dyn-client-abc')
+      expect(String(mockFetch.mock.calls[3][0])).toBe('https://auth.example.com/register')
+    })
+
     // Discovery mocks (probe → resource metadata → auth-server metadata with a
     // registration endpoint) shared by the redirect-candidate fallback tests.
     function setupNewServerDcrDiscovery() {
