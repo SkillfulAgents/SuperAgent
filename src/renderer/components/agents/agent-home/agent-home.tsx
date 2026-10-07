@@ -287,6 +287,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       track('voice_mode_entered', { origin })
     } catch (error) {
       console.error('Failed to start a voice session:', error)
+      readAloud.releaseUnlockedAudio()
       track('voice_mode_start_failed', { origin })
     }
   }, [isDisabled, createSession, agent.slug, composerOptions, onSessionCreated, track])
