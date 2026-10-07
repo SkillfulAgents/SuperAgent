@@ -1,4 +1,4 @@
-import { waitingInputNotification } from '../requests/definition'
+import { waitingInputNotification, type RequestDefinition } from '../requests/definition'
 
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 
@@ -27,5 +27,6 @@ export const requestConnectedAccountDef = {
   request: {
     kind: 'connected_account',
     getNotification: waitingInputNotification('needs account access'),
-  },
+    describeVoice: (request) => `The agent needs the user to select or connect a ${request.toolkit} account in the application's connection card.${request.reason ? ` Reason: ${request.reason}` : ''}`,
+  } satisfies RequestDefinition<'connected_account'>,
 } as const

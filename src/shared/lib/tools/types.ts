@@ -5,10 +5,10 @@
 // ── ToolDefinition interface ─────────────────────────────────────────
 // Every tool definition file exports a `*Def` object satisfying this shape.
 
-import type { RequestDefinition } from './requests/definition'
+import type { AnyRequestDefinition } from './requests/definition'
 
 export interface ToolDefinition {
-  request?: RequestDefinition
+  request?: AnyRequestDefinition
   /** A request card or file delivery already supplies the chat presentation. */
   hideToolStatusInChat?: boolean
   /** Preserve the transcript's waiting label independently of request blocking. */

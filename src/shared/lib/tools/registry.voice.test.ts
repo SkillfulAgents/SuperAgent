@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { describeVoiceInputRequest } from './voice-input-request'
-import type { PendingRequestDescriptor } from './use-pending-requests'
+import { describeVoiceInputRequest } from './registry'
+import type { PendingRequestDescriptor } from './requests/types'
 
 const base = { key: 'request-1', toolUseId: 'request-1', onComplete: () => {} }
 
@@ -10,6 +10,15 @@ describe('voice input request context', () => {
     [{ ...base, kind: 'browser_input', message: 'Sign in to your account.', requirements: ['login', '2FA'] }, ['browser', 'Sign in to your account.', 'login', '2FA']],
     [{ ...base, kind: 'secret', secretName: 'API_KEY', reason: 'Needed for API access.' }, ['secret card', 'API_KEY', 'Needed for API access.']],
     [{ ...base, kind: 'connected_account', toolkit: 'gmail', reason: 'Find the receipt.' }, ['connection card', 'gmail', 'Find the receipt.']],
+    [{ ...base, kind: 'file', description: 'Upload the invoice.', fileTypes: '.pdf' }, ['file card', 'Upload the invoice.']],
+    [{ ...base, kind: 'remote_mcp', url: 'https://example.test', name: 'Documents', reason: 'Search your notes.' }, ['connection card', 'Documents', 'Search your notes.']],
+    [{ ...base, kind: 'script_run', script: 'ls', explanation: 'List the files.', scriptType: 'shell' }, ['script card', 'List the files.']],
+    [{ ...base, kind: 'computer_use', method: 'click', params: {}, permissionLevel: 'write', appName: 'Notes' }, ['permission card', 'Notes']],
+    [{ ...base, kind: 'capability_review', capability: 'workflows', toolName: 'Workflow', input: {} }, ['approval card', 'workflows']],
+    [{ ...base, kind: 'proxy_review', reviewId: 'review-1', accountId: 'account-1', toolkit: 'github', method: 'POST', targetPath: '/repos', matchedScopes: [], scopeDescriptions: {} }, ['approval card', 'github']],
+    [{ ...base, kind: 'x_agent_review', reviewId: 'review-1', xAgent: { targetAgentSlug: 'research', targetAgentName: 'Research', operation: 'invoke' } }, ['review an interaction with another agent']],
+    [{ ...base, kind: 'account_reauth_required', proxyRequestId: 'proxy-1', accountId: 'account-1', toolkit: 'gmail', accountStatus: 'expired' }, ['reconnect', 'gmail']],
+    [{ ...base, kind: 'mcp_reauth_required', proxyRequestId: 'proxy-1', mcpId: 'mcp-1', mcpName: 'Calendar', authType: 'oauth' }, ['reconnect', 'Calendar']],
   ])('describes the $0.kind card using its displayed request context', (request, details) => {
     const context = describeVoiceInputRequest(request)
     expect(context.id).toBe(`${request.kind}:request-1`)

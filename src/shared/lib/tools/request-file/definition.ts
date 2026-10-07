@@ -1,4 +1,4 @@
-import { waitingInputNotification } from '../requests/definition'
+import { waitingInputNotification, type RequestDefinition } from '../requests/definition'
 
 export interface RequestFileInput {
   description?: string
@@ -22,5 +22,6 @@ export const requestFileDef = {
   request: {
     kind: 'file',
     getNotification: waitingInputNotification('needs a file from you'),
-  },
+    describeVoice: (request) => `The agent needs a file uploaded through the application's file card: ${request.description}`,
+  } satisfies RequestDefinition<'file'>,
 } as const

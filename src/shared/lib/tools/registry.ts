@@ -5,8 +5,9 @@
  * (MessagePersister, AgentIntegrationManager) and renderer.
  */
 
-import type { RequestDefinition } from './requests/definition'
+import type { AnyRequestDefinition, RequestDefinition } from './requests/definition'
 import type { UserInputRequestKind } from './requests/request-schema'
+import type { PendingRequestDescriptor } from './requests/types'
 import { computerUseRequestDef } from './computer-use/definition'
 import { capabilityReviewRequestDef } from './capability-review/definition'
 import { proxyReviewRequestDef } from './proxy-review/definition'
@@ -177,7 +178,7 @@ export function getToolPresentation(toolName: string) {
 }
 
 /** Tool aliases share the same request object; standalone requests register here too. */
-const requestDefinitions = new Map<UserInputRequestKind, RequestDefinition>()
+const requestDefinitions = new Map<UserInputRequestKind, AnyRequestDefinition>()
 for (const request of [
   ...new Set(Object.values(definitions).flatMap(definition => definition.request ? [definition.request] : [])),
   computerUseRequestDef,
@@ -194,6 +195,15 @@ for (const request of [
 export function getRequestDefinition<K extends UserInputRequestKind>(kind: K): RequestDefinition<K> {
   const definition = requestDefinitions.get(kind)
   if (!definition) throw new Error(`Missing request definition: ${kind}`)
-  // Entries are indexed by their own discriminant above.
-  return definition as RequestDefinition<K>
+  // Map cannot express the key/value correlation; entries are indexed by their
+  // own discriminant above, including their kind-specific voice descriptor.
+  return definition as unknown as RequestDefinition<K>
+}
+
+/** Describe the displayed request, including recovered cards, without forwarding raw inputs. */
+export function describeVoiceInputRequest(request: PendingRequestDescriptor): { id: string; message: string } {
+  return {
+    id: `${request.kind}:${request.key}`,
+    message: getRequestDefinition(request.kind).describeVoice(request).slice(0, 2000),
+  }
 }

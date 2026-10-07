@@ -1,4 +1,4 @@
-import { waitingInputNotification } from '../requests/definition'
+import { waitingInputNotification, type RequestDefinition } from '../requests/definition'
 
 export interface RequestScriptRunInput {
   script?: string
@@ -33,5 +33,6 @@ export const requestScriptRunDef = {
     kind: 'script_run',
     syncsAwaitingItself: true,
     getNotification: waitingInputNotification('wants to run a script on your machine'),
-  },
+    describeVoice: (request) => `The agent needs approval in the application's script card: ${request.explanation}`,
+  } satisfies RequestDefinition<'script_run'>,
 } as const

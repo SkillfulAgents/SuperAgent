@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { MessageInput } from '@renderer/components/messages/message-input'
-import { describeVoiceInputRequest } from '@renderer/components/messages/voice-input-request'
+import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@shared/lib/tools/requests/pending-request-stack'
