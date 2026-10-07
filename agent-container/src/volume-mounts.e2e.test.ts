@@ -106,9 +106,8 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     await waitFor(() => sh(container, `ls -A ${source}`) === '', 5_000);
 
     // Git and editors write a temp file and rename it at once.
-    sh(container, `cd ${mount} && node -e "const fs = require('fs'); for (const i of [1, 2, 3]) { fs.writeFileSync('tmp' + i, 'x'); fs.renameSync('tmp' + i, 'final' + i) }"`);
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
-    expect(sh(container, `ls ${source}`)).toBe('final1\nfinal2\nfinal3');
+    sh(container, `cd ${mount} && node -e "const fs = require('fs'); for (const i of [1, 2, 3]) { fs.writeFileSync('tmp' + i, String(i)); fs.renameSync('tmp' + i, 'final' + i) }"`);
+    await waitFor(() => sh(container, `ls ${source}`) === 'final1\nfinal2\nfinal3' && sh(container, `cat ${source}/final*`) === '123', 5_000);
     sh(container, `rm ${mount}/final*`);
     await waitFor(() => sh(container, `ls -A ${source}`) === '', 5_000);
 
@@ -156,6 +155,23 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
     docker('rm', container);
     expect(fs.statSync(uploaded).size).toBe(40_000_000);
+    fs.rmSync(source, { recursive: true });
+  }, 60_000);
+
+  it('uploads a file still waiting in the queue when the host stops the container', async () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
+    fs.chmodSync(source, 0o777);
+    const container = startAgent('rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes', [{ volumeId: 'v_late', name: 'docs' }], 'claude', ['-v', `${source}:/srv/v_late`]);
+    await healthUntilOk(container);
+    // Holds the upload past the stop deadline, as a retry backing off after a failed upload would.
+    const rc = 'curl -s --unix-socket /tmp/rclone-v_late.sock -X POST -H "Content-Type: application/json"';
+    sh(container, `echo late > /mounts/docs/late.txt && sleep 0.2 && id=$(${rc} -d '{}' http://rc/vfs/queue | node -pe "JSON.parse(require('fs').readFileSync(0)).queue[0].id") && ${rc} -d "{\\"id\\":$id,\\"expiry\\":60}" http://rc/vfs/queue-set-expiry`);
+    expect(fs.existsSync(path.join(source, 'late.txt'))).toBe(false);
+
+    docker('stop', '-t', '5', container);
+    expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
+    docker('rm', container);
+    expect(fs.readFileSync(path.join(source, 'late.txt'), 'utf8')).toBe('late\n');
     fs.rmSync(source, { recursive: true });
   }, 60_000);
 });

@@ -41,14 +41,13 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
     '--vfs-cache-mode', 'writes',
-    // At 0s rclone uploads inside close(), outside its upload queue. A rename right after close (as git and editors
-    // do) then only renames the cache, and the file reaches the app under its old name. Queued uploads follow renames.
+    // Every upload goes through rclone's queue, so a rename made right after close (as git and editors do) carries onto it.
     '--vfs-write-back', '1s',
     '--dir-cache-time', '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
-    // Shutdown asks this socket which uploads are still running. Any claude process can use it, including to quit
-    // rclone, which claude can already do by killing it.
+    // Shutdown reads the upload queue through this socket and starts what is waiting. Any claude process can use it,
+    // including to quit rclone, which claude can already do by killing it.
     '--rc', '--rc-addr', `unix://${controlSocket(volumeId)}`, '--rc-no-auth',
   ];
 }
@@ -103,23 +102,43 @@ export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
   });
 }
 
-function rc(volumeId: string, command: string, params: object = {}): Promise<any> {
+function rc(volumeId: string, command: string, params: object = {}): Promise<unknown> {
   return new Promise((resolve) => {
     const req = http.request({ socketPath: controlSocket(volumeId), path: `/${command}`, method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => resolve(JSON.parse(body)));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          resolve(body);
+        }
+      });
+      res.on('error', () => resolve(undefined));
     });
-    // No answer means rclone is gone, so nothing is queued.
-    req.on('error', () => resolve({}));
+    // No answer means rclone is gone.
+    req.on('error', () => resolve(undefined));
     req.end(JSON.stringify(params));
   });
 }
 
-// Starts every queued upload now rather than after the write-back delay, and returns all still queued or uploading.
+const uploadQueueSchema = z.object({
+  queue: z.array(z.object({ id: z.number(), name: z.string(), expiry: z.number(), uploading: z.boolean() })),
+});
+
+// Starts every waiting upload now rather than after the write-back delay, and returns all still queued or uploading.
 async function startQueuedUploads(volumeId: string): Promise<string[]> {
-  const queue: { id: number; name: string; uploading: boolean }[] = (await rc(volumeId, 'vfs/queue')).queue ?? [];
-  await Promise.all(queue.filter((u) => !u.uploading).map((u) => rc(volumeId, 'vfs/queue-set-expiry', { id: u.id, expiry: 0 })));
+  const reply = await rc(volumeId, 'vfs/queue');
+  // A gone rclone has nothing left to upload.
+  if (reply === undefined) return [];
+  const parsed = uploadQueueSchema.safeParse(reply);
+  if (!parsed.success) {
+    console.error('[volumes] Unexpected vfs/queue reply:', reply);
+    return [];
+  }
+  const { queue } = parsed.data;
+  const waiting = queue.filter((u) => !u.uploading && u.expiry > 0);
+  await Promise.all(waiting.map((u) => rc(volumeId, 'vfs/queue-set-expiry', { id: u.id, expiry: 0 })));
   return queue.map((u) => u.name);
 }
 
@@ -128,7 +147,7 @@ async function startQueuedUploads(volumeId: string): Promise<string[]> {
 export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number): Promise<string[]> {
   let pending: string[] = [];
   while (Date.now() < deadline) {
-    // A just-closed file shows up as a transfer a few ms later, so an answer right away can miss it.
+    // FUSE queues a file after close() has returned, so an answer right away can miss it.
     await new Promise((resolve) => setTimeout(resolve, 250));
     pending = await uploads();
     if (pending.length === 0) return [];
