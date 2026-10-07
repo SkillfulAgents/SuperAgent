@@ -501,7 +501,7 @@ somewhere else.
 
 | Site | Why |
 | --- | --- |
-| Add a new local volume (`use-mounts.ts`, `home-volumes.tsx`, `volumes-tab.tsx`) | The picker browses this computer; the path is handed to the agent's. Attaching an existing saved volume works against any API target |
+| Browse for a volume's folder (`volume-settings-dialog.tsx`) | The picker browses this computer; the path is handed to the agent's. Creating a saved volume by entering a path on the workspace's server, and attaching an existing volume, work against any API target |
 | Open-a-mount in Finder/Explorer (`home-volumes.tsx`) | `hostPath` belongs to the agent's machine |
 | Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
 | Reveal a workspace folder in Finder/Explorer (`folder-host-actions.tsx`) | The folder panel's header action. Same reasoning as revealing a file: the deployment returns *its* host path. The Copy-path action beside it stays everywhere, since a path is just text |

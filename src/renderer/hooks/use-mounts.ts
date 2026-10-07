@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
-import { useVolumeDefinitions } from './use-volume-definitions'
+import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
 import { useUser } from '@renderer/context/user-context'
 import type { VolumeSummary, MountSummaryWithHealth } from '@shared/lib/types/mount'
 
@@ -32,7 +31,7 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; restart?: boolean } & ({ hostPath: string; volumeId?: never } | { volumeId: string; hostPath?: never })) => {
+    mutationFn: async (data: { agentSlug: string; restart?: boolean } & ({ hostPath: string; volumeId?: never; name?: string; visibility?: 'public' | 'private' } | { volumeId: string; hostPath?: never; name?: never; visibility?: never })) => {
       if (!data.volumeId && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
@@ -41,7 +40,7 @@ export function useAddMount() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
           ? { volumeId: data.volumeId, restart: data.restart }
-          : { type: 'local', config: { path: data.hostPath }, restart: data.restart }),
+          : { type: 'local', config: { path: data.hostPath }, name: data.name, visibility: data.visibility, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<VolumeSummary>
@@ -80,7 +79,6 @@ export function useVolumesManager(agentSlug: string) {
   const definitions = registry.data ?? []
   const { canUseAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
-  const canCreateMount = canModifyMounts && canUseHostFeatures()
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -98,17 +96,14 @@ export function useVolumesManager(agentSlug: string) {
     }
   }, [isAgentRunning, pendingRestart])
 
-  const handleAddMount = async () => {
-    if (!canCreateMount) return
-    try {
-      setOperationError(null)
-      const dirPath = await window.electronAPI?.openDirectory()
-      if (!dirPath) return
-      await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
-      if (isAgentRunning) setPendingRestart(true)
-    } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Failed to add mount')
-    }
+  const handleCreateMount = async ({ name, path, visibility }: VolumeSettingsInput) => {
+    if (!canModifyMounts) throw new Error('You do not have permission to add volumes to this agent')
+    if (!path) throw new Error('Enter a folder path')
+    setOperationError(null)
+    // Create + attach through one atomic API operation. Let the dialog surface
+    // errors and retain the form so retrying cannot leave an unused definition.
+    await addMount.mutateAsync({ agentSlug, hostPath: path, name, visibility })
+    if (isAgentRunning) setPendingRestart(true)
   }
 
   const handleAttach = async (volumeId: string) => {
@@ -159,16 +154,15 @@ export function useVolumesManager(agentSlug: string) {
     isLoading: isLoading || registry.isLoading,
     operationError: operationError ?? (registry.error ? 'Could not load saved volumes' : null),
     canModifyMounts,
-    canCreateMount,
     pendingRestart,
     isRestarting,
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // Only creating a local source needs this computer's directory picker.
-    // Attaching a saved source works against any API target.
-    canAddMount: canModifyMounts && (canCreateMount || definitions.some(v => !mounts.some(m => m.volumeId === v.id))),
-    handleAddMount,
+    // Creation and reuse operate on the selected workspace. Only the dialog's
+    // native folder picker needs access to this computer.
+    canAddMount: canModifyMounts,
+    handleCreateMount,
     handleAttach,
     handleRemove,
     handleRestart,

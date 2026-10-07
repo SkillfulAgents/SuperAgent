@@ -1,20 +1,16 @@
 import { useState } from 'react'
-import { Folder, FolderOpen, Globe, Loader2, Lock, Pencil, Plus, Trash2 } from 'lucide-react'
-import { useUser } from '@renderer/context/user-context'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { Folder, Globe, Lock, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
+import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 
 export function VolumesTab() {
   const registry = useVolumeDefinitions()
   const remove = useDeleteVolumeDefinition()
+  const save = useSaveVolumeDefinition()
   const [editing, setEditing] = useState<VolumeDefinitionSummary | 'new' | null>(null)
   const [deleting, setDeleting] = useState<VolumeDefinitionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -35,7 +31,7 @@ export function VolumesTab() {
     <div className="space-y-6" data-testid="volumes-settings">
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">Save folders once, then attach them to any of your agents from their Volumes card.</p>
-        {canUseHostFeatures() && <Button size="sm" onClick={() => setEditing('new')}><Plus className="h-4 w-4" />Add volume</Button>}
+        <Button size="sm" onClick={() => setEditing('new')}><Plus className="h-4 w-4" />Add volume</Button>
       </div>
       {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load volumes. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading volumes…</p> : definitions.length === 0 ? (
@@ -70,7 +66,11 @@ export function VolumesTab() {
           ))}
         </div>
       )}
-      {editing && <VolumeSettingsDialog volume={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} />}
+      {editing && <VolumeSettingsDialog
+        volume={editing === 'new' ? undefined : editing}
+        onSave={input => save.mutateAsync({ ...input, id: editing === 'new' ? undefined : editing.id })}
+        onClose={() => setEditing(null)}
+      />}
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -86,79 +86,5 @@ export function VolumesTab() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
-}
-
-function VolumeSettingsDialog({ volume, onClose }: { volume?: VolumeDefinitionSummary; onClose: () => void }) {
-  const { isAuthMode, isAdmin } = useUser()
-  const [name, setName] = useState(volume?.name ?? '')
-  const [folder, setFolder] = useState(volume?.hostPath ?? '')
-  const [visibility, setVisibility] = useState<'private' | 'public'>(volume ? volume.userId === null ? 'public' : 'private' : isAuthMode ? 'private' : 'public')
-  const [error, setError] = useState<string | null>(null)
-  const save = useSaveVolumeDefinition()
-  const inUse = (volume?.attachmentCount ?? 0) > 0
-
-  const chooseFolder = async () => {
-    if (!canUseHostFeatures()) return
-    try {
-      const selected = await window.electronAPI?.openDirectory()
-      if (!selected) return
-      setFolder(selected)
-      if (!name) setName(selected.split(/[/\\]/).filter(Boolean).at(-1) ?? '')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not open the folder picker')
-    }
-  }
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    setError(null)
-    try {
-      await save.mutateAsync({ id: volume?.id, name, path: volume ? undefined : folder, visibility })
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save volume')
-    }
-  }
-
-  return (
-    <Dialog open onOpenChange={open => { if (!open && !save.isPending) onClose() }}>
-      <DialogContent className="sm:max-w-lg" data-testid="volume-settings-dialog">
-        <DialogHeader>
-          <DialogTitle>{volume ? 'Volume settings' : 'Add volume'}</DialogTitle>
-          <DialogDescription>{volume ? 'Manage this saved volume. Existing agents keep their current mount paths.' : 'Choose a folder to make available to your agents. Attached agents get read/write access.'}</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="volume-name">Name</Label>
-            <Input id="volume-name" value={name} onChange={event => setName(event.target.value)} maxLength={255} required />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="volume-folder">Folder</Label>
-            <div className="flex gap-2">
-              <Input id="volume-folder" value={folder} readOnly placeholder="Choose a folder" className="font-mono text-xs" />
-              {!volume && canUseHostFeatures() && <Button type="button" variant="outline" onClick={() => { void chooseFolder() }}><FolderOpen className="h-4 w-4" />Browse</Button>}
-            </div>
-          </div>
-          {isAuthMode && <div className="space-y-2">
-            <Label htmlFor="volume-access">Who can attach this volume?</Label>
-            {isAdmin ? (
-              <Select value={visibility} onValueChange={value => setVisibility(value as 'public' | 'private')} disabled={inUse}>
-                <SelectTrigger id="volume-access"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="private">Only me</SelectItem><SelectItem value="public">Everyone</SelectItem></SelectContent>
-              </Select>
-            ) : <p className="text-sm">Only me</p>}
-            {inUse && isAdmin && <p className="text-xs text-muted-foreground">Detach from all agents before changing access.</p>}
-          </div>}
-          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={save.isPending}>Cancel</Button>
-            <Button type="submit" disabled={!name.trim() || (!volume && !folder) || save.isPending}>
-              {save.isPending && <Loader2 className="h-4 w-4 animate-spin" />}{volume ? 'Save changes' : 'Add volume'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }

@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const volumes = vi.hoisted(() => ({
   mounts: [] as { id: string; volumeId?: string; name: string; type: string; hostPath: string | null; health?: unknown }[],
   definitions: [] as { id: string; name: string; hostPath: string }[],
-  canCreateMount: true,
   canModifyMounts: true,
   operationError: null as string | null,
   handleAttach: vi.fn(),
@@ -16,11 +15,12 @@ const volumes = vi.hoisted(() => ({
   isAddingMount: false,
   isRemovingMount: false,
   canAddMount: true,
-  handleAddMount: vi.fn(),
+  handleCreateMount: vi.fn(),
   handleRemove: vi.fn(),
   handleRestart: vi.fn(),
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useVolumesManager: () => volumes }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
   mockCanUseHostFeatures: vi.fn(() => true),
@@ -42,13 +42,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   volumes.mounts = [MOUNT]
   volumes.canAddMount = true
-  volumes.canCreateMount = true
   volumes.canModifyMounts = true
   volumes.definitions = []
   volumes.operationError = null
   volumes.pendingRestart = false
   mockCanUseHostFeatures.mockReturnValue(true)
-  window.electronAPI = { platform: 'darwin', showInFolder: vi.fn() } as never
+  window.electronAPI = { platform: 'darwin', showInFolder: vi.fn(), openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
 })
 
 afterEach(() => {
@@ -88,13 +87,15 @@ describe('a volume with no local folder', () => {
 describe('driving a cloud workspace', () => {
   beforeEach(() => {
     mockCanUseHostFeatures.mockReturnValue(false)
-    volumes.canAddMount = false
-    volumes.canCreateMount = false
   })
 
-  it('does not offer a directory picker that would browse the wrong machine', () => {
+  it('offers creation with a workspace path instead of browsing the wrong machine', async () => {
     render(<HomeVolumes agentSlug="a1" />)
-    expect(screen.queryByRole('button', { name: /add mount/i })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Browse' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Folder')).not.toHaveAttribute('readonly')
+    expect(screen.getByText(/computer running this workspace/)).toBeInTheDocument()
   })
 
   it('still lists the mounts, which are real on whichever Superagent is driven', () => {
@@ -121,13 +122,11 @@ describe('driving a cloud workspace', () => {
     expect(rows).toHaveLength(0)
   })
 
-  it('hides the section entirely when there is nothing mounted', () => {
+  it('offers creation when there are no saved volumes or mounts', async () => {
     volumes.mounts = []
-    const { container } = render(<HomeVolumes agentSlug="a1" />)
-
-    // Otherwise: an empty box inviting you to "mount a folder from your
-    // computer", with no button to do it.
-    expect(container).toBeEmptyDOMElement()
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })
 
@@ -139,30 +138,46 @@ describe('saved volume picker', () => {
       { id: 'v2', name: 'notes', hostPath: '/Users/joe/notes' },
     ]
   })
-  it('offers saved sources and adding a new folder, disabling mounted sources', async () => {
+  it('offers saved sources and New Volume, disabling mounted sources', async () => {
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
     expect(screen.getByRole('menuitem', { name: /code.*mounted/i })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByRole('menuitem', { name: /add new folder/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /new volume/i })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('menuitem', { name: /notes/i }))
     expect(volumes.handleAttach).toHaveBeenCalledWith('v2')
-    expect(volumes.handleAddMount).not.toHaveBeenCalled()
+    expect(volumes.handleCreateMount).not.toHaveBeenCalled()
   })
   it('retains the existing folder picker for adding a new source', async () => {
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
-    await userEvent.click(screen.getByRole('menuitem', { name: /add new folder/i }))
-    expect(volumes.handleAddMount).toHaveBeenCalledOnce()
+    await userEvent.click(screen.getByRole('menuitem', { name: /new volume/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create and attach' }))
+    expect(window.electronAPI!.openDirectory).toHaveBeenCalledOnce()
+    expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'folder', path: '/new/folder', visibility: 'private' })
   })
   it('attaches saved volumes remotely without offering the native folder picker', async () => {
     mockCanUseHostFeatures.mockReturnValue(false)
-    volumes.canCreateMount = false
     volumes.mounts = []
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
-    expect(screen.queryByRole('menuitem', { name: /add new folder/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /new volume/i })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('menuitem', { name: /notes/i }))
     expect(volumes.handleAttach).toHaveBeenCalledWith('v2')
+  })
+  it('creates and attaches from the remote dropdown, with the action after a separator', async () => {
+    mockCanUseHostFeatures.mockReturnValue(false)
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    const create = screen.getByRole('menuitem', { name: 'New Volume' })
+    expect(create.previousElementSibling).toHaveAttribute('role', 'separator')
+    expect(screen.getAllByRole('menuitem').at(-1)).toBe(create)
+    await userEvent.click(create)
+    await userEvent.type(screen.getByLabelText('Name'), 'Reports')
+    await userEvent.type(screen.getByLabelText('Folder'), '/srv/reports')
+    await userEvent.click(screen.getByRole('button', { name: 'Create and attach' }))
+    expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'Reports', path: '/srv/reports', visibility: 'private' })
+    expect(volumes.handleAttach).not.toHaveBeenCalled()
   })
   it('hides attachment and removal controls from viewers', async () => {
     volumes.canModifyMounts = false

@@ -32,4 +32,11 @@ describe('useAddMount', () => {
     expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ volumeId: 'saved', restart: true })
   })
 
+  it('creates and attaches a named volume with the selected visibility in one request', async () => {
+    const { result } = renderHook(() => useAddMount(), { wrapper: Wrapper })
+    await act(() => result.current.mutateAsync({ agentSlug: 'a1', hostPath: '/srv/reports', name: 'Reports', visibility: 'private' }))
+    expect(mockApiFetch).toHaveBeenCalledOnce()
+    expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ type: 'local', config: { path: '/srv/reports' }, name: 'Reports', visibility: 'private' })
+  })
+
 })

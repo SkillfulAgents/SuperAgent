@@ -2,6 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 
+export interface VolumeSettingsInput {
+  name: string
+  path?: string
+  visibility: 'public' | 'private'
+}
+
 async function checkedResponse(response: Response): Promise<Response> {
   if (!response.ok) {
     const body = await response.json().catch(() => null)

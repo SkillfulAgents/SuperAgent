@@ -27,6 +27,7 @@ import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { openableProps } from '@renderer/lib/openable'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
 import { VolumeStatusBadge } from '../volume-status-badge'
 import type { VolumeSummaryWithHealth } from '@shared/lib/types/mount'
 
@@ -37,6 +38,7 @@ interface HomeVolumesProps {
 
 export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
+  const [showNewVolume, setShowNewVolume] = useState(false)
 
   // Saved sources can be attached from a browser or cloud workspace, too.
   if (!volumes.canAddMount && volumes.mounts.length === 0 && !volumes.operationError) return null
@@ -58,7 +60,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No volumes yet</p>
-          <p className="text-xs mt-1">Attach a saved volume{volumes.canCreateMount ? ' or choose a folder from your computer' : ''} to give this agent read/write access.</p>
+          <p className="text-xs mt-1">Attach a saved volume or create a new one to give this agent read/write access.</p>
         </div>
       )}
 
@@ -113,20 +115,23 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                       </DropdownMenuItem>
                     )
                   })}
-                  {volumes.canCreateMount && <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => { void volumes.handleAddMount() }}><Plus className="h-4 w-4" />Add new folder…</DropdownMenuItem>
-                  </>}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => setShowNewVolume(true)}><Plus className="h-4 w-4" />New Volume</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
-              <Button variant="ghost" size="sm" onClick={volumes.handleAddMount} disabled={volumes.isAddingMount || volumes.isLoading}>
+              <Button variant="ghost" size="sm" onClick={() => setShowNewVolume(true)} disabled={volumes.isAddingMount || volumes.isLoading}>
                 {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />} Add Mount
               </Button>
             )}
           </div>
         )}
       </div>
+      {showNewVolume && <VolumeSettingsDialog
+        attachToAgent
+        onSave={volumes.handleCreateMount}
+        onClose={() => setShowNewVolume(false)}
+      />}
     </HomeCollapsible>
   )
 }

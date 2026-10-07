@@ -52,7 +52,7 @@ describe('volume settings', () => {
     expect(screen.getByLabelText('Name')).toHaveValue('folder')
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.getByText('Only me')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Add volume' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
     expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'folder', path: '/new/folder', visibility: 'private' })
   })
   it('shows public sources without management controls for other users', () => {
@@ -63,7 +63,17 @@ describe('volume settings', () => {
     expect(screen.getByText('Public')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete Notes' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Add volume' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add volume' })).toBeInTheDocument()
+  })
+  it('creates a volume from a server path in a browser', async () => {
+    state.host = false
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Add volume' }))
+    expect(screen.queryByRole('button', { name: 'Browse' })).not.toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Name'), 'Reports')
+    await userEvent.type(screen.getByLabelText('Folder'), '/srv/reports')
+    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
+    expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'Reports', path: '/srv/reports', visibility: 'private' })
   })
   it('keeps the dialog open with the server error when a volume cannot be saved', async () => {
     state.save.mockRejectedValue(new Error('Detach this volume from all agents before changing its access'))
