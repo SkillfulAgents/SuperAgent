@@ -1175,9 +1175,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return null
   }
 
-  public buildVolumeFlag(_hostPath: string, _containerPath: string): string {
-    // Workspace is an S3 Files mount performed inside the VM, not a host bind.
-    return ''
+  /** FUSE in the microVM is unverified, so it mounts no volumes. */
+  public volumeRunFlags(): string | null {
+    return null
   }
 
   public getHostApiBaseUrl(): Promise<string> {

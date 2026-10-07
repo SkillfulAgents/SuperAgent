@@ -1,12 +1,11 @@
 import { useCallback } from 'react'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
+import type { NotMountedVolume } from '@shared/lib/types/mount'
 
 interface MountWarning {
   agentSlug: string
-  missingMounts: { folderName: string; hostPath: string }[]
-  /** Optional extra context (e.g. macOS cloud-storage hint) shown in the banner. */
-  hint?: string
+  notMounted: NotMountedVolume[]
 }
 
 const QUERY_KEY_PREFIX = 'mount-warnings'

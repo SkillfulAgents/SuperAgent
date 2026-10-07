@@ -84,13 +84,12 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
       ))}
 
       {/* Missing mount warning banner */}
-      {mountWarning && mountWarning.missingMounts.length > 0 && (
+      {mountWarning && mountWarning.notMounted.length > 0 && (
         <div className="shrink-0 border-b bg-yellow-500/10 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-yellow-700 dark:text-yellow-400 select-text">
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span className="flex-1">
-              Some mounted folders were not found and have been skipped: {mountWarning.missingMounts.map((m) => m.folderName).join(', ')}
-              {mountWarning.hint ? ` — ${mountWarning.hint}` : ''}
+              Not mounted: {mountWarning.notMounted.map((v) => `${v.name} (${v.reason})`).join(', ')}
             </span>
             <button
               onClick={dismissMountWarning}

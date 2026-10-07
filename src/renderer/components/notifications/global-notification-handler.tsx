@@ -637,11 +637,10 @@ export function GlobalNotificationHandler() {
           }
 
           case 'mount_health_warning': {
-            // Some mounted folders are missing or inaccessible — show banner in agent view
+            // An empty list clears the banner.
             setMountWarning(queryClient, {
               agentSlug: data.agentSlug,
-              missingMounts: data.missingMounts,
-              hint: data.hint,
+              notMounted: data.notMounted,
             })
             break
           }

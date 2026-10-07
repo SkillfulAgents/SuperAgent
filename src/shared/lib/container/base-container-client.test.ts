@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
+import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
@@ -31,9 +31,6 @@ class TestContainerClient extends BaseContainerClient {
   // Expose protected predicates for testing.
   public testIsPortConflictError(error: unknown): boolean {
     return this.isPortConflictError(error)
-  }
-  public testExtractInaccessibleMountPath(error: unknown): string | null {
-    return this.extractInaccessibleMountPath(error)
   }
   public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
@@ -526,6 +523,14 @@ describe('parseMemoryValue', () => {
 // shellQuote
 // ============================================================================
 
+describe('shellEscape', () => {
+  // The workspace -v value runs through a real shell, so its path must stay one literal word.
+  it.skipIf(process.platform === 'win32')('keeps a path with shell syntax literal through a real shell', async () => {
+    const { stdout } = await execWithPath(`printf %s ${shellEscape("/tmp/a$(echo pwned) b'c")}`)
+    expect(stdout).toBe("/tmp/a$(echo pwned) b'c")
+  })
+})
+
 describe('shellQuote', () => {
   // Note: shellQuote checks the module-level `isWindows` constant which is
   // set at module load time from process.platform. On macOS/Linux this will
@@ -852,10 +857,6 @@ describe('BaseContainerClient.isPortConflictError', () => {
   it('does not match unrelated errors', () => {
     expect(client.testIsPortConflictError(new Error('no such image'))).toBe(false)
   })
-
-  it('base extractInaccessibleMountPath returns null (no VM filesystem)', () => {
-    expect(client.testExtractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
-  })
 })
 
 // ============================================================================
@@ -1013,5 +1014,26 @@ describe('BaseContainerClient.observeUnexpectedDeath', () => {
       action: 'ignore',
       liveSessionIds: ['live'],
     })
+  })
+})
+
+describe('refusedVolumeFlags', () => {
+  const flags = '--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined'
+
+  it('is true when the runtime names a volume flag in stderr, and never reads the command line', () => {
+    expect(refusedVolumeFlags({ stderr: 'error gathering device information while adding custom device "/dev/fuse": no such file' }, flags)).toBe(true)
+    expect(refusedVolumeFlags({ stderr: 'unknown flag: --security-opt' }, flags)).toBe(true)
+    // Node's exec error: the message repeats the command with the flags, stderr holds the runtime's words.
+    const pullDenied = Object.assign(new Error(`Command failed: docker run ${flags} img`), { stderr: 'pull access denied for img' })
+    expect(refusedVolumeFlags(pullDenied, flags)).toBe(false)
+    expect(refusedVolumeFlags({ stderr: '' }, flags)).toBe(false)
+    // Apple's flags carry the short word root, which any stderr can contain.
+    expect(refusedVolumeFlags({ stderr: 'process running as root exited' }, '--user root --cap-add CAP_SYS_ADMIN')).toBe(false)
+  })
+
+  // WSL writes UTF-16LE, so its stderr arrives with a null between every character.
+  it('matches a runtime error execWithPath read with nulls in it', async () => {
+    const error = await execWithPath(`printf 'u\\0n\\0k\\0n\\0o\\0w\\0n\\0 \\0f\\0l\\0a\\0g\\0:\\0 \\0-\\0-\\0d\\0e\\0v\\0i\\0c\\0e' >&2; exit 1`).catch((e) => e)
+    expect(refusedVolumeFlags(error, flags)).toBe(true)
   })
 })

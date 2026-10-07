@@ -115,6 +115,12 @@ export function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/** The device and the capability a container needs to mount FUSE. */
+export const FUSE_RUN_FLAGS = '--device /dev/fuse --cap-add SYS_ADMIN'
+
+// WSL emits UTF-16LE with embedded nulls; strip them so the text is readable.
+const stripNulls = (s: unknown) => String(s ?? '').replace(/\0/g, '').trim()
+
 /**
  * Execute a command with enhanced PATH (includes common binary locations).
  *
@@ -135,8 +141,6 @@ export async function execWithPath(
       ...(opts?.timeoutMs ? { timeout: opts.timeoutMs, killSignal: 'SIGKILL' as const } : {}),
     })
   } catch (err) {
-    // WSL emits UTF-16LE with embedded nulls; strip them so the message is readable.
-    const stripNulls = (s: unknown) => String(s ?? '').replace(/\0/g, '').trim()
     const e = err as NodeJS.ErrnoException & { stderr?: string; stdout?: string }
     const stderr = stripNulls(e.stderr)
     const stdout = stripNulls(e.stdout)
@@ -250,6 +254,12 @@ const BASE_PORT = (() => {
 // Max time for a single /health probe (isHealthy). Kept short because it gates
 // the request hot path via ensureRunning's stale-cache liveness check.
 const HEALTH_PROBE_TIMEOUT_MS = 2000
+
+// Reads stderr only: an exec error's message repeats the command line, flags included.
+export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
+  const text = stripNulls(error?.stderr).toLowerCase()
+  return flags.split(/\s+/).some((flag) => flag.length > 4 && text.includes(flag.toLowerCase()))
+}
 
 /**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
@@ -370,6 +380,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return ''
   }
 
+  public volumeRunFlags(): string | null {
+    return FUSE_RUN_FLAGS
+  }
+
   /**
    * Host-internal bridge IP a host-side service must bind to so this runner's
    * containers can reach it via host.docker.internal, or null when containers
@@ -453,17 +467,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
-   * Build a -v flag value for a volume mount.
-   * Encapsulates hostPathForRuntime() + getVolumeMountSuffix().
-   */
-  public buildVolumeFlag(hostPath: string, containerPath: string): string {
-    // hostPath is user-controlled (a selected mount). shellEscape() (not raw
-    // double quotes) so a path like `/tmp/a$(...)` can't trigger command
-    // substitution when start() runs the joined command through a real shell.
-    return shellEscape(`${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}`)
-  }
-
-  /**
    * Returns resource limit flags for the container.
    * Subclasses can override if the runtime uses different flag syntax.
    */
@@ -482,8 +485,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   /**
    * Exec bound for the `run` command; undefined = unbounded. Override when the
-   * runtime can hang on run instead of failing (e.g. Apple's VZ materializing
-   * a dataless iCloud mount).
+   * runtime can hang on run instead of failing (e.g. Apple Container).
    */
   protected getRunExecTimeoutMs(): number | undefined {
     return undefined
@@ -503,17 +505,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       /Bind for .* failed/i.test(msg) ||
       /failed to bind host port/i.test(msg)
     )
-  }
-
-  /**
-   * If a run failure is caused by a bind mount the runtime can't access, return
-   * the offending host path so start() can drop that one mount and retry without
-   * it. Default: never (most runtimes share the host filesystem directly).
-   * VM-based runtimes (Lima) override to parse EPERM-on-stat for cloud-synced
-   * mounts that the VM helper is denied access to.
-   */
-  protected extractInaccessibleMountPath(_error: any): string | null {
-    return null
   }
 
   /**
@@ -724,6 +715,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     if (info.status === 'running') {
       console.log(`Container ${this.getContainerName()} is already running on port ${info.port}`)
       this.rememberRunningPort(info.port)
+      options?.onAlreadyRunning?.()
       return info
     }
 
@@ -746,18 +738,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Find an available port
       let port = await this.findAvailablePort()
 
+      // The volume list travels with the volume run flags: a run that drops one drops both.
+      let volumes = options?.volumes?.length ? options.volumes : undefined
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const { flag: envFileFlag, cleanup: cleanupEnvFile } = await this.buildEnvFile(options?.envVars, options?.agentName)
+      const envFile = () => this.buildEnvFile(
+        volumes ? { ...options?.envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : options?.envVars,
+        options?.agentName,
+      )
+      let { flag: envFileFlag, cleanup: cleanupEnvFile } = await envFile()
       const containerName = this.getContainerName()
 
       // Build resource limit flags
       const resourceFlags = this.getResourceFlags(cpu, memory)
       const additionalFlags = this.getAdditionalRunFlags()
-
-      // Mutable copy of bind-mount flags — an inaccessible mount (e.g. a
-      // cloud-synced folder the VM helper is denied) is dropped from this list
-      // on retry so the container can still start without it.
-      let volumes = [...(options?.additionalVolumes || [])]
 
       const buildRunCmd = () =>
         [
@@ -765,16 +758,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           '--name', containerName,
           '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
           '-v', shellEscape(`${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}`),
-          ...volumes.flatMap(v => ['-v', v]),
           resourceFlags,
           additionalFlags,
+          volumes ? this.volumeRunFlags() : null,
           envFileFlag,
           image,
         ].filter(Boolean).join(' ')
 
       // Bounded retry loop. Each recovery path makes exactly one attempt of
-      // progress so the loop can't spin: dropping a mount shrinks `volumes`,
-      // re-picking a port is capped by portRetries, and VM provisioning and
+      // progress so the loop can't spin: re-picking a port is capped by
+      // portRetries, the volume list is dropped once, and VM provisioning and
       // image re-creation each run once (the latter shared between the two
       // corruption shapes: a run that fails to mount, and a run that starts
       // but dies on a corrupt file). A fresh force-remove precedes every
@@ -793,21 +786,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           try {
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
           } catch (runError: any) {
-            // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM
-            //    can't stat). Drop that one mount and retry without it.
-            const badMountPath = this.extractInaccessibleMountPath(runError)
-            if (badMountPath) {
-              const before = volumes.length
-              volumes = volumes.filter((v) => !v.includes(badMountPath))
-              if (volumes.length < before) {
-                console.warn(`[Container] Dropping inaccessible mount and retrying: ${badMountPath}`)
-                addErrorBreadcrumb({ category: 'container', message: 'Dropped inaccessible mount, retrying', data: { hostPath: badMountPath, agentId: this.config.agentId } })
-                options?.onMountDropped?.(badMountPath)
-                continue
-              }
-            }
-
-            // 2. Host-port allocation race — re-pick a port (bounded).
+            // 1. Host-port allocation race — re-pick a port (bounded).
             if (this.isPortConflictError(runError) && portRetries < MAX_PORT_RETRIES) {
               portRetries++
               const newPort = await this.findAvailablePort(triedPorts)
@@ -815,6 +794,23 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               console.warn(`[Container] Port ${port} unavailable (attempt ${portRetries}/${MAX_PORT_RETRIES}), retrying on ${newPort}`)
               addErrorBreadcrumb({ category: 'container', message: 'Port conflict, retrying with new port', data: { oldPort: port, newPort, attempt: portRetries, agentId: this.config.agentId } })
               port = newPort
+              continue
+            }
+
+            // 2. The runtime refused the volume flags: run once more without them, so the folders are left out, not the agent.
+            //    Before subclass recovery, whose VM-fault text match would rebuild a VM over a missing /dev/fuse.
+            if (volumes && refusedVolumeFlags(runError, this.volumeRunFlags() ?? '')) {
+              volumes = undefined
+              cleanupEnvFile()
+              ;({ flag: envFileFlag, cleanup: cleanupEnvFile } = await envFile())
+              const error = String(runError?.message || runError).slice(0, 2000)
+              console.warn(`[Container] Run failed with volumes, retrying without them: ${error}`)
+              captureMessage('Container run failed with volumes, retrying without them', {
+                level: 'warning',
+                tags: { component: 'volumes', operation: 'run' },
+                extra: { agentId: this.config.agentId, error },
+              })
+              options?.onVolumesDropped?.()
               continue
             }
 
@@ -1148,21 +1144,29 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async isHealthy(knownPort?: number): Promise<boolean> {
+    return (await this.probeHealth(knownPort))?.ok ?? false
+  }
+
+  async health(knownPort?: number): Promise<unknown> {
+    const response = await this.probeHealth(knownPort)
+    return response?.ok ? response.json() : null
+  }
+
+  private async probeHealth(knownPort?: number): Promise<Response | null> {
     const port = knownPort ?? (await this.getInfo()).port
-    if (!port) return false
+    if (!port) return null
     try {
       // Bound the probe: this runs on the request hot path (ensureRunning's
       // stale-cache liveness check), and a container that died with its port
       // forward left half-open would accept the TCP connect but never respond,
       // hanging the fetch — and the caller — indefinitely without this.
-      const response = await fetch(`${this.getBaseUrl(port)}/health`, {
+      return await fetch(`${this.getBaseUrl(port)}/health`, {
         signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
         headers: this.getHostAuthHeaders(),
       })
-      return response.ok
     } catch {
       // Includes AbortError on timeout — treat an unresponsive probe as unhealthy.
-      return false
+      return null
     }
   }
 

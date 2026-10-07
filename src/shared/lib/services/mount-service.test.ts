@@ -23,6 +23,14 @@ function makeHostDir(name: string): string {
   return dir
 }
 
+/** Write mounts.json for test-agent as given, bypassing addMount */
+function writeRows(rows: unknown[]) {
+  const file = path.join(tmpDir, 'agents', 'test-agent', 'mounts.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(rows))
+  return file
+}
+
 // Import after env is set up (uses SUPERAGENT_DATA_DIR)
 async function importService() {
   const mod = await import('./mount-service')
@@ -97,17 +105,17 @@ describe('mount-service', () => {
       expect(mount.config).toEqual({ path: fs.realpathSync(realDir) })
     })
 
-    it.runIf(process.platform === 'darwin')('rejects iCloud Drive (Mobile Documents) paths', async () => {
-      const { addMount } = await importService()
-      const cloudDir = path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'proj')
-      // Path need not exist — the prefix check fires before any fs access.
-      await expect(addMount('test-agent', 'local', { path: cloudDir })).rejects.toThrow(/cloud-synced|iCloud/i)
+    it('keeps a folder whose name is only spaces, as the image accepts it', async () => {
+      const { addMount, listVolumes } = await importService()
+      const dir = makeHostDir('   ')
+      const mount = await addMount('test-agent', 'local', { path: dir })
+      expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: mount.id, name: '   ' }])
     })
 
-    it.runIf(process.platform === 'darwin')('rejects File Provider (CloudStorage) paths like Dropbox', async () => {
+    // The name becomes /mounts/<name>, and the filesystem root has none.
+    it('rejects a folder with no name', async () => {
       const { addMount } = await importService()
-      const cloudDir = path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'work')
-      await expect(addMount('test-agent', 'local', { path: cloudDir })).rejects.toThrow(/cloud-synced|iCloud/i)
+      await expect(addMount('test-agent', 'local', { path: path.parse(tmpDir).root })).rejects.toThrow('The folder must have a name')
     })
   })
 
@@ -180,14 +188,44 @@ describe('mount-service', () => {
     })
   })
 
-  describe('stored rows', () => {
-    function writeRows(rows: unknown[]) {
-      const file = path.join(tmpDir, 'agents', 'test-agent', 'mounts.json')
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, JSON.stringify(rows))
-      return file
-    }
+  describe('listVolumes', () => {
+    it('sends a volume whose source serves its root, leaves out the rest with why, and the card agrees', async () => {
+      const { listVolumes, getMountsWithHealth } = await importService()
+      const notes = makeHostDir('notes')
+      const gone = makeHostDir('old-drive')
+      fs.rmSync(gone, { recursive: true })
+      writeRows([
+        { id: 'v1', name: 'notes', type: 'local', config: { path: notes } },
+        { id: 'v2', name: 'old-drive', type: 'local', config: { path: gone } },
+        { id: 'v3', name: 'bad', type: 'local', config: { folder: notes } },
+        // A row from before volumes, for a folder at the filesystem root: its name is ''.
+        { id: 'v4', hostPath: notes, containerPath: '/mounts/' },
+      ])
 
+      expect(await listVolumes('test-agent')).toEqual({
+        volumes: [{ volumeId: 'v1', name: 'notes' }],
+        notMounted: [{ name: 'old-drive', reason: 'not found' }, { name: 'bad', reason: 'unreadable' }, { name: '', reason: 'invalid name' }],
+      })
+      expect((await getMountsWithHealth('test-agent')).map((m) => m.health)).toEqual(['ok', 'missing', 'missing', 'missing'])
+    })
+
+    // Root ignores mode bits, so this needs an ordinary user.
+    it.skipIf(process.getuid?.() === 0)('reports a folder the app may not reach as not accessible', async () => {
+      const { listVolumes } = await importService()
+      const parent = makeHostDir('locked')
+      const inner = path.join(parent, 'inner')
+      fs.mkdirSync(inner)
+      writeRows([{ id: 'v1', name: 'inner', type: 'local', config: { path: inner } }])
+      fs.chmodSync(parent, 0)
+      try {
+        expect((await listVolumes('test-agent')).notMounted).toEqual([{ name: 'inner', reason: 'not accessible' }])
+      } finally {
+        fs.chmodSync(parent, 0o755)
+      }
+    })
+  })
+
+  describe('stored rows', () => {
     it('reads a row from before volumes had a type as a local folder named by its container path, and saves the new shape on the next write', async () => {
       const { addMount, getMounts } = await importService()
       const hostPath = makeHostDir('notes')

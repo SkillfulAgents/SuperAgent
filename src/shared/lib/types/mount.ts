@@ -10,11 +10,34 @@ export interface StoredVolume {
   config: unknown
 }
 
-/** A volume as the API returns it: no config, only the host folder the card and the bind path need. */
+/** A volume as the API returns it: no config, only the host folder the card shows. */
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 
 export interface VolumeSummaryWithHealth extends VolumeSummary {
   health: 'ok' | 'missing'
+}
+
+/** A volume as the container receives it, in SUPERAGENT_VOLUMES. */
+export interface ContainerVolume {
+  volumeId: string
+  name: string
+}
+
+/** Why a volume is not in the container. */
+export type NotMountedReason =
+  | 'not found'
+  | 'not accessible'
+  | 'unreadable'
+  | 'invalid name'
+  | 'not supported here'
+  | 'start failed with folders'
+  | 'failed in the agent'
+  | 'not confirmed'
+
+/** A volume the container does not have, with why. */
+export interface NotMountedVolume {
+  name: string
+  reason: NotMountedReason
 }

@@ -18,7 +18,6 @@ vi.mock('./client-factory', () => ({
     getStats: vi.fn(),
     fetch: vi.fn(),
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
-    buildVolumeFlag: (hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`,
     createSession: vi.fn(),
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -116,7 +115,7 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: () => 'UTC' }))
-vi.mock('@shared/lib/services/mount-service', () => ({ getMountsWithHealth: () => [] }))
+vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }) }))
 
 import { containerHost } from './container-host'
 

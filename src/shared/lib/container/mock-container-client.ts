@@ -2744,9 +2744,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     })
   }
 
-  // Volume flag builder (no-op in mock — mounts are not simulated)
-  buildVolumeFlag(hostPath: string, containerPath: string): string {
-    return `"${hostPath}:${containerPath}"`
+  /** The mock mounts nothing, but behaves as a runtime that can. */
+  volumeRunFlags(): string | null {
+    return ''
   }
 
   // No real host networking in mock mode — report loopback-direct (no proxy).
@@ -2763,6 +2763,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
     this.running = true
+    this.mountedVolumeIds = (options?.volumes ?? []).map((v) => v.volumeId)
     // Surface the container env that carries the proxy credentials so E2E
     // specs can call the API/MCP proxies the way a real container would
     // (there is deliberately no HTTP endpoint that returns the proxy token).
@@ -3191,6 +3192,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
+  }
+
+  private mountedVolumeIds: string[] = []
+
+  /** The mock mounts nothing, but reports the volumes it was started with, as a runtime that can. */
+  async health(_knownPort?: number): Promise<unknown> {
+    return this.running ? { status: 'ok', volumes: this.mountedVolumeIds } : null
   }
 
   onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {

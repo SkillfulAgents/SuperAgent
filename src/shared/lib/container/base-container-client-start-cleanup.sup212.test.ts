@@ -16,6 +16,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Record every command string handed to child_process.exec (which
 // base-container-client promisifies into execAsync at module load).
 const execCommands: string[] = []
+// A run flag the fake runtime refuses.
+const refused = { flag: '', message: '' }
 
 vi.mock('child_process', () => {
   // promisify(exec) calls exec(command, options, callback) and resolves with
@@ -34,10 +36,18 @@ vi.mock('child_process', () => {
     execCommands.push(command)
 
     let stdout = ''
-    if (/run\s+-d/.test(command)) stdout = 'fake-container-id'
+    if (/run\s+-d/.test(command)) {
+      if (refused.flag && command.includes(refused.flag)) {
+        // Node's exec error: the message repeats the command, the runtime's words are in stderr.
+        const stderr = refused.message || `unknown flag: ${refused.flag}`
+        cb(Object.assign(new Error(`Command failed: ${command}\n${stderr}`), { stderr }))
+        return {}
+      }
+      stdout = 'fake-container-id'
+    }
     // image inspect → image found (skip build); ps → no used ports; logs → empty.
-    // stop/rm/everything else → resolve empty. Nothing rejects: the runner
-    // succeeds, only the health check fails.
+    // stop/rm/everything else → resolve empty. Only a run carrying the refused
+    // flag rejects: otherwise the runner succeeds, and only the health check fails.
     cb(null, { stdout, stderr: '' })
     return {}
   }
@@ -70,6 +80,7 @@ vi.mock('net', () => {
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
   addErrorBreadcrumb: vi.fn(),
 }))
 
@@ -104,6 +115,7 @@ vi.mock('fs', () => {
   }
 })
 
+import * as fs from 'fs'
 import { BaseContainerClient } from './base-container-client'
 import type { ContainerConfig, ContainerInfo } from './types'
 
@@ -159,5 +171,84 @@ describe('SUP-212 start() cleans up an unhealthy container', () => {
   it('still surfaces the health-check error to the caller', async () => {
     const client = new TestContainerClient({ agentId: 'abc123' } as ContainerConfig)
     await expect(client.start()).rejects.toThrow(/failed to become healthy/i)
+  })
+})
+
+describe('start() run flags for volumes', () => {
+  class VolumeTestClient extends TestContainerClient {
+    public recoveries = 0
+    public volumeRunFlags(): string | null {
+      return '--test-volume-flags'
+    }
+    protected async handleRunError(): Promise<boolean> {
+      this.recoveries++
+      return false
+    }
+  }
+
+  const volumes = [{ volumeId: 'v1', name: 'notes' }]
+  const client = () => new VolumeTestClient({ agentId: 'abc123' } as ContainerConfig)
+  const runs = () => execCommands.filter((c) => /run\s+-d/.test(c))
+  // The env file a run command names, as its content.
+  const envOf = (run: string) => {
+    const file = /--env-file "([^"]+)"/.exec(run)?.[1]
+    return String(vi.mocked(fs.writeFileSync).mock.calls.find(([written]) => written === file)?.[1])
+  }
+  const reset = () => {
+    execCommands.length = 0
+    vi.mocked(fs.writeFileSync).mockClear()
+  }
+
+  beforeEach(reset)
+
+  it("sends the volume list with the client's volume flags, and neither without volumes", async () => {
+    await expect(client().start({ volumes })).rejects.toThrow()
+    expect(runs()[0]).toContain('--test-volume-flags')
+    expect(envOf(runs()[0])).toContain('SUPERAGENT_VOLUMES=[{"volumeId":"v1","name":"notes"}]')
+
+    for (const start of [() => client().start(), () => client().start({ volumes: [] })]) {
+      reset()
+      await expect(start()).rejects.toThrow()
+      expect(runs()[0]).not.toContain('--test-volume-flags')
+      expect(envOf(runs()[0])).not.toContain('SUPERAGENT_VOLUMES')
+    }
+  })
+
+  it('starts once more without the volume list and flags when the runtime refuses the flags, and says so', async () => {
+    refused.flag = '--test-volume-flags'
+    try {
+      const onVolumesDropped = vi.fn()
+      const c = client()
+      await expect(c.start({ volumes, onVolumesDropped })).rejects.toThrow(/healthy/i)
+      // Never handed to subclass recovery, which could rebuild a VM over a missing /dev/fuse.
+      expect(c.recoveries).toBe(0)
+      expect(runs()).toHaveLength(2)
+      expect(runs()[1]).not.toContain('--test-volume-flags')
+      expect(envOf(runs()[0])).toContain('SUPERAGENT_VOLUMES')
+      expect(envOf(runs()[1])).not.toContain('SUPERAGENT_VOLUMES')
+      expect(onVolumesDropped).toHaveBeenCalledTimes(1)
+    } finally {
+      refused.flag = ''
+    }
+  })
+
+  it('does not retry without volumes a run whose error names no volume flag', async () => {
+    Object.assign(refused, { flag: 'run -d', message: 'image not found' })
+    try {
+      await expect(client().start({ volumes })).rejects.toThrow(/image not found/)
+      expect(runs().every((run) => run.includes('--test-volume-flags'))).toBe(true)
+    } finally {
+      Object.assign(refused, { flag: '', message: '' })
+    }
+  })
+
+  it('surfaces the run error when the run without volumes fails too', async () => {
+    Object.assign(refused, { flag: 'run -d', message: 'unknown flag: --test-volume-flags' })
+    try {
+      await expect(client().start({ volumes })).rejects.toThrow(/unknown flag/)
+      expect(runs()).toHaveLength(2)
+    } finally {
+      Object.assign(refused, { flag: '', message: '' })
+    }
   })
 })

@@ -350,17 +350,6 @@ export interface SystemPromptVars {
   userInstructions: string;
 }
 
-const mountsEnvSchema = z.array(z.string().min(1));
-
-function parseMountPaths(raw: string | undefined): string[] {
-  if (!raw) return [];
-  try {
-    return mountsEnvSchema.parse(JSON.parse(raw));
-  } catch {
-    return [];
-  }
-}
-
 /**
  * Builds the variable bag consumed by the system-prompt template: the two
  * trigger-availability gates and the computer-use host gate read from the
@@ -390,11 +379,7 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  const mountPaths = [
-    // TODO: delete SUPERAGENT_MOUNTS, with parseMountPaths and its tests, once every mount moves to SUPERAGENT_VOLUMES.
-    ...parseMountPaths(process.env.SUPERAGENT_MOUNTS),
-    ...mountedVolumePaths(),
-  ];
+  const mountPaths = mountedVolumePaths();
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,

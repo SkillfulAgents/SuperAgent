@@ -24,7 +24,7 @@ const APPLE_SYSTEM_START_CMD =
   `container system start --enable-kernel-install --timeout ${APPLE_SYSTEM_START_TIMEOUT_SEC}`
 const APPLE_SYSTEM_START_EXEC_TIMEOUT_MS = (APPLE_SYSTEM_START_TIMEOUT_SEC + 30) * 1000
 const APPLE_SYSTEM_STOP_EXEC_TIMEOUT_MS = 15_000
-/** `run` normally returns in seconds; a dataless iCloud mount hangs it for minutes. */
+/** `run` normally returns in seconds; bound it so a stuck run can't hang startup. */
 const APPLE_RUN_EXEC_TIMEOUT_MS = 120_000
 
 let cachedMacOSMajorVersion: number | null | undefined = undefined // null failures not cached
@@ -175,6 +175,11 @@ export class AppleContainerClient extends BaseContainerClient {
     return version !== null && version >= 26
   }
 
+  // No --device, and /dev/fuse is root-only: the image starts as root and drops to claude (start.sh).
+  public volumeRunFlags(): string | null {
+    return '--user root --cap-add CAP_SYS_ADMIN'
+  }
+
   protected getRunnerCommand(): string {
     return 'container'
   }
@@ -212,18 +217,17 @@ export class AppleContainerClient extends BaseContainerClient {
 
     // Our run exec bound fired while the runtime is healthy. error.killed is
     // set only when the exec API itself killed the child (the timeoutMs
-    // bound), never for an external kill. Likeliest cause is a mount stuck
-    // materializing dataless iCloud files (Desktop & Documents sync lives
-    // outside the rejected cloud prefixes) - name it as likely, not certain.
+    // bound), never for an external kill. The cause is not known here, so the
+    // message names only the timeout.
     if (error?.killed && error?.signal === 'SIGKILL') {
       throw new Error(
-        'Container start timed out after 2 minutes. This can happen when a folder attached to this agent is stored in iCloud but not downloaded on this Mac - download it or remove it, then try again.',
+        'Container start timed out after 2 minutes. Try starting the agent again.',
       )
     }
     return false
   }
 
-  /** See APPLE_RUN_EXEC_TIMEOUT_MS: bound `run` so a dataless mount can't hang startup. */
+  /** See APPLE_RUN_EXEC_TIMEOUT_MS: bound `run` so a stuck run can't hang startup. */
   protected getRunExecTimeoutMs(): number {
     return APPLE_RUN_EXEC_TIMEOUT_MS
   }

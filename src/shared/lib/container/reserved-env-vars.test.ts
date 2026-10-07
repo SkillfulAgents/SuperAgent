@@ -22,7 +22,7 @@ describe('reserved-env-vars', () => {
       'SUPERAGENT_AGENT_SLUG',
       'CONNECTED_ACCOUNTS',
       'REMOTE_MCPS',
-      'SUPERAGENT_MOUNTS',
+      'SUPERAGENT_VOLUMES',
       'AGENT_BROWSER_USE_HOST',
       'HOST_APP_URL',
       'AGENT_ID',
