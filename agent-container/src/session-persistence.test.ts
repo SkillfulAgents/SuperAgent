@@ -92,6 +92,37 @@ describe('SessionPersistence', () => {
     expect(fs.readdirSync(testDirectory).some((name) => name.startsWith('sessions.json.corrupt-'))).toBe(true);
   });
 
+  it('applies a combined per-message update with one file write', async () => {
+    const atomicFile = await vi.importActual<typeof import('./atomic-file')>('./atomic-file');
+    const writes = vi.fn(atomicFile.writeFileAtomicSync);
+    vi.doMock('./atomic-file', () => ({ ...atomicFile, writeFileAtomicSync: writes }));
+    try {
+      const persistence = await loadPersistence();
+      persistence.saveSession(legacySession('turn'));
+      writes.mockClear();
+
+      persistence.updateSession('turn', {
+        lastActivity: '2026-01-02T00:00:00.000Z',
+        llmProviderId: 'personal-account',
+        effort: 'high',
+        model: 'claude-opus-5',
+        metadata: { isAutomated: false },
+      });
+
+      expect(writes).toHaveBeenCalledTimes(1);
+      vi.resetModules();
+      expect((await loadPersistence()).getSession('turn')).toMatchObject({
+        lastActivity: '2026-01-02T00:00:00.000Z',
+        llmProviderId: 'personal-account',
+        effort: 'high',
+        model: 'claude-opus-5',
+        metadata: { isAutomated: false },
+      });
+    } finally {
+      vi.doUnmock('./atomic-file');
+    }
+  });
+
   describe('saveSessionChecked', () => {
     const record = (sessionId: string, extra: Record<string, unknown> = {}) => ({
       sessionId,

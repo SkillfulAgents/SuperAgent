@@ -11,7 +11,7 @@ vi.mock('./session-persistence', () => ({
     getSession() { return null }
     deleteSession() {}
     updateLastActivity() {}
-    updateMetadata() {}
+    updateSession() {}
   },
 }))
 

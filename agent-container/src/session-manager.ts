@@ -6,7 +6,7 @@ import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
-import { SessionPersistence } from './session-persistence';
+import { SessionPersistence, type SessionUpdate } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
@@ -958,33 +958,27 @@ export class SessionManager extends EventEmitter {
     // host explicitly marks it as another automated turn (x-agent follow-up).
     // Human input promotes the session to the interactive eviction class so
     // the conversation doesn't pay a cold restart after every turn.
+    const persisted: SessionUpdate = {};
     if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
       console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
       sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
-      this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+      persisted.metadata = sessionData.session.metadata;
     }
 
     // Update last activity
     sessionData.session.lastActivity = new Date();
-    this.persistence.updateLastActivity(sessionId);
+    persisted.lastActivity = sessionData.session.lastActivity.toISOString();
 
     if (options?.llmRuntime) {
       rememberConnectionRuntime(options.llmRuntime);
-      this.persistence.updateConnection(sessionId, options.llmRuntime.llmProviderId);
+      persisted.llmProviderId = options.llmRuntime.llmProviderId;
     }
     // Persist runtime-options changes so resume after eviction uses the latest values
-    if (options?.effort !== undefined) {
-      this.persistence.updateEffort(sessionId, options.effort);
-    }
-    if (options?.speed !== undefined) {
-      this.persistence.updateSpeed(sessionId, options.speed);
-    }
-    if (options?.model !== undefined) {
-      this.persistence.updateModel(sessionId, options.model);
-    }
-    if (options?.capabilityPolicies !== undefined) {
-      this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
-    }
+    if (options?.effort !== undefined) persisted.effort = options.effort;
+    if (options?.speed !== undefined) persisted.speed = options.speed;
+    if (options?.model !== undefined) persisted.model = options.model;
+    if (options?.capabilityPolicies !== undefined) persisted.capabilityPolicies = options.capabilityPolicies;
+    this.persistence.updateSession(sessionId, persisted);
 
     // Send to Claude Code process (messages are stored via handleMessage)
     await sessionData.process.sendMessage(content, uuid, options);
