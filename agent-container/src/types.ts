@@ -97,6 +97,7 @@ export interface CreateSessionRequest {
   effort?: EffortLevel; // Initial thinking effort level
   speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
+  globalInstructions?: string; // Org-wide guidance set in host Settings, rendered into every agent's prompt
   // What the host expects the NEXT session to ask for (agent default model/
   // effort/speed with the global fallback applied), as opposed to this
   // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
@@ -123,4 +124,5 @@ export interface SendMessageRequest {
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
   isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
+  globalInstructions?: string; // Current org-wide guidance; a change triggers interrupt+restart (it lives in the prompt)
 }

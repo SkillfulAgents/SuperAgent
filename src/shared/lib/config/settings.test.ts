@@ -1676,3 +1676,22 @@ describe('agentCapabilities', () => {
     expect(DEFAULT_SETTINGS.agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
   })
 })
+
+describe('globalInstructions', () => {
+  it('is absent when never set', () => {
+    mockNoSettingsFile()
+    expect(loadSettings().globalInstructions).toBeUndefined()
+  })
+
+  it('loads a stored string as-is', () => {
+    mockSettingsFile(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
+    expect(loadSettings().globalInstructions).toBe('Be concise.\n')
+  })
+
+  it.each([42, { text: 'x' }, 'x'.repeat(20_001)])('drops an invalid stored value (%#) instead of prompting every agent with it', (value) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockSettingsFile(JSON.stringify({ globalInstructions: value }))
+    expect(loadSettings().globalInstructions).toBeUndefined()
+    warn.mockRestore()
+  })
+})

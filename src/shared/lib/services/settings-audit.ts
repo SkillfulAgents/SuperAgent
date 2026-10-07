@@ -31,6 +31,7 @@ const AUDITED_KEYS: (keyof AppSettings)[] = [
   'shareErrorReports',
   'enableToolSearch',
   'agentCapabilities',
+  'globalInstructions',
 ]
 
 /**
@@ -72,6 +73,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['voice', 'Voice'],
   ['computerUse', 'Computer Use'],
   ['agentCapabilities', 'Subagents'],
+  ['globalInstructions', 'Global Guidance'],
   ['shareAnalytics', 'Analytics'],
   ['shareErrorReports', 'Analytics'],
   ['analyticsTargets', 'Analytics'],
