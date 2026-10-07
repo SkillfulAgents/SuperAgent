@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA-20261007-201038-5j5j agent can receive a message, execute browser commands, navigate to example.com, retrieve the page title, and return a response that mentions \"Example Domain\"",
+  "steps": [
+    "Step 1: Navigate to http://localhost:47891 - Successfully navigated to the Gamut application homepage, page loaded with title \"Gamut\"",
+    "Step 2: Find the \"QA-20261007-201038-5j5j\" agent in sidebar and click it - Successfully located the agent in the \"Your Agents\" section and clicked it, navigated to the agent page with URL /agents/qa-20261007-201038-5j5j-10z5blttpc",
+    "Step 3: Click on chat input box and type message - Successfully clicked the input field (ref=e204) and typed the message \"Open a browser and go to https://example.com. Tell me the page title.\"",
+    "Step 4: Send the message - Successfully clicked the send button (ref=e357), message was sent to the agent, agent status changed to \"working\"",
+    "Step 5: Wait for response - Agent completed the task in approximately 10 seconds. Response received and displayed in the chat window",
+    "Step 6: Verify response mentions \"Example Domain\" - Response successfully displayed: 'The page title is \"Example Domain\". The page at https://example.com loaded normally, and I closed the browser afterwards.'",
+    "Step 7: Take screenshot of final result - Screenshot captured showing the complete chat conversation with the agent's response containing \"Example Domain\""
+  ],
+  "bugs": [],
+  "durationMs": 315586,
+  "sessionId": "181a4b3b-6210-4d7a-ba4c-a05e1b181730",
+  "cost": {
+    "inputTokens": 584,
+    "outputTokens": 13503,
+    "cacheCreationTokens": 91672,
+    "cacheReadTokens": 1808149,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.363504
+  }
+}
