@@ -1,29 +1,8 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createAgent, deleteAgentViaApi, uniqueName } from '../helpers/agents'
-
-async function chooseFolder(page: Page, folder: string, change = false) {
-  await page.getByTestId('volume-settings-dialog').getByRole('button', { name: change ? 'Change folder' : 'Select folder', exact: true }).click()
-  const picker = page.getByTestId('volume-folder-picker')
-  await expect(picker).toBeVisible()
-  await expect(picker.getByRole('textbox')).toHaveCount(0)
-  // A deleted previous selection can still recover through Home.
-  await picker.getByRole('button', { name: 'Home', exact: true }).click()
-  const root = path.parse(folder).root
-  await picker.getByRole('button', { name: process.platform === 'win32' ? root.slice(0, 2) : 'Computer', exact: true }).click()
-  await expect(picker.getByTestId('volume-picker-location')).toHaveText(root)
-  let current = root
-  for (const segment of folder.slice(root.length).split(path.sep).filter(Boolean)) {
-    await picker.getByRole('button', { name: `Open ${segment}`, exact: true }).click()
-    current = path.join(current, segment)
-    await expect(picker.getByTestId('volume-picker-location')).toHaveText(current)
-  }
-  await picker.getByRole('button', { name: 'Select this folder' }).click()
-  await expect(picker).not.toBeVisible()
-  await expect(page.getByTestId('selected-volume-folder')).toHaveText(folder)
-}
 
 test('reuses a saved volume, edits its definition, and detaches without deleting files', async ({ page, request }, testInfo) => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shared-volume-e2e-')))
@@ -32,19 +11,11 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
   const second = await createAgent(request, uniqueName(testInfo, 'Volume borrower'))
   let volumeId: string | undefined
   try {
-    await page.goto('/settings/volumes')
-    await page.getByRole('button', { name: 'Add volume', exact: true }).click()
-    await expect(page.getByRole('textbox', { name: 'Folder' })).toHaveCount(0)
-    await chooseFolder(page, folder)
-    const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/volume-definitions'))
-    await page.getByRole('button', { name: 'Create volume', exact: true }).click()
-    const definition = await saved
-    expect(definition.status()).toBe(201)
-    volumeId = (await definition.json()).id
-    await expect(page.getByTestId('volume-settings-dialog')).not.toBeVisible()
-    const created = await request.post(`/api/agents/${first.slug}/mounts`, { data: { volumeId } })
+    // The existing folder-picker request still creates and attaches in one call.
+    const created = await request.post(`/api/agents/${first.slug}/mounts`, { data: { type: 'local', config: { path: folder } } })
     expect(created.status()).toBe(201)
     const original = await created.json() as { id: string; volumeId: string; name: string }
+    volumeId = original.volumeId
     const renamed = uniqueName(testInfo, 'Shared notes')
 
     await page.goto('/settings/volumes')
@@ -59,7 +30,7 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
 
     await page.goto(`/agents/${second.slug}`)
     await page.getByTestId('add-mount-menu').click()
-    await expect(page.getByRole('menuitem', { name: 'New Volume' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'New Volume' })).not.toBeVisible()
     await page.getByRole('menuitem', { name: renamed, exact: false }).click()
     await expect(page.getByRole('button', { name: 'Mount actions' })).toBeVisible()
     const secondMounts = await (await request.get(`/api/agents/${second.slug}/mounts`)).json() as Array<{ id: string; volumeId: string; name: string }>
@@ -85,56 +56,6 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
     await deleteAgentViaApi(request, first)
     await deleteAgentViaApi(request, second)
     if (volumeId) await request.delete(`/api/volume-definitions/${volumeId}`)
-    fs.rmSync(folder, { recursive: true, force: true })
-  }
-})
-
-
-test('creates a volume from the dropdown even when every saved volume is already mounted', async ({ page, request }, testInfo) => {
-  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'new-volume-e2e-')))
-  const agent = await createAgent(request, uniqueName(testInfo, 'New volume'))
-  const volumeIds: string[] = []
-  try {
-    const existing = await request.post(`/api/agents/${agent.slug}/mounts`, { data: { type: 'local', config: { path: folder } } })
-    expect(existing.status()).toBe(201)
-    volumeIds.push((await existing.json()).volumeId)
-    await page.goto(`/agents/${agent.slug}`)
-    await page.getByTestId('add-mount-menu').click()
-    await expect(page.getByRole('menuitem').last()).toHaveText('New Volume')
-    await page.getByRole('menuitem', { name: 'New Volume' }).click()
-    const dialog = page.getByTestId('volume-settings-dialog')
-    await expect(dialog).toHaveAccessibleName('New Volume')
-    await expect(dialog.getByRole('button', { name: 'Select folder' })).toBeVisible()
-    await expect(dialog.getByRole('textbox', { name: 'Folder' })).toHaveCount(0)
-    const name = uniqueName(testInfo, 'Reports')
-    await dialog.getByLabel('Name', { exact: true }).fill(name)
-    const disappearingFolder = path.join(folder, 'removed-after-selection')
-    fs.mkdirSync(disappearingFolder)
-    await chooseFolder(page, disappearingFolder)
-    fs.rmdirSync(disappearingFolder)
-    await dialog.getByRole('button', { name: 'Create and attach' }).click()
-    await expect(dialog.getByRole('alert')).toBeVisible()
-    await expect(dialog.getByLabel('Name')).toHaveValue(name)
-    const rejectedList = await (await request.get('/api/volume-definitions')).json() as Array<{ name: string }>
-    expect(rejectedList.some(v => v.name === name)).toBe(false)
-
-    await chooseFolder(page, folder, true)
-    const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/mounts'))
-    await dialog.getByRole('button', { name: 'Create and attach' }).click()
-    const response = await saved
-    expect(response.status()).toBe(201)
-    const created = await response.json() as { volumeId: string }
-    volumeIds.push(created.volumeId)
-    await expect(dialog).not.toBeVisible()
-    await expect(page.getByText(name, { exact: true })).toBeVisible()
-    const mounts = await (await request.get(`/api/agents/${agent.slug}/mounts`)).json()
-    expect(mounts).toHaveLength(2)
-    expect(mounts).toContainEqual(expect.objectContaining({ volumeId: created.volumeId, name }))
-    await page.goto('/settings/volumes')
-    await expect(page.getByTestId('saved-volume-row').filter({ hasText: name })).toContainText('Used by 1 agent')
-  } finally {
-    await deleteAgentViaApi(request, agent)
-    for (const id of volumeIds) await request.delete(`/api/volume-definitions/${id}`)
     fs.rmSync(folder, { recursive: true, force: true })
   }
 })

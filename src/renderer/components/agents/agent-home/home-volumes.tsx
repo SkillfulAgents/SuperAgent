@@ -60,7 +60,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No volumes yet</p>
-          <p className="text-xs mt-1">Attach a saved volume or create a new one to give this agent read/write access.</p>
+          <p className="text-xs mt-1">Attach a saved volume{volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.</p>
         </div>
       )}
 
@@ -115,8 +115,10 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                       </DropdownMenuItem>
                     )
                   })}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => setShowNewVolume(true)}><Plus className="h-4 w-4" />New Volume</DropdownMenuItem>
+                  {volumes.canCreateMount && <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => setShowNewVolume(true)}><Plus className="h-4 w-4" />New Volume</DropdownMenuItem>
+                  </>}
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (

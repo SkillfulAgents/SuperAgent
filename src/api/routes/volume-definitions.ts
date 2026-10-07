@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated } from '../middleware/auth'
-import { listVolumeFolders } from '@shared/lib/services/volume-folder-browser'
 import { volumeViewer } from '../lib/volume-access'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -16,8 +15,6 @@ routes.onError((error, c) => {
   return c.json({ error: 'Could not update volumes' }, 500)
 })
 
-// Browsing and creating local volumes share the authenticated workspace boundary.
-routes.get('/folders', async c => c.json(await listVolumeFolders(c.req.query())))
 routes.get('/', async c => c.json(await listVolumeDefinitions(volumeViewer(c))))
 routes.post('/', async c => {
   const id = await createVolumeDefinition(await c.req.json(), volumeViewer(c))

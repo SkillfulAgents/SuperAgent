@@ -42,27 +42,6 @@ afterEach(async () => {
 const input = () => ({ type: 'local', config: { path: folder }, name: 'Notes' })
 
 describe('volume definition API', () => {
-  it('browses workspace folders with authentication, omitting files and rejecting invalid folders', async () => {
-    fs.mkdirSync(path.join(folder, 'Reports'))
-    fs.mkdirSync(path.join(folder, 'Research'))
-    fs.writeFileSync(path.join(folder, 'notes.txt'), 'A file, not a folder')
-    const route = `/folders?path=${encodeURIComponent(folder)}`
-    expect((await app.request(`/volumes${route}`)).status).toBe(401)
-    const response = await request(route)
-    expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({
-      path: folder, parent: path.dirname(folder),
-      folders: [
-        { name: 'Reports', path: path.join(folder, 'Reports') },
-        { name: 'Research', path: path.join(folder, 'Research') },
-      ],
-    })
-    expect((await request('/folders?path=relative')).status).toBe(400)
-    expect((await request(`/folders?path=${encodeURIComponent(path.join(folder, 'missing'))}`)).status).toBe(400)
-    expect((await request(`/folders?path=${encodeURIComponent(path.join(folder, 'notes.txt'))}`)).status).toBe(400)
-    const root = path.parse(folder).root
-    expect(await (await request(`/folders?path=${encodeURIComponent(root)}`)).json()).toMatchObject({ path: root, parent: null })
-  })
   it('requires authentication and binds private ownership to the authenticated user', async () => {
     expect((await app.request('/volumes')).status).toBe(401)
     const response = await request('', 'POST', input())

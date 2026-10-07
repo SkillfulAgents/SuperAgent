@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
@@ -79,6 +80,7 @@ export function useVolumesManager(agentSlug: string) {
   const definitions = registry.data ?? []
   const { canUseAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
+  const canCreateMount = canModifyMounts && canUseHostFeatures()
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -98,7 +100,8 @@ export function useVolumesManager(agentSlug: string) {
 
   const handleCreateMount = async ({ name, path, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add volumes to this agent')
-    if (!path) throw new Error('Enter a folder path')
+    if (!canCreateMount) throw new Error('Select a folder in the desktop app')
+    if (!path) throw new Error('Select a folder')
     setOperationError(null)
     // Create + attach through one atomic API operation. Let the dialog surface
     // errors and retain the form so retrying cannot leave an unused definition.
@@ -154,14 +157,14 @@ export function useVolumesManager(agentSlug: string) {
     isLoading: isLoading || registry.isLoading,
     operationError: operationError ?? (registry.error ? 'Could not load saved volumes' : null),
     canModifyMounts,
+    canCreateMount,
     pendingRestart,
     isRestarting,
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // Creation and reuse operate on the selected workspace. Only the dialog's
-    // native folder picker needs access to this computer.
-    canAddMount: canModifyMounts,
+    // New local folders use the existing OS picker; saved volumes can be reused from any target.
+    canAddMount: canModifyMounts && (canCreateMount || definitions.some(v => !mounts.some(m => m.volumeId === v.id))),
     handleCreateMount,
     handleAttach,
     handleRemove,
