@@ -78,10 +78,17 @@ describe('LinuxMprisBackend', () => {
     const { run, calls } = bus({ 'org.mpris.MediaPlayer2.spotify': { status: 'Playing' } })
     const backend = new LinuxMprisBackend(run)
     await backend.pause('org.mpris.MediaPlayer2.spotify')
-    await backend.play('org.mpris.MediaPlayer2.spotify')
+    await expect(backend.play('org.mpris.MediaPlayer2.spotify')).resolves.toBe(true)
     expect(run).toHaveBeenCalledWith(DBUS_SEND, expect.arrayContaining(['org.mpris.MediaPlayer2.Player.Pause']))
     expect(calls.at(-1)).toEqual([
       '--session', '--print-reply', '--dest=org.mpris.MediaPlayer2.spotify', '/org/mpris/MediaPlayer2', 'org.mpris.MediaPlayer2.Player.Play',
     ])
+  })
+
+  it('reports a player that quit as not played, and lets other failures through', async () => {
+    const { run } = bus({})
+    await expect(new LinuxMprisBackend(run).play('org.mpris.MediaPlayer2.spotify')).resolves.toBe(false)
+    const timeout = vi.fn(async () => { throw new Error('Command failed: dbus-send (timed out)') })
+    await expect(new LinuxMprisBackend(timeout).play('org.mpris.MediaPlayer2.spotify')).rejects.toThrow(/timed out/)
   })
 })

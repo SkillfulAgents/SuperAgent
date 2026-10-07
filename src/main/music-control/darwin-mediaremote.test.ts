@@ -37,13 +37,31 @@ describe('DarwinMediaRemoteBackend', () => {
     await expect(new DarwinMediaRemoteBackend(adapter, garbage).probe()).rejects.toThrow(/other than JSON/)
   })
 
-  it('sends the MediaRemote pause and play commands', async () => {
+  it('sends the MediaRemote pause command', async () => {
     const run = vi.fn(async () => '')
-    const backend = new DarwinMediaRemoteBackend(adapter, run)
-    await backend.pause('com.spotify.client')
+    await new DarwinMediaRemoteBackend(adapter, run).pause('com.spotify.client')
     expect(run).toHaveBeenLastCalledWith(PERL, [adapter.script, adapter.framework, 'send', '1'])
-    await backend.play('com.spotify.client')
-    expect(run).toHaveBeenLastCalledWith(PERL, [adapter.script, adapter.framework, 'send', '0'])
+  })
+
+  it('plays only the held player, which still owns now playing while paused', async () => {
+    const owner = (info: object | null) => vi.fn(async (_file: string, args: string[]) => args.includes('get') ? JSON.stringify(info) : '')
+    const paused = owner({ bundleIdentifier: 'com.spotify.client', playing: false, title: 'Song' })
+    await expect(new DarwinMediaRemoteBackend(adapter, paused).play('com.spotify.client')).resolves.toBe(true)
+    expect(paused).toHaveBeenLastCalledWith(PERL, [adapter.script, adapter.framework, 'send', '0'])
+
+    // The person played and paused a browser video since: play would start it.
+    const browser = owner({ bundleIdentifier: 'com.google.Chrome.helper', parentApplicationBundleIdentifier: 'com.google.Chrome', playing: false, title: 'Video' })
+    await expect(new DarwinMediaRemoteBackend(adapter, browser).play('com.spotify.client')).resolves.toBe(false)
+    expect(browser).not.toHaveBeenCalledWith(PERL, expect.arrayContaining(['send']))
+
+    const gone = owner(null)
+    await expect(new DarwinMediaRemoteBackend(adapter, gone).play('com.spotify.client')).resolves.toBe(false)
+    expect(gone).toHaveBeenCalledTimes(1)
+
+    // Reported as still playing a moment after a pause (the state trails commands): play anyway.
+    const stale = owner({ bundleIdentifier: 'com.spotify.client', playing: true, title: 'Song' })
+    await expect(new DarwinMediaRemoteBackend(adapter, stale).play('com.spotify.client')).resolves.toBe(true)
+    expect(stale).toHaveBeenLastCalledWith(PERL, [adapter.script, adapter.framework, 'send', '0'])
   })
 })
 

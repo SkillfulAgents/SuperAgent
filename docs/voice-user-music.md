@@ -21,7 +21,24 @@ layer rather than any one player's API.
   speaks or standalone read-aloud is audible. A request card pauses the hold,
   so the music waits with it.
 - Voice mode goes off → the player is started again, but only if voice mode is
-  the one that paused it.
+  the one that paused it, and only while it still owns now playing. On macOS
+  play goes to whichever app owns now playing, so if the person played and
+  paused something else meanwhile (a browser video), nothing is sent and voice
+  mode lets go of the player instead of starting the video.
+- Voice mode holds the player until the host confirms it plays again: a
+  resume the host could not carry out is retried on the next hold (at most
+  every 2 s) and at the end of the session.
+- The OS reports a player's state about 200 ms behind our own commands
+  (still "playing" right after a pause, still "paused" right after a play).
+  So nothing decides from a state it just changed: an end() followed at once
+  by a begin() (React replays a mount's effects in development) hands the
+  paused player over instead of playing and re-pausing it, play is sent
+  without checking `playing`, and a pause within 1.5 s of our own play
+  pauses that player even while the OS still reports it paused.
+- A pause that lands after voice mode went off for good is given back by
+  that session's end().
+- Main remembers which player each window holds paused. A window that closes
+  or reloads mid-session, or an app that quits, gives the music back.
 - Every pause asks the host what is playing first. A player the person paused
   themselves is never started again against their wish; a player they started
   in place of the first one is followed.
@@ -45,7 +62,7 @@ own settings (`voice.holdSound`, `voice.userMusic`, default on).
 | Renderer | `src/renderer/hooks/use-user-music.ts` | `useUserMusicSession(enabled)` begins/ends the takeover; `userMusicSupported()` is the gate |
 | Renderer | `src/renderer/components/messages/message-input.tsx` | picks the hold source per session |
 | Preload | `src/preload/index.ts` | `musicProbe`, `musicPause`, `musicResume` |
-| Main | `src/main/music-control/index.ts` | stateless service over one backend per platform |
+| Main | `src/main/music-control/index.ts` | service over one backend per platform; remembers each window's held player and releases it on close, reload and quit |
 | Main | `src/main/music-control/darwin-mediaremote.ts` | macOS: the MediaRemote adapter |
 | Main | `src/main/music-control/linux-mpris.ts` | Linux: MPRIS over `dbus-send` |
 
@@ -70,11 +87,18 @@ Apple's own `/usr/bin/perl` is still allowed, so the app ships
 now-playing JSON and sends play/pause. No Automation prompt is involved.
 
 `scripts/build-mediaremote-adapter.sh` fetches the pinned ref, builds the
-framework with cmake (universal x86_64 + arm64) and leaves everything in
+framework with cmake (universal x86_64 + arm64, deployment target macOS 12 so
+dyld loads it on every macOS the app runs on) and leaves everything in
 `build/mediaremote-adapter/`, which the mac `extraResources` config copies into
 the app bundle. `npm run dist:mac` runs it; for local development on a Mac run
 `npm run build:mediaremote-adapter` once (needs cmake). Without it the main
 process logs one warning and reports the feature unsupported.
+
+MediaRemote cannot address a command to one app: `send` reaches whichever app
+owns now playing. Play therefore asks `get` first and sends only when the
+held player is still the owner. That check and the send are two spawns about
+40 ms apart, so an owner change inside that window (another app starting
+media at that instant, or the owner quitting) can still receive the play.
 
 Risks: Apple could remove perl from macOS (announced in 2019, not done as of
 macOS 26) or gate it too. The adapter is actively maintained and the app

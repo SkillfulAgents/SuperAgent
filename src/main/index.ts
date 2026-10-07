@@ -58,7 +58,7 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
-import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying } from './music-control'
+import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
 import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
@@ -601,11 +601,15 @@ ipcMain.handle('set-keep-awake', async (_event, enabled: boolean) => {
 
 // Voice mode and the person's own music player (Spotify, Music, a browser):
 // what is playing, pause it while someone speaks, play it while the agent
-// works. The renderer owns the session; main only asks and tells the OS.
+// works. The renderer owns the session; main asks and tells the OS, and
+// remembers what each window holds so a closed or reloaded one gives it back.
 const NowPlayingPlayerId = z.string().min(1).max(512)
 ipcMain.handle('music:probe', () => probeNowPlaying())
-ipcMain.handle('music:pause', () => pauseNowPlaying())
-ipcMain.handle('music:resume', (_event, playerId: unknown) => resumeNowPlaying(NowPlayingPlayerId.parse(playerId)))
+ipcMain.handle('music:pause', (event) => {
+  watchNowPlayingHolder(event.sender)
+  return pauseNowPlaying(event.sender.id)
+})
+ipcMain.handle('music:resume', (event, playerId: unknown) => resumeNowPlaying(event.sender.id, NowPlayingPlayerId.parse(playerId)))
 
 // IPC handler for showing OS notifications.
 // `actions` and `context` are optional — when present, action buttons are
@@ -1789,6 +1793,9 @@ async function gracefulShutdown() {
 
   // Restore system sleep settings (best-effort, no sudo prompt)
   cleanupKeepAwake()
+
+  // Give back a music player voice mode holds paused
+  await releaseAllNowPlaying()
 
   // Stop notification listener
   stopNotificationListener()

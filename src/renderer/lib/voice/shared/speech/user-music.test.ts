@@ -1,20 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { UserMusic, type MusicBridge } from './user-music'
+import { RESUME_RETRY_MS, UserMusic, type MusicBridge } from './user-music'
 
 const spotify = { id: 'com.spotify.client', name: 'Spotify' }
 
 /** A host whose player state the test can move under voice mode's feet. */
 function host(initial: { id: string; name: string } | null) {
   const state = { playing: initial }
+  const known = new Map<string, { id: string; name: string }>()
   const bridge: MusicBridge = {
     probe: vi.fn(async () => ({ supported: true, player: state.playing })),
     pause: vi.fn(async () => {
       const paused = state.playing
+      if (paused) known.set(paused.id, paused)
       state.playing = null
       return { paused }
     }),
     resume: vi.fn(async (playerId: string) => {
-      state.playing = { id: playerId, name: 'resumed' }
+      state.playing = known.get(playerId) ?? { id: playerId, name: 'resumed' }
+      return { outcome: 'resumed' as const }
     }),
   }
   return { bridge, state }
@@ -133,12 +136,13 @@ describe('UserMusic', () => {
     expect(bridge.pause).toHaveBeenCalledTimes(2)
   })
 
-  it('ignores answers that arrive after the session they belong to ended', async () => {
-    const { bridge } = host(spotify)
+  it('undoes a pause that lands after the session it belongs to ended', async () => {
+    const { bridge, state } = host(spotify)
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
     ;(bridge.pause as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       await gate
+      state.playing = null
       return { paused: spotify }
     })
     const music = new UserMusic({ bridge })
@@ -147,7 +151,89 @@ describe('UserMusic', () => {
     release()
     await Promise.all([begun, ended])
     expect(music.getState()).toEqual({ active: false, playerName: null })
+    expect(bridge.resume).toHaveBeenCalledWith(spotify.id)
+    expect(state.playing).not.toBeNull()
+  })
+
+  it('takes the player over when a mount replays begin, end, begin (React Strict Mode)', async () => {
+    const { bridge, state } = host(spotify)
+    const music = new UserMusic({ bridge })
+    await Promise.all([music.begin(), music.end(), music.begin()])
+    expect(music.getState()).toEqual({ active: true, playerName: 'Spotify' })
+    expect(state.playing).toBeNull()
+    await music.end()
+    expect(state.playing).not.toBeNull()
+  })
+
+  it('hands the paused player across a replayed mount instead of playing and pausing it again', async () => {
+    // The OS reports state a moment late: right after a pause it still says
+    // "playing", right after a play it still says "paused". A replay that
+    // asked again would find nothing playing and fall back to the loop.
+    const { bridge, state } = host(spotify)
+    const music = new UserMusic({ bridge })
+    await Promise.all([music.begin(), music.end(), music.begin()])
+    expect(bridge.pause).toHaveBeenCalledOnce()
     expect(bridge.resume).not.toHaveBeenCalled()
+    expect(music.getState()).toEqual({ active: true, playerName: 'Spotify' })
+    await Promise.all([music.end(), music.begin(), music.end()])
+    expect(bridge.pause).toHaveBeenCalledOnce()
+    expect(bridge.resume).toHaveBeenCalledOnce()
+    expect(state.playing).not.toBeNull()
+    expect(music.getState()).toEqual({ active: false, playerName: null })
+  })
+
+  it('keeps holding a player whose resume failed, retries it without stacking, and gives it back at the end', async () => {
+    vi.useFakeTimers()
+    try {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const { bridge, state } = host(spotify)
+      const resume = bridge.resume as ReturnType<typeof vi.fn>
+      const music = new UserMusic({ bridge })
+      await music.begin()
+      resume.mockResolvedValueOnce({ outcome: 'failed' })
+      music.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(resume).toHaveBeenCalledTimes(1)
+      expect(state.playing).toBeNull()
+
+      // The hold polls every 200 ms: nothing until the retry delay has passed.
+      music.start()
+      await vi.advanceTimersByTimeAsync(RESUME_RETRY_MS - 1)
+      music.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(resume).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      resume.mockResolvedValueOnce({ outcome: 'failed' })
+      music.start()
+      music.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(resume).toHaveBeenCalledTimes(2)
+
+      // Speech pauses nothing (it never played), and end() still gives it back.
+      music.stopImmediately()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(bridge.pause).toHaveBeenCalledTimes(1)
+      await music.end()
+      expect(resume).toHaveBeenCalledTimes(3)
+      expect(state.playing).not.toBeNull()
+      warn.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets go of a player the host says it can no longer play', async () => {
+    const { bridge } = host(spotify)
+    const resume = bridge.resume as ReturnType<typeof vi.fn>
+    const music = new UserMusic({ bridge })
+    await music.begin()
+    resume.mockResolvedValueOnce({ outcome: 'released' })
+    music.start()
+    await settle()
+    music.start()
+    await settle()
+    await music.end()
+    expect(resume).toHaveBeenCalledTimes(1)
   })
 
   it('survives a host that cannot answer', async () => {

@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { NowPlayingPlayer } from '@shared/lib/voice/now-playing-types'
-import { mediaRemoteNowPlayingSchema } from './mediaremote-schema'
+import { mediaRemoteNowPlayingSchema, type MediaRemoteNowPlaying } from './mediaremote-schema'
 import { runCommand, type NowPlayingBackend, type RunCommand } from './backend'
 
 /**
@@ -63,6 +63,33 @@ export class DarwinMediaRemoteBackend implements NowPlayingBackend {
   ) {}
 
   async probe(): Promise<NowPlayingPlayer | null> {
+    const info = await this.nowPlaying()
+    if (!info?.playing) return null
+    return { id: ownerId(info), name: playerNameFromBundleId(ownerId(info)) }
+  }
+
+  // MediaRemote commands go to whichever app holds now playing; there is no
+  // per-player addressing. Pause follows a probe that named the owner.
+  async pause(_playerId: string): Promise<void> {
+    await this.run(PERL, [this.adapter.script, this.adapter.framework, 'send', MR_PAUSE])
+  }
+
+  /**
+   * Play only when the held player still owns now playing, which it does
+   * while paused. Otherwise the command would start whatever the person
+   * played and paused since, e.g. a browser video. `playing` is not
+   * consulted: it trails a pause sent a moment ago by about 200 ms, and
+   * playing a player that plays is harmless.
+   */
+  async play(playerId: string): Promise<boolean> {
+    const info = await this.nowPlaying()
+    if (!info || ownerId(info) !== playerId) return false
+    await this.run(PERL, [this.adapter.script, this.adapter.framework, 'send', MR_PLAY])
+    return true
+  }
+
+  /** The now-playing owner, playing or paused, or null when no app reports one. */
+  private async nowPlaying(): Promise<MediaRemoteNowPlaying> {
     const stdout = await this.run(PERL, [this.adapter.script, this.adapter.framework, 'get', '--no-artwork'])
     const trimmed = stdout.trim()
     if (!trimmed) return null
@@ -72,20 +99,11 @@ export class DarwinMediaRemoteBackend implements NowPlayingBackend {
     } catch {
       throw new Error(`MediaRemote adapter printed something other than JSON: ${trimmed.slice(0, 200)}`)
     }
-    const info = mediaRemoteNowPlayingSchema.parse(raw)
-    if (!info?.playing) return null
-    // A browser reports through a helper process; the parent is the app the person knows.
-    const id = info.parentApplicationBundleIdentifier ?? info.bundleIdentifier
-    return { id, name: playerNameFromBundleId(id) }
+    return mediaRemoteNowPlayingSchema.parse(raw)
   }
+}
 
-  // MediaRemote commands go to whichever app holds now playing; there is no
-  // per-player addressing, so the player id is only a record of intent.
-  async pause(_playerId: string): Promise<void> {
-    await this.run(PERL, [this.adapter.script, this.adapter.framework, 'send', MR_PAUSE])
-  }
-
-  async play(_playerId: string): Promise<void> {
-    await this.run(PERL, [this.adapter.script, this.adapter.framework, 'send', MR_PLAY])
-  }
+/** A browser reports through a helper process; the parent is the app the person knows. */
+function ownerId(info: NonNullable<MediaRemoteNowPlaying>): string {
+  return info.parentApplicationBundleIdentifier ?? info.bundleIdentifier
 }

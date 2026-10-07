@@ -24,3 +24,17 @@ export interface NowPlayingPauseResult {
   /** The player that was playing and is now paused, or null when nothing was playing. */
   paused: NowPlayingPlayer | null
 }
+
+/**
+ * What became of a request to play a held player again:
+ * - `resumed`: it is playing (or already was).
+ * - `released`: it no longer holds now playing (it quit, or the person moved
+ *   on to another app), so playing would start someone else's media; voice
+ *   mode lets go of it.
+ * - `failed`: the host could not answer; voice mode still holds it and may try again.
+ */
+export type NowPlayingResumeOutcome = 'resumed' | 'released' | 'failed'
+
+export interface NowPlayingResumeResult {
+  outcome: NowPlayingResumeOutcome
+}

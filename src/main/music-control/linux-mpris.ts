@@ -57,8 +57,16 @@ export class LinuxMprisBackend implements NowPlayingBackend {
     await this.call(playerId, 'Pause')
   }
 
-  async play(playerId: string): Promise<void> {
-    await this.call(playerId, 'Play')
+  // MPRIS addresses the player by its bus name, so Play cannot reach anyone
+  // else; a name with no owner means the player quit.
+  async play(playerId: string): Promise<boolean> {
+    try {
+      await this.call(playerId, 'Play')
+      return true
+    } catch (err) {
+      if (err instanceof Error && /ServiceUnknown|NameHasNoOwner/.test(err.message)) return false
+      throw err
+    }
   }
 
   /** The player's own display name, falling back to its bus name. */

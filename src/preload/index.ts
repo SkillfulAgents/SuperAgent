@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
-import type { NowPlayingPauseResult, NowPlayingProbe } from '../shared/lib/voice/now-playing-types'
+import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -345,8 +345,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   musicProbe: (): Promise<NowPlayingProbe> => ipcRenderer.invoke('music:probe'),
   // Pause whatever is playing; says which player that was, or null when nothing was.
   musicPause: (): Promise<NowPlayingPauseResult> => ipcRenderer.invoke('music:pause'),
-  // Play again the player musicPause reported.
-  musicResume: (playerId: string): Promise<void> => ipcRenderer.invoke('music:resume', playerId),
+  // Play again the player musicPause reported, if it still owns now playing.
+  musicResume: (playerId: string): Promise<NowPlayingResumeResult> => ipcRenderer.invoke('music:resume', playerId),
 
   // Auto-update
   checkForUpdates: (): Promise<void> => {
@@ -552,7 +552,7 @@ declare global {
       setKeepAwake: (enabled: boolean) => Promise<void>
       musicProbe: () => Promise<NowPlayingProbe>
       musicPause: () => Promise<NowPlayingPauseResult>
-      musicResume: (playerId: string) => Promise<void>
+      musicResume: (playerId: string) => Promise<NowPlayingResumeResult>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>

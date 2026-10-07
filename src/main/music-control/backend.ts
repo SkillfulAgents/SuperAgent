@@ -6,7 +6,12 @@ export interface NowPlayingBackend {
   /** The player that is audibly playing right now, or null. */
   probe(): Promise<NowPlayingPlayer | null>
   pause(playerId: string): Promise<void>
-  play(playerId: string): Promise<void>
+  /**
+   * Play `playerId` again. False when that player is not the one the command
+   * would reach (it quit, or another app took now playing), in which case
+   * nothing was sent.
+   */
+  play(playerId: string): Promise<boolean>
 }
 
 /** Runs a fixed argv and resolves with stdout; injectable for tests. */
