@@ -45,7 +45,21 @@ describe('fetchPlatformBillingInfo', () => {
       'http://proxy.test/v1/billing',
       expect.objectContaining({ headers: { Authorization: 'Bearer plat_sa_token' } }),
     )
-    expect(result).toEqual(VALID_SNAPSHOT)
+    expect(result).toEqual({ ...VALID_SNAPSHOT, subscription: { ...VALID_SNAPSHOT.subscription, creditScope: 'seat' } })
+  })
+
+  it.each([
+    ['missing', undefined, 'seat'],
+    ['null', null, 'seat'],
+    ['seat', 'seat', 'seat'],
+    ['org', 'org', 'org'],
+    ['unknown', 'department', 'seat'],
+  ])('reads subscription.creditScope %s as %s', async (_label, creditScope, expected) => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ ...VALID_SNAPSHOT, subscription: { ...VALID_SNAPSHOT.subscription, creditScope } }),
+    )
+    const result = await fetchPlatformBillingInfo()
+    expect(result.subscription.creditScope).toBe(expected)
   })
 
   it('keeps an optional hasPaymentMethod flag from newer proxies', async () => {

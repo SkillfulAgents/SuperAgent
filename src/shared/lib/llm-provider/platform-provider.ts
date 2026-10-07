@@ -1,4 +1,5 @@
 import { fetchPlatformBillingInfo } from '../services/platform-billing-service'
+import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '../services/platform-billing-copy'
 import { usageSnapshot, type UsageLimit } from './usage-schema'
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
@@ -61,11 +62,13 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     if (!billing.configured) return usageSnapshot([])
     const limits: UsageLimit[] = []
     if (billing.seat) {
+      // Pooled orgs report the shared pool under `seat`; only the wording changes.
+      const copy = SUBSCRIPTION_CREDIT_COPY[subscriptionCreditScope(billing)]
       const { balanceCents, startingBalanceCents } = billing.seat
-      if (startingBalanceCents > 0) limits.push({ kind: 'window', id: 'seat', label: 'Seat allowance',
+      if (startingBalanceCents > 0) limits.push({ kind: 'window', id: 'seat', label: copy.allowance,
         usedPercent: Math.max(0, (1 - balanceCents / startingBalanceCents) * 100),
         ...(billing.subscription.currentPeriodEnd && Number.isFinite(Date.parse(billing.subscription.currentPeriodEnd)) ? { resetsAt: billing.subscription.currentPeriodEnd } : {}) })
-      limits.push({ kind: 'balance', id: 'seat-credits', label: 'Seat credits', remaining: balanceCents / 100, unit: 'USD' })
+      limits.push({ kind: 'balance', id: 'seat-credits', label: copy.credits, remaining: balanceCents / 100, unit: 'USD' })
     }
     limits.push({ kind: 'balance', id: 'organization-credits', label: 'Organization credits', remaining: billing.orgPool.poolBalanceCents / 100, unit: 'USD' })
     return usageSnapshot(limits)
