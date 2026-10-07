@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useIsDark } from '@renderer/hooks/use-theme'
 import { CodeCopyButton } from './code-copy-button'
 
-// Scripts and styles may only be inline; nothing can be fetched, posted, or framed.
+// The same Inter stylesheet the app loads (src/renderer/index.html).
+const APP_FONT_STYLESHEET = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap'
+
+// Scripts and styles are inline; only the app's Google font may load. Nothing else is fetched, posted, or framed.
 const HTML_BLOCK_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; img-src data:; font-src data: https://fonts.gstatic.com; form-action 'none'; base-uri 'none'"
 
 const HEIGHT_MESSAGE = 'superagent:html-block-height'
 const WHEEL_MESSAGE = 'superagent:html-block-wheel'
@@ -24,13 +27,15 @@ const THEME_TOKENS = [
 function themeStyle(): string {
   const computed = getComputedStyle(document.documentElement)
   const vars = THEME_TOKENS.map((name) => `--${name}:${computed.getPropertyValue(`--${name}`).trim()}`).join(';')
+  const fontFamily = getComputedStyle(document.body).fontFamily
   return (
     `:root{${vars}}` +
     'html{overflow:hidden;scrollbar-width:thin}' +
     // flow-root keeps child margins inside body, so its height is the content height.
     'body{display:flow-root}' +
     "html,body{margin:0;background:transparent;color:hsl(var(--foreground));" +
-    "font:14px/1.5 'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}" +
+    // Same size and line height as chat prose (prose-sm).
+    `font:14px/1.7142857 ${fontFamily}}` +
     // Focus rings follow the app's ring color; mouse clicks show none.
     ':focus-visible{outline:2px solid hsl(var(--ring))!important;outline-offset:2px}' +
     ':focus:not(:focus-visible){outline:none!important}'
@@ -63,6 +68,7 @@ function renderHtmlBlockDocument(source: string, scheme: 'light' | 'dark'): stri
     `<!DOCTYPE html><html data-theme="${scheme}"><head>` +
     `<meta http-equiv="Content-Security-Policy" content="${HTML_BLOCK_CSP}">` +
     `<meta name="color-scheme" content="${scheme}">` +
+    `<link rel="stylesheet" href="${APP_FONT_STYLESHEET}">` +
     `<style>${themeStyle()}</style>` +
     `<script>${FRAME_SCRIPT}</script>${source}`
   )
