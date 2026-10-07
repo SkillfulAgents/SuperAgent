@@ -456,6 +456,7 @@ describe('oauth', () => {
     function setupDiscoveryMocks(options: {
       issuer?: string
       supportsIss?: boolean
+      cimdSupported?: boolean
     } = {}) {
       // Probe: 401 with resource_metadata
       mockFetch.mockResolvedValueOnce(
@@ -488,6 +489,7 @@ describe('oauth', () => {
             ...(options.supportsIss === undefined
               ? {}
               : { authorization_response_iss_parameter_supported: options.supportsIss }),
+            ...(options.cimdSupported ? { client_id_metadata_document_supported: true } : {}),
           }),
           { status: 200 }
         )
@@ -879,6 +881,34 @@ describe('oauth', () => {
       expect(result).not.toBeNull()
       const url = new URL(result!.authorizationUrl)
       expect(url.searchParams.get('redirect_uri')).toBe('superagent://mcp-oauth-callback')
+    })
+
+    it('keeps a stored hand-entered client on reconnect when the server also offers CIMD', async () => {
+      setupDiscoveryMocks({ cimdSupported: true })
+
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        { oauthClientId: 'manual-client-id', oauthClientSecret: 'manual-secret' },
+      ])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        ['http://localhost:3000/callback'],
+        false,
+        undefined,
+        undefined,
+        undefined,
+        'https://platform.example.com/oauth/superagent-desktop.json',
+      )
+
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('manual-client-id')
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({ oauthClientId: 'manual-client-id', oauthClientSecret: 'manual-secret' }),
+      )
     })
   })
 

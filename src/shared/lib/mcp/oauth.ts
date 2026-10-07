@@ -549,7 +549,7 @@ export async function initiateOAuthFlow(
     )
   }
 
-  // Resolve client credentials: explicit override > dynamic registration > stored.
+  // Resolve client credentials: explicit override > dynamic registration > stored > CIMD.
   let clientId: string | undefined
   let clientSecret: string | undefined
   let registeredScope: string | undefined
@@ -598,6 +598,10 @@ export async function initiateOAuthFlow(
         throw error
       }
     }
+  } else if (existing?.oauthClientId && existing.oauthClientId !== cimdId) {
+    // A hand-entered client must survive reconnect even if the server now offers CIMD.
+    clientId = existing.oauthClientId
+    clientSecret = existing.oauthClientSecret || undefined
   } else if (cimdId) {
     clientId = cimdId
     redirectUri = await pickCimdRedirect(
@@ -606,9 +610,6 @@ export async function initiateOAuthFlow(
       redirectCandidates,
       resource,
     )
-  } else if (existing?.oauthClientId) {
-    clientId = existing.oauthClientId
-    clientSecret = existing.oauthClientSecret || undefined
   }
 
   if (!clientId) {
