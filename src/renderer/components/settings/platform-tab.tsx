@@ -19,7 +19,8 @@ import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { cn } from '@shared/lib/utils'
-import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '@shared/lib/services/platform-billing-copy'
+import type { ParsedPlatformBillingInfo, SubscriptionCreditScope } from '@shared/lib/types/skillset-schema'
 
 interface PlatformTabProps {
   readOnly?: boolean
@@ -135,16 +136,24 @@ function PlatformBillingCard({
               right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
             />
             {billing.seat ? (
-              <SeatCreditsRow seat={billing.seat} />
+              <SubscriptionCreditsRow
+                seat={billing.seat}
+                scope={subscriptionCreditScope(billing)}
+                periodEnd={billing.subscription.currentPeriodEnd}
+              />
             ) : (
               <SettingRow
-                name="Seat credits"
+                name={SUBSCRIPTION_CREDIT_COPY[subscriptionCreditScope(billing)].credits}
                 right={<span className={VALUE_CLASS}>Not subscribed</span>}
               />
             )}
             <SettingRow
               name="Organization credits"
-              subtitle="Shared pool used after your seat quota"
+              subtitle={
+                subscriptionCreditScope(billing) === 'org'
+                  ? 'Shared pool used after your team plan credits'
+                  : 'Shared pool used after your seat quota'
+              }
               right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
             />
             <SettingRow
@@ -280,20 +289,37 @@ function CloudWorkspaceCard({
   )
 }
 
-function SeatCreditsRow({ seat }: { seat: NonNullable<ParsedPlatformBillingInfo['seat']> }) {
+// The monthly subscription credit. A pooled org (`scope: 'org'`) gets the same
+// bar with the same numbers — the proxy already sends the org's shared pool
+// under `seat` — so only the wording says whose credit it is.
+function SubscriptionCreditsRow({
+  seat,
+  scope,
+  periodEnd,
+}: {
+  seat: NonNullable<ParsedPlatformBillingInfo['seat']>
+  scope: SubscriptionCreditScope
+  periodEnd: string | null
+}) {
   const pct = seatPercentRemaining(seat)
   return (
-    <div className="py-3 px-4 space-y-1.5">
+    <div className="py-3 px-4 space-y-1.5" data-testid="subscription-credits-row" data-scope={scope}>
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium">Seat credits</span>
+        <span className="text-xs font-medium">{SUBSCRIPTION_CREDIT_COPY[scope].credits}</span>
         <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
       </div>
       <Progress percent={pct} thresholds={{ warning: 20, critical: 5 }} />
       <div className="text-[11px] text-muted-foreground">
         {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
+        {scope === 'org' && ` · shared by your whole organization${renewalNote(periodEnd)}`}
       </div>
     </div>
   )
+}
+
+function renewalNote(periodEnd: string | null): string {
+  if (!periodEnd || !Number.isFinite(Date.parse(periodEnd))) return ''
+  return `, resets ${new Date(periodEnd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
 }
 
 function HoverArrow() {

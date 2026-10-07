@@ -269,6 +269,63 @@ describe('PlatformPaywallCard', () => {
     expect(fetchBilling).not.toHaveBeenCalled()
   })
 
+  describe('pooled subscription credit', () => {
+    const POOLED = { status: 'active', paymentStatus: 'current', currentPeriodEnd: '2026-10-27T16:00:00Z', creditScope: 'org' as const }
+
+    it('tells an admin the team\'s shared credit is used up and offers Add usage', async () => {
+      platformAuth.role = 'owner'
+      fetchBilling.mockResolvedValue(billing({ subscription: POOLED }))
+      renderCard()
+      await screen.findByRole('button', { name: 'Add usage' })
+      expect(screen.getByText("Your team's shared credit is used up")).toBeInTheDocument()
+      expect(screen.getByText('Your team has used its shared monthly credit. Add usage credit so everyone can keep going.')).toBeInTheDocument()
+      expect(screen.queryByText('You need more usage credit to continue')).not.toBeInTheDocument()
+      expect(screen.getByTestId('composer')).not.toBeVisible()
+    })
+
+    it('points a member to their admin without mentioning a seat', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: POOLED }))
+      renderCard()
+      await waitFor(() => expect(screen.getByText("Your team's shared credit is used up")).toBeInTheDocument())
+      expect(screen.getByText('Your team has used its shared monthly credit. Ask a workspace admin to add usage credit.')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Go to billing' })).toBeInTheDocument()
+      expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
+    })
+
+    it('keeps the plan and payment cards unchanged for a pooled org', async () => {
+      platformAuth.role = 'owner'
+      fetchBilling.mockResolvedValue(billing({ subscription: { ...POOLED, paymentStatus: 'past_due' } }))
+      renderCard()
+      await waitFor(() => expect(screen.getByText('Payment needs attention')).toBeInTheDocument())
+      expect(screen.queryByText(/shared credit/)).not.toBeInTheDocument()
+    })
+
+    it('tells a member about the payment problem, not the pool, when payment is past due', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: { ...POOLED, paymentStatus: 'past_due' } }))
+      renderCard()
+      await waitFor(() => expect(screen.getByText('Workspace billing needs attention')).toBeInTheDocument())
+      expect(screen.queryByText(/shared/)).not.toBeInTheDocument()
+      expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
+    })
+
+    it('describes the plan\'s usage as shared when a pooled org is asked to subscribe', async () => {
+      platformAuth.role = 'owner'
+      fetchBilling.mockResolvedValue(billing({ subscription: { ...POOLED, status: 'cancelled' } }))
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByRole('button', { name: 'Upgrade to Pro' })
+      expect(screen.getByText('A shared pool of monthly usage: $200 for every seat on your plan. Pay-as-you-go past that.')).toBeInTheDocument()
+      expect(screen.queryByText(/per seat/)).not.toBeInTheDocument()
+    })
+
+    it('treats a snapshot without creditScope as per-seat', async () => {
+      platformAuth.role = 'owner'
+      renderCard()
+      await screen.findByRole('button', { name: 'Add usage' })
+      expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument()
+      expect(screen.getByText('Add usage credit to resume this answer.')).toBeInTheDocument()
+    })
+  })
+
   it('opens the platform on Add usage, then that button becomes Recheck', async () => {
     platformAuth.role = 'owner'
     renderCard()
@@ -873,7 +930,7 @@ describe('PlatformPaywallCard', () => {
     })
 
     it('remounts the frame with the panel that matches the CTA after a recheck changes the view', async () => {
-      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null, creditScope: 'seat' } }))
       renderCard()
       const paymentFrame = await screen.findByTestId('billing-cta-frame')
       expectEmbedUrl({ view: 'payment', surface: 'cta' })
@@ -965,7 +1022,7 @@ describe('PlatformPaywallCard', () => {
     })
 
     it('embeds the payment CTA when the payment is past due', async () => {
-      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null, creditScope: 'seat' } }))
       renderCard()
       await screen.findByTestId('billing-cta-frame')
       expectEmbedUrl({ view: 'payment', surface: 'cta' })

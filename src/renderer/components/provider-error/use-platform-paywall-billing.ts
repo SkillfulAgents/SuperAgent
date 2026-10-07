@@ -5,7 +5,10 @@ import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
-import { resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './platform-paywall-cta'
+import { subscriptionCreditScope } from '@shared/lib/services/platform-billing-copy'
+import type { SubscriptionCreditScope } from '@shared/lib/types/skillset-schema'
+
+import { paymentNeedsAttention, resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './platform-paywall-cta'
 
 export const PAYWALL_RECHECK_INTERVAL_MS = 5000
 
@@ -16,6 +19,13 @@ export interface PaywallBilling {
   blocked: boolean
   /** A fresh snapshot allows access again (after this paywall appeared, if live): the card can go. */
   cleared: boolean
+  /** Whose monthly subscription credit the org has: `org` = one pool shared by every member. */
+  creditScope: SubscriptionCreditScope
+  /**
+   * The org is subscribed, its payment is fine, and it is the team's shared monthly
+   * credit that ran out, not a seat's. A payment problem keeps the payment copy.
+   */
+  pooledExhausted: boolean
   recheck: () => void
 }
 
@@ -118,22 +128,27 @@ export function usePlatformPaywallBilling(
 
   const snapshot = useMemo(() => {
     if (billingQuery.isLoading) {
-      return { cta: null, loading: true, blocked: false, cleared: false }
+      return { cta: null, loading: true, blocked: false, cleared: false, creditScope: 'seat' as const, pooledExhausted: false }
     }
     const fresh = billingQuery.data?.stale !== true
     const billing = billingQuery.data?.billing
     const allowed = fresh ? billing?.access?.allowed : undefined
+    const subscriptionRequired = flagFrom402 ?? subscriptionRequiredFromBilling(billing)
+    const creditScope = subscriptionCreditScope(billing)
+    const paymentStatus = billing?.subscription.paymentStatus
     return {
       cta: resolvePaywallCta({
-        subscriptionRequired: flagFrom402 ?? subscriptionRequiredFromBilling(billing),
+        subscriptionRequired,
         role,
         hasPaymentMethod: billing?.hasPaymentMethod,
-        paymentStatus: billing?.subscription.paymentStatus,
+        paymentStatus,
         billingHref,
       }),
       loading: false,
       blocked: allowed === false,
       cleared: allowed === true && (!live || billingQuery.dataUpdatedAt > seenAt),
+      creditScope,
+      pooledExhausted: creditScope === 'org' && subscriptionRequired === false && !paymentNeedsAttention(paymentStatus),
     }
   }, [
     billingHref,
