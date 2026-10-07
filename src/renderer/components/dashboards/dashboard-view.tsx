@@ -7,6 +7,7 @@ import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
+import { getRemoteDeploymentUrl } from '@renderer/lib/api-target'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { DashboardDispatchDialog } from './dashboard-dispatch-dialog'
@@ -110,7 +111,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   // id even when the surrounding app route uses a decorative display slug.
   const dashboardAgentSlug = agent?.slug ?? agentSlug
   const dashboardPath = buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)
-  const iframeSrc = `${baseUrl}${dashboardPath}`
+  const iframeSrc = `${getRemoteDeploymentUrl() ?? baseUrl}${dashboardPath}`
   const dashboardDispatch = useDashboardDispatch(iframeRef)
 
   const handleRefresh = useCallback(() => {

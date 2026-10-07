@@ -37,7 +37,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
-import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -124,6 +124,7 @@ import { configureDownloadNonceRecovery } from '@shared/lib/services/download-no
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
@@ -348,6 +349,18 @@ function createWindow() {
     const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
     return allowed.includes(permission)
   })
+  installCloudDashboardAuth(
+    session.defaultSession,
+    () => mainWindow?.webContents.id ?? null,
+    () => {
+      // Cloud is the active target exactly when this resolves (see `activeApiTarget`).
+      const workspace = readPreferredApiTarget() === 'cloud' ? cloudProxyTarget() : null
+      // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
+      // by origin, the form Chromium reports frames in.
+      // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
+      return workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin }
+    },
+  )
 
   // Spellcheck context menu — show correction suggestions on right-click
   mainWindow.webContents.on('context-menu', (_event, params) => {
@@ -475,9 +488,14 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
+/** The cloud workspace this app can drive, or null when there is none. */
+function cloudProxyTarget() {
+  return isCloudProxyEnabled() ? resolveCloudProxyTarget() : null
+}
+
 /** The cloud proxy's base URL and the deployment behind it, or null when there is no workspace to drive. */
 function cloudEndpoint(): CloudEndpoint | null {
-  const target = isCloudProxyEnabled() ? resolveCloudProxyTarget() : null
+  const target = cloudProxyTarget()
   if (!target) return null
   return {
     baseUrl: `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`,
@@ -488,6 +506,12 @@ function cloudEndpoint(): CloudEndpoint | null {
 /** Which Superagent this app is driving, and the base URL that reaches it. */
 function activeApiTarget() {
   return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudEndpoint())
+}
+
+/** Open a popout where the dashboard lives: the cloud workspace's own address, or the local API. */
+function openDashboard(agentSlug: string, dashboardSlug: string) {
+  const { baseUrl, deploymentUrl } = activeApiTarget()
+  openDashboardWindow(agentSlug, dashboardSlug, deploymentUrl ?? baseUrl, deploymentUrl !== null)
 }
 
 // Which Superagent this renderer drives, settled in main rather than in the
@@ -933,7 +957,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
+  openDashboard(agentSlug, dashboardSlug)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1155,7 +1179,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
+        openDashboard(agentSlug, dashboardSlug)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1527,7 +1551,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
+    openDashboard(link.agentSlug, link.dashboardSlug)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()

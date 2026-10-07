@@ -77,9 +77,9 @@ export function targetIsRemote(): boolean {
 }
 
 /**
- * The cloud workspace's public origin, for handing the user to it in a browser
- * — null unless the target is cloud. Not a request base: calls go through the
- * proxy prefix, which is what carries the credential.
+ * The cloud workspace's public origin — null unless the target is cloud. API
+ * calls go through the proxy prefix, which carries the credential. Dashboards
+ * load here instead, signed by main (see `installCloudDashboardAuth`).
  */
 export function getRemoteDeploymentUrl(): string | null {
   return remoteDeploymentUrl
