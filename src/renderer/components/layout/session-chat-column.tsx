@@ -1,4 +1,6 @@
+import { useMemo } from 'react'
 import { MessageInput } from '@renderer/components/messages/message-input'
+import { describeVoiceInputRequest } from '@renderer/components/messages/voice-input-request'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@shared/lib/tools/requests/pending-request-stack'
@@ -72,6 +74,7 @@ export function SessionChatColumn({
     agentSlug,
     pendingUserMessages,
   })
+  const voiceInputRequests = useMemo(() => pendingRequestItems.map(describeVoiceInputRequest), [pendingRequestItems])
 
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
 
@@ -156,6 +159,7 @@ export function SessionChatColumn({
                     initialModel={model} initialLlmProviderId={llmProviderId}
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
+                    inputRequests={voiceInputRequests}
                   />
                   <div className="relative isolate flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 overflow-hidden px-6 py-3">
                     <div

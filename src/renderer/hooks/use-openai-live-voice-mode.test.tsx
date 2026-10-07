@@ -2,6 +2,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveRequest, VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
+import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 interface Callbacks {
   onRequest: (request: LiveRequest) => Promise<boolean>
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   fadeMusic: vi.fn(),
   stream: { activeStartTime: null as number | null, isActive: false, streamingMessage: null as string | null, error: null as string | null },
   interrupt: vi.fn(async () => ({})),
-  instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
+  instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; setInputRequests: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
 }))
 vi.mock('@renderer/lib/voice/shared/speech/hold-sound', () => ({ holdSound: { stopImmediately: mocks.stopMusic, stop: mocks.fadeMusic } }))
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => mocks.stream }))
@@ -28,6 +29,7 @@ vi.mock('@renderer/lib/voice/providers/openai/live-session', () => ({
     close = vi.fn()
     updateReply = vi.fn()
     setPaused = vi.fn()
+    setInputRequests = vi.fn()
     setMicrophoneMuted = vi.fn()
     setOutputMuted = vi.fn()
     setBusy = vi.fn()
@@ -43,7 +45,8 @@ import { useVoiceMode } from './use-voice-mode'
 
 function setup() {
   const send = vi.fn(async () => true)
-  const hook = renderHook(({ active, paused }) => useVoiceMode({ sessionId: 's1', agentSlug: 'agent', active, paused, send }), { initialProps: { active: true, paused: false } })
+  const initialProps: { active: boolean; paused: boolean; inputRequests?: readonly VoiceInputRequest[] } = { active: true, paused: false }
+  const hook = renderHook(({ active, paused, inputRequests }) => useVoiceMode({ sessionId: 's1', agentSlug: 'agent', active, paused, inputRequests, send }), { initialProps })
   const adapter = mocks.instances.at(-1)!
   act(() => adapter.callbacks.onReady())
   return { ...hook, adapter, send }
@@ -53,6 +56,32 @@ beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); mocks.instances.lengt
 afterEach(() => vi.useRealTimers())
 
 describe('Live session hook', () => {
+  it('forwards request context while paused and restores it when voice restarts', async () => {
+    const { adapter, send, rerender, unmount } = setup()
+    const question = { id: 'question:1', message: 'Choose a database in the question card.' }
+    const secret = { id: 'secret:2', message: 'Enter the API key in the secret card.' }
+    rerender({ active: true, paused: true, inputRequests: [question] })
+    expect(adapter.setInputRequests).toHaveBeenLastCalledWith([question])
+    expect(adapter.setPaused).toHaveBeenLastCalledWith(true)
+    // Another card can arrive without changing the pause flag.
+    const inputRequests = [question, secret]
+    rerender({ active: true, paused: true, inputRequests })
+    expect(adapter.setInputRequests).toHaveBeenLastCalledWith(inputRequests)
+    await act(async () => { expect(await adapter.callbacks.onRequest({ action: 'message', text: 'Not an answer.' })).toBe(false) })
+    expect(send).not.toHaveBeenCalled()
+
+    rerender({ active: false, paused: true, inputRequests })
+    adapter.setInputRequests.mockClear()
+    rerender({ active: true, paused: true, inputRequests })
+    const restarted = mocks.instances.at(-1)!
+    expect(restarted).not.toBe(adapter)
+    expect(restarted.setInputRequests).toHaveBeenLastCalledWith(inputRequests)
+    expect(adapter.setInputRequests).not.toHaveBeenCalled()
+    rerender({ active: true, paused: false, inputRequests: [] })
+    expect(restarted.setInputRequests).toHaveBeenLastCalledWith([])
+    unmount()
+  })
+
   it('sends normalized requests and forwards the new streamed reply', async () => {
     const { adapter, send, rerender, unmount } = setup()
     await act(async () => { expect(await adapter.callbacks.onRequest({ action: 'message', text: 'Find Thursday.' })).toBe(true) })

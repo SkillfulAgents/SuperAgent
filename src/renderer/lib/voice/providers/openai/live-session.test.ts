@@ -66,6 +66,54 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Live WebRTC lifecycle', () => {
+  it('announces each new input request once while paused, without reopening the mic or submitting an answer', async () => {
+    const { adapter, callbacks } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    adapter.setPaused(true)
+    channel.send.mockClear()
+    const question = { id: 'question:1', message: 'The agent needs a database choice in the question card.' }
+    const secret = { id: 'secret:2', message: 'The agent needs an API key in the secret card.' }
+    const announcements = () => channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
+    adapter.setInputRequests([question])
+    adapter.setInputRequests([{ ...question }])
+    adapter.setInputRequests([question, secret])
+    expect(announcements().map(event => event.content)).toEqual([
+      `Application input request: ${question.message}`,
+      `Application input request: ${secret.message}`,
+    ])
+    expect(track.enabled).toBe(false)
+    expect(adapter['audio']?.muted).toBe(false)
+    expect(callbacks.onRequest).not.toHaveBeenCalled()
+    // Removing cards or replaying a snapshot must not repeat the announcement.
+    adapter.setInputRequests([])
+    adapter.setInputRequests([secret])
+    expect(announcements()).toHaveLength(2)
+    adapter.close()
+    adapter.setInputRequests([{ id: 'question:3', message: 'Too late.' }])
+    expect(announcements()).toHaveLength(2)
+  })
+
+  it('announces only still-pending requests when the voice connection becomes ready', async () => {
+    const { adapter } = setup()
+    adapter.setPaused(true)
+    adapter.setInputRequests([{ id: 'old', message: 'Already answered.' }])
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    const current = { id: 'current', message: 'Connect a calendar account in the application.' }
+    adapter.setInputRequests([current])
+    expect(channel.send).not.toHaveBeenCalled()
+    channel.receive({ type: 'session.started' })
+    const sent = channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(sent.filter(event => event.type === 'session.commentary.append').map(event => event.content)).toEqual([
+      `Application input request: ${current.message}`,
+    ])
+    expect(sent.at(-1).type).toBe('session.commentary.append')
+    expect(track.enabled).toBe(false)
+    adapter.close()
+  })
+
   it('starts on the selected agent route without supplying custom instructions from the browser', async () => {
     const { adapter } = setup('ada display/slug')
     await adapter.start()

@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { acquireMicStream } from '../../shared/audio-capture'
 import { OpenAILiveBridge } from './live-bridge'
 import type { LiveRequest, LiveSessionAnswer, VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
+import type { VoiceInputRequest } from '../../contracts/conversation'
 
 interface ConversationEvents {
   onRequest: (request: LiveRequest) => Promise<boolean>
@@ -60,6 +61,8 @@ export class OpenAILiveConversation {
   private replyText = ''
   private replyFed = 0
   private replyTimer: ReturnType<typeof setTimeout> | undefined
+  private inputRequests: readonly VoiceInputRequest[] = []
+  private announcedInputRequests = new Set<string>()
 
   constructor(private events: ConversationEvents, private history: VoiceHistory = [], private agentSlug?: string) {
     this.bridge = new OpenAILiveBridge({
@@ -152,6 +155,7 @@ export class OpenAILiveConversation {
           this.ready = true
           for (const command of this.commands.splice(0)) this.send(command)
           this.setPaused(this.paused)
+          this.announceInputRequests()
           this.events.onReady()
         } else if (event.type === 'error') {
           this.events.onError((event.error as { message?: string })?.message || 'OpenAI Live error.')
@@ -253,8 +257,25 @@ export class OpenAILiveConversation {
     this.bridge.setPaused(paused)
     this.gateMicrophone()
     this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
-      ? 'The user is answering a request card in the application. Finish what you are saying, then wait; do not delegate until the application resumes.'
+      ? 'The application is waiting for user input. Finish what you are saying and briefly announce any new application input requests supplied in commentary, then wait for the user to complete them in the application. Do not delegate until the application resumes.'
       : 'The application is ready for voice conversation. Continue listening and responding normally.' })
+  }
+
+  setInputRequests(requests: readonly VoiceInputRequest[]) {
+    if (this.closed) return
+    this.inputRequests = requests
+    this.announceInputRequests()
+  }
+
+  private announceInputRequests() {
+    // Keep only the current cards while connecting, so a resolved request is
+    // never announced late. Each request is announced once per voice session.
+    if (!this.ready || this.closed) return
+    for (const request of this.inputRequests) {
+      if (this.announcedInputRequests.has(request.id)) continue
+      this.announcedInputRequests.add(request.id)
+      this.bridge.commentary(`Application input request: ${request.message}`)
+    }
   }
 
   /** Silence the remote voice at the speaker; the call and its turn-taking carry on. */

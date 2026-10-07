@@ -5,7 +5,7 @@ import { createVoiceConversation } from '@renderer/lib/voice/registry/conversati
 import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
-import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot } from '@renderer/lib/voice/contracts/conversation'
+import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot, VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 export interface UseVoiceModeArgs {
   sessionId: string
@@ -14,6 +14,7 @@ export interface UseVoiceModeArgs {
   send(text: string): Promise<boolean>
   startWithAgentTurn?: boolean
   paused?: boolean
+  inputRequests?: readonly VoiceInputRequest[]
   history?: VoiceHistory
 }
 export interface VoiceModeResult extends VoiceConversationSnapshot {
@@ -38,10 +39,11 @@ const IDLE: VoiceConversationSnapshot = {
   utterance: '', hold: { allowed: false, delayMs: 700 },
 }
 const IDLE_AGENT: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
+const NO_INPUT_REQUESTS: readonly VoiceInputRequest[] = []
 
 /** One React integration, one stream subscription, and one selected voice engine. */
 export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConversationEngine | null): VoiceModeResult {
-  const { sessionId, agentSlug, active, paused = false } = args
+  const { sessionId, agentSlug, active, paused = false, inputRequests = NO_INPUT_REQUESTS } = args
   const stream = useMessageStream(active && engine ? sessionId : null, active && engine ? agentSlug : null)
   const interrupt = useInterruptSession()
   const latest = useRef({ args, stream, interrupt })
@@ -154,6 +156,12 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
       adapter.current?.setPaused(false)
     }
   }, [paused])
+
+  useEffect(() => {
+    // Request details still flow while the coordinator is paused. Include the
+    // connection identity so a restarted engine gets the current cards too.
+    adapter.current?.acceptAgentEvent({ type: 'input-requests', requests: inputRequests })
+  }, [inputRequests, active, engine, sessionId, agentSlug])
 
   useEffect(() => {
     coordinator.current?.update({
