@@ -138,9 +138,13 @@ vi.mock('@renderer/lib/env', () => ({
   getPlatform: () => 'web',
 }))
 
+// Names of tool rows rendered, to check which rows re-render.
+const mockToolRenders: string[] = []
+
 // Mock child components that are complex
 vi.mock('./tool-call-item', () => ({
   ToolCallItem: ({ toolCall, isSessionActive }: any) => (
+    mockToolRenders.push(toolCall.name),
     <div data-testid={`tool-call-${toolCall.name}`} data-running={isSessionActive ? 'true' : 'false'}>{toolCall.name}</div>
   ),
   StreamingToolCallItem: ({ name }: any) => <div data-testid="streaming-tool-call">{name}</div>,
@@ -148,7 +152,10 @@ vi.mock('./tool-call-item', () => ({
 }))
 
 vi.mock('./subagent-block', () => ({
-  SubAgentBlock: ({ toolCall }: any) => <div data-testid="subagent-block">{toolCall.name}</div>,
+  SubAgentBlock: ({ toolCall }: any) => (
+    mockToolRenders.push(toolCall.name),
+    <div data-testid="subagent-block">{toolCall.name}</div>
+  ),
 }))
 
 vi.mock('./informational-item', () => ({
@@ -215,6 +222,37 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
     expect(container.querySelector('.animate-spin')).toBeTruthy()
+  })
+
+  it('re-renders only rows with subagent calls when subagent state changes', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Look around the repo' } }),
+      createAssistantMessage({ content: { text: 'Listing files' }, toolCalls: [createToolCall({ id: 'tc-bash', name: 'Bash' })] }),
+      createAssistantMessage({ content: { text: 'Delegating' }, toolCalls: [createToolCall({ id: 'tc-agent', name: 'Agent' })] }),
+    ]
+    // Re-render from inside the providers: renderWithProviders' rerender builds a new
+    // QueryClient, which would re-render every row regardless of props.
+    let rerenderList = () => {}
+    function Harness() {
+      const [, setTick] = useState(0)
+      rerenderList = () => setTick((n) => n + 1)
+      return <MessageList sessionId="s-1" agentSlug="agent-1" />
+    }
+    renderWithProviders(<Harness />)
+    expect(mockToolRenders).toEqual(expect.arrayContaining(['Bash', 'Agent']))
+
+    mockToolRenders.length = 0
+    mockStreamState.activeSubagents = [{
+      agentId: 'sub-1',
+      parentToolId: 'tc-agent',
+      subagentType: 'Explore',
+      description: 'Explore workspace structure',
+    }]
+    act(() => rerenderList())
+
+    expect(mockToolRenders).toContain('Agent')
+    expect(mockToolRenders).not.toContain('Bash')
   })
 
   it('renders messages', () => {

@@ -158,11 +158,19 @@ interface MessageListProps {
   bottomInset?: number
 }
 
+// Subagent state changes identity on every subagent event; only rows that draw a
+// subagent or workflow card read it, so other rows keep their memo.
+function rendersSubagentBlocks(message: ApiMessage): boolean {
+  return message.toolCalls?.some(tc => tc.name === 'Task' || tc.name === 'Agent' || tc.name === 'Workflow') ?? false
+}
+
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
-  const deleteMessage = useDeleteMessage()
-  const deleteToolCall = useDeleteToolCall()
+  // useMutation returns a new object every render; only `mutate` is stable, and the
+  // row handlers must stay stable for MessageItem's memo.
+  const { mutate: deleteMessage } = useDeleteMessage()
+  const { mutate: deleteToolCall } = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
   // Ghosts with a cancel request in flight (disables their Cancel button)
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set())
@@ -177,14 +185,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
-      deleteMessage.mutate({ sessionId, agentSlug, messageId })
+      deleteMessage({ sessionId, agentSlug, messageId })
     },
     [sessionId, agentSlug, deleteMessage]
   )
 
   const handleRemoveToolCall = useCallback(
     (toolCallId: string) => {
-      deleteToolCall.mutate({ sessionId, agentSlug, toolCallId })
+      deleteToolCall({ sessionId, agentSlug, toolCallId })
     },
     [sessionId, agentSlug, deleteToolCall]
   )
@@ -1195,8 +1203,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       isLatestAssistant={item.id === latestAssistantId && !(streamingMessage && !isStreamingMessagePersisted)}
                       voiceReading={voiceReading && item.id === latestAssistantId}
                       isSessionActive={canHaveRunningToolCalls.has(item.id)}
-                      activeSubagents={activeSubagents}
-                      completedSubagents={completedSubagents}
+                      activeSubagents={rendersSubagentBlocks(displayedMessage) ? activeSubagents : undefined}
+                      completedSubagents={rendersSubagentBlocks(displayedMessage) ? completedSubagents : undefined}
                       onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
                       onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
                       workDetailClassName={

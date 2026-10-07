@@ -654,10 +654,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 // Memoized: on the 5s refetch React Query's structural sharing preserves the
 // object reference of any unchanged message, so the default shallow prop compare
 // skips re-rendering all but the items that actually changed. Handlers, agentSlug
-// and sessionId are referentially stable. Note: activeSubagents/completedSubagents
-// are passed to every item and change identity on each subagent SSE event, so the
-// memo gives no benefit while a subagent is actively streaming — it still pays off
-// for the common idle/refetch and plain-text-streaming cases.
+// and sessionId are referentially stable. activeSubagents/completedSubagents
+// change identity on each subagent SSE event, so MessageList passes them only to
+// rows with Task/Agent/Workflow calls; other rows skip re-rendering.
 export const MessageItem = memo(MessageItemComponent)
 
 if (__RENDER_TRACKING__) {
