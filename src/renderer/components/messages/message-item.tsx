@@ -127,6 +127,7 @@ const MARKDOWN_COMPONENTS: Components = {
 }
 
 const MermaidDiagram = lazy(() => import('./mermaid-diagram').then(m => ({ default: m.MermaidDiagram })))
+const MathBlock = lazy(() => import('./math-block').then(m => ({ default: m.MathBlock })))
 
 function hastText(node: ElementContent): string {
   if (node.type === 'text') return node.value
@@ -134,29 +135,37 @@ function hastText(node: ElementContent): string {
   return ''
 }
 
-function mermaidSource(pre: ElementContent | undefined): string | null {
+function fenceSource(pre: ElementContent | undefined, language: string): string | null {
   const code = pre?.type === 'element' ? pre.children[0] : undefined
   if (code?.type !== 'element' || code.tagName !== 'code') return null
   const classes = code.properties.className
-  if (!Array.isArray(classes) || !classes.includes('language-mermaid')) return null
+  if (!Array.isArray(classes) || !classes.includes(`language-${language}`)) return null
   return hastText(code)
 }
 
-// Only settled blocks draw diagrams: a fence still streaming in the tail would
-// re-render an incomplete diagram on every delta, so it stays a code block.
+const RENDERED_FENCES = [
+  { language: 'mermaid', Render: MermaidDiagram },
+  { language: 'math', Render: MathBlock },
+]
+
+// Only settled blocks render diagrams and equations: a fence still streaming in the
+// tail would re-render incomplete output on every delta, so it stays a code block.
 const SETTLED_MARKDOWN_COMPONENTS: Components = {
   ...MARKDOWN_COMPONENTS,
   pre: ({ children, node }) => {
     const codeBlock = <CodeBlock>{children}</CodeBlock>
-    const source = mermaidSource(node)
-    if (source === null) return codeBlock
-    return (
-      <ErrorBoundary fallback={codeBlock}>
-        <Suspense fallback={codeBlock}>
-          <MermaidDiagram source={source} fallback={codeBlock} />
-        </Suspense>
-      </ErrorBoundary>
-    )
+    for (const { language, Render } of RENDERED_FENCES) {
+      const source = fenceSource(node, language)
+      if (source === null) continue
+      return (
+        <ErrorBoundary fallback={codeBlock}>
+          <Suspense fallback={codeBlock}>
+            <Render source={source} fallback={codeBlock} />
+          </Suspense>
+        </ErrorBoundary>
+      )
+    }
+    return codeBlock
   },
 }
 
