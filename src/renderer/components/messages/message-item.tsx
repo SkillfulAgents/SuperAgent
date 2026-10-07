@@ -2,6 +2,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, useMemo, memo, lazy, Suspense, type ReactNode } from 'react'
 import { Link2 } from 'lucide-react'
 import { CodeCopyButton } from './code-copy-button'
+import { HtmlBlock } from './html-block'
 import { useBlockBreakout } from './use-block-breakout'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
@@ -134,21 +135,23 @@ function hastText(node: ElementContent): string {
   return ''
 }
 
-function mermaidSource(pre: ElementContent | undefined): string | null {
+function fenceSource(pre: ElementContent | undefined, language: string): string | null {
   const code = pre?.type === 'element' ? pre.children[0] : undefined
   if (code?.type !== 'element' || code.tagName !== 'code') return null
   const classes = code.properties.className
-  if (!Array.isArray(classes) || !classes.includes('language-mermaid')) return null
+  if (!Array.isArray(classes) || !classes.includes(`language-${language}`)) return null
   return hastText(code)
 }
 
-// Only settled blocks draw diagrams: a fence still streaming in the tail would
-// re-render an incomplete diagram on every delta, so it stays a code block.
+// Only settled blocks draw diagrams or run HTML: a fence still streaming in the
+// tail would re-render incomplete output on every delta, so it stays a code block.
 const SETTLED_MARKDOWN_COMPONENTS: Components = {
   ...MARKDOWN_COMPONENTS,
   pre: ({ children, node }) => {
     const codeBlock = <CodeBlock>{children}</CodeBlock>
-    const source = mermaidSource(node)
+    const html = fenceSource(node, 'html')
+    if (html !== null) return <HtmlBlock source={html} />
+    const source = fenceSource(node, 'mermaid')
     if (source === null) return codeBlock
     return (
       <ErrorBoundary fallback={codeBlock}>

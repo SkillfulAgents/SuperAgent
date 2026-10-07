@@ -859,4 +859,53 @@ describe('MessageItem', () => {
       expect(container.querySelector('pre')).toHaveTextContent('Draft --> Final')
     })
   })
+
+  describe('html code fences', () => {
+    const CHART = '```html\n<svg width="120" height="120"><circle cx="60" cy="60" r="50"/></svg>\n<script>document.title = "Spend"</script>\n```'
+
+    it('renders a settled html fence in a script-only sandbox with the policy first', () => {
+      const msg = createAssistantMessage({ content: { text: `Here is your spend:\n\n${CHART}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const frame = screen.getByTitle('HTML preview')
+      expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+      const doc = frame.getAttribute('srcdoc')!
+      expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<svg'))
+      expect(doc).toContain("default-src 'none'")
+      expect(container.querySelector('pre')).toBeNull()
+    })
+
+    it('keeps the fence still streaming in as a code block', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<div>Draft' } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<div>Draft')
+    })
+
+    it('leaves other fences as code', () => {
+      const msg = createAssistantMessage({ content: { text: '```text\n<div>Source only</div>\n```' } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<div>Source only</div>')
+    })
+
+    it('sizes the frame from its own height reports only', () => {
+      const msg = createAssistantMessage({ content: { text: CHART } })
+      render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const report = (source: MessageEventSource | null, height: number) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source, data: { type: 'superagent:html-block-height', height } }))
+        })
+
+      report(window, 900)
+      expect(frame.style.height).toBe('160px')
+      report(frame.contentWindow, 240)
+      expect(frame.style.height).toBe('240px')
+      report(frame.contentWindow, 50_000)
+      expect(frame.style.height).toBe('1200px')
+    })
+  })
 })
