@@ -105,8 +105,37 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     sh(container, `rm ${mount}/d/b.txt && rmdir ${mount}/d`);
     await waitFor(() => sh(container, `ls -A ${source}`) === '', 5_000);
 
+    // Git and editors write a temp file and rename it at once.
+    sh(container, `cd ${mount} && node -e "const fs = require('fs'); for (const i of [1, 2, 3]) { fs.writeFileSync('tmp' + i, String(i)); fs.renameSync('tmp' + i, 'final' + i) }"`);
+    await waitFor(() => sh(container, `ls ${source}`) === 'final1\nfinal2\nfinal3' && sh(container, `cat ${source}/final*`) === '123', 5_000);
+    sh(container, `rm ${mount}/final*`);
+    await waitFor(() => sh(container, `ls -A ${source}`) === '', 5_000);
+
     sh(container, `echo outside > ${source}/new.txt`);
     await waitFor(() => sh(container, `cat ${mount}/new.txt 2>/dev/null || true`) === 'outside', 2_000);
+  }, 60_000);
+
+  it('reads what the host wrote over a file the agent wrote, at the same size and after a resize', async () => {
+    // In a folder: the kernel keeps an entry rclone creates for 60s without asking again, unless its folder is reread.
+    const source = '/tmp/src/v_edit/sub';
+    const file = '/mounts/docs/sub/w.txt';
+    const container = startAgent(
+      `mkdir -p ${source} && chmod -R a+rwX /tmp/src && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes --dir-cache-time 0s`,
+      [{ volumeId: 'v_edit', name: 'docs' }],
+    );
+    await healthUntilOk(container);
+    sh(container, `echo AAAAAAAA > ${file}`);
+    await waitFor(() => sh(container, `cat ${source}/w.txt 2>/dev/null || true`) === 'AAAAAAAA', 5_000);
+    // Modification times have 1s precision, so the host edit lands in a later second than the upload.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    sh(container, `echo BBBBBBBB > ${source}/w.txt`);
+    await waitFor(() => sh(container, `cat ${file}`) === 'BBBBBBBB', 4_000);
+
+    // The read above closed the file, so this read reopens it within rclone's default 5s handle-caching window.
+    sh(container, `echo CCCCCCCCCCCCCC > ${source}/w.txt`);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(sh(container, `cat ${file}`)).toBe('CCCCCCCCCCCCCC');
   }, 60_000);
 
   it('sends the token, leaves out a volume whose app never answers, and the container still removes at once', async () => {
@@ -149,6 +178,23 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
     docker('rm', container);
     expect(fs.statSync(uploaded).size).toBe(40_000_000);
+    fs.rmSync(source, { recursive: true });
+  }, 60_000);
+
+  it('uploads a file still waiting in the queue when the host stops the container', async () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
+    fs.chmodSync(source, 0o777);
+    const container = startAgent('rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes', [{ volumeId: 'v_late', name: 'docs' }], 'claude', ['-v', `${source}:/srv/v_late`]);
+    await healthUntilOk(container);
+    // Holds the upload past the stop deadline, as a retry backing off after a failed upload would.
+    const rc = 'curl -s --unix-socket /tmp/rclone-v_late.sock -X POST -H "Content-Type: application/json"';
+    sh(container, `echo late > /mounts/docs/late.txt && sleep 0.2 && id=$(${rc} -d '{}' http://rc/vfs/queue | node -pe "JSON.parse(require('fs').readFileSync(0)).queue[0].id") && ${rc} -d "{\\"id\\":$id,\\"expiry\\":60}" http://rc/vfs/queue-set-expiry`);
+    expect(fs.existsSync(path.join(source, 'late.txt'))).toBe(false);
+
+    docker('stop', '-t', '5', container);
+    expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
+    docker('rm', container);
+    expect(fs.readFileSync(path.join(source, 'late.txt'), 'utf8')).toBe('late\n');
     fs.rmSync(source, { recursive: true });
   }, 60_000);
 });
