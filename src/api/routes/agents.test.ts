@@ -734,6 +734,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 // Import the agents router after all mocks are set up
 import agents from './agents'
 import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
@@ -4072,6 +4073,39 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
+
+  // After the handoff an error would return text the agent may still run.
+  it.each([{}, { shouldQuery: false }])('answers outcome unknown with the id when a handoff fails without proof (%o)', async options => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockSendMessage.mockRejectedValueOnce(new Error('Failed to send message - request timed out.'))
+
+    const res = await postJson(app, URL, { content: 'hello', ...options })
+    expect(res.status).toBe(202)
+    const body = await res.json()
+    expect(body.success).toBe(false)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, expect.anything())
+  })
+
+  it('errors when the agent provably never got the message', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'connect ECONNREFUSED'))
+
+    expect((await postJson(app, URL, { content: 'hello' })).status).toBe(500)
+  })
+
+  it('accepts a delivered send when the session read after the handoff fails', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmDefault: { model: 'claude-sonnet-5' } } as never)
+    vi.mocked(getSessionMetadata).mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('metadata read failed'))
+    try {
+      const res = await postJson(app, URL, { content: 'hello' })
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', (await res.json()).uuid, {})
+    } finally {
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
+  })
 })
 
 describe('message author attribution — GET /:id/sessions/:sessionId/messages', () => {
@@ -6109,6 +6143,16 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
       text: '\\[Test User]: keep going',
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('accepts a message held during recovery when saving its author fails', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+    mockDbInsertValues.mockImplementationOnce(() => { throw new Error('database unavailable') })
+
+    const res = await postJson(app, URL, { content: 'keep going' })
+    expect(res.status).toBe(201)
+    expect((await res.json()).queued).toBe(true)
   })
 
   it('a transcript-only append coalesced during recovery is remembered as one, attributed like a live append', async () => {
@@ -8752,6 +8796,22 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect((await postJson(app, MESSAGES_URL, { content: 'and tomorrow?' })).status).toBe(201)
     await new Promise((r) => setTimeout(r, 0))
     expect(mockLlmMessagesCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['stream', 'author'] as const)('starts the chat when the %s step after the agent started fails', async step => {
+    mockIsAuthMode.mockReturnValue(true)
+    if (step === 'stream') vi.mocked(messagePersister.subscribeToSession).mockRejectedValueOnce(new Error('stream unavailable'))
+    else mockDbInsertValues.mockImplementationOnce(() => { throw new Error('database unavailable') })
+
+    const res = await postJson(app, SESSIONS_URL, { message: 'hello there' })
+    expect(res.status).toBe(201)
+    expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'New Session', expect.any(Object))
+  })
+
+  // Reporting success would leave a chat whose tasks and triggers run with no owner.
+  it('still fails the create when registering the chat fails', async () => {
+    vi.mocked(registerSession).mockRejectedValueOnce(new Error('metadata write failed'))
+    expect((await postJson(app, SESSIONS_URL, { message: 'hello there' })).status).toBe(500)
   })
 
   it('a session opened by a person is named from that message as before', async () => {

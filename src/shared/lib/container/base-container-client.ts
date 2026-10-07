@@ -1484,44 +1484,47 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const model = llmRuntime?.model
     const shouldQuery = options?.shouldQuery
     const isAutomated = options?.isAutomated
-    // Refreshed on every message so a long-lived session tracks settings
-    // changes; the container restarts its query only on a block-boundary flip.
-    const capabilityPolicies = getAgentCapabilitySettings()
 
+    let requestStarted = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-      const response = await fetch(
-        `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
-          body: JSON.stringify({
-            content,
-            ...(llmRuntime ? { llmProviderId: llmRuntime.llmProviderId, llmRuntime } : {}),
-            ...(uuid ? { uuid } : {}),
-            ...(effort ? { effort } : {}),
-            ...(speed ? { speed } : {}),
-            ...(model && !preserveRuntime ? { model } : {}),
-            ...(shouldQuery !== undefined ? { shouldQuery } : {}),
-            ...(isAutomated !== undefined ? { isAutomated } : {}),
-            capabilityPolicies,
-          }),
-          signal: controller.signal,
-        }
-      )
+      const url = `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`
+      const request: RequestInit = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
+        body: JSON.stringify({
+          content,
+          ...(llmRuntime ? { llmProviderId: llmRuntime.llmProviderId, llmRuntime } : {}),
+          ...(uuid ? { uuid } : {}),
+          ...(effort ? { effort } : {}),
+          ...(speed ? { speed } : {}),
+          ...(model && !preserveRuntime ? { model } : {}),
+          ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+          ...(isAutomated !== undefined ? { isAutomated } : {}),
+          // Refreshed on every message so a long-lived session tracks settings
+          // changes; the container restarts its query only on a block-boundary flip.
+          capabilityPolicies: getAgentCapabilitySettings(),
+        }),
+        signal: controller.signal,
+      }
+      requestStarted = true
+      const response = await fetch(url, request)
 
       clearTimeout(timeoutId)
 
       if (!response.ok) {
         let errorDetail = ''
+        let inputRejected = false
         try {
           const errorBody = await response.text()
           if (errorBody) {
             try {
               const parsed = JSON.parse(errorBody)
               errorDetail = parsed.error || errorBody
+              inputRejected = parsed.inputAccepted === false
             } catch {
               errorDetail = errorBody
             }
@@ -1529,15 +1532,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         } catch {
           errorDetail = response.statusText
         }
+        if (inputRejected) throw Object.assign(new MessageNotAcceptedError('rejected', `Failed to send message: ${errorDetail || response.statusText}`), { status: response.status })
         if (response.status === 404) throw new MessageNotAcceptedError('session-gone', `Failed to send message: ${errorDetail || response.statusText}`)
         throw new Error(`Failed to send message: ${errorDetail || response.statusText}`)
       }
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
 
+      if (err instanceof MessageNotAcceptedError) throw err
       if (err.name === 'AbortError') {
         throw new Error(
           'Failed to send message - request timed out. Please check your connection and try again.'
+        )
+      }
+
+      if (!requestStarted || requestWasNotDispatched(err)) {
+        if (requestStarted) this.handleConnectionError()
+        throw new MessageNotAcceptedError(
+          'unavailable',
+          requestStarted ? 'Failed to send message - connection lost. Please check that the agent is running and try again.' : err.message,
+          { cause: err },
         )
       }
 
@@ -1549,6 +1563,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       throw err
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 

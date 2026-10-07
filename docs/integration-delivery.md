@@ -48,11 +48,13 @@ Preparation/dispatch failures retry up to **five attempts**, with delays of
 **1 second, 5 seconds, 30 seconds, and 2 minutes**. Invalid input and explicit
 permanent errors stop immediately. A definite pre-acceptance runtime refusal
 (container not running or session not found) can retry; a missing session retains
-the existing self-heal behavior. Creation is a runtime handoff too. Local request
-preparation, connection refusal/DNS failure, and explicit runtime rejection before
-input submission can retry. The container reports `inputAccepted: false` for these
-runtime rejections; the SDK's explicit executable-launch failure is also recognized
-(including older containers). A confirmed rejection with a permanent HTTP status
+the existing self-heal behavior. Creation and follow-up sends are runtime handoffs
+alike. Local request preparation, connection refusal/DNS failure, and explicit
+runtime rejection before input submission can retry. The container reports
+`inputAccepted: false` for these runtime rejections, and so does the cloud microVM
+proxy when it refuses before anything may have reached the agent; the SDK's
+explicit executable-launch failure is also recognized on creation (including older
+containers). A confirmed rejection with a permanent HTTP status
 fails without retry and never becomes `uncertain`.
 
 A reset connection, read timeout, or unmarked server failure after submission may

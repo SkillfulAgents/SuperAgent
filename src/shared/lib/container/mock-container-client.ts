@@ -3524,6 +3524,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
     scenario.execute(sessionId, this.scenarioView(sessionId), content)
+    // Content keyword lets tests reproduce a container that took the message,
+    // then answered the send with an error.
+    if (content.includes('error after accepting')) throw new Error('Failed to send message: Internal Server Error')
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {

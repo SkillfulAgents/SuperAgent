@@ -1684,7 +1684,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; onQueued?: () => void }): Promise<void> {
     const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
       ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
@@ -1878,6 +1878,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
+    options?.onQueued?.();
     // A turn is about to start; until the CLI says otherwise the session is
     // no longer known-idle (interruptTurn reads this to decide whether there
     // is a foreground turn to abort, and a Stop in the send→running window

@@ -92,6 +92,25 @@ test.describe('Composer failure recovery', () => {
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 
+  test('a send the agent took is not returned when the send errors after the handoff', async ({ page }) => {
+    // The mock agent starts the turn, then answers the send with an error.
+    // Only proof the agent never got the message may return the text.
+    const text = 'error after accepting, still answered'
+    await sessionPage.typeMessage(text)
+    const answered = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && /\/sessions\/[^/]+\/messages$/.test(res.url())
+    )
+    await sessionPage.getSendButton().click()
+    expect((await answered).status()).toBe(202)
+
+    await sessionPage.waitForUserMessageCount(2, 15000)
+    await sessionPage.expectUserMessage(text, 1)
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
+    ).toHaveCount(2, { timeout: 15000 })
+    await expect(sessionPage.getMessageInput()).toHaveText('')
+  })
+
   test('a failed upload flags the chip, keeps the text, and retries from the chip or from Send', async ({ page }) => {
     const filePath = path.join(tmpDir, 'guarded.txt')
     fs.writeFileSync(filePath, 'file content that must not be lost')

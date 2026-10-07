@@ -101,7 +101,8 @@ const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
 app.use('*', async (c, next) => {
   if (!hostAuthEnabled() || c.req.path === '/health') return next();
   if (!isValidHostToken(c.req.header(HOST_TOKEN_HEADER))) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    // Refused before any route runs, so no input landed.
+    return c.json({ error: 'Unauthorized', inputAccepted: false }, 401);
   }
   return next();
 });
@@ -259,11 +260,13 @@ app.post('/sessions/:id/messages', async (c) => {
     return c.json({ error: 'Session not found' }, 404);
   }
 
+  // Reading the request happens before the session takes the input, so a
+  // failure here proves the message never landed.
+  let body: SendMessageRequest;
+  let options: Parameters<typeof sessionManager.sendMessage>[3];
   try {
-    const body = await c.req.json<SendMessageRequest>();
-    const content = typeof body.content === 'string' ? body.content : JSON.stringify(body.content);
-
-    await sessionManager.sendMessage(sessionId, content, body.uuid, {
+    body = await c.req.json<SendMessageRequest>();
+    options = {
       effort: body.effort,
       speed: speedLevelSchema.parse(body.speed),
       model: body.model,
@@ -271,12 +274,21 @@ app.post('/sessions/:id/messages', async (c) => {
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
-    });
+    };
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Invalid message request', inputAccepted: false }, 400);
+  }
+
+  try {
+    const content = typeof body.content === 'string' ? body.content : JSON.stringify(body.content);
+    await sessionManager.sendMessage(sessionId, content, body.uuid, options);
 
     return c.json({ success: true }, 201);
   } catch (error: any) {
     console.error('Error sending message:', error);
-    return c.json({ error: error.message || 'Failed to send message' }, 500);
+    // A failure before the session queued the input carries the same
+    // not-accepted evidence as create's.
+    return c.json(sessionCreationFailure(error), 500);
   }
 });
 
