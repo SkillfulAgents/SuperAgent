@@ -3316,7 +3316,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
       await agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
-      agentRegistry.get(agentSlug).inputs.reviews.denyAll()
+      agentRegistry.get(agentSlug).inputs.reviews.denyAll(sessionId)
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
@@ -3335,7 +3335,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // stop that had to fall back to a process restart killed the background
     // tasks, and the persister must drop them.
     await actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
-    actor.inputs.reviews.denyAll()
+    actor.inputs.reviews.denyAll(sessionId)
 
     return c.json({ success: true, processKept })
   } catch (error) {
@@ -3344,7 +3344,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Ownership was established above, so this reaches only the caller's session.
     try {
       await agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
-      agentRegistry.get(agentSlug).inputs.reviews.denyAll()
+      agentRegistry.get(agentSlug).inputs.reviews.denyAll(sessionId)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)

@@ -513,7 +513,7 @@ export interface ReviewOps {
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
   submit(id: string, decision: 'allow' | 'deny'): boolean
   /** `AgentReviews.denyAll` */
-  denyAll(): void
+  denyAll(sessionId?: string): void
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): void
   /** `AgentReviews.resolveMatchingByLabel` */

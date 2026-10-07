@@ -74,8 +74,8 @@ export class ReviewManager {
     return this.agents.get(callerAgentSlug).requestXAgent(targetAgentSlug, targetAgentName, operation, preview, fileTransfer, signal)
   }
 
-  denyAllForAgent(agentSlug: string): void {
-    this.agents.peek(agentSlug)?.denyAll()
+  denyAllForAgent(agentSlug: string, sessionId?: string): void {
+    this.agents.peek(agentSlug)?.denyAll(sessionId)
   }
 
   rejectAll(): void {

@@ -53,6 +53,16 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
 }
 
 /**
+ * The session is gone: settle the calls parked on its own review and re-auth
+ * cards before the registry drops those cards with the session.
+ */
+export function releaseSessionState(state: AgentState, sessionId: string): void {
+  state.reviews.dropSession(sessionId)
+  state.accountReauth.dropSession(sessionId)
+  state.mcpReauth.dropSession(sessionId)
+}
+
+/**
  * The agent is gone from this process: reject every parked call, settle
  * every open request so its listeners hear the end of it, and forget the
  * rest. The persisted computer-use grants are left where they are; they

@@ -18,6 +18,7 @@ import {
   type InMemoryAgentStateDirectory,
 } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
 import { isReauthDismissed } from './reauth-dismissal'
+import { releaseSessionState } from '@shared/lib/agent-actor/agent-state'
 import { getReplacementAccountId } from './account-replacement'
 
 const DETAILS = {
@@ -252,6 +253,19 @@ describe('AccountReauthManager', () => {
 
       expect(await Promise.all([first, other])).toEqual(['replacement', 'replacement'])
       expect(cards()).toHaveLength(0)
+    })
+
+    it("deleting a session dismisses its parked calls and leaves the other session's", async () => {
+      const first = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' }).catch((error: unknown) => error)
+      const other = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-b' })
+
+      releaseSessionState(agents.states.get('agent-1')!, 'session-a')
+      userInputRequestManager.dropSessionRequests('agent-1', 'session-a')
+
+      expect(isReauthDismissed(await first)).toBe(true)
+      expect(cards().map((r) => r.scope.sessionId)).toEqual(['session-b'])
+      manager.completeAccount('account-1')
+      await expect(other).resolves.toBeUndefined()
     })
   })
 })

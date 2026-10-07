@@ -262,6 +262,14 @@ export class AgentReauthWaits<Details extends { callerSessionId?: string }> {
     return true
   }
 
+  /** The session is gone: dismiss the calls parked on its own cards, which go with it. */
+  dropSession(sessionId: string): void {
+    for (const group of [...this.groups.values()]) {
+      if (group.sessionId !== sessionId) continue
+      this.dismiss(group.entryId, 'The session was deleted.')
+    }
+  }
+
   /** Resume every parked request on the reconnected subject; returns how many. */
   complete(subject: string): number {
     let completed = 0

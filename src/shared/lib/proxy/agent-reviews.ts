@@ -345,12 +345,24 @@ export class AgentReviews {
     )
   }
 
-  denyAll(): void {
+  /** With a session, only the reviews it shows: its own and the agent-wide ones. */
+  denyAll(sessionId?: string): void {
     for (const entry of this.entries()) {
+      const scoped = entry.scope.sessionId
+      if (sessionId && scoped !== undefined && scoped !== sessionId) continue
       this.settleReview(entry, 'declined', { type: 'resolve', decision: 'deny' })
     }
     this.shadowSettlerCheck('denyAllForAgent')
     this.syncAwaiting()
+  }
+
+  /** The session is gone: deny the calls parked on its own reviews, whose cards go with it. */
+  dropSession(sessionId: string): void {
+    const own = this.entries().filter((entry) => entry.scope.sessionId === sessionId)
+    for (const entry of own) {
+      this.settleReview(entry, 'cancelled', { type: 'resolve', decision: 'deny' })
+    }
+    if (own.length > 0) this.syncAwaiting()
   }
 
   /** Reject every parked review: the process is shutting down, or the agent is gone. */

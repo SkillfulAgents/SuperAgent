@@ -13,6 +13,7 @@ messagePersister.attachSessionStores(createInMemorySessionStore)
 import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { ReviewManager } from './review-manager'
+import { releaseSessionState } from '@shared/lib/agent-actor/agent-state'
 
 // Likewise the actors' in-memory stores (requests, reviews), which the
 // persister and the review manager route to.
@@ -167,6 +168,28 @@ describe('proxy review session awaiting', () => {
 
       await expect(promise).resolves.toBe('allow')
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it("stopping another session leaves this session's review open", async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+
+      manager.denyAllForAgent(AGENT_SLUG, OTHER_SESSION_ID)
+      expect(manager.getPendingReviewsForAgent(AGENT_SLUG)).toHaveLength(1)
+
+      manager.denyAllForAgent(AGENT_SLUG, SESSION_ID)
+      await expect(promise).resolves.toBe('deny')
+    })
+
+    it('deleting the session denies the call parked on its review', async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+      const state = agents.states.get(AGENT_SLUG)!
+
+      releaseSessionState(state, SESSION_ID)
+      messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+
+      await expect(promise).resolves.toBe('deny')
+      expect(state.reviews.settlerIds()).toEqual([])
+      expect(manager.getPendingReviewsForAgent(AGENT_SLUG)).toHaveLength(0)
     })
   })
 })
