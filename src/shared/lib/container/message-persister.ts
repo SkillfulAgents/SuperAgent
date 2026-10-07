@@ -4,21 +4,21 @@ import { z } from 'zod'
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import { mergeCanonicalSlashCommands } from './slash-commands'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
-import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
-import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
-import type { RequestFileInput } from '@shared/lib/tool-definitions/request-file'
-import type { RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
-import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
-import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
-import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
-import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
+import type { AskUserQuestionInput } from '@shared/lib/tools/ask-user-question/definition'
+import type { RequestSecretInput } from '@shared/lib/tools/request-secret/definition'
+import type { RequestFileInput } from '@shared/lib/tools/request-file/definition'
+import type { RequestConnectedAccountInput } from '@shared/lib/tools/request-connected-account/definition'
+import type { RequestRemoteMcpInput } from '@shared/lib/tools/request-remote-mcp/definition'
+import type { RequestBrowserInputInput } from '@shared/lib/tools/request-browser-input/definition'
+import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run/definition'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
+import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/tools/requests/request-manager'
 import {
   isReplayableUserInputRequest,
   type PendingUserInputRequest,
   type UserInputRequestKind,
   type UserInputRequestOutcome,
-} from '@shared/lib/user-input/request-schema'
+} from '@shared/lib/tools/requests/request-schema'
 import { classifyResult } from './result-classification'
 import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind } from './runtime-death'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
@@ -574,13 +574,8 @@ class MessagePersister {
     // Defensive type boundary if a future caller violates the agent-scoped
     // re-auth invariant; these kinds are not accepted notification categories.
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
-    const waitingFor =
-      request.kind === 'capability_review'
-        ? (request.payload as { capability?: unknown }).capability === 'workflows'
-          ? 'capability_review_workflows'
-          : 'capability_review_subagents'
-        : request.kind
-    notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, waitingFor).catch((err) => {
+    const { kind, payload } = request
+    notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, { kind, payload }).catch((err) => {
       console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
     })
   }

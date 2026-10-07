@@ -2,7 +2,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { Check, X, Ban, ChevronDown, ChevronRight, FileText, ImageOff, Loader2, Search } from 'lucide-react'
 import { useState, useRef, useMemo, useEffect, memo } from 'react'
-import { getToolRenderer } from './tool-renderers'
+import { getToolRenderer } from '@shared/lib/tools/renderers'
 import {
   parseToolResult,
   type ParsedToolResultDocument,
@@ -11,10 +11,10 @@ import {
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
-import { formatToolName } from '@shared/lib/tool-definitions/types'
+import { formatToolName } from '@shared/lib/tools/types'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 
-export { formatToolName } from '@shared/lib/tool-definitions/types'
+export { formatToolName } from '@shared/lib/tools/types'
 
 interface ToolCallItemProps {
   toolCall: ApiToolCall

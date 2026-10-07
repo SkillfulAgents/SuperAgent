@@ -1,4 +1,4 @@
 /**
- * @deprecated Import from @shared/lib/tool-definitions/types instead.
+ * @deprecated Import from @shared/lib/tools/types instead.
  */
-export { formatToolName } from '@shared/lib/tool-definitions/types'
+export { formatToolName } from '@shared/lib/tools/types'

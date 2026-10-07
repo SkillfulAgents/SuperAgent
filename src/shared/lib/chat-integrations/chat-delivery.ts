@@ -1,10 +1,10 @@
 import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
-import type { PendingUserInputRequest } from '../user-input/request-schema'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
-import { getToolDefinition } from '../tool-definitions/registry'
-import { formatToolName } from '../tool-definitions/types'
+import { getToolDefinition } from '@shared/lib/tools/registry'
+import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>

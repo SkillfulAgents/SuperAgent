@@ -58,7 +58,7 @@ import {
   type SessionDashboardDispatch,
 } from '@shared/lib/dashboard-dispatch-schema'
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
@@ -71,7 +71,7 @@ import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
-} from '@shared/lib/user-input/request-schema'
+} from '@shared/lib/tools/requests/request-schema'
 import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {

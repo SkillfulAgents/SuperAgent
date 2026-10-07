@@ -4,7 +4,7 @@ import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-r
 
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { Button } from '@renderer/components/ui/button'
 import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
 import { Markdown } from '@renderer/components/ui/markdown'

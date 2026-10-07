@@ -1,0 +1,127 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { renderWithProviders as render } from '@renderer/test/test-utils'
+import { FileRequestItem } from './request'
+
+const mockApiFetch = vi.fn()
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}))
+
+const mockUploadFileChunked = vi.fn()
+vi.mock('@renderer/lib/upload', () => ({
+  uploadFileChunked: (...args: unknown[]) => mockUploadFileChunked(...args),
+}))
+
+const defaultProps = {
+  toolUseId: 'tu-1',
+  description: 'Please upload a CSV file with user data',
+  fileTypes: '.csv,.xlsx',
+  sessionId: 's-1',
+  agentSlug: 'my-agent',
+  onComplete: vi.fn(),
+}
+
+describe('FileRequestItem', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders pending state with description and file type hint', () => {
+    render(<FileRequestItem {...defaultProps} />)
+    expect(screen.getByText('Please upload a CSV file with user data')).toBeInTheDocument()
+    expect(screen.getByText(/Accepted file types:.*\.csv,\.xlsx/)).toBeInTheDocument()
+  })
+
+  it('renders drop zone with browse prompt', () => {
+    render(<FileRequestItem {...defaultProps} />)
+    expect(screen.getByText(/Click to browse/)).toBeInTheDocument()
+    expect(screen.getByText(/drag & drop file here/)).toBeInTheDocument()
+  })
+
+  it('upload button is disabled when no file is selected', () => {
+    render(<FileRequestItem {...defaultProps} />)
+    const uploadButton = screen.getByText('Upload file').closest('button')!
+    expect(uploadButton).toBeDisabled()
+  })
+
+  it('shows file name after selecting a file', async () => {
+    const user = userEvent.setup()
+    render(<FileRequestItem {...defaultProps} />)
+
+    const fileInput = document.querySelector('input[type="file"]')!
+    const file = new File(['hello'], 'data.csv', { type: 'text/csv' })
+    await user.upload(fileInput as HTMLInputElement, file)
+
+    await waitFor(() => {
+      expect(screen.getByText('data.csv')).toBeInTheDocument()
+    })
+  })
+
+  it('uploads file and provides it to the agent', async () => {
+    const user = userEvent.setup()
+    mockUploadFileChunked.mockResolvedValueOnce({ path: '/uploads/data.csv' })
+    mockApiFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
+
+    render(<FileRequestItem {...defaultProps} />)
+
+    // Select a file
+    const fileInput = document.querySelector('input[type="file"]')!
+    const file = new File(['hello'], 'data.csv', { type: 'text/csv' })
+    await user.upload(fileInput as HTMLInputElement, file)
+
+    // Click upload
+    await waitFor(() => {
+      expect(screen.getByText('data.csv')).toBeInTheDocument()
+    })
+    await user.click(screen.getByText('Upload file'))
+
+    await waitFor(() => {
+      expect(screen.getByText('File uploaded')).toBeInTheDocument()
+    })
+    expect(defaultProps.onComplete).toHaveBeenCalled()
+  })
+
+  it('decline button sends decline request', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
+
+    render(<FileRequestItem {...defaultProps} />)
+
+    // Click the Decline button (left side of the split button)
+    await user.click(screen.getByText('Decline'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Declined')).toBeInTheDocument()
+    })
+    expect(defaultProps.onComplete).toHaveBeenCalled()
+  })
+
+  it('shows the backend error message on upload failure', async () => {
+    const user = userEvent.setup()
+    mockUploadFileChunked.mockRejectedValueOnce(new Error('Upload failed'))
+
+    render(<FileRequestItem {...defaultProps} />)
+
+    const fileInput = document.querySelector('input[type="file"]')!
+    const file = new File(['hello'], 'data.csv', { type: 'text/csv' })
+    await user.upload(fileInput as HTMLInputElement, file)
+
+    await waitFor(() => {
+      expect(screen.getByText('data.csv')).toBeInTheDocument()
+    })
+    await user.click(screen.getByText('Upload file'))
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error:.*Upload failed/)).toBeInTheDocument()
+    })
+  })
+})

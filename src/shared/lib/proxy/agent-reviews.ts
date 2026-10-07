@@ -5,8 +5,8 @@
 import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from './x-agent-review'
 import crypto from 'crypto'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
-import type { AgentInputRequests } from '@shared/lib/user-input/agent-input-requests'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { generateReviewDisplayText, type ReviewDetails } from './review-display'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 

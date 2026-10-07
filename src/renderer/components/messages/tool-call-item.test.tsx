@@ -7,7 +7,7 @@ import { formatToolName } from './tool-call-item'
 import { createToolCall } from '@renderer/test/factories'
 
 // Mock getToolRenderer to return null (generic display)
-vi.mock('./tool-renderers', () => ({
+vi.mock('@shared/lib/tools/renderers', () => ({
   getToolRenderer: () => null,
 }))
 

@@ -220,7 +220,7 @@ import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-mem
 // the persister routes to through the singletons.
 attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { attribution } from '@shared/lib/platform-attribution'
 
@@ -2840,7 +2840,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        'remote_mcp'
+        expect.objectContaining({ kind: 'remote_mcp' })
       )
     })
 

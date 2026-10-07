@@ -65,7 +65,7 @@ vi.mock('drizzle-orm', () => ({
 
 import mcpProxy from './mcp-proxy'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 function mcp(status: 'active' | 'auth_required', accessToken: string) {
   return {
