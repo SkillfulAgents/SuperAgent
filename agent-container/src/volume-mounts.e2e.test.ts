@@ -105,6 +105,13 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     sh(container, `rm ${mount}/d/b.txt && rmdir ${mount}/d`);
     await waitFor(() => sh(container, `ls -A ${source}`) === '', 5_000);
 
+    // Git and editors write a temp file and rename it at once.
+    sh(container, `cd ${mount} && node -e "const fs = require('fs'); for (const i of [1, 2, 3]) { fs.writeFileSync('tmp' + i, 'x'); fs.renameSync('tmp' + i, 'final' + i) }"`);
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(sh(container, `ls ${source}`)).toBe('final1\nfinal2\nfinal3');
+    sh(container, `rm ${mount}/final*`);
+    await waitFor(() => sh(container, `ls -A ${source}`) === '', 5_000);
+
     sh(container, `echo outside > ${source}/new.txt`);
     await waitFor(() => sh(container, `cat ${mount}/new.txt 2>/dev/null || true`) === 'outside', 2_000);
   }, 60_000);

@@ -41,7 +41,9 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
     '--vfs-cache-mode', 'writes',
-    '--vfs-write-back', '0s',
+    // At 0s the upload starts while close() is still running, and a rename right after it (as git and editors do)
+    // is lost: the file reaches the app under its old name. 1s lets the rename land first.
+    '--vfs-write-back', '1s',
     '--dir-cache-time', '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
@@ -101,12 +103,13 @@ export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
   });
 }
 
-function uploadsRunning(volumeId: string): Promise<string[]> {
+// Both uploads waiting out the write-back delay and uploads running.
+function uploadsPending(volumeId: string): Promise<string[]> {
   return new Promise((resolve) => {
-    const req = http.request({ socketPath: controlSocket(volumeId), path: '/core/stats', method: 'POST' }, (res) => {
+    const req = http.request({ socketPath: controlSocket(volumeId), path: '/vfs/queue', method: 'POST' }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => resolve((JSON.parse(body).transferring ?? []).map((t: { name: string }) => t.name)));
+      res.on('end', () => resolve((JSON.parse(body).queue ?? []).map((t: { name: string }) => t.name)));
     });
     // No answer means rclone is gone, so nothing is uploading.
     req.on('error', () => resolve([]));
@@ -114,8 +117,8 @@ function uploadsRunning(volumeId: string): Promise<string[]> {
   });
 }
 
-// A closed file keeps uploading in the background, and rclone drops that upload when stopped.
-// Returns what was still uploading once the deadline passes.
+// A closed file uploads in the background, and rclone drops that upload when stopped.
+// Returns what was still pending once the deadline passes.
 export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number): Promise<string[]> {
   let pending: string[] = [];
   while (Date.now() < deadline) {
@@ -129,7 +132,7 @@ export async function waitForUploads(uploads: () => Promise<string[]>, deadline:
 
 export async function unmountVolumes(deadline: number): Promise<void> {
   await Promise.all(mounted.map(async ({ volumeId, name, rclone }) => {
-    const pending = await waitForUploads(() => uploadsRunning(volumeId), deadline);
+    const pending = await waitForUploads(() => uploadsPending(volumeId), deadline);
     if (pending.length > 0) console.error(`[volumes] Unmounting /mounts/${name} with uploads unfinished:`, pending);
     // SIGTERM makes rclone unmount.
     const exited = new Promise((resolve) => rclone.once('exit', resolve));
