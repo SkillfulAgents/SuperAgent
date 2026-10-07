@@ -138,6 +138,25 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(sh(container, `cat ${file}`)).toBe('CCCCCCCCCCCCCC');
   }, 60_000);
 
+  it('git sees no mode change in a mounted repo, and keeps the executable bit outside /mounts', async () => {
+    // The repo is made on the source side, as on the host: a repo made through the mount would detect
+    // that chmod does not stick and turn off core.fileMode itself.
+    const source = '/tmp/src/v_git';
+    const commit = 'git -c user.name=t -c user.email=t@t commit -qm init';
+    const container = startAgent(
+      `mkdir -p ${source} && cd ${source} && git init -q && echo x > a.txt && git add a.txt && ${commit} && chmod -R a+rwX /tmp/src && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes --dir-cache-time 0s`,
+      [{ volumeId: 'v_git', name: 'repo' }],
+    );
+    await healthUntilOk(container);
+
+    expect(sh(container, 'cd /mounts/repo && git --no-optional-locks status --porcelain')).toBe('');
+    expect(sh(container, 'git --no-optional-locks --work-tree /mounts/repo -C /mounts/repo status --porcelain')).toBe('');
+    expect(sh(container, `git -C ${source} config core.fileMode`)).toBe('true');
+
+    sh(container, `cd /tmp && git init -q plain && cd plain && printf '#!/bin/sh\\n' > run.sh && chmod +x run.sh && git add run.sh`);
+    expect(sh(container, 'git -C /tmp/plain ls-files -s run.sh').slice(0, 6)).toBe('100755');
+  }, 60_000);
+
   it('sends the token, leaves out a volume whose app never answers, and the container still removes at once', async () => {
     const booted = Date.now();
     const container = startAgent(
