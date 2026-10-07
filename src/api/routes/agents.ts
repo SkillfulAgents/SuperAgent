@@ -1,6 +1,7 @@
 import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
+import { credentialRefreshErrorBody, credentialRefreshUserStatus, findCredentialRefreshError } from '@shared/lib/llm-provider/credential-refresh-response'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
@@ -2134,6 +2135,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   } catch (error) {
     if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to create session:', error)
+    const refresh = findCredentialRefreshError(error)
+    if (refresh) return c.json(credentialRefreshErrorBody(refresh), credentialRefreshUserStatus(refresh))
     return c.json({ error: 'Failed to create session' }, 500)
   }
 })
@@ -2864,6 +2867,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   } catch (error) {
     if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to send message:', error)
+    const refresh = findCredentialRefreshError(error)
+    if (refresh) return c.json(credentialRefreshErrorBody(refresh), credentialRefreshUserStatus(refresh))
     return c.json({ error: 'Failed to send message' }, 500)
   }
 })

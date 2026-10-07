@@ -9,6 +9,7 @@ const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }))
 vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
+import { ProviderRequestError } from './provider-request-error'
 
 beforeEach(() => {
   mockToastError.mockClear()
@@ -27,6 +28,17 @@ describe('handleMutationError', () => {
     handleMutationError(new Error('boom'), { skipGlobalErrorToast: true })
     expect(mockCapture).toHaveBeenCalledTimes(1)
     expect(mockToastError).not.toHaveBeenCalled()
+  })
+
+  it('skips the toast for a provider error only when the caller shows it inline', () => {
+    const error = new ProviderRequestError('Reconnect in Settings', { severity: 'error', message: 'Reconnect in Settings', icon: 'info' })
+    handleMutationError(error, { providerErrorsShownInline: true })
+    expect(mockToastError).not.toHaveBeenCalled()
+    handleMutationError(new Error('Failed to create session'), { providerErrorsShownInline: true })
+    expect(mockToastError).toHaveBeenCalledWith('Failed to create session')
+    handleMutationError(error)
+    expect(mockToastError).toHaveBeenLastCalledWith('Reconnect in Settings')
+    expect(mockCapture).toHaveBeenCalledTimes(3)
   })
 
   it('uses meta.errorMessage as the toast text when provided', () => {

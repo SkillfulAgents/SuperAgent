@@ -21,6 +21,7 @@ import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, set
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import { UploadError } from '@renderer/components/ui/upload-error'
+import { RequestProviderError } from '@renderer/components/provider-error/request-provider-error'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
@@ -105,7 +106,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const voiceSendRef = useRef(false)
   // Let out-of-tree components (file-preview comment bar) focus this composer.
   useEffect(() => registerSessionComposerFocus(sessionId, () => textareaRef.current?.focus()), [sessionId])
-  const sendMessage = useSendMessage()
+  const sendMessage = useSendMessage({ providerErrorsShownInline: true })
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
@@ -498,6 +499,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               </div>
             )}
             <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
+            <RequestProviderError error={sendMessage.error} className="mt-2" />
           </>
         )}
       />
@@ -607,6 +609,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             )}
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
             <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
+            <RequestProviderError error={sendMessage.error} className="mt-2" />
           </>
         )}
       />

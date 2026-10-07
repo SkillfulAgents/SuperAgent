@@ -1,5 +1,6 @@
 import { CredentialRefreshError } from '../../../agent-container/src/credential-refresh-error'
 import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
+import { credentialRefreshErrorBody } from '@shared/lib/llm-provider/credential-refresh-response'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { IsAgent } from '../middleware/auth'
@@ -15,7 +16,8 @@ routes.use('*', IsAgent())
 routes.onError((error, c) => {
   if (!(error instanceof CredentialRefreshError)) throw error
   if (error.status === 503) c.header('Retry-After', '30')
-  return c.json({ error: error.message, code: error.status === 401 ? 'provider_reconnect_required' : 'provider_refresh_unavailable' }, error.status)
+  const { error: message, code } = credentialRefreshErrorBody(error)
+  return c.json({ error: message, code }, error.status)
 })
 const requestSchema = z.object({
   sessionId: z.string().min(1),

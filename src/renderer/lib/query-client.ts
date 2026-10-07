@@ -22,6 +22,7 @@ import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstac
 import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
+import { ProviderRequestError } from './provider-request-error'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -37,6 +38,8 @@ declare module '@tanstack/react-query' {
       skipGlobalErrorToast?: boolean
       /** Override the global error toast text for this mutation. */
       errorMessage?: string
+      /** Skip the toast for a `ProviderRequestError`; the caller renders it as a card. */
+      providerErrorsShownInline?: boolean
     }
     queryMeta: {
       /** Opt a query INTO a global error toast (queries are silent by default). */
@@ -60,6 +63,7 @@ function messageFromError(error: unknown): string {
 export function handleMutationError(error: unknown, meta?: MutationMeta): void {
   captureRendererException(error, { tags: { source: 'mutation' } })
   if (meta?.skipGlobalErrorToast) return
+  if (meta?.providerErrorsShownInline && error instanceof ProviderRequestError) return
   toast.error(meta?.errorMessage ?? messageFromError(error))
 }
 
