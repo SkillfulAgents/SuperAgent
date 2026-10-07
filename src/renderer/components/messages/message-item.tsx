@@ -145,7 +145,8 @@ function fenceSource(pre: ElementContent | undefined, language: string): string 
 
 // Only settled blocks draw diagrams or run HTML: a fence still streaming in the
 // tail would re-render incomplete output on every delta, so it stays a code block.
-const settledPre = (htmlPreview: boolean): Components['pre'] => ({ children, node }) => {
+const settledPre = (htmlPreview: boolean): Components['pre'] =>
+  function SettledPre({ children, node }) {
   const codeBlock = <CodeBlock>{children}</CodeBlock>
   const html = htmlPreview ? fenceSource(node, 'html') : null
   if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />
