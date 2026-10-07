@@ -179,7 +179,7 @@ export function AgentShell() {
 
   // Holder #1 of the two-holder EventSource pattern: keeps the stream ref-counted
   // open across leaf changes (SessionChatColumn is holder #2).
-  const { contextUsage: streamContextUsage, isStreaming } = useMessageStream(activeSessionId, slug)
+  const { contextUsage: streamContextUsage, isStreaming } = useMessageStream(activeSessionId, slug, ['contextUsage', 'isStreaming'])
 
   const value: PendingMessagesContextValue = {
     getPendingMessages,

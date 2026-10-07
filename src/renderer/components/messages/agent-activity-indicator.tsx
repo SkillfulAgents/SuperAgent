@@ -53,7 +53,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isActive, error, apiErrorCode, errorPresentation, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
-  } = useMessageStream(sessionId, agentSlug)
+  } = useMessageStream(sessionId, agentSlug, [
+    'isActive', 'error', 'apiErrorCode', 'errorPresentation', 'activeStartTime', 'isCompacting', 'activeSubagents',
+    'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking',
+  ])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
 
   const [revoking, setRevoking] = useState(false)

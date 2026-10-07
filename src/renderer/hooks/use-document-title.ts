@@ -235,7 +235,7 @@ export function useDocumentTitle() {
 
   const { data: agent } = useAgent(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
-  const { isStreaming } = useMessageStream(sessionId, agentSlug)
+  const { isStreaming } = useMessageStream(sessionId, agentSlug, ['isStreaming'])
 
   const dashboardName = useMemo(() => {
     if (location.view.kind !== 'dashboard') return null
