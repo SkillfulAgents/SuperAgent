@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser automation test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back correctly.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded Gamut interface showing Your Agents page with two agents listed: QA-20261007-205258-6h5p and QA-20261007-205256-5dzn",
+    "Step 2: Clicked on \"QA-20261007-205258-6h5p\" agent in sidebar — Successfully navigated to agent chat page at /agents/qa-20261007-205258-6h5p-d1v1ccgn92, showing agent configuration, triggers, connections, skills, and message input field",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input field — Message successfully entered in textbox with ref=e204, Send button became active",
+    "Step 4: Clicked Send message button — Message sent successfully, agent status changed to \"working\", new session created at /agents/qa-20261007-205258-6h5p-d1v1ccgn92/sessions/26b84014-6799-4b56-8048-5100e156887a",
+    "Step 5: Waited for and received agent response — Agent completed task in 5 seconds using 3 tool calls and 149,633 tokens. Response stated: \"The page title at https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\""
+  ],
+  "bugs": [],
+  "durationMs": 66874,
+  "sessionId": "dbe1494c-a86b-4f02-a7c5-08a3d1354b0f",
+  "cost": {
+    "inputTokens": 350,
+    "outputTokens": 9711,
+    "cacheCreationTokens": 73619,
+    "cacheReadTokens": 980895,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.239018
+  }
+}
