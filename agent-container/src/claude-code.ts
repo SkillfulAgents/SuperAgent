@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
 import { gamutPluginDir } from './gamut-plugin';
@@ -1135,6 +1136,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
       // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
       env: withSpeedHeader(withAgentAttributionHeaders({
+        // The CLI caps concurrent workflow agents at min(16, cores - 2), which
+        // is 1-2 on our 2-core microVMs. Workflow agents mostly wait on the
+        // model API, so floor it at 4. Placed first so a custom env var wins.
+        CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: String(Math.min(16, Math.max(4, os.availableParallelism() - 2))),
         // Agent SDK 0.2.113+ replaces process.env with options.env instead of
         // overlaying it, so we must spread process.env explicitly or the Claude
         // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
