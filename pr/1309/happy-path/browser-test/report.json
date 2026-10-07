@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature test - agent successfully opened browser, navigated to example.com, reported correct page title \"Example Domain\", and closed the browser",
+  "steps": [
+    "Navigated to http://localhost:47891 - Application loaded successfully showing Gamut home page with agent list in sidebar",
+    "Clicked on \"QA-20261007-210005-qtbt\" agent in sidebar - Agent interface opened successfully, displaying agent configuration and message input area",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was entered in textbox, send button clicked, and session was initiated with status showing \"working\"",
+    "Waited for agent response - Agent processed the request for approximately 5 seconds, executed \"Open Browser\" action to https://example.com and completed processing",
+    "Verified response mentions \"Example Domain\" - Response displayed: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\" Verification successful. Session summary showed: \"Worked for 5s · 3 tool calls · 149,633 tokens\""
+  ],
+  "bugs": [],
+  "durationMs": 195039,
+  "sessionId": "44b8fa0f-b9f2-47ce-ac6f-4ce2eba9e928",
+  "cost": {
+    "inputTokens": 860,
+    "outputTokens": 25469,
+    "cacheCreationTokens": 141630,
+    "cacheReadTokens": 3435959,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.648838
+  }
+}
