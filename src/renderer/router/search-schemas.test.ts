@@ -87,8 +87,8 @@ describe('settingsTabSchema', () => {
     expect(settingsTabSchema.safeParse('system-prompt').success).toBe(false)
     expect(settingsTabSchema.safeParse('secrets').success).toBe(false)
   })
-  it('has 21 tabs', () => {
-    expect(SETTINGS_TABS).toHaveLength(21)
+  it('includes the volume settings route', () => {
+    expect(SETTINGS_TABS).toContain('volumes')
     expect(settingsTabSchema.safeParse('capabilities').success).toBe(true)
   })
 })

@@ -3,7 +3,9 @@ import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
-import type { VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
+import { useVolumeDefinitions } from './use-volume-definitions'
+import { useUser } from '@renderer/context/user-context'
+import type { VolumeSummary, MountSummaryWithHealth } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -15,7 +17,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 }
 
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<VolumeSummaryWithHealth[]>({
+  return useQuery<MountSummaryWithHealth[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
@@ -30,14 +32,16 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; hostPath: string; restart?: boolean }) => {
-      if (!data.hostPath) {
+    mutationFn: async (data: { agentSlug: string; restart?: boolean } & ({ hostPath: string; volumeId?: never } | { volumeId: string; hostPath?: never })) => {
+      if (!data.volumeId && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'local', config: { path: data.hostPath }, restart: data.restart }),
+        body: JSON.stringify(data.volumeId
+          ? { volumeId: data.volumeId, restart: data.restart }
+          : { type: 'local', config: { path: data.hostPath }, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<VolumeSummary>
@@ -47,6 +51,7 @@ export function useAddMount() {
       // canonical id, but this mutation can fire from the session composer's
       // display-slug route, so a targeted key would miss it.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
     },
   })
 }
@@ -63,6 +68,7 @@ export function useRemoveMount() {
     onSuccess: () => {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
     },
   })
 }
@@ -70,6 +76,11 @@ export function useRemoveMount() {
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
   const mounts = Array.isArray(mountsData) ? mountsData : []
+  const registry = useVolumeDefinitions()
+  const definitions = registry.data ?? []
+  const { canUseAgent } = useUser()
+  const canModifyMounts = canUseAgent(agentSlug)
+  const canCreateMount = canModifyMounts && canUseHostFeatures()
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -77,6 +88,7 @@ export function useVolumesManager(agentSlug: string) {
   const [pendingRestart, setPendingRestart] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
 
   // A stopped agent picks up mount changes on next start — no restart needed.
   useEffect(() => {
@@ -87,18 +99,37 @@ export function useVolumesManager(agentSlug: string) {
   }, [isAgentRunning, pendingRestart])
 
   const handleAddMount = async () => {
-    const dirPath = await window.electronAPI?.openDirectory()
-    if (!dirPath) return
-    await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
-    if (isAgentRunning) setPendingRestart(true)
+    if (!canCreateMount) return
+    try {
+      setOperationError(null)
+      const dirPath = await window.electronAPI?.openDirectory()
+      if (!dirPath) return
+      await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
+      if (isAgentRunning) setPendingRestart(true)
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Failed to add mount')
+    }
+  }
+
+  const handleAttach = async (volumeId: string) => {
+    if (!canModifyMounts) return
+    try {
+      setOperationError(null)
+      await addMount.mutateAsync({ agentSlug, volumeId })
+      if (isAgentRunning) setPendingRestart(true)
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Failed to add mount')
+    }
   }
 
   const handleRemove = async (mountId: string) => {
+    if (!canModifyMounts) return
     try {
+      setOperationError(null)
       await removeMount.mutateAsync({ agentSlug, mountId })
       if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
-      console.error('Failed to remove mount:', error)
+      setOperationError(error instanceof Error ? error.message : 'Failed to remove mount')
     }
   }
 
@@ -124,18 +155,21 @@ export function useVolumesManager(agentSlug: string) {
 
   return {
     mounts,
-    isLoading,
+    definitions,
+    isLoading: isLoading || registry.isLoading,
+    operationError: operationError ?? (registry.error ? 'Could not load saved volumes' : null),
+    canModifyMounts,
+    canCreateMount,
     pendingRestart,
     isRestarting,
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // A mount is a path on the machine that runs the agent. Picking one here
-    // opens *this* computer's directory picker, so it only means something when
-    // this computer is also the one running them. Existing mounts still list —
-    // they are real on whichever Superagent is being driven.
-    canAddMount: canUseHostFeatures(),
+    // Only creating a local source needs this computer's directory picker.
+    // Attaching a saved source works against any API target.
+    canAddMount: canModifyMounts && (canCreateMount || definitions.some(v => !mounts.some(m => m.volumeId === v.id))),
     handleAddMount,
+    handleAttach,
     handleRemove,
     handleRestart,
   }

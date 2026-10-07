@@ -1,10 +1,11 @@
 import fs from 'fs'
 import path from 'path'
-import { z } from 'zod'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
+import type { LocalVolumeConfig } from './volume-config-schema'
+export { localVolumeConfigSchema, type LocalVolumeConfig } from './volume-config-schema'
 
 /**
  * An entry as a listing reports it, never following a link: a link shows as an
@@ -51,9 +52,6 @@ function refuseRoot(volumePath: string): void {
 }
 
 /** A local volume's folder, by its real path. */
-export const localVolumeConfigSchema = z.object({ path: z.string() })
-export type LocalVolumeConfig = z.infer<typeof localVolumeConfigSchema>
-
 /** Checks a folder picked for a new local volume, and names the volume after it. */
 export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
   if (!path.isAbsolute(folder)) {

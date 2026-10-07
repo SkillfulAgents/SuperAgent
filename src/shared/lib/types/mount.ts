@@ -19,9 +19,25 @@ export interface VolumeSummaryWithHealth extends VolumeSummary {
   health: 'ok' | 'missing'
 }
 
+/** The saved definition available in Settings and the attachment picker. */
+export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
+  userId: string | null
+  canManage: boolean
+  attachmentCount: number
+}
+
+/** An agent's attachment, whose id and name are independent of the definition. */
+export interface MountedVolume extends StoredVolume {
+  volumeId: string
+}
+
+export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
+  volumeId: string
+}
+
 /** A volume as the container receives it, in SUPERAGENT_VOLUMES. */
 export interface ContainerVolume {
-  volumeId: string
+  volumeId: string // attachment id; the agent token scopes its lookup
   name: string
 }
 

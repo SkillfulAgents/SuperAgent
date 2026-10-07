@@ -407,7 +407,7 @@ export class ContainerRuntime {
 
   /**
    * Restart the container by stopping and re-starting it.
-   * Mounts are re-loaded from mounts.json on start.
+   * Volume attachments are re-loaded from SQLite on start.
    */
   async restartContainer(): Promise<ContainerClient> {
     await this.stopContainer()

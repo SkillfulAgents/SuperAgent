@@ -3,7 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; name: string; type: string; hostPath: string | null; health?: unknown }[],
+  mounts: [] as { id: string; volumeId?: string; name: string; type: string; hostPath: string | null; health?: unknown }[],
+  definitions: [] as { id: string; name: string; hostPath: string }[],
+  canCreateMount: true,
+  canModifyMounts: true,
+  operationError: null as string | null,
+  handleAttach: vi.fn(),
   isLoading: false,
   pendingRestart: false,
   isRestarting: false,
@@ -27,17 +32,20 @@ import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
 
 /**
- * A volume is a path on the machine that runs the agent. Every affordance here
- * — pick one, open one in Finder — reaches *this* computer, so they mean
- * something only while the two are the same machine.
+ * Local folder picking/revealing needs this computer. Saved volumes belong to
+ * the selected API target and can also be attached from browsers/cloud windows.
  */
 
-const MOUNT = { id: 'm1', name: 'code', type: 'local', hostPath: '/Users/joe/code' }
+const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', type: 'local', hostPath: '/Users/joe/code' }
 
 beforeEach(() => {
   vi.clearAllMocks()
   volumes.mounts = [MOUNT]
   volumes.canAddMount = true
+  volumes.canCreateMount = true
+  volumes.canModifyMounts = true
+  volumes.definitions = []
+  volumes.operationError = null
   volumes.pendingRestart = false
   mockCanUseHostFeatures.mockReturnValue(true)
   window.electronAPI = { platform: 'darwin', showInFolder: vi.fn() } as never
@@ -81,6 +89,7 @@ describe('driving a cloud workspace', () => {
   beforeEach(() => {
     mockCanUseHostFeatures.mockReturnValue(false)
     volumes.canAddMount = false
+    volumes.canCreateMount = false
   })
 
   it('does not offer a directory picker that would browse the wrong machine', () => {
@@ -119,5 +128,48 @@ describe('driving a cloud workspace', () => {
     // Otherwise: an empty box inviting you to "mount a folder from your
     // computer", with no button to do it.
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+
+describe('saved volume picker', () => {
+  beforeEach(() => {
+    volumes.definitions = [
+      { id: 'v1', name: 'code', hostPath: '/Users/joe/code' },
+      { id: 'v2', name: 'notes', hostPath: '/Users/joe/notes' },
+    ]
+  })
+  it('offers saved sources and adding a new folder, disabling mounted sources', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    expect(screen.getByRole('menuitem', { name: /code.*mounted/i })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('menuitem', { name: /add new folder/i })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('menuitem', { name: /notes/i }))
+    expect(volumes.handleAttach).toHaveBeenCalledWith('v2')
+    expect(volumes.handleAddMount).not.toHaveBeenCalled()
+  })
+  it('retains the existing folder picker for adding a new source', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /add new folder/i }))
+    expect(volumes.handleAddMount).toHaveBeenCalledOnce()
+  })
+  it('attaches saved volumes remotely without offering the native folder picker', async () => {
+    mockCanUseHostFeatures.mockReturnValue(false)
+    volumes.canCreateMount = false
+    volumes.mounts = []
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    expect(screen.queryByRole('menuitem', { name: /add new folder/i })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('menuitem', { name: /notes/i }))
+    expect(volumes.handleAttach).toHaveBeenCalledWith('v2')
+  })
+  it('hides attachment and removal controls from viewers', async () => {
+    volumes.canModifyMounts = false
+    volumes.canAddMount = false
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.queryByRole('button', { name: /add mount/i })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+    expect(screen.queryByRole('button', { name: /remove mount/i })).not.toBeInTheDocument()
   })
 })

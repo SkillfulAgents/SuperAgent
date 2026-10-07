@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,9 +21,11 @@ import {
   Plus,
   Loader2,
   RefreshCw,
+  ChevronDown,
 } from 'lucide-react'
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
+import { openableProps } from '@renderer/lib/openable'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeStatusBadge } from '../volume-status-badge'
 import type { VolumeSummaryWithHealth } from '@shared/lib/types/mount'
@@ -35,10 +38,8 @@ interface HomeVolumesProps {
 export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
 
-  // Nothing mounted and no way to mount anything (a cloud workspace, where the
-  // picker would browse the wrong machine): the section would be an empty box
-  // inviting you to do something this window cannot do.
-  if (!volumes.canAddMount && volumes.mounts.length === 0) return null
+  // Saved sources can be attached from a browser or cloud workspace, too.
+  if (!volumes.canAddMount && volumes.mounts.length === 0 && !volumes.operationError) return null
 
   return (
     <HomeCollapsible title="Volumes" className={className}>
@@ -50,17 +51,19 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               mount={mount}
               onRemove={() => volumes.handleRemove(mount.id)}
               isRemovingMount={volumes.isRemovingMount}
+              canRemove={volumes.canModifyMounts}
             />
           ))}
         </div>
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No volumes yet</p>
-          <p className="text-xs mt-1">Mount a folder from your computer to give your agents direct read/write access to the files in it.</p>
+          <p className="text-xs mt-1">Attach a saved volume{volumes.canCreateMount ? ' or choose a folder from your computer' : ''} to give this agent read/write access.</p>
         </div>
       )}
 
       <div className="mt-3 px-4">
+        {volumes.operationError && <p role="alert" className="mb-2 text-xs text-destructive">{volumes.operationError}</p>}
         {volumes.pendingRestart ? (
           <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
@@ -84,23 +87,45 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               </span>
             )}
           </div>
-        ) : volumes.canAddMount ? (
-          <div className="flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={volumes.handleAddMount}
-              disabled={volumes.isAddingMount}
-            >
-              {volumes.isAddingMount ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Plus />
-              )}
-              Add Mount
-            </Button>
-          </div>
         ) : null}
+        {volumes.canAddMount && (
+          <div className="flex justify-end">
+            {volumes.definitions.length > 0 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" disabled={volumes.isAddingMount || volumes.isLoading} data-testid="add-mount-menu">
+                    {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />}
+                    Add Mount <ChevronDown />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-72">
+                  <DropdownMenuLabel>Saved volumes</DropdownMenuLabel>
+                  {volumes.definitions.map(volume => {
+                    const attached = volumes.mounts.some(m => m.volumeId === volume.id)
+                    return (
+                      <DropdownMenuItem key={volume.id} disabled={attached} onSelect={() => { void volumes.handleAttach(volume.id) }}>
+                        <Folder className="h-4 w-4 shrink-0" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate">{volume.name}</span>
+                          {volume.hostPath && <span className="block truncate text-xs text-muted-foreground">{volume.hostPath}</span>}
+                        </span>
+                        {attached && <span className="text-xs text-muted-foreground">Mounted</span>}
+                      </DropdownMenuItem>
+                    )
+                  })}
+                  {volumes.canCreateMount && <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => { void volumes.handleAddMount() }}><Plus className="h-4 w-4" />Add new folder…</DropdownMenuItem>
+                  </>}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={volumes.handleAddMount} disabled={volumes.isAddingMount || volumes.isLoading}>
+                {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />} Add Mount
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </HomeCollapsible>
   )
@@ -117,9 +142,10 @@ interface VolumeRowProps {
   mount: VolumeSummaryWithHealth
   onRemove: () => void
   isRemovingMount: boolean
+  canRemove: boolean
 }
 
-function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
+function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const fileManagerLabel = getFileManagerLabel()
@@ -149,20 +175,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
         // Not a button when there is nothing to open: an inert control that
         // still takes focus and highlights on hover promises an action the
         // window cannot perform.
-        {...(canOpenInFileManager
-          ? {
-            role: 'button',
-            tabIndex: 0,
-            onClick: handleOpenInFinder,
-            onKeyDown: (e: React.KeyboardEvent) => {
-              if (e.target !== e.currentTarget) return
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                handleOpenInFinder()
-              }
-            },
-          }
-          : {})}
+        {...(canOpenInFileManager ? openableProps(handleOpenInFinder) : {})}
         className={`group relative py-3 px-4 transition-colors ${canOpenInFileManager ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
       >
         <div className="flex items-center gap-2">
@@ -216,7 +229,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
                   Copy path
                 </button>
               )}
-              <button
+              {canRemove && <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => {
                   e.stopPropagation()
@@ -226,7 +239,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 Remove Mount
-              </button>
+              </button>}
             </PopoverContent>
           </Popover>
         </div>
@@ -237,7 +250,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Mount</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to unmount &quot;{mount.name}&quot;? The agent will lose access to this folder after restarting.
+              Detach &quot;{mount.name}&quot; from this agent? The saved volume and its files will remain available. Restart the agent to remove the mount from its filesystem.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
