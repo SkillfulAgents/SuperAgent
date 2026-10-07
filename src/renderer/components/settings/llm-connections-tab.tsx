@@ -354,7 +354,7 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
     </>
   )
 }
-function ConnectionEditor({
+export function ConnectionEditor({
   existing,
   initialProvider,
   userId,
@@ -362,6 +362,8 @@ function ConnectionEditor({
   catalogFor,
   modelPricing,
   onClose,
+  onSaved,
+  saveLabel = 'Save',
 }: {
   existing?: ConnectionInfo
   initialProvider?: LlmProviderId
@@ -370,6 +372,8 @@ function ConnectionEditor({
   modelPricing: GlobalModelPricing
   catalogFor: (provider: LlmProviderId) => ConnectionInfo['catalog']
   onClose: () => void
+  onSaved?: (id: string) => void
+  saveLabel?: string
 }) {
   const formId = useId()
   const updateSettings = useUpdateSettings()
@@ -452,12 +456,13 @@ function ConnectionEditor({
         else toast.error(result.error ?? 'Validation failed')
         return
       }
-      await mutation.mutateAsync({
+      const saved = await mutation.mutateAsync({
         path: existing ? `/${existing.id}` : '',
         method: existing ? 'PUT' : 'POST',
         body: connection,
       })
-      onClose()
+      if (onSaved) onSaved(saved.id)
+      else onClose()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not save connection')
     }
@@ -702,7 +707,7 @@ function ConnectionEditor({
           Cancel
         </Button>
         <Button type="submit" disabled={mutation.isPending || (isOAuthProvider(provider) && !oauthLoginId && !existing?.isConfigured)}>
-          Save
+          {mutation.isPending ? 'Saving…' : saveLabel}
         </Button>
       </DialogFooter>
     </form>

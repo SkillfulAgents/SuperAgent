@@ -15,6 +15,8 @@ export const PAYWALL_RECHECK_INTERVAL_MS = 5000
 export interface PaywallBilling {
   cta: PaywallCta | null
   loading: boolean
+  /** Needs a plan, independently of whether this user may manage workspace billing. */
+  subscriptionRequired: boolean
   /** A fresh snapshot positively denies access: the composer can be withheld. */
   blocked: boolean
   /** A fresh snapshot allows access again (after this paywall appeared, if live): the card can go. */
@@ -128,7 +130,7 @@ export function usePlatformPaywallBilling(
 
   const snapshot = useMemo(() => {
     if (billingQuery.isLoading) {
-      return { cta: null, loading: true, blocked: false, cleared: false, creditScope: 'seat' as const, pooledExhausted: false }
+      return { cta: null, loading: true, subscriptionRequired: false, blocked: false, cleared: false, creditScope: 'seat' as const, pooledExhausted: false }
     }
     const fresh = billingQuery.data?.stale !== true
     const billing = billingQuery.data?.billing
@@ -145,6 +147,7 @@ export function usePlatformPaywallBilling(
         billingHref,
       }),
       loading: false,
+      subscriptionRequired: subscriptionRequired === true,
       blocked: allowed === false,
       cleared: allowed === true && (!live || billingQuery.dataUpdatedAt > seenAt),
       creditScope,

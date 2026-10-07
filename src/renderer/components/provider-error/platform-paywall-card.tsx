@@ -16,6 +16,7 @@ import { BillingEmbedFrame, BRAND_BUTTON_CLASS, type SubscribePlan } from './bil
 import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
+import { PaywallSubscriptionOptions } from './paywall-subscription-options'
 
 // The session composer's glass (FLOATING_COMPOSER_CLASS in chat-composer-box.tsx), a touch
 // more opaque so the card's copy stays readable over the colour bloom behind it.
@@ -234,7 +235,7 @@ function SubscribeBody({ plan, hint, actions, expanded, pooled }: { plan: Subscr
 // Platform 402. An invitation, not a failure: neutral card, title + muted subtitle, one
 // role/billing-aware CTA. Fails open: the composer is withheld only while a fresh billing
 // snapshot positively denies access; otherwise the card sits above it.
-export function PlatformPaywallCard({ message, presentation, onDisplaceChildren, live = true, dismissible = false }: ProviderErrorComponentProps) {
+export function PlatformPaywallCard({ message, presentation, onDisplaceChildren, live = true, dismissible = false, session }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -404,6 +405,12 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
             </div>
           )}
         </div>
+        {billing.subscriptionRequired && session && (
+          <PaywallSubscriptionOptions
+            session={session}
+            onResumed={() => setDismissed(true)}
+          />
+        )}
       </div>
     </>
   )

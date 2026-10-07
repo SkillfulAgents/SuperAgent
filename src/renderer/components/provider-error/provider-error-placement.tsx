@@ -111,10 +111,12 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
     <div data-testid={showing ? `provider-error-placement-${placement}` : undefined}>
       {showing && (
         <resolved.Component
+          key={`${agentSlug}:${sessionId}`}
           message={current.message}
           presentation={current.presentation}
           live={current.live}
           onDisplaceChildren={setDisplaced}
+          session={{ sessionId, agentSlug }}
         />
       )}
       <div hidden={slot.displaced}>{typeof children === 'function' ? children(slot) : children}</div>

@@ -239,6 +239,14 @@ describe('ProviderErrorPlacement', () => {
     expect(screen.getByTestId('composer')).not.toBeVisible()
   })
 
+  it('passes the current session to recovery components', () => {
+    const Recovery = ({ session }: ProviderErrorComponentProps) => <div data-testid="recovery">{session?.agentSlug}/{session?.sessionId}</div>
+    mockedRegistry.mockReturnValue({ Component: Recovery, placement: 'composer' })
+    mockMessages.push(errorMessage(composerError))
+    mount()
+    expect(screen.getByTestId('recovery')).toHaveTextContent('a/s')
+  })
+
   it('tells function children when they are displaced, and when they are not', () => {
     const Displacing = ({ onDisplaceChildren }: ProviderErrorComponentProps) => {
       useEffect(() => { onDisplaceChildren?.(true) }, [onDisplaceChildren])

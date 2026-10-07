@@ -36,6 +36,12 @@ vi.mock('@renderer/components/home/home-empty-clouds', () => ({
   HomeEmptyClouds: () => null,
 }))
 
+vi.mock('./paywall-subscription-options', () => ({
+  PaywallSubscriptionOptions: ({ onResumed }: { onResumed: () => void }) => (
+    <button data-testid="paywall-subscriptions" onClick={onResumed}>Connect an existing subscription</button>
+  ),
+}))
+
 const openExternalUrl = vi.fn()
 vi.mock('@renderer/lib/open-external', () => ({
   openExternalUrl: (url: string) => openExternalUrl(url),
@@ -152,7 +158,7 @@ function renderCard(
   dismissible = false,
 ) {
   return render(
-    <Slot message={message} presentation={presentation} live={live} dismissible={dismissible} />,
+    <Slot message={message} presentation={presentation} live={live} dismissible={dismissible} session={{ sessionId: 's', agentSlug: 'a' }} />,
     { wrapper: Wrapper },
   )
 }
@@ -187,6 +193,43 @@ describe('PlatformPaywallCard', () => {
   afterEach(() => {
     vi.clearAllMocks()
     delete (window as { electronAPI?: unknown }).electronAPI
+  })
+
+  it.each(['owner', 'member'])('offers existing subscriptions for an unsubscribed %s', async role => {
+    platformAuth.role = role
+    fetchBilling.mockResolvedValue(billing({ subscription: { status: 'none', paymentStatus: null, currentPeriodEnd: null, creditScope: 'seat' } }))
+    renderCard()
+    expect(await screen.findByTestId('paywall-subscriptions')).toBeVisible()
+    expect(screen.getByTestId('composer')).not.toBeVisible()
+    act(() => { screen.getByTestId('paywall-subscriptions').click() })
+    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
+  })
+
+  it('uses the explicit subscription-required error even without a billing snapshot', async () => {
+    fetchBilling.mockRejectedValue(new Error('Billing unavailable'))
+    renderCard('API Error: 402 {"subscription_required":true}')
+    expect(await screen.findByTestId('paywall-subscriptions')).toBeVisible()
+  })
+
+  it.each([
+    ['top-up', billing()],
+    ['add card', billing({ hasPaymentMethod: false })],
+    ['payment failure', billing({ subscription: { status: 'past_due', paymentStatus: 'past_due', currentPeriodEnd: null, creditScope: 'seat' } })],
+    ['unknown subscription', { connected: true }],
+  ] as const)('does not offer existing subscriptions for %s', async (_label, snapshot) => {
+    platformAuth.role = 'owner'
+    fetchBilling.mockResolvedValue(snapshot)
+    renderCard()
+    await waitFor(() => expect(screen.queryByTestId('paywall-actions-loading')).not.toBeInTheDocument())
+    expect(screen.queryByTestId('paywall-subscriptions')).not.toBeInTheDocument()
+  })
+
+  it('does not offer subscription recovery on a historical card without a current session', async () => {
+    fetchBilling.mockResolvedValue(billing({ subscription: { status: 'none', paymentStatus: null, currentPeriodEnd: null, creditScope: 'seat' } }))
+    render(<Slot message={'API Error: 402 {"subscription_required":true}'} presentation={PRESENTATION} />, { wrapper: Wrapper })
+    await screen.findByText('Workspace billing needs attention')
+    expect(screen.queryByTestId('paywall-subscriptions')).not.toBeInTheDocument()
   })
 
   it('tracks the paywall being shown and its CTA click', async () => {
