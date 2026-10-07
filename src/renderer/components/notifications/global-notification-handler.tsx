@@ -51,6 +51,9 @@ import {
   USER_ACTIONABLE_NOTIFICATION_TYPES,
 } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+import type { RuntimeReadiness } from '@shared/lib/container/types'
+import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
+import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 
@@ -645,11 +648,23 @@ export function GlobalNotificationHandler() {
             break
           }
 
-          case 'runtime_readiness_changed':
-            // Runtime readiness changed (e.g., image pull started/completed)
+          case 'runtime_readiness_changed': {
+            const readiness = data.readiness as RuntimeReadiness | undefined
+            const previous =
+              queryClient.getQueryData<RuntimeStatusResponse>(['runtime-status'])?.runtimeReadiness ??
+              queryClient.getQueryData<GlobalSettingsResponse>(['settings'])?.runtimeReadiness
+            // An image pull sends a progress event about every second with the same
+            // status. Patch the new readiness in instead of refetching every
+            // settings query per tick; a status change (e.g. to READY) still refetches.
+            if (readiness && previous?.status === readiness.status) {
+              queryClient.setQueryData<RuntimeStatusResponse>(['runtime-status'], (old) => old && { ...old, runtimeReadiness: readiness })
+              queryClient.setQueryData<GlobalSettingsResponse>(['settings'], (old) => old && { ...old, runtimeReadiness: readiness })
+              break
+            }
             queryClient.invalidateQueries({ queryKey: ['settings'] })
             queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
             break
+          }
         }
       } catch {
         // Ignore parse errors for ping/connected messages

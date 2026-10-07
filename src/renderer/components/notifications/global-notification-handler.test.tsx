@@ -137,6 +137,28 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     Reflect.deleteProperty(document, 'visibilityState')
   })
 
+  it('runtime_readiness_changed patches same-status progress and refetches only on a status change', () => {
+    const pulling = (percent: number) => ({
+      status: 'PULLING_IMAGE',
+      message: 'Pulling agent image',
+      pullProgress: { status: `Pulling image... ${percent}%`, percent, completedLayers: 3, totalLayers: 7 },
+    })
+    queryClient.setQueryData(['runtime-status'], { runtimeReadiness: pulling(44), hasRunningAgents: false })
+    queryClient.setQueryData(['settings'], { runtimeReadiness: pulling(44), app: { theme: 'dark' } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: pulling(45) })
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(['runtime-status'])).toEqual({ runtimeReadiness: pulling(45), hasRunningAgents: false })
+    expect(queryClient.getQueryData(['settings'])).toEqual({ runtimeReadiness: pulling(45), app: { theme: 'dark' } })
+
+    const ready = { status: 'READY', message: 'Ready', pullProgress: null }
+    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: ready })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['settings'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['runtime-status'] })
+  })
+
   it('invalidates the current roster on changes and rejects malformed hints', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
