@@ -20,6 +20,8 @@ import {
   mcpAuditLog,
   mcpToolPolicies,
   agentAcl,
+  agentVolumes,
+  volumeDefinitions,
   agents,
   messageAuthor,
   xAgentPolicies,
@@ -59,6 +61,9 @@ function factoryResetTables(): SQLiteTable[] { return [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  // attachments precede both their saved source and their agent
+  agentVolumes,
+  volumeDefinitions,
   // the agent catalog itself, once the per-agent rows above are gone
   agents,
   notifications,

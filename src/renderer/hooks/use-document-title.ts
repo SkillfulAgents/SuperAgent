@@ -55,6 +55,7 @@ const SETTINGS_TAB_TITLES = {
   notifications: 'Notifications',
   platform: 'Account',
   connections: 'Connections',
+  volumes: 'Volumes',
   usage: 'Usage',
   llm: 'Model Provider',
   runtime: 'Container Runtime',

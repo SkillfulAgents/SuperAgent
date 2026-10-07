@@ -20,6 +20,7 @@ import { importAgentsFromDirectories } from './0001-import-agents-from-directori
 import { importLlmConnections } from './0003-import-llm-connections'
 import { renameDefaultConnections } from './0004-rename-default-connections'
 import { renameClaudeMdToAgentsMd } from './0005-rename-claude-md-to-agents-md'
+import { importVolumeDefinitions } from './0006-import-volume-definitions'
 
 /** The query surface a migration gets. Await every statement: the driver may answer asynchronously. */
 export type DataMigrationDb = Pick<AppDatabase, 'select' | 'insert' | 'update' | 'delete'>
@@ -37,7 +38,7 @@ export interface DataMigration {
 }
 
 /** Every data migration, in the order they are applied. */
-export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing, importLlmConnections, renameDefaultConnections, renameClaudeMdToAgentsMd]
+export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing, importLlmConnections, renameDefaultConnections, renameClaudeMdToAgentsMd, importVolumeDefinitions]
 
 /**
  * Apply every migration in `migrations` the ledger does not list, in id

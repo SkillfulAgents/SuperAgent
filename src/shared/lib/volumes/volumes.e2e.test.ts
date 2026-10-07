@@ -11,6 +11,11 @@ import { execFile, execFileSync, spawnSync } from 'child_process'
 import { promisify } from 'util'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { agents } from '@shared/lib/db/schema'
+
+let handle: TestDatabase
+vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 import { serve, type ServerType } from '@hono/node-server'
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
@@ -47,7 +52,9 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
   let server: ServerType
   const client = () => new DockerContainerClient({ agentId: 'agent-a' } as never)
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    handle = await createTestDatabase()
+    await handle.db.insert(agents).values({ slug: 'agent-a', name: 'Agent A', createdAt: new Date() }).run()
     execFileSync('docker', ['build', '-t', IMAGE, path.resolve(__dirname, '../../../../agent-container')], { stdio: 'ignore', timeout: 900_000 })
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volumes-e2e-')))
     process.env.SUPERAGENT_DATA_DIR = tmpDir
@@ -57,7 +64,8 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' })
   }, 900_000)
 
-  afterAll(() => {
+  afterAll(async () => {
+    await handle?.close()
     spawnSync('docker', ['rm', '-f', 'superagent-agent-a'], { stdio: 'ignore', timeout: 60_000 })
     server?.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -71,9 +79,9 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     }
     const notes = folder('notes')
     fs.writeFileSync(path.join(notes, 'a.txt'), 'hello')
-    const { id: notesId } = await addMount('agent-a', 'local', { path: notes })
-    await addMount('agent-a', 'local', { path: folder('late') })
-    await addMount('agent-a', 'local', { path: folder('gone') })
+    const { id: notesId } = await addMount('agent-a', 'local', { path: notes }, { userId: null, admin: true })
+    await addMount('agent-a', 'local', { path: folder('late') }, { userId: null, admin: true })
+    await addMount('agent-a', 'local', { path: folder('gone') }, { userId: null, admin: true })
     fs.rmSync(path.join(tmpDir, 'gone'), { recursive: true })
 
     const listed = await listVolumes('agent-a')

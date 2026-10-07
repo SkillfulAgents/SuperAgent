@@ -501,7 +501,7 @@ somewhere else.
 
 | Site | Why |
 | --- | --- |
-| Add-a-mount, and the Volumes section when empty (`use-mounts.ts`, `home-volumes.tsx`) | The picker browses this computer; the path is handed to the agent's |
+| Create a local volume (`volume-settings-dialog.tsx`, `home-volumes.tsx`, `volumes-tab.tsx`) | Uses the existing OS folder picker on this computer. Attaching an existing saved volume works against any API target |
 | Open-a-mount in Finder/Explorer (`home-volumes.tsx`) | `hostPath` belongs to the agent's machine |
 | Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
 | Reveal a workspace folder in Finder/Explorer (`folder-host-actions.tsx`) | The folder panel's header action. Same reasoning as revealing a file: the deployment returns *its* host path. The Copy-path action beside it stays everywhere, since a path is just text |
@@ -554,9 +554,6 @@ None of this is enforced. There is no lint rule, roughly a hundred raw
 `window.electronAPI` reads and ~47 `isElectron()` sites, and nothing stops the
 next feature from asking the old question. Specifically, and unfixed:
 
-- **`handleAddMount` (`use-mounts.ts`) is itself ungated** — only the button that
-  calls it consults `canAddMount`. A second caller reintroduces the host-path
-  leak.
 - **Dock shortcuts carry no target.** `create-dock-shortcut` stores
   `agentSlug`/`dashboardSlug` only, and the deep-link handler opens them against
   whatever target is active at click time. A shortcut made for a cloud dashboard
