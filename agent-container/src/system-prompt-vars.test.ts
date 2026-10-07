@@ -5,6 +5,9 @@ import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
 import { SERVICES } from './tools/search-connected-account-services'
 import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
 import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
+import { mountedVolumePaths } from './volume-mounts'
+
+vi.mock('./volume-mounts', () => ({ mountedVolumePaths: vi.fn(() => []) }))
 
 const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'SUPERAGENT_MOUNTS']
 let saved: Record<string, string | undefined>
@@ -42,6 +45,12 @@ describe('buildSystemPromptVars', () => {
     const vars = buildSystemPromptVars()
     expect(vars.hasMounts).toBe(false)
     expect(vars.mountPathsJoined).toBe('')
+  })
+
+  it('lists mounted volumes after the bind paths', () => {
+    process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project'])
+    vi.mocked(mountedVolumePaths).mockReturnValueOnce(['/mounts/docs'])
+    expect(buildSystemPromptVars().mountPathsJoined).toBe('"/mounts/project", "/mounts/docs"')
   })
 
   it('leaves mounts off when the env is absent', () => {

@@ -44,6 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Document/media reading (formats the product renders)
     poppler-utils \
     ffmpeg \
+    # FUSE for volumes at /mounts/<name> (fusermount3 lets the non-root user mount)
+    fuse3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x
@@ -77,6 +79,11 @@ RUN curl -fsSL https://bun.sh/install | bash && \
     ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
     chmod 755 /usr/local/bin/bun && \
     rm -rf /root/.bun
+
+# Install rclone, the FUSE driver that mounts each volume from the app over WebDAV
+RUN curl -fsSL -o /tmp/rclone.deb "https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-$(dpkg --print-architecture).deb" && \
+    dpkg -i /tmp/rclone.deb && \
+    rm /tmp/rclone.deb
 
 # Install Chromium dependencies (needed by agent-browser)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -122,7 +129,7 @@ RUN bin=$(find /opt/playwright-browsers -type f \( -name headless_shell -o -name
 # SAME layer that creates the files: a later `chown -R` (or `rm`) of a lower
 # layer copies up (or merely whiteouts) every file, shipping ~400MB twice.
 RUN useradd -m -s /bin/bash claude && \
-    install -d -o claude -g claude /app /workspace /home/claude/.claude
+    install -d -o claude -g claude /app /workspace /mounts /home/claude/.claude
 WORKDIR /app
 
 # ---- builder: dev install + TypeScript build ----
@@ -215,6 +222,16 @@ RUN chmod -R a-w /opt/gamut/docs
 COPY --chown=root:root bin/ /opt/gamut/bin/
 RUN chmod -R a-w /opt/gamut/bin && chmod a+rx /opt/gamut/bin/*.py
 
+# Volumes. Ubuntu 25.04+ hosts confine the program at /usr/bin/fusermount3 by
+# path, which reaches into containers too; a setuid copy earlier on PATH lets
+# claude mount FUSE there. start.sh drops to claude when a runtime starts the
+# image as root (Apple Container, whose /dev/fuse is root-only).
+RUN install -m 4755 /usr/bin/fusermount3 /usr/local/bin/fusermount3
+# fusermount3 unmounts for a non-root user only with /etc/mtab, which Docker
+# creates at run time and Apple Container does not.
+RUN ln -sf /proc/self/mounts /etc/mtab
+COPY --chown=root:root start.sh /usr/local/bin/gamut-start
+
 # Switch to non-root user
 USER claude
 
@@ -254,4 +271,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
 # Start the server
-CMD ["node", "dist/server.js"]
+CMD ["gamut-start"]
