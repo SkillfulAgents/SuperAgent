@@ -788,6 +788,14 @@ describe('usage-service', () => {
       )
     })
 
+    it('bills the whole claude-haiku-5-5 request at 5x once the prompt passes 100K', () => {
+      // 50K fresh + 60K cache writes = 110K prompt → over 100K.
+      expect(calculateCost('claude-haiku-5-5', 50_000, 1_000, 60_000, 0)).toBeCloseTo(
+        (50_000 * 0.5 + 1_000 * 2.5 + 60_000 * 0.625) / 1_000_000,
+        9,
+      )
+    })
+
     it('Claude models have no cliff — large prompts stay linear', () => {
       expect(calculateCost('claude-opus-4-6', 500_000, 10_000, 0, 0)).toBeCloseTo(
         (500_000 * 5 + 10_000 * 25) / 1_000_000,
@@ -898,6 +906,7 @@ describe('usage-service', () => {
       ['claude-sonnet-5-5', 2, 10],
       ['claude-haiku-4-5-20251001', 1, 5],
       ['claude-haiku-4-5', 1, 5],
+      ['claude-haiku-5-5', 0.1, 0.5],
       // Provider-translated runtime ids observed in sanitized transcripts.
       ['anthropic/claude-sonnet-5-20260630', 2, 10],
       ['anthropic/claude-4.6-sonnet-20260217', 3, 15],
