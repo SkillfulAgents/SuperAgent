@@ -212,7 +212,17 @@
     "output": 10,
     "cacheCreation": 2.5,
     "cacheCreation1h": 4,
-    "cacheRead": 0.2
+    "cacheRead": 0.1,
+    "historicalRates": [
+      {
+        "before": "2026-10-07T00:00:00Z",
+        "input": 2,
+        "output": 10,
+        "cacheCreation": 2.5,
+        "cacheCreation1h": 4,
+        "cacheRead": 0.2
+      }
+    ]
   },
   "gpt-5.4": {
     "input": 2.5,
