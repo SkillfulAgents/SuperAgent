@@ -1,11 +1,15 @@
 import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
-import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
 import {
   persistedSessionsFileSchema,
   sessionMetadataSchema,
   type SessionMetadata,
 } from './session-persistence-schema';
+
+export type SessionUpdate = Partial<Pick<
+  SessionMetadata,
+  'lastActivity' | 'metadata' | 'llmProviderId' | 'effort' | 'speed' | 'model' | 'capabilityPolicies'
+>>;
 
 // Overridable so the session-GC E2E harness (which runs this stack on a dev
 // machine, where /workspace does not exist) gets working persistence.
@@ -125,47 +129,11 @@ export class SessionPersistence {
     }
   }
 
-  updateEffort(sessionId: string, effort: EffortLevel | undefined): void {
+  // One write per change set: every save rewrites the whole file with fsyncs.
+  updateSession(sessionId: string, update: SessionUpdate): void {
     const session = this.sessions.get(sessionId);
     if (session) {
-      session.effort = effort;
-      this.save();
-    }
-  }
-
-  updateSpeed(sessionId: string, speed: SpeedLevel | undefined): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.speed = speed;
-      this.save();
-    }
-  }
-
-  updateMetadata(sessionId: string, metadata: Record<string, unknown> | undefined): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.metadata = metadata;
-      this.save();
-    }
-  }
-
-  updateConnection(sessionId: string, llmProviderId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (session) { session.llmProviderId = llmProviderId; this.save(); }
-  }
-
-  updateModel(sessionId: string, model: string | undefined): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.model = model;
-      this.save();
-    }
-  }
-
-  updateCapabilityPolicies(sessionId: string, policies: AgentCapabilityPolicies | undefined): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.capabilityPolicies = policies;
+      Object.assign(session, update);
       this.save();
     }
   }

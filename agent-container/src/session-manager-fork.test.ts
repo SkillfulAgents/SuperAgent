@@ -23,9 +23,7 @@ vi.mock('./session-persistence', () => ({
     getSession(id: string) { return persisted.get(id) ?? null }
     deleteSession(id: string) { persisted.delete(id) }
     updateLastActivity() {}
-    updateEffort() {}
-    updateModel() {}
-    updateMetadata() {}
+    updateSession() {}
     addSessionCapabilityGrant() {}
     getAllSessions() { return [...persisted.values()] }
   },
