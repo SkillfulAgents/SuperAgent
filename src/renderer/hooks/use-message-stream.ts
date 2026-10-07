@@ -325,6 +325,14 @@ function invalidateMessagesNow(
   return refetch
 }
 
+// Only the subagent that changed: a session-wide refresh re-downloads every subagent transcript on each event.
+function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  queryClient.invalidateQueries({
+    queryKey: ['subagent-messages', sessionId],
+    predicate: agentId ? (query) => query.queryKey[3] === agentId : undefined,
+  })
+}
+
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
@@ -1248,7 +1256,7 @@ function getOrCreateEventSource(
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          invalidateSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
@@ -1280,7 +1288,7 @@ function getOrCreateEventSource(
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          invalidateSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
           invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
