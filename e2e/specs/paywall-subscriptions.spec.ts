@@ -4,9 +4,30 @@ import { SessionPage } from '../pages/session.page'
 import type { ApiMessage } from '../../src/shared/lib/types/api'
 import type { ConnectionInfo } from '../../src/shared/lib/llm-provider/connection-schema'
 
+type TrackedEvent = { event: string; properties: Record<string, unknown> }
+async function trackedEvents(page: Page): Promise<TrackedEvent[]> {
+  return page.evaluate(() => (window as unknown as { paywallTestEvents?: TrackedEvent[] }).paywallTestEvents ?? [])
+}
+
 // Billing and the exhausted response are mocked. Connection creation, message
 // sending, and the session's saved provider all go through the real app API.
 async function openPaywall(page: Page, request: APIRequestContext, subscribed = false) {
+  // E2E disables outbound analytics. Replace only the SDK adapter with a memory
+  // sink, exercising the real AnalyticsProvider and component event handlers.
+  await page.route(/\/lib\/analytics\.ts(?:\?|$)/, route => route.fulfill({
+    contentType: 'application/javascript',
+    body: `
+      export const hasActivePlugins = () => true;
+      export const getAnalyticsMetadata = () => ({});
+      export const createAnalyticsInstance = () => ({
+        identify() {},
+        track(event, properties) {
+          window.paywallTestEvents ??= [];
+          window.paywallTestEvents.push({ event, properties });
+        }
+      });
+    `,
+  }))
   const agent = await createAgent(request, `Subscription recovery ${Date.now()}`)
   const created = await request.post(`/api/agents/${agent.slug}/sessions`, { data: { message: 'Hello' } })
   expect(created.ok()).toBe(true)
@@ -96,6 +117,25 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expect.poll(async () => (await (await request.get(endpoint)).json()).llmProviderId).toBe(connectionId)
       expect(after.defaultSelection).toEqual(baseline.defaultSelection)
 
+      await expect.poll(async () => (await trackedEvents(page)).filter(item => item.event === 'paywall_subscription_resumed').length).toBe(1)
+      const events = await trackedEvents(page)
+      const shown = events.filter(item => item.event === 'paywall_shown')
+      expect(shown).toHaveLength(1)
+      const flow = events.filter(item => item.properties.provider === 'claude-subscription')
+      expect(flow.map(item => item.event)).toEqual([
+        'paywall_subscription_clicked', 'paywall_subscription_token_entered',
+        'paywall_subscription_save_started', 'paywall_subscription_saved',
+        'paywall_subscription_resume_started', 'paywall_subscription_resumed', 'paywall_cleared',
+      ])
+      const attemptId = flow[0].properties.attemptId
+      for (const { properties } of flow) {
+        expect(properties).toMatchObject({ attemptId, paywallId: shown[0].properties.paywallId, entryPoint: 'platform_paywall', paywallType: 'subscription' })
+      }
+      expect(flow.at(-1)?.properties.resolution).toBe('subscription')
+      expect(events.filter(item => item.event === 'paywall_subscription_cancelled')).toHaveLength(4)
+      expect(JSON.stringify(events)).not.toContain('sk-ant-oat01-e2e-placeholder')
+      expect(JSON.stringify(events)).not.toContain(name)
+
       // The composer's next send must retain the subscription rather than
       // resurrecting the platform selection it had before the paywall.
       const chat = new SessionPage(page)
@@ -119,6 +159,9 @@ test('does not offer subscription connections on a top-up paywall', async ({ pag
   try {
     await expect(page.getByRole('button', { name: 'Add usage', exact: true })).toBeVisible()
     await expect(page.getByTestId('paywall-subscriptions')).not.toBeVisible()
+    const events = await trackedEvents(page)
+    expect(events.some(item => item.event.startsWith('paywall_subscription_'))).toBe(false)
+    expect(events.find(item => item.event === 'paywall_shown')?.properties.paywallType).toBe('topup')
   } finally {
     await request.delete(`/api/agents/${agent.slug}`)
   }

@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { v4 as uuid } from 'uuid'
 import { ArrowRight, Check, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
 import { cn } from '@shared/lib/utils/cn'
-import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -17,6 +17,7 @@ import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
 import { PaywallSubscriptionOptions } from './paywall-subscription-options'
+import { usePaywallTracking, type PaywallAnalyticsContext, type SubscriptionRecovery } from './paywall-analytics'
 
 // The session composer's glass (FLOATING_COMPOSER_CLASS in chat-composer-box.tsx), a touch
 // more opaque so the card's copy stays readable over the colour bloom behind it.
@@ -237,6 +238,12 @@ function SubscribeBody({ plan, hint, actions, expanded, pooled }: { plan: Subscr
 // snapshot positively denies access; otherwise the card sits above it.
 export function PlatformPaywallCard({ message, presentation, onDisplaceChildren, live = true, dismissible = false, session }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
+  const [paywallId] = useState(() => uuid())
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [handedOff, setHandedOff] = useState(false)
   const [expanded, setExpanded] = useState(false)
   // An open panel's outcome is unknown until the platform reports it: a background poll
@@ -248,7 +255,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   const billingChanged = useRef(false)
   const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
-  const { track } = useAnalyticsTracking()
+  const track = usePaywallTracking()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
@@ -286,16 +293,34 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   }, [billing.cleared, holding, inApp])
 
   const ctaKind = billing.cta?.kind ?? 'none'
+  const analytics = useMemo<PaywallAnalyticsContext>(() => ({
+    paywallId,
+    entryPoint: 'platform_paywall',
+    paywallType: billing.subscriptionRequired ? 'subscription' : ctaKind,
+    ctaKind,
+    placement: presentation?.placement ?? 'unknown',
+  }), [paywallId, billing.subscriptionRequired, ctaKind, presentation?.placement])
   const shownRef = useRef(false)
+  const clearedRef = useRef(false)
   useEffect(() => {
     if (shownRef.current || billing.loading || billing.cleared || dismissed) return
     shownRef.current = true
-    track('paywall_shown', { ctaKind, blocked: billing.blocked, placement: presentation?.placement ?? 'unknown' })
-  }, [billing.loading, billing.cleared, billing.blocked, dismissed, ctaKind, presentation?.placement, track])
+    track('paywall_shown', { ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown' })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, track])
   useEffect(() => {
-    if (!shownRef.current || !billing.cleared || holding) return
-    track('paywall_cleared', { ctaKind, handedOff })
-  }, [billing.cleared, holding, ctaKind, handedOff, track])
+    if (!shownRef.current || clearedRef.current || !billing.cleared || holding) return
+    clearedRef.current = true
+    track('paywall_cleared', { ...analytics, handedOff, resolution: 'billing' })
+  }, [billing.cleared, holding, analytics, handedOff, track])
+  const handleSubscriptionResumed = useCallback((recovery: SubscriptionRecovery) => {
+    if (!clearedRef.current) {
+      clearedRef.current = true
+      track('paywall_cleared', { ...analytics, ...recovery, handedOff, resolution: 'subscription' })
+    }
+    // Streaming can unmount this wall before the send request resolves. The
+    // recovery outcome still belongs to this paywall, without a stale UI update.
+    if (mounted.current) setDismissed(true)
+  }, [analytics, handedOff, track])
 
   const resolved = (billing.cleared && !holding) || dismissed
   const displaced = !resolved && billing.blocked
@@ -343,21 +368,33 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
           fallbackHref={ctaHref(billing.cta)}
           onBillingUpdated={handleBillingUpdated}
-          onOpenBilling={expand}
-          onClose={collapse}
-          onOpenExternal={() => { collapse(); setHandedOff(true) }}
+          onOpenBilling={() => {
+            // The iframe reports opening its promo/top-up panel, not every
+            // checkout click. Keep that observed action explicit in analytics.
+            track('paywall_cta_clicked', { ...analytics, surface: 'embedded', action: 'open_panel' })
+            expand()
+          }}
+          onClose={() => {
+            track('paywall_billing_closed', { ...analytics, surface: 'embedded' })
+            collapse()
+          }}
+          onOpenExternal={() => {
+            track('paywall_cta_clicked', { ...analytics, surface: 'external', action: 'embed_fallback' })
+            collapse()
+            setHandedOff(true)
+          }}
         />
       ) : null}
       onDismiss={(kind) => {
-        track('paywall_dismissed', { ctaKind: kind, handedOff })
+        track('paywall_dismissed', { ...analytics, ctaKind: kind, handedOff })
         setDismissed(true)
       }}
       onHandOff={(kind) => {
-        track('paywall_cta_clicked', { ctaKind: kind })
+        track('paywall_cta_clicked', { ...analytics, ctaKind: kind, surface: 'external', action: 'open_billing' })
         setHandedOff(true)
       }}
       onRecheck={(kind) => {
-        track('paywall_recheck_clicked', { ctaKind: kind })
+        track('paywall_recheck_clicked', { ...analytics, ctaKind: kind })
         billing.recheck()
       }}
     />
@@ -408,7 +445,8 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
         {billing.subscriptionRequired && session && (
           <PaywallSubscriptionOptions
             session={session}
-            onResumed={() => setDismissed(true)}
+            analytics={analytics}
+            onResumed={handleSubscriptionResumed}
           />
         )}
       </div>
