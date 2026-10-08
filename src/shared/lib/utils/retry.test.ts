@@ -23,6 +23,12 @@ describe('withRetry', () => {
     expect(fn).toHaveBeenCalledTimes(2)
   })
 
+  it('throws at once an error the predicate does not retry', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('not found'))
+    await expect(withRetry(fn, 3, 10, () => false)).rejects.toThrow('not found')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
   it('retries on failure and succeeds on third attempt', async () => {
     const fn = vi
       .fn()

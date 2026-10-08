@@ -7,6 +7,7 @@ export const volumesEnvSchema = z.array(z.object({
   name: z.string().min(1).refine((name) => name !== '.' && name !== '..' && !/[/\\\0]/.test(name)),
   cacheMode: z.enum(['local', 'remote']).default('local'),
   caseInsensitive: z.boolean().optional(),
+  ignoreSize: z.boolean().optional(),
 }));
 
 export type ContainerMount = z.infer<typeof volumesEnvSchema>[number];
