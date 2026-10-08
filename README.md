@@ -207,11 +207,6 @@ ANTHROPIC_API_KEY=your-api-key-here
 
 [[Finish this section -- get to a running server]]
 
-# Web search
-
-Parallel is an opt-in, free web search provider that needs no API key. See
-[Parallel web search setup](docs/parallel-web-search.md).
-
 # Development
 
 ## Scripts

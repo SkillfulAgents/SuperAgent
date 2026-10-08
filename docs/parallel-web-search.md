@@ -18,8 +18,9 @@ requests use the same 15-second per-request timeout and transient retry policy a
 the other host providers.
 
 Result count is capped locally. Domain and publication-date constraints are sent
-in the search objective and enforced on returned hits. Results without a usable
-publication date are omitted when a date range is requested. The host's allowed
+in the search objective and enforced on returned hits. A requested domain also
+matches its subdomains. Results without a usable publication date are kept when a
+date range is requested. The host's allowed
 and blocked site policy still applies. A provider failure is reported to the
 agent rather than silently switching providers.
 

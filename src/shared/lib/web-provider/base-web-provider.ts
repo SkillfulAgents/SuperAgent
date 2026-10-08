@@ -38,8 +38,8 @@ const MAX_FETCH_CHARS = 100_000
 export abstract class BaseWebProvider {
   abstract readonly name: string
   abstract readonly id: WebProviderId
-  protected readonly settingsKeyField?: keyof ApiKeySettings
-  protected readonly envVarName?: string
+  protected abstract readonly settingsKeyField: keyof ApiKeySettings | undefined
+  protected abstract readonly envVarName: string | undefined
 
   /** Run a ranked web search and return normalized hits. Throws on a whole-request failure. */
   search?(query: string, opts: WebSearchOptions): Promise<WebSearchResponse>

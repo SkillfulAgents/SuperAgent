@@ -7,7 +7,7 @@ export const ParallelRpcResponseSchema = z.object({
   error: z.object({ code: z.number(), message: z.string() }).optional(),
 })
 
-export const ParallelInitializeSchema = z.object({ protocolVersion: z.literal('2025-03-26') })
+export const ParallelInitializeSchema = z.object({ protocolVersion: z.string() })
 export const ParallelToolsSchema = z.object({ tools: z.array(z.object({ name: z.string() })) })
 export const ParallelToolResultSchema = z.object({
   isError: z.boolean().optional(),
@@ -16,7 +16,7 @@ export const ParallelToolResultSchema = z.object({
 })
 export const ParallelSearchResponseSchema = z.object({
   results: z.array(z.object({
-    url: z.httpUrl(),
+    url: z.string(),
     title: z.string().nullable().optional(),
     excerpts: z.array(z.string()),
     publish_date: z.string().nullable().optional(),
