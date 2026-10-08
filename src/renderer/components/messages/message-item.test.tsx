@@ -956,6 +956,23 @@ describe('MessageItem', () => {
       expect(frame.style.height).toBe('1200px')
     })
 
+    it('does not grow for content that follows the frame height, but still shrinks', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<h3>Spend</h3><div style="height:100vh"></div>\n```' } })
+      render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const report = (height: number, followsFrame: boolean) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'superagent:html-block-height', height, followsFrame } }))
+        })
+
+      report(218, false)
+      expect(frame.style.height).toBe('218px')
+      report(276, true)
+      expect(frame.style.height).toBe('218px')
+      report(120, true)
+      expect(frame.style.height).toBe('120px')
+    })
+
     it('forwards wheel input the frame reports to the chat only while the pointer is on it', () => {
       const msg = createAssistantMessage({ content: { text: '```html\n<p>Weekly spend</p>\n```' } })
       const { container } = render(<MessageItem message={msg} />)

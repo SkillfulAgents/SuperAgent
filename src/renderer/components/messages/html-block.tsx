@@ -53,12 +53,22 @@ function themeStyle(): string {
 
 // Reports the content height, and shows a scrollbar only past the cap. Wheel input the page
 // can't use scrolls the chat instead; the chat's scroll engine never sees it, so it's forwarded.
+// A report caused by the frame only getting taller means the content follows the frame's height
+// (100vh, innerHeight), so growing for it would loop up to the cap.
 const FRAME_SCRIPT = `(() => {
   const root = document.documentElement
+  let lastWidth = innerWidth
+  let followsFrame = false
+  addEventListener('resize', () => {
+    followsFrame = innerWidth === lastWidth
+    lastWidth = innerWidth
+    // Two frames: the first runs before this resize's ResizeObserver callback.
+    requestAnimationFrame(() => requestAnimationFrame(() => { followsFrame = false }))
+  })
   const post = () => {
     const height = document.body ? document.body.scrollHeight : root.scrollHeight
     root.style.overflowY = height > ${MAX_HEIGHT} ? 'auto' : 'hidden'
-    parent.postMessage({ type: '${HEIGHT_MESSAGE}', height }, '*')
+    parent.postMessage({ type: '${HEIGHT_MESSAGE}', height, followsFrame }, '*')
   }
   const observer = new ResizeObserver(post)
   observer.observe(root)
@@ -88,6 +98,7 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
   const getSource = useCallback(() => source, [source])
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(() => measuredHeights.get(source) ?? INITIAL_HEIGHT)
+  const heightRef = useRef(height)
   const loadedDoc = useRef<string | null>(null)
   const [navigatedAway, setNavigatedAway] = useState(false)
 
@@ -107,7 +118,7 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
     const onMessage = (event: MessageEvent) => {
       const frame = frameRef.current
       if (!frame || event.source !== frame.contentWindow) return
-      const data = event.data as { type?: unknown; height?: unknown; deltaY?: unknown } | null
+      const data = event.data as { type?: unknown; height?: unknown; deltaY?: unknown; followsFrame?: unknown } | null
       if (data?.type === WHEEL_MESSAGE && typeof data.deltaY === 'number' && Number.isFinite(data.deltaY)) {
         // A script can post these on its own; only scroll the chat while the pointer is on the preview.
         if (frame.matches(':hover')) frame.dispatchEvent(new WheelEvent('wheel', { deltaY: data.deltaY, bubbles: true }))
@@ -115,6 +126,8 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
       }
       if (data?.type !== HEIGHT_MESSAGE || typeof data.height !== 'number' || !Number.isFinite(data.height)) return
       const next = Math.min(Math.max(Math.ceil(data.height), 1), MAX_HEIGHT)
+      if (data.followsFrame === true && next > heightRef.current) return
+      heightRef.current = next
       rememberHeight(source, next)
       setHeight(next)
     }
