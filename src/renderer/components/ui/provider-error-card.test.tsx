@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
+import { credentialRefreshErrorBody } from '@shared/lib/llm-provider/credential-refresh-response'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 
 import { DialogContext } from '@renderer/context/dialog-context'
 
+import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
 import { ProviderErrorCard, ProviderErrorView } from './provider-error-card'
+
+const testWindow = window as unknown as { electronAPI?: unknown }
+let originalElectronAPI: unknown
+beforeEach(() => { originalElectronAPI = testWindow.electronAPI })
+afterEach(() => { testWindow.electronAPI = originalElectronAPI })
 
 const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 const SPEND_CAP =
@@ -74,6 +81,15 @@ describe('ProviderErrorView', () => {
     fireEvent.click(link)
     expect(openSettings).toHaveBeenCalledWith('llm')
     expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('does not point a temporary refresh outage at Settings', () => {
+    const body = credentialRefreshErrorBody(new CredentialRefreshError(503))
+    render(<ProviderErrorView presentation={body.errorPresentation} rawMessage={body.error} />)
+
+    const card = screen.getByTestId('provider-error-card')
+    expect(card).toHaveTextContent('temporarily unavailable')
+    expect(card).not.toHaveTextContent('More details')
   })
 })
 

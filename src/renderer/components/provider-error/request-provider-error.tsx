@@ -8,7 +8,7 @@ export function RequestProviderError({ error, className }: { error: unknown; cla
   const { Component } = resolveProviderError(error.presentation)
   return (
     <div className={className}>
-      <Component message={error.message} presentation={error.presentation} />
+      <Component message={error.message} presentation={error.presentation} dismissible />
     </div>
   )
 }

@@ -1,7 +1,8 @@
 import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
-import { credentialRefreshErrorBody, credentialRefreshUserStatus, findCredentialRefreshError } from '@shared/lib/llm-provider/credential-refresh-response'
+import { credentialRefreshErrorBody, credentialRefreshHeaders, credentialRefreshUserStatus, findCredentialRefreshError } from '@shared/lib/llm-provider/credential-refresh-response'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
@@ -2136,7 +2137,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to create session:', error)
     const refresh = findCredentialRefreshError(error)
-    if (refresh) return c.json(credentialRefreshErrorBody(refresh), credentialRefreshUserStatus(refresh))
+    if (refresh) return c.json(credentialRefreshErrorBody(refresh), credentialRefreshUserStatus(refresh), credentialRefreshHeaders(refresh))
     return c.json({ error: 'Failed to create session' }, 500)
   }
 })
@@ -2811,7 +2812,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      try {
+        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      } catch (error) {
+        // No turn started, so the retry must be a fresh turn, not a queued follow-up.
+        if (!wasQueued && error instanceof MessageNotAcceptedError) actor.sessions.markIdle(sessionId)
+        throw error
+      }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
@@ -2868,7 +2875,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to send message:', error)
     const refresh = findCredentialRefreshError(error)
-    if (refresh) return c.json(credentialRefreshErrorBody(refresh), credentialRefreshUserStatus(refresh))
+    if (refresh) return c.json(credentialRefreshErrorBody(refresh), credentialRefreshUserStatus(refresh), credentialRefreshHeaders(refresh))
     return c.json({ error: 'Failed to send message' }, 500)
   }
 })

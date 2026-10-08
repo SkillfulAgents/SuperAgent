@@ -50,8 +50,10 @@ function markdownComponents(openSettings: ((tab: string) => void) | undefined): 
   }
 }
 
-function defaultHint(raw: string): string {
+function defaultHint(raw: string): string | undefined {
   const lower = raw.toLowerCase()
+  // A transient outage: the message already says to retry, and settings are fine.
+  if (lower.includes('temporarily unavailable')) return undefined
   if (lower.includes('invalid or revoked') || lower.includes('authentication') || lower.includes('401')) {
     return 'Your access token may have expired or been revoked. Please reconnect your platform account in Settings.'
   }
@@ -72,7 +74,7 @@ export function ProviderErrorView({
   'data-testid'?: string
 }) {
   const Icon = ICONS[presentation.icon] ?? Info
-  // Nullable: router-free hosts mount no DialogProvider, so settings links do nothing there.
+  // The main app and quick dispatch both provide this; only bare test renders lack it.
   const openSettings = useContext(DialogContext)?.openSettings
   const components = useMemo(() => markdownComponents(openSettings), [openSettings])
 

@@ -3,6 +3,7 @@ import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
 import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
+import { findCredentialRefreshError } from '@shared/lib/llm-provider/credential-refresh-response'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
@@ -1260,8 +1261,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const warmSelection = options.prewarmDefaults
         ? await resolveExecutionSelection(storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId))
         : null
+      // A signed-out default provider must not block a session on a different provider; it just isn't prewarmed.
       const warmRuntime = warmSelection
-        ? await connectionRuntime(warmSelection, this.config.agentId)
+        ? await connectionRuntime(warmSelection, this.config.agentId).catch((error: unknown) => {
+          if (findCredentialRefreshError(error)) return undefined
+          throw error
+        })
         : undefined
       const resolvedModel = llmRuntime.model
       const resolvedBrowserModel = llmRuntime.browserModel
