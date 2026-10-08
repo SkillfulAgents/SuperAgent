@@ -16,7 +16,7 @@ interface Callbacks {
 const mocks = vi.hoisted(() => ({
   stopMusic: vi.fn(),
   fadeMusic: vi.fn(),
-  stream: { activeStartTime: null as number | null, isActive: false, streamingMessage: null as string | null, error: null as string | null },
+  stream: { isSettled: false, isStreaming: false, isWaitingBackground: false, backgroundTasks: [] as Array<{ taskId: string; isSubagent?: boolean }>, activeStartTime: null as number | null, isActive: false, streamingMessage: null as string | null, error: null as string | null },
   interrupt: vi.fn(async () => ({})),
   instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; reportAgentError: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; setInputRequests: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
 }))
@@ -52,11 +52,87 @@ function setup() {
   act(() => adapter.callbacks.onReady())
   return { ...hook, adapter, send }
 }
-beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); mocks.instances.length = 0; mocks.stream = { activeStartTime: null, isActive: false, streamingMessage: null, error: null }; mocks.interrupt.mockResolvedValue({}) })
+beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); mocks.instances.length = 0; mocks.stream = { isSettled: false, isStreaming: false, isWaitingBackground: false, backgroundTasks: [], activeStartTime: null, isActive: false, streamingMessage: null, error: null }; mocks.interrupt.mockResolvedValue({}) })
 
 afterEach(() => vi.useRealTimers())
 
 describe('Live session hook', () => {
+  it('does not finish on idle snapshots, message boundaries, or background task completion alone', async () => {
+    const { adapter, rerender, unmount } = setup()
+    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Research with subagents.' }) })
+    const render = () => rerender({ active: true, paused: false })
+    mocks.stream = { ...mocks.stream, isActive: true, activeStartTime: 1, streamingMessage: 'Researching.' }
+    render()
+    mocks.stream = { ...mocks.stream, isActive: false, streamingMessage: 'Waiting for the researcher.' }
+    render()
+    expect(adapter.updateReply).toHaveBeenLastCalledWith('Waiting for the researcher.', false)
+    mocks.stream = { ...mocks.stream, isSettled: true, isWaitingBackground: true, backgroundTasks: [{ taskId: 'researcher', isSubagent: true }] }
+    render()
+    expect(adapter.updateReply.mock.calls.every(([, complete]) => !complete)).toBe(true)
+    mocks.stream = { ...mocks.stream, isSettled: false, isWaitingBackground: false, backgroundTasks: [] }
+    render()
+    expect(adapter.updateReply.mock.calls.every(([, complete]) => !complete)).toBe(true)
+    mocks.stream = { ...mocks.stream, isActive: true, activeStartTime: 2, streamingMessage: 'Research complete. The answer is 42.' }
+    render()
+    mocks.stream = { ...mocks.stream, isActive: false, isSettled: true }
+    render()
+    expect(adapter.updateReply).toHaveBeenLastCalledWith('Research complete. The answer is 42.', true)
+    expect(adapter.updateReply.mock.calls.filter(([, complete]) => complete)).toHaveLength(1)
+    unmount()
+  })
+
+  it('holds late final text until the stream ends and then announces the new result', async () => {
+    const { adapter, rerender, unmount } = setup()
+    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Prepare the draft.' }) })
+    mocks.stream = { ...mocks.stream, isSettled: true, streamingMessage: 'Draft saved.' }
+    rerender({ active: true, paused: false })
+    expect(adapter.updateReply).toHaveBeenLastCalledWith('Draft saved.', true)
+    mocks.stream = { ...mocks.stream, isStreaming: true, streamingMessage: 'Draft saved. Nothing was sent.' }
+    rerender({ active: true, paused: false })
+    expect(adapter.updateReply).toHaveBeenLastCalledWith('Draft saved. Nothing was sent.', false)
+    mocks.stream = { ...mocks.stream, isStreaming: false }
+    rerender({ active: true, paused: false })
+    expect(adapter.updateReply).toHaveBeenLastCalledWith('Draft saved. Nothing was sent.', true)
+    unmount()
+  })
+
+  it('delivers work completed during a request-card pause on resume', async () => {
+    const { adapter, rerender, unmount } = setup()
+    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Prepare the draft.' }) })
+    mocks.stream = { ...mocks.stream, isActive: true, activeStartTime: 1, streamingMessage: 'Preparing the draft.' }
+    rerender({ active: true, paused: true })
+    adapter.updateReply.mockClear()
+    mocks.stream = { ...mocks.stream, isActive: false, isSettled: true, streamingMessage: 'Draft saved; nothing sent.' }
+    rerender({ active: true, paused: true })
+    expect(adapter.updateReply).not.toHaveBeenCalled()
+    rerender({ active: true, paused: false })
+    expect(adapter.updateReply).toHaveBeenCalledExactlyOnceWith('Draft saved; nothing sent.', true)
+    unmount()
+  })
+
+  it('forwards facts first received in an error snapshot before announcing the error', async () => {
+    const { adapter, rerender, unmount } = setup()
+    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Send invoice 42.' }) })
+    mocks.stream = { ...mocks.stream, streamingMessage: 'Invoice 42 was sent.', error: 'Receipt upload failed.' }
+    rerender({ active: true, paused: false })
+    expect(adapter.updateReply).toHaveBeenCalledExactlyOnceWith('Invoice 42 was sent.', false)
+    expect(adapter.reportAgentError).toHaveBeenCalledExactlyOnceWith('Receipt upload failed.')
+    expect(adapter.updateReply.mock.invocationCallOrder[0]).toBeLessThan(adapter.reportAgentError.mock.invocationCallOrder[0])
+    unmount()
+  })
+
+  it('finishes a followed turn with no text without replaying old history', async () => {
+    mocks.stream.streamingMessage = 'Previous invoice sent.'
+    const { adapter, rerender, unmount } = setup()
+    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Check its status.' }) })
+    mocks.stream = { ...mocks.stream, isActive: true, activeStartTime: 1 }
+    rerender({ active: true, paused: false })
+    mocks.stream = { ...mocks.stream, isActive: false, isSettled: true }
+    rerender({ active: true, paused: false })
+    expect(adapter.updateReply).toHaveBeenCalledExactlyOnceWith('', true)
+    unmount()
+  })
+
   it('forwards request context while paused and restores it when voice restarts', async () => {
     const { adapter, send, rerender, unmount } = setup()
     const question = { id: 'question:1', message: 'Choose a database in the question card.' }
@@ -170,7 +246,7 @@ describe('Live session hook', () => {
     rerender({ active: true, paused: false })
     expect(result.current.error).toBeNull()
     expect(result.current.working).toBe(true)
-    mocks.stream = { ...mocks.stream, isActive: false, streamingMessage: 'Found it.' }
+    mocks.stream = { ...mocks.stream, isActive: false, isSettled: true, streamingMessage: 'Found it.' }
     rerender({ active: true, paused: false })
     expect(adapter.updateReply).toHaveBeenLastCalledWith('Found it.', true)
     expect(result.current.working).toBe(false)

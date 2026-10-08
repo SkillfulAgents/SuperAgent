@@ -18,7 +18,7 @@ async function setup(page: Page, request: APIRequestContext) {
     const latest = input.transcript?.split('user:').at(-1) ?? ''
     return route.fulfill({ json: latest.includes('Cancel')
       ? { action: 'cancel', text: '' }
-      : { action: 'message', text: latest.includes('slow') ? 'slow response' : 'Give me a short greeting' } })
+      : { action: 'message', text: latest.includes('background') ? 'run background slowly' : latest.includes('slow') ? 'slow response' : 'Give me a short greeting' } })
   })
   const agent = await createAgent(request, `Live Progress ${Date.now()}`)
   const session = await createSession(request, agent, 'Give me a short greeting')
@@ -69,5 +69,22 @@ test('Live cancels a running turn without its completion cue, then completes a r
   await expect(page.getByTestId('voice-mode-composer')).toHaveAttribute('data-phase', 'listening')
   const sent = await replies()
   expect(sent.filter(event => event.type === 'session.thinking.append').map(event => event.content).join('')).toBe('This is a mock response from the E2E test container.')
+  await page.getByTestId('voice-mode-exit').click()
+})
+
+test('Live waits through background work and its wakeup before announcing completion', async ({ page, request }) => {
+  const { ask, replies } = await setup(page, request)
+  await ask('Run the background task.', 'background-turn')
+  // The parent turn has ended here, but the real host still owns a live task.
+  await expect(page.getByTestId('background-task-row')).toBeVisible()
+  await expect.poll(async () => (await replies()).filter(event => event.type === 'session.thinking.append').length).toBeGreaterThan(0)
+  expect((await replies()).filter(event => event.content === completionCue)).toHaveLength(0)
+  await expect(page.getByTestId('voice-mode-composer')).toHaveAttribute('data-phase', 'thinking')
+  await expect.poll(async () => (await replies()).filter(event => event.content === completionCue), { timeout: 15_000 }).toHaveLength(1)
+  const sent = await replies()
+  const context = sent.filter(event => event.type === 'session.thinking.append').map(event => event.content).join('')
+  expect(context).toContain('done sleeping')
+  expect(sent.at(-1)?.content).toBe(completionCue)
+  await expect(page.getByTestId('background-task-row')).not.toBeVisible()
   await page.getByTestId('voice-mode-exit').click()
 })

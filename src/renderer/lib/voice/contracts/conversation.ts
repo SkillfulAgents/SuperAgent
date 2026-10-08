@@ -13,6 +13,8 @@ export interface VoiceAgentSnapshot {
   startedAt: number | null
   toolsRunning: boolean
   error: string | null
+  /** An explicit settled runtime event, with no streaming or background work. */
+  settled?: boolean
 }
 export interface VoiceAgentState {
   active: boolean
@@ -27,7 +29,7 @@ export interface VoiceInputRequest {
 export type VoiceAgentEvent =
   | { type: 'state'; state: VoiceAgentState }
   | { type: 'reset' }
-  | { type: 'reply'; segment: number; text: string; complete: boolean }
+  | { type: 'reply'; segment: number; text: string; complete: boolean; settled?: boolean }
   | { type: 'error'; message: string }
   | { type: 'input-requests'; requests: readonly VoiceInputRequest[] }
 
@@ -64,6 +66,8 @@ export interface VoiceTurnPolicy {
    * and a failed cancel is not reported. Live keeps strict ordering instead.
    */
   sendAfterFailedInterrupt: boolean
+  /** Live needs results produced during a request-card pause on resume. */
+  retainPausedReplies?: boolean
 }
 
 /** No agent API calls or stream subscriptions belong in implementations. */

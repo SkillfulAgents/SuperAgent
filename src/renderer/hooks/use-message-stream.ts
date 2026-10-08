@@ -56,6 +56,7 @@ export interface PeerUserMessage {
 
 interface StreamState {
   isActive: boolean // True from user message until query result
+  isSettled: boolean // Only an explicit session_idle confirms all work has settled
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
@@ -108,6 +109,7 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 // Global state to track streaming per session
 const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
+  isSettled: false,
   isStreaming: false,
   streamingMessage: null,
   streamingToolUses: [],
@@ -471,6 +473,7 @@ function getOrCreateEventSource(
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
+          isSettled: false,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUses: [],
@@ -553,6 +556,7 @@ function getOrCreateEventSource(
         streamStates.set(sessionId, {
           ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
+          isSettled: false,
           // Message-scoped: a new message clears the last error, ends whatever
           // typing indicator it belongs to, and resumes work that was parked on
           // background tasks.
@@ -588,6 +592,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: false,
+          isSettled: true,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -648,6 +653,7 @@ function getOrCreateEventSource(
               activeSubagents: current.activeSubagents.filter(s => !!s.agentId && backgroundAgentIds.has(s.agentId)),
               backgroundTasks,
               isWaitingBackground: true,
+              isSettled: false,
             })
             invalidateMessagesThrottled(queryClient, sessionId)
           } else {
@@ -655,6 +661,7 @@ function getOrCreateEventSource(
               ...current,
               backgroundTasks: serverTaskList(data) ?? current.backgroundTasks,
               isWaitingBackground: true,
+              isSettled: false,
             })
           }
         }
@@ -665,6 +672,7 @@ function getOrCreateEventSource(
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
+          isSettled: false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -736,6 +744,7 @@ function getOrCreateEventSource(
           const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
             ...current,
+            isSettled: false,
             backgroundTasks: serverTaskList(data) ?? (index === -1
               ? [...current.backgroundTasks, task]
               : current.backgroundTasks.map((t, i) => (i === index ? task : t))),
@@ -843,6 +852,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          isSettled: current?.isSettled ?? false,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUses: [],
@@ -868,6 +878,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          isSettled: current?.isSettled ?? false,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -909,6 +920,7 @@ function getOrCreateEventSource(
           : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          isSettled: false,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: updatedTools,
@@ -950,6 +962,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          isSettled: current?.isSettled ?? false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -1387,6 +1400,7 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             isActive: false,
+            isSettled: false,
             isStreaming: false,
             streamingMessage: null,
             streamingToolUses: [],

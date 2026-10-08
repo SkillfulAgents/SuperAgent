@@ -91,7 +91,7 @@ afterEach(() => vi.useRealTimers())
     events.map.mockResolvedValueOnce({ action: 'clarify', text: 'Which day?' })
     user('Check...'); delegate()
     await vi.advanceTimersByTimeAsync(700)
-    expect(events.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'session.commentary.append', delegation_id: 'item_1', content: 'Clarification needed: Which day?' }))
+    expect(events.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'session.commentary.append', delegation_id: 'item_1', content: 'Clarification needed: Which day?' }), undefined)
     events.map.mockResolvedValueOnce({ action: 'none', text: '' })
     user('Stop talking.'); delegate('item_2')
     await vi.advanceTimersByTimeAsync(700)
@@ -118,7 +118,7 @@ afterEach(() => vi.useRealTimers())
     expect(sent.slice(0, -1).map(event => event.content).join('')).toBe(summary + 'Nothing has been sent.')
     expect(sent.at(-1)).toMatchObject({ type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE })
     expect(sent.every(event => event.delegation_id === 'item_1')).toBe(true)
-    expect(sent.every(event => new TextEncoder().encode(event.content).length <= 400)).toBe(true)
+    expect(sent).toHaveLength(3) // Logical appends stay whole until the transport is ready.
     bridge.close()
   })
 
@@ -149,7 +149,7 @@ afterEach(() => vi.useRealTimers())
     bridge.completeReply()
     await vi.advanceTimersByTimeAsync(0)
     const sent = events.send.mock.calls.map(([event]) => event)
-    expect(sent.filter(event => event.type === 'session.thinking.append').map(event => event.content).join('')).toBe(result)
+    expect(sent.filter(event => event.type === 'session.thinking.append').map(event => event.content).join('')).toBe(result.trim())
     expect(sent.at(-1)).toMatchObject({ type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE })
     expect(events.onError).toHaveBeenCalledOnce()
     bridge.close()
@@ -172,18 +172,44 @@ afterEach(() => vi.useRealTimers())
     bridge.close()
   })
 
-  it('does not announce completion while paused for user input', async () => {
+  it('tags a paused cue for deferred transport delivery and invalidates it independently of text', async () => {
     const { bridge, events } = setup()
     bridge.reply('The draft needs approval.')
     bridge.completeReply()
     bridge.setPaused(true)
-    bridge.commentary('Application input request: Approve the $12 cost in the app.')
     await vi.advanceTimersByTimeAsync(0)
-    const sent = events.send.mock.calls.map(([event]) => event)
-    expect(sent.filter(event => event.type === 'session.commentary.append').map(event => event.content)).toEqual([
-      'Application input request: Approve the $12 cost in the app.',
-    ])
-    expect(sent).toContainEqual(expect.objectContaining({ type: 'session.thinking.append', content: 'The draft needs approval.' }))
+    const [reply, cue] = events.send.mock.calls
+    expect(reply[1]).toMatchObject({ kind: 'reply' })
+    expect(cue[1]).toMatchObject({ kind: 'completion' })
+    expect(cue[1].isCurrent()).toBe(true)
+    bridge.cancelCompletion()
+    expect(cue[1].isCurrent()).toBe(false)
+    expect(reply[1].isCurrent()).toBe(true)
+    bridge.close()
+  })
+
+  it('preserves every prose fact without markdown when condensation fails', async () => {
+    const { bridge, events } = setup()
+    events.map.mockRejectedValueOnce(new Error('Unavailable'))
+    const text = '# Invoice\n**Invoice 42 was sent.**\n' + '- Still reconciling.\n'.repeat(80) + '\nPayment failed. Do not resend.'
+    bridge.reply(text)
+    await vi.advanceTimersByTimeAsync(0)
+    const content = events.send.mock.calls[0][0].content
+    expect(content).toContain('Invoice 42 was sent.')
+    expect(content).toContain('Payment failed. Do not resend.')
+    expect(content).not.toMatch(/[#*]/)
+    expect(events.send).toHaveBeenCalledOnce()
+    bridge.close()
+  })
+
+  it('reports delivery failure separately and allows subsequent replies through', async () => {
+    const { bridge, events } = setup()
+    events.send.mockImplementationOnce(() => { throw new Error('Transport unavailable') })
+    bridge.reply('First result.')
+    bridge.reply('Second result.')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events.onError).toHaveBeenCalledWith('Transport unavailable')
+    expect(events.send.mock.calls.at(-1)![0].content).toBe('Second result.')
     bridge.close()
   })
 

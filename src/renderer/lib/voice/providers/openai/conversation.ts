@@ -6,6 +6,7 @@ import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceC
 /** Adapts Live media/mapping to the same agent-event contract as the chained engine. */
 export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   readonly capabilities = { speechSpeed: false, spokenTranscript: true }
+  readonly turnPolicy = { retainPausedReplies: true }
   private conversation: OpenAILiveConversation
   private state: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
   private releaseAudio: (() => void) | null = null
@@ -56,7 +57,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
     } else if (event.type === 'reply') {
       if (this.segment !== null && this.segment !== event.segment) this.conversation.nextReplySegment()
       this.segment = event.segment
-      this.conversation.updateReply(event.text, event.complete)
+      this.conversation.updateReply(event.text, event.settled === true)
     } else if (event.type === 'error') {
       this.segment = null
       this.conversation.reportAgentError(event.message)

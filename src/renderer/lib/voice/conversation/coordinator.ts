@@ -35,6 +35,7 @@ export class VoiceAgentCoordinator {
   private staleText: string | null
   private fedText = ''
   private fedComplete = false
+  private fedSettled = false
   private segment = 0
   private commands = 0
   private queue: Promise<VoiceCommandResult> | null = null
@@ -72,6 +73,7 @@ export class VoiceAgentCoordinator {
     this.dependencies.onEvent({ type: 'reset' })
     this.fedText = ''
     this.fedComplete = false
+    this.fedSettled = false
     this.segment++
     this.staleText = this.dependencies.snapshot().text
     this.clearWait()
@@ -202,6 +204,7 @@ export class VoiceAgentCoordinator {
         this.staleText = this.fedText
         this.fedText = ''
         this.fedComplete = false
+        this.fedSettled = false
         this.segment++
       }
     }
@@ -209,6 +212,9 @@ export class VoiceAgentCoordinator {
       this.clearWait()
       this.awaiting = false
       this.dependencies.onIssue(snapshot.error)
+      // The error snapshot can contain the last confirmation of a side effect.
+      // Deliver it before the error, without emitting a completion cue.
+      if (this.followingTurn && !this.cancelled) this.feedReply(snapshot, false, false)
       if (snapshot.error !== this.lastError) this.dependencies.onEvent({ type: 'error', message: snapshot.error })
       this.lastError = snapshot.error
       this.publishState()
@@ -229,21 +235,31 @@ export class VoiceAgentCoordinator {
     // Publish the final text before the idle state: adapters may finish their
     // playback stream as soon as they observe an idle agent.
     if (!this.awaiting) {
-      if (snapshot.text !== this.staleText) {
-        this.staleText = null
-        const complete = !snapshot.active
-        if (snapshot.text !== this.fedText || complete !== this.fedComplete) {
-          if (this.fedText && !snapshot.text.startsWith(this.fedText)) this.segment++
-          this.fedText = snapshot.text
-          this.fedComplete = complete
-          this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: snapshot.text, complete })
-        }
-      }
+      this.feedReply(snapshot, !snapshot.active, snapshot.settled === true && !snapshot.active)
     }
     this.publishState()
     // Only clear the recoverable handoff warning; execution errors belong to
     // their command and are cleared by the next command, not arbitrary tokens.
     if (snapshot.active || freshText) this.clearWarning()
+  }
+
+  private feedReply(snapshot: VoiceAgentSnapshot, complete: boolean, settled: boolean) {
+    if (snapshot.text === this.staleText) {
+      if (!settled || this.fedSettled) return
+      // A settled turn can have no textual result. Do not replay old history
+      // as its answer, but still deliver the terminal boundary.
+      this.fedComplete = complete
+      this.fedSettled = true
+      this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: this.fedText, complete, settled })
+      return
+    }
+    this.staleText = null
+    if (snapshot.text === this.fedText && complete === this.fedComplete && settled === this.fedSettled) return
+    if (this.fedText && !snapshot.text.startsWith(this.fedText)) this.segment++
+    this.fedText = snapshot.text
+    this.fedComplete = complete
+    this.fedSettled = settled
+    this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: snapshot.text, complete, settled })
   }
 
   private acknowledge(snapshot: VoiceAgentSnapshot) {
@@ -289,17 +305,20 @@ export class VoiceAgentCoordinator {
     // for a bounded, silent wait rather than handing it to the person at once.
     // A reply that arrived during the pause means the turn is over.
     const replyArrived = !!snapshot.text && snapshot.text !== this.staleText && snapshot.text !== this.fedText
-    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error) {
+    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error && !snapshot.settled) {
       this.awaiting = true
       this.resumeWait = true
       this.sawIdle = true
       this.previousStart = snapshot.startedAt
     }
     this.floorAtPause = false
-    this.staleText = snapshot.text
-    this.fedText = ''
-    this.fedComplete = false
-    this.segment++
+    if (!this.policy.retainPausedReplies) {
+      this.staleText = snapshot.text
+      this.fedText = ''
+      this.fedComplete = false
+      this.fedSettled = false
+      this.segment++
+    }
     this.update(snapshot)
     this.armWait()
   }

@@ -79,8 +79,10 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     const getAgentSnapshot = (): VoiceAgentSnapshot => {
       const value = latest.current.stream
       return {
-        active: value.isActive, text: value.streamingMessage ?? '', startedAt: value.activeStartTime ?? null,
+        active: value.isActive || value.isWaitingBackground || !!value.backgroundTasks?.length,
+        text: value.streamingMessage ?? '', startedAt: value.activeStartTime ?? null,
         toolsRunning: (value.streamingToolUses?.length ?? 0) > 0, error: value.error ?? null,
+        settled: value.isSettled && !value.isStreaming && !value.isWaitingBackground && !value.backgroundTasks?.length,
       }
     }
     const conversation = createVoiceConversation(engine, { sessionId, agentSlug, history: latest.current.args.history ?? [] }, {
@@ -168,10 +170,12 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
 
   useEffect(() => {
     coordinator.current?.update({
-      active: stream.isActive, text: stream.streamingMessage ?? '', startedAt: stream.activeStartTime ?? null,
+      active: stream.isActive || stream.isWaitingBackground || !!stream.backgroundTasks?.length,
+      text: stream.streamingMessage ?? '', startedAt: stream.activeStartTime ?? null,
       toolsRunning: (stream.streamingToolUses?.length ?? 0) > 0, error: stream.error ?? null,
+      settled: stream.isSettled && !stream.isStreaming && !stream.isWaitingBackground && !stream.backgroundTasks?.length,
     })
-  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error])
+  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error, stream.isSettled, stream.isStreaming, stream.isWaitingBackground, stream.backgroundTasks])
 
   const pressMic = useCallback(() => adapter.current?.pressMic(), [])
   const getAnalyser = useCallback(() => adapter.current?.analyser ?? null, [])

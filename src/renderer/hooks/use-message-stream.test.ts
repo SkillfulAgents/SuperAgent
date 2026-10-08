@@ -81,6 +81,41 @@ function createWrapper() {
 }
 
 describe('useMessageStream', () => {
+  it('requires an explicit settled event across message ends and background-subagent wakeups', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('voice-settlement', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    expect(result.current.isSettled).toBe(false)
+    send({ type: 'connected', isActive: false })
+    send({ type: 'stream_delta', text: 'Starting a researcher.' })
+    send({ type: 'stream_end' })
+    expect(result.current.isActive).toBe(false)
+    expect(result.current.isSettled).toBe(false)
+    send({ type: 'session_active' })
+    const task = { taskId: 'researcher', startedAt: 1, isSubagent: true }
+    send({ type: 'background_task_started', ...task, backgroundTasks: [task] })
+    send({ type: 'turn_output_complete' })
+    send({ type: 'session_waiting_background', backgroundTasks: [task] })
+    expect(result.current.isSettled).toBe(false)
+    expect(result.current.isWaitingBackground).toBe(true)
+    send({ type: 'background_task_completed', taskId: task.taskId, backgroundTasks: [] })
+    expect(result.current.isWaitingBackground).toBe(false)
+    expect(result.current.isSettled).toBe(false)
+    send({ type: 'session_active' })
+    send({ type: 'stream_start' })
+    send({ type: 'stream_delta', text: 'The research found the answer.' })
+    send({ type: 'stream_end' })
+    expect(result.current.isSettled).toBe(false)
+    send({ type: 'session_idle' })
+    expect(result.current.isSettled).toBe(true)
+    expect(result.current.streamingMessage).toBe('The research found the answer.')
+    send({ type: 'session_active' })
+    expect(result.current.isSettled).toBe(false)
+    send({ type: 'session_error', error: 'Disconnected' })
+    expect(result.current.isSettled).toBe(false)
+    unmount()
+  })
+
   it('returns default state initially', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

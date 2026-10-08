@@ -1,8 +1,15 @@
 import { splitSpeechText } from '@shared/lib/voice/text-chunks'
+import { markdownToSpokenWords } from '../../shared/speech/spoken-words'
 import { LIVE_TURN_COMPLETE_CUE, liveRequestSchema, type LiveMappingInput, type LiveRequest, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 
+/** Local delivery metadata, never sent to OpenAI. */
+export interface LiveDelivery {
+  kind: 'reply' | 'completion'
+  isCurrent(): boolean
+}
+
 export interface LiveBridgeEvents {
-  send: (event: Record<string, unknown>) => void
+  send: (event: Record<string, unknown>, delivery?: LiveDelivery) => void
   map: (input: LiveMappingInput, signal: AbortSignal) => Promise<unknown>
   onRequest: (request: LiveRequest) => Promise<boolean>
   onUtterance: (text: string) => void
@@ -31,6 +38,7 @@ export class OpenAILiveBridge {
   private replyAbort: AbortController | null = null
   private replyQueue: Promise<void> = Promise.resolve()
   private replyRevision = 0
+  private completionRevision = 0
   private busy = false
   private paused = false
   private closed = false
@@ -38,7 +46,10 @@ export class OpenAILiveBridge {
 
   constructor(private events: LiveBridgeEvents, private history: VoiceHistory = []) {}
 
-  setBusy(busy: boolean) { this.busy = busy }
+  setBusy(busy: boolean) {
+    if (busy && !this.busy) this.cancelCompletion()
+    this.busy = busy
+  }
 
   setPaused(paused: boolean) {
     this.paused = paused
@@ -147,47 +158,64 @@ export class OpenAILiveBridge {
 
   invalidateReplies() {
     this.replyRevision++
+    this.cancelCompletion()
     this.replyAbort?.abort()
   }
+
+  cancelCompletion() { this.completionRevision++ }
 
   /** One coherent agent segment, ordered and discarded if a newer request supersedes it. */
   reply(text: string) {
     if (!text.trim()) return
     const revision = this.replyRevision
     const delegation = this.delegationId
+    const isCurrent = () => !this.closed && revision === this.replyRevision
     this.replyQueue = this.replyQueue.then(async () => {
-      if (this.closed || revision !== this.replyRevision) return
+      if (!isCurrent()) return
       const controller = new AbortController()
       this.replyAbort = controller
+      let content = text
       try {
-        let content = text
         if (text.length > 600) {
-          try {
-            const result = await this.events.map({ kind: 'reply', text: text.slice(0, 12000) }, controller.signal) as { text?: string }
-            if (!result.text?.trim()) throw new Error('The summarizer returned an empty voice reply.')
-            content = result.text
-          } catch (error) {
-            if (controller.signal.aborted || this.closed || revision !== this.replyRevision) return
-            this.events.onError(error instanceof Error ? error.message : 'Could not summarize the reply.')
-            // Thinking can carry the original text. Never send a finish cue
-            // with the outcome missing just because condensation failed.
-          }
+          const result = await this.events.map({ kind: 'reply', text: text.slice(0, 12000) }, controller.signal) as { text?: string }
+          if (!result.text?.trim()) throw new Error('The summarizer returned an empty voice reply.')
+          content = result.text
         }
-        if (!controller.signal.aborted && !this.closed && revision === this.replyRevision) this.append('thinking', content, delegation)
       } catch (error) {
-        if (!controller.signal.aborted && !this.closed) this.events.onError(error instanceof Error ? error.message : 'Could not summarize the reply.')
+        if (controller.signal.aborted || !isCurrent()) return
+        this.events.onError(error instanceof Error ? error.message : 'Could not summarize the reply.')
+        // Keep all prose facts, including partial side effects, without feeding
+        // display markdown to Live. Chunk only when the transport is ready.
+        content = markdownToSpokenWords(text).map(word => word.text).join(' ') ||
+          'The backend supplied non-prose output. Its details are available in the application; no outcome can be confirmed from this update.'
       } finally {
         if (this.replyAbort === controller) this.replyAbort = null
       }
+      if (!controller.signal.aborted && isCurrent()) this.append('thinking', content, delegation, { kind: 'reply', isCurrent })
+    }).catch(error => {
+      if (isCurrent()) this.events.onError(error instanceof Error ? error.message : 'Could not deliver the voice update.')
     })
   }
 
   /** Queue behind every context chunk, including summaries still being mapped. */
   completeReply() {
+    const completion = ++this.completionRevision
     const revision = this.replyRevision
     const delegation = this.delegationId
+    const isCurrent = () => !this.closed && revision === this.replyRevision && completion === this.completionRevision
     this.replyQueue = this.replyQueue.then(() => {
-      if (!this.closed && !this.paused && revision === this.replyRevision) this.commentary(LIVE_TURN_COMPLETE_CUE, delegation)
+      if (isCurrent()) this.append('commentary', LIVE_TURN_COMPLETE_CUE, delegation, { kind: 'completion', isCurrent })
+    })
+  }
+
+  /** Preserve partial work and replace only the success cue, after all context. */
+  reportAgentError(message: string) {
+    this.cancelCompletion()
+    const revision = this.replyRevision
+    const delegation = this.delegationId
+    const isCurrent = () => !this.closed && revision === this.replyRevision
+    this.replyQueue = this.replyQueue.then(() => {
+      if (isCurrent()) this.append('commentary', `The agent reported an error: ${message}`, delegation, { kind: 'reply', isCurrent })
     })
   }
 
@@ -195,11 +223,9 @@ export class OpenAILiveBridge {
     this.append('commentary', text, delegation)
   }
 
-  private append(type: 'thinking' | 'commentary', text: string, delegation: string | null) {
+  private append(type: 'thinking' | 'commentary', text: string, delegation: string | null, delivery?: LiveDelivery) {
     if (this.closed) return
-    for (const content of liveTextChunks(text)) this.events.send({
-      type: `session.${type}.append`, delegation_id: delegation, content, event_id: crypto.randomUUID(),
-    })
+    this.events.send({ type: `session.${type}.append`, delegation_id: delegation, content: text }, delivery)
   }
 
   close() {
