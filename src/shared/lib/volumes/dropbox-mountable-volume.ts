@@ -7,9 +7,9 @@ import { dropboxRequest, requireDropboxAccount, withDropboxAccount, type Dropbox
 import { dropboxListSchema, dropboxMetadataSchema, dropboxSessionSchema, type DropboxList, type DropboxMetadata, type DropboxVolumeConfig } from './dropbox-schema'
 import { dropboxReadCache } from './dropbox-read-cache'
 import { dropboxHealthCache } from './dropbox-health-cache'
+import { serialize } from './remote-listing-cache'
+import { uploadChunks } from './remote-transfer'
 import { DropboxUnavailableError } from './dropbox-error'
-
-const mutations = new Map<string, Promise<unknown>>()
 
 // Platform's Composio route accepts at most 1,000,000 bytes of JSON. Binary
 // bodies expand by 4/3 in base64; 512 KiB leaves room for the request envelope,
@@ -18,8 +18,8 @@ export const DROPBOX_UPLOAD_CHUNK_BYTES = 512 * 1024
 
 /** Serialize namespace commits across overlapping mounts. Body reads and upload
  * staging never hold this lock; Dropbox locks the namespace only at commit too. */
-async function mutate<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
-  const pending = (mutations.get(accountId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+function mutate<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
+  return serialize(accountId, async () => {
     dropboxReadCache.invalidate(accountId)
     dropboxHealthCache.invalidate(accountId)
     try { return await operation() } finally {
@@ -27,10 +27,6 @@ async function mutate<T>(accountId: string, operation: () => Promise<T>): Promis
       dropboxHealthCache.invalidate(accountId)
     }
   })
-  mutations.set(accountId, pending)
-  try { return await pending } finally {
-    if (mutations.get(accountId) === pending) mutations.delete(accountId)
-  }
 }
 
 /** Invalid upstream JSON is an availability error, not invalid user input. */
@@ -44,34 +40,6 @@ function entryOf(metadata: DropboxMetadata, name = metadata.name): VolumeEntry {
     : { name, kind: 'file', size: metadata.size, mtimeMs: Date.parse(metadata.server_modified) }
 }
 
-/** Bound the encoded proxy request, even for large incoming stream chunks. */
-async function* uploadChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<ArrayBuffer> {
-  const reader = body.getReader()
-  let buffer = new Uint8Array(DROPBOX_UPLOAD_CHUNK_BYTES)
-  let used = 0
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      for (let offset = 0; offset < value.length;) {
-        const count = Math.min(value.length - offset, buffer.length - used)
-        buffer.set(value.subarray(offset, offset + count), used)
-        used += count
-        offset += count
-        if (used === buffer.length) {
-          yield buffer.buffer
-          buffer = new Uint8Array(DROPBOX_UPLOAD_CHUNK_BYTES)
-          used = 0
-        }
-      }
-    }
-    if (used) yield buffer.slice(0, used).buffer
-  } finally {
-    await reader.cancel().catch(() => {})
-    reader.releaseLock()
-  }
-}
-
 export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeConfig> {
   readonly type = 'dropbox'
   readonly cacheMode = 'remote'
@@ -79,6 +47,10 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
 
   constructor(id: string, name: string, config: DropboxVolumeConfig, private readonly agentSlug?: string) {
     super(id, name, config)
+  }
+
+  get sourceLabel(): string {
+    return `Dropbox · ${this.config.path || '/'}`
   }
 
   private remotePath(relative: string): string {
@@ -233,7 +205,7 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
           path: target, mode: previous ? { '.tag': 'update', update: previous.rev } : 'add',
           autorename: false, strict_conflict: true,
         }
-        const chunks = uploadChunks(body)
+        const chunks = uploadChunks(body, DROPBOX_UPLOAD_CHUNK_BYTES)
         try {
           const first = await chunks.next()
           let next = await chunks.next()

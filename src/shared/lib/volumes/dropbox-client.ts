@@ -1,26 +1,19 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { eq } from 'drizzle-orm'
-import { db } from '@shared/lib/db'
-import { connectedAccounts } from '@shared/lib/db/schema'
 import { getAccountProviderByName } from '@shared/lib/account-providers/provider-factory'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { writeProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { dropboxErrorSchema } from './dropbox-schema'
 import { DropboxUnavailableError } from './dropbox-error'
+import { requireAccount } from './remote-account'
 
 export type DropboxEndpoint =
   | 'get_metadata' | 'list_folder' | 'list_folder/continue' | 'download'
   | 'upload' | 'upload_session/start' | 'upload_session/append_v2' | 'upload_session/finish'
   | 'create_folder_v2' | 'delete_v2' | 'move_v2'
 
-export async function requireDropboxAccount(accountId: string, creator?: { userId: string | null }) {
-  const account = await db.select().from(connectedAccounts).where(eq(connectedAccounts.id, accountId)).get()
-  if (!account || account.toolkitSlug !== 'dropbox' || (creator?.userId && account.userId !== creator.userId)) {
-    throw new WorkspaceFileError('not-found', 'Dropbox account not found')
-  }
-  if (account.status !== 'active') throw new WorkspaceFileError('not-accessible', 'Reconnect this Dropbox account in Connections')
-  return account
+export function requireDropboxAccount(accountId: string, creator?: { userId: string | null }) {
+  return requireAccount(accountId, 'dropbox', creator)
 }
 
 type DropboxAccount = Awaited<ReturnType<typeof requireDropboxAccount>>
