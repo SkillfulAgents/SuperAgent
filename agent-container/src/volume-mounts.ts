@@ -49,7 +49,7 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     '--vfs-write-back', '1s',
     // Local edits must appear promptly; remote listings are expensive. Writes through
     // this mount invalidate its cache, while outside changes appear after expiry.
-    '--dir-cache-time', cacheMode === 'remote' ? '1m' : '1s',
+    '--dir-cache-time', cacheMode === 'remote' ? '5m' : '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
     // Shutdown reads the upload queue through this socket and starts what is waiting. Any claude process can use it,

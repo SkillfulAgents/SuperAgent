@@ -171,8 +171,8 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     sh(container, `echo BBBBBBBB > ${source}/w.txt`);
     expect(sh(container, `cat ${file}`)).toBe('AAAAAAAA');
     const invalidate = 'curl -sf --unix-socket /tmp/rclone-cloud.sock -X POST -H "Content-Type: application/json" -d "{}" http://rc/vfs/refresh';
-    // Exercise the real one-minute policy, including the kernel and disk caches.
-    await waitFor(() => sh(container, `ls /mounts/cloud >/dev/null && cat ${file}`) === 'BBBBBBBB', 65_000);
+    // Exercise the real five-minute policy, including the kernel and disk caches.
+    await waitFor(() => sh(container, `ls /mounts/cloud >/dev/null && cat ${file}`) === 'BBBBBBBB', 305_000);
 
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     sh(container, `echo CCCCCCCCCCCCCC > ${source}/w.txt`);
@@ -182,7 +182,7 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     sh(container, 'echo own-write > /mounts/cloud/new.txt');
     expect(sh(container, 'cat /mounts/cloud/new.txt')).toBe('own-write');
     await waitFor(() => sh(container, `cat ${source}/new.txt 2>/dev/null || true`) === 'own-write', 5_000);
-  }, 100_000);
+  }, 340_000);
 
   it('git sees no mode change in a mounted repo, and keeps the executable bit outside /mounts', async () => {
     // The repo is made on the source side, as on the host: a repo made through the mount would detect
