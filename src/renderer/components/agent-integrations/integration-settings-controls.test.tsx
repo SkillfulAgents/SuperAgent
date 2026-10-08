@@ -6,6 +6,7 @@ import { IntegrationModelEffort } from './integration-settings-controls'
 import { makeChatIntegration as makeIntegration } from './test-factories'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
+import { connectionInfoSchema } from '@shared/lib/llm-provider/connection-schema'
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD: EffortLevel[] = ['low', 'medium', 'high']
@@ -17,6 +18,7 @@ const CATALOG: ModelDefinition[] = [
 ]
 
 const mutateMock = vi.fn()
+const runtime = vi.hoisted(() => ({ settings: {} as Record<string, unknown>, prefs: {} as Record<string, unknown> }))
 
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useUpdateAgentIntegration: () => ({
@@ -36,6 +38,7 @@ vi.mock('@renderer/hooks/use-settings', () => {
         defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       }],
       models: { agentModel: 'claude-opus-4-8', agentEffort: 'high' },
+      ...runtime.settings,
     },
   })
   return {
@@ -45,12 +48,30 @@ vi.mock('@renderer/hooks/use-settings', () => {
 })
 
 vi.mock('@renderer/hooks/use-agent-preferences', () => ({
-  useAgentPreferences: () => ({ data: {} }),
+  useAgentPreferences: () => ({ data: runtime.prefs }),
 }))
 
 describe('IntegrationModelEffort', () => {
   beforeEach(() => {
     mutateMock.mockReset()
+    runtime.settings = {}
+    runtime.prefs = {}
+  })
+
+  it('names the account the run inherits from the agent default, not the app default', async () => {
+    const connection = (id: string, name: string) => connectionInfoSchema.parse({
+      id, name, provider: 'anthropic', userId: null, ownerName: null, managed: false, isConfigured: true,
+      catalog: CATALOG, modelOverrides: [], defaultModel: 'opus', browserModel: null, dashboardModel: null,
+      canManage: true, canDelete: true,
+    })
+    runtime.settings = {
+      connections: [connection('app', 'App key'), connection('agent', 'Agent key')],
+      defaultSelection: { llmProviderId: 'app', model: 'opus' },
+    }
+    runtime.prefs = { defaultModel: 'opus', defaultLlmProviderId: 'agent' }
+    render(<IntegrationModelEffort integration={makeIntegration()} />)
+    await userEvent.hover(screen.getByTestId('settings-model-trigger'))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Agent key')
   })
 
   it('renders the model trigger', () => {
