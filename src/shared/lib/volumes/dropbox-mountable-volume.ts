@@ -53,6 +53,10 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
     super(id, name, config)
   }
 
+  get sourceLabel(): string {
+    return `Dropbox · ${this.config.path || '/'}`
+  }
+
   private remotePath(relative: string): string {
     if (relative && relative.split('/').some(part => !part || part === '.' || part === '..' || /[\\\0]/.test(part))) {
       throw new WorkspaceFileError('invalid-path')

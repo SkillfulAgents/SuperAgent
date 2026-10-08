@@ -1,13 +1,12 @@
 import type { NotMountedReason, StoredVolume, VolumeSummary } from '@shared/lib/types/mount'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { instantiateVolume } from './volume-factory'
-import { dropboxVolumeConfigSchema } from './dropbox-schema'
 
 export function volumeSummary(row: StoredVolume): VolumeSummary {
-  const dropbox = row.type === 'dropbox' ? dropboxVolumeConfigSchema.safeParse(row.config) : null
+  const volume = instantiateVolume(row)
   return {
-    id: row.id, name: row.name, type: row.type, hostPath: instantiateVolume(row)?.hostPath ?? null,
-    ...(dropbox?.success ? { sourceLabel: `Dropbox · ${dropbox.data.path || '/'}` } : {}),
+    id: row.id, name: row.name, type: row.type, hostPath: volume?.hostPath ?? null,
+    ...(volume?.sourceLabel ? { sourceLabel: volume.sourceLabel } : {}),
   }
 }
 

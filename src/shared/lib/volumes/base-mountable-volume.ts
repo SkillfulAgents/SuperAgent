@@ -51,6 +51,11 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
+  /** What the card shows for a remote source, or null for a source whose host path says it. */
+  get sourceLabel(): string | null {
+    return null
+  }
+
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */
