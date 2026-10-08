@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully executed browser commands to open https://example.com, retrieve the page title \"Example Domain\", and report back within 3 minutes.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Home page loaded showing \"Your Agents\" with two agents listed: \"QA-20261008-010941-ggrk\" and \"QA-20261008-010939-yhg8\"",
+    "Clicked on \"QA-20261008-010941-ggrk\" agent in sidebar — Agent page loaded with chat interface showing empty conversation area and configuration panels on right side",
+    "Clicked on chat input field and typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in input field with \"Send message\" button enabled",
+    "Clicked \"Send message\" button — Message sent successfully, agent session created with title \"Browser Page Title Check\", agent status changed to \"working\", and tool calls shown (Open Browser, Close Browser)",
+    "Waited for agent response (up to 3 minutes) — Response completed in approximately 5 seconds with agent status changing back to \"idle\"",
+    "Verified response content — Agent response states: \"The page title is \"Example Domain\". The page at https://example.com loaded successfully, and I've closed the browser.\" Response explicitly mentions \"Example Domain\" as required."
+  ],
+  "bugs": [],
+  "durationMs": 75141,
+  "sessionId": "3356a5a0-1c17-4b94-9e88-6cce5a0b04fd",
+  "cost": {
+    "inputTokens": 490,
+    "outputTokens": 11772,
+    "cacheCreationTokens": 80693,
+    "cacheReadTokens": 1405071,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.300723
+  }
+}
