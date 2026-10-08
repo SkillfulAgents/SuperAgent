@@ -1,7 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { acquireMicStream } from '../../shared/audio-capture'
 import { OpenAILiveBridge } from './live-bridge'
-import type { LiveRequest, LiveSessionAnswer, VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
+import { LIVE_TURN_COMPLETE_CUE, type LiveRequest, type LiveSessionAnswer, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 import type { VoiceInputRequest } from '../../contracts/conversation'
 
 interface ConversationEvents {
@@ -23,6 +23,10 @@ const AUDIO_METER_MS = 20
 const OUTPUT_SPEECH_RMS = 0.003
 // Only extends speech already confirmed by transcription; never opens the gate.
 const INPUT_SPEECH_RMS = 0.006
+
+function isTurnCompleteCue(event: Record<string, unknown>) {
+  return event.type === 'session.commentary.append' && event.content === LIVE_TURN_COMPLETE_CUE
+}
 
 function sampleRms(analyser: AnalyserNode, buffer: Float32Array<ArrayBuffer>): number {
   analyser.getFloatTimeDomainData(buffer)
@@ -60,6 +64,7 @@ export class OpenAILiveConversation {
   private bridge: OpenAILiveBridge
   private replyText = ''
   private replyFed = 0
+  private replyComplete = false
   private replyTimer: ReturnType<typeof setTimeout> | undefined
   private inputRequests: readonly VoiceInputRequest[] = []
   private announcedInputRequests = new Set<string>()
@@ -302,9 +307,12 @@ export class OpenAILiveConversation {
 
   resetReply() {
     this.bridge.invalidateReplies()
+    // Replies can reach the transport queue while WebRTC is still connecting.
+    this.commands = this.commands.filter(event => event.type !== 'session.thinking.append' && !isTurnCompleteCue(event))
     clearTimeout(this.replyTimer)
     this.replyText = ''
     this.replyFed = 0
+    this.replyComplete = false
   }
 
   /** Receives the same cumulative text stream used by Deepgram read-aloud. */
@@ -314,6 +322,8 @@ export class OpenAILiveConversation {
     clearTimeout(this.replyTimer)
     if (complete || text.length - this.replyFed >= 1200) this.flushReply()
     else this.replyTimer = setTimeout(() => this.flushReply(), 1000)
+    if (complete && !this.replyComplete) this.bridge.completeReply()
+    this.replyComplete = complete
   }
 
   /** The shared coordinator supplies message boundaries; no text-prefix guessing here. */
@@ -322,6 +332,13 @@ export class OpenAILiveConversation {
     this.flushReply()
     this.replyText = ''
     this.replyFed = 0
+    this.replyComplete = false
+  }
+
+  /** Execution errors need attention, without claiming the backend turn finished. */
+  reportAgentError(message: string) {
+    this.resetReply()
+    this.bridge.commentary(`The agent reported an error: ${message}`)
   }
 
   private flushReply() {
@@ -340,7 +357,7 @@ export class OpenAILiveConversation {
   }
 
   private send(event: Record<string, unknown>) {
-    if (this.closed) return
+    if (this.closed || (this.paused && isTurnCompleteCue(event))) return
     if (this.ready && this.channel?.readyState === 'open') this.channel.send(JSON.stringify(event))
     else if (this.commands.length < 128) this.commands.push(event)
   }

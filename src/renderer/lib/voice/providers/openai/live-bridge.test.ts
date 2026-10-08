@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OpenAILiveBridge, liveTextChunks } from './live-bridge'
+import { LIVE_TURN_COMPLETE_CUE } from '@shared/lib/voice/live-types'
 
 function setup() {
   const events = {
@@ -98,20 +99,92 @@ afterEach(() => vi.useRealTimers())
     bridge.close()
   })
 
-  it('does not leak delayed replies across a new request or a closed session', async () => {
+  it('orders thinking and the completion cue behind a delayed summary with the same delegation', async () => {
+    const { bridge, events, user, delegate } = setup()
+    user('Check Friday.'); delegate()
+    await vi.advanceTimersByTimeAsync(700)
+    let resolve!: (value: unknown) => void
+    events.map.mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    bridge.reply('Detailed findings. '.repeat(100))
+    bridge.reply('Nothing has been sent.')
+    bridge.completeReply()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events.send).not.toHaveBeenCalled()
+    const summary = 'Friday works. 世界 🌍 '.repeat(30)
+    resolve({ text: summary })
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = events.send.mock.calls.map(([event]) => event)
+    expect(sent.slice(0, -1).every(event => event.type === 'session.thinking.append')).toBe(true)
+    expect(sent.slice(0, -1).map(event => event.content).join('')).toBe(summary + 'Nothing has been sent.')
+    expect(sent.at(-1)).toMatchObject({ type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE })
+    expect(sent.every(event => event.delegation_id === 'item_1')).toBe(true)
+    expect(sent.every(event => new TextEncoder().encode(event.content).length <= 400)).toBe(true)
+    bridge.close()
+  })
+
+  it('does not leak delayed replies or completion cues across a new request or a closed session', async () => {
     const { bridge, events } = setup()
     let resolve!: (value: unknown) => void
     events.map.mockImplementationOnce(() => new Promise((done) => { resolve = done }))
     bridge.reply('old response '.repeat(100))
+    bridge.completeReply()
     await Promise.resolve()
     bridge.invalidateReplies()
     resolve({ text: 'Outdated answer.' })
     await vi.advanceTimersByTimeAsync(0)
     expect(events.send).not.toHaveBeenCalled()
-    bridge.close()
     bridge.reply('Never spoken.')
+    bridge.completeReply()
+    bridge.close()
     await vi.advanceTimersByTimeAsync(0)
     expect(events.send).not.toHaveBeenCalled()
+  })
+
+  it.each(['unavailable', 'empty'])('preserves the result before completion if the reply summarizer is %s', async (failure) => {
+    const { bridge, events } = setup()
+    if (failure === 'unavailable') events.map.mockRejectedValueOnce(new Error('Summarizer unavailable.'))
+    else events.map.mockResolvedValueOnce({ text: ' ' })
+    const result = 'The PDF is ready; the signing service rejected the login. Nothing was sent or charged. '.repeat(10)
+    bridge.reply(result)
+    bridge.completeReply()
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = events.send.mock.calls.map(([event]) => event)
+    expect(sent.filter(event => event.type === 'session.thinking.append').map(event => event.content).join('')).toBe(result)
+    expect(sent.at(-1)).toMatchObject({ type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE })
+    expect(events.onError).toHaveBeenCalledOnce()
+    bridge.close()
+  })
+
+  it('does not fall back to an old result if its summarizer fails after cancellation', async () => {
+    const { bridge, events } = setup()
+    let reject!: (error: Error) => void
+    events.map.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    bridge.reply('Obsolete result. '.repeat(100))
+    bridge.completeReply()
+    await vi.advanceTimersByTimeAsync(0)
+    bridge.invalidateReplies()
+    reject(new Error('Cancelled summarizer.'))
+    bridge.reply('The replacement result.')
+    bridge.completeReply()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events.send.mock.calls.map(([event]) => event.content)).toEqual(['The replacement result.', LIVE_TURN_COMPLETE_CUE])
+    expect(events.onError).not.toHaveBeenCalled()
+    bridge.close()
+  })
+
+  it('does not announce completion while paused for user input', async () => {
+    const { bridge, events } = setup()
+    bridge.reply('The draft needs approval.')
+    bridge.completeReply()
+    bridge.setPaused(true)
+    bridge.commentary('Application input request: Approve the $12 cost in the app.')
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = events.send.mock.calls.map(([event]) => event)
+    expect(sent.filter(event => event.type === 'session.commentary.append').map(event => event.content)).toEqual([
+      'Application input request: Approve the $12 cost in the app.',
+    ])
+    expect(sent).toContainEqual(expect.objectContaining({ type: 'session.thinking.append', content: 'The draft needs approval.' }))
+    bridge.close()
   })
 
   it('keeps failed mapping available for explicit retry and stops on close', async () => {

@@ -1,5 +1,5 @@
 import { splitSpeechText } from '@shared/lib/voice/text-chunks'
-import { liveRequestSchema, type LiveMappingInput, type LiveRequest, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
+import { LIVE_TURN_COMPLETE_CUE, liveRequestSchema, type LiveMappingInput, type LiveRequest, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 
 export interface LiveBridgeEvents {
   send: (event: Record<string, unknown>) => void
@@ -162,11 +162,18 @@ export class OpenAILiveBridge {
       try {
         let content = text
         if (text.length > 600) {
-          const result = await this.events.map({ kind: 'reply', text: text.slice(0, 12000) }, controller.signal) as { text?: string }
-          if (!result.text) throw new Error('The summarizer returned an empty voice reply.')
-          content = result.text
+          try {
+            const result = await this.events.map({ kind: 'reply', text: text.slice(0, 12000) }, controller.signal) as { text?: string }
+            if (!result.text?.trim()) throw new Error('The summarizer returned an empty voice reply.')
+            content = result.text
+          } catch (error) {
+            if (controller.signal.aborted || this.closed || revision !== this.replyRevision) return
+            this.events.onError(error instanceof Error ? error.message : 'Could not summarize the reply.')
+            // Thinking can carry the original text. Never send a finish cue
+            // with the outcome missing just because condensation failed.
+          }
         }
-        if (!controller.signal.aborted && !this.closed && revision === this.replyRevision) this.commentary(content, delegation)
+        if (!controller.signal.aborted && !this.closed && revision === this.replyRevision) this.append('thinking', content, delegation)
       } catch (error) {
         if (!controller.signal.aborted && !this.closed) this.events.onError(error instanceof Error ? error.message : 'Could not summarize the reply.')
       } finally {
@@ -175,9 +182,23 @@ export class OpenAILiveBridge {
     })
   }
 
+  /** Queue behind every context chunk, including summaries still being mapped. */
+  completeReply() {
+    const revision = this.replyRevision
+    const delegation = this.delegationId
+    this.replyQueue = this.replyQueue.then(() => {
+      if (!this.closed && !this.paused && revision === this.replyRevision) this.commentary(LIVE_TURN_COMPLETE_CUE, delegation)
+    })
+  }
+
   commentary(text: string, delegation = this.delegationId) {
+    this.append('commentary', text, delegation)
+  }
+
+  private append(type: 'thinking' | 'commentary', text: string, delegation: string | null) {
+    if (this.closed) return
     for (const content of liveTextChunks(text)) this.events.send({
-      type: 'session.commentary.append', delegation_id: delegation, content, event_id: crypto.randomUUID(),
+      type: `session.${type}.append`, delegation_id: delegation, content, event_id: crypto.randomUUID(),
     })
   }
 

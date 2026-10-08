@@ -28,7 +28,7 @@ The OpenAI implementation owns:
 - Host-side Live session creation with the existing BYOK key; only the SDP answer and an opaque cleanup handle reach the renderer.
 - WebRTC microphone/speaker tracks and the data channel. It waits for `session.started`; it does not send the WebSocket-only `session.start` command.
 - Client-delegation and transcript mapping. A delegation event contains metadata, not an agent request. The adapter coalesces transcript fragments and asks the configured summarizer for a schema-constrained message, cancellation, clarification, or no action. Additional user fragments invalidate in-flight mappings. Duplicate delegation IDs are ignored.
-- Spoken results. Short coherent updates go directly to Live commentary. Longer updates use the same summarizer. Appends are UTF-8-byte bounded below the API's 500-token limit and ordered; a replacement request invalidates older queued summaries.
+- Backend context. All streamed replies, including final answers, use `session.thinking.append`; longer updates still use the same summarizer. If summarization fails or returns empty text, the original update is sent as thinking so the finish cue cannot lose its outcome context. Appends are UTF-8-byte bounded below the API's 500-token limit and ordered. On reply completion, one `session.commentary.append` says “The backend agent has finished this turn.” It queues behind all pending text and summaries, including when completion adds no new text. Repeated completion snapshots do not repeat the cue. A replacement request, execution error, or closed session invalidates pending replies and cues; no completion cue is sent while paused for a request card. Clarifications, cancellations, execution errors, and application input requests retain direct commentary.
 - Microphone/playback cleanup, including exiting before the session-creation response arrives. Host cleanup handles are user-bound and calls have a one-hour backstop with a one-minute expiry warning. Page exit triggers best-effort cleanup. Failed hangups release the admission slot immediately, retain the upstream handle for bounded retries, and make a final attempt at expiry.
 
 ## Standard text-to-speech
@@ -77,6 +77,69 @@ Current session voice mode starts through `POST /api/voice/live/agents/:id/sessi
 `buildLiveConversationPrompt` combines the voice delegation policy with a compact adaptation of the platform system prompt: account connection/discovery, authorization cards, MCP connections, secrets, research, files, code, artifacts, and scheduling. Unknown service availability is delegated to the backend. Voice must not infer that accounts are already connected or claim completion before a backend result.
 
 Custom instructions are included as saved agent configuration, capped at 6,000 characters and explicitly marked when truncated. The backend retains the full instructions and resolves detailed constraints. This context is a startup snapshot; exiting and re-entering voice reloads changes. It does not enumerate account credentials, connected-account metadata, or tool schemas. Prompt tests and mocked transport tests verify propagation; spoken behavior still needs a live conversation check (for example, “Connect my Gmail account”).
+
+The spoken-update policy asks Live to stay silent for routine progress, tool activity, repeated status, and next-step narration. It should speak for answers, outcomes, meaningful findings or plan changes, blockers, failures, and user decisions, preserving approvals, costs, and application input requests. Backend replies now arrive as thinking context. The application-owned completion cue asks Live to summarize any outcome not yet covered, finish an ongoing summary without restarting, or stay quiet if the user already heard the outcome (adding only missing important details). Turn completion does not imply every action succeeded. No early classification of final versus intermediate text is needed, and streaming continues throughout the turn. Speech selection and avoiding repetition remain model behavior guided by the prompt, not transport guarantees.
+
+A prompt-only experiment on 2026-10-07 (PDT), before the transport change, used `gpt-live-1`, Marin, client delegation, and the primary WebSocket API. Each session received three routine updates, a final result, and an approval request disclosing a $12 cost. The original prompt, a spoken-update policy, and a stricter variant with an explicit silence policy prepended were compared using identical startup history and session-wide commentary. “Current prompt” in the experiment tables below refers to that tested spoken-update policy, before the completion protocol was added. A fourth session repeated it using a synthesized spoken request and the actual client delegation ID returned by Live.
+
+| Prompt and request setup | Routine updates narrated | Final result and approval/cost request narrated |
+| --- | --- | --- |
+| Original prompt, startup history | 3/3 | 2/2 |
+| Current prompt, startup history | 3/3 | 2/2 |
+| Stronger silence policy, startup history | 3/3 | 2/2 |
+| Current prompt, spoken request and real client delegation | 3/3 | 2/2 |
+
+The probe streamed paced PCM audio continuously, verified every commentary acknowledgment, and recorded both audio and transcripts for at least 12 seconds after each acknowledgment. All four sessions closed successfully, totaling 297 voice seconds. For “Now building the contract,” the current prompt produced “Working on the contract”; the stronger prompt produced “Sure thing, I'm on it.” This small synthetic experiment does not establish that every possible prompt must fail, but the tested prompt changes did not solve the narration problem. They should not be treated as a working suppression mechanism.
+
+A follow-up on the same date sent every test update through `session.thinking.append`, using synthetic spoken input and a real client delegation in all three sessions. Two sessions used the current default prompt; a third prepended a clearer policy that distinguished process updates from completed outcomes, material findings, blockers, and required user actions. The second and third sessions used fresh routine wording plus an exclusivity-clause finding and a rejected-login blocker.
+
+| Thinking experiment | Routine updates narrated | Meaningful updates triggered speech |
+| --- | --- | --- |
+| Current prompt, original completion/approval examples | 0/3 | 2/2 |
+| Current prompt, fresh finding/blocker examples | 3/3 | 2/2 |
+| Clearer policy, same fresh examples | 1/3 | 2/2 |
+
+All six meaningful updates triggered speech without another user utterance or commentary event. The first output transcript arrived 526–635 ms after sending each meaningful update. The probe observed each meaningful update for at least 20 seconds after acknowledgment, then allowed a further 15 seconds before sending a separate commentary positive control. Every control was spoken, all thinking appends were acknowledged, and all three sessions closed successfully, totaling 371 voice seconds. No additional transcripts appeared between the test windows and controls.
+
+The first routine window in the first thinking session contained about 300 ms of audio consistent with the tail of the initial acknowledgment, with no new transcript; later sessions waited for two seconds of quiet before testing. Narration counts above concern the supplied updates. Speech triggering also does not establish faithful paraphrasing: the clearer-policy trial changed a finding from “I removed that clause” to “I'm removing it” and added that it had been flagged. These tests establish that thinking context can prompt meaningful spontaneous speech and permit silence, while routine filtering and factual fidelity remain inconsistent.
+
+A further experiment on the same date streamed progress and final results entirely as thinking, then sent a separate completion cue. Final results were split into 100-character fragments, including splits inside words, with approximately one second between acknowledged fragments. Every session used synthetic spoken input and an actual client delegation. A completion-aware prompt asked Live to wait for the cue before summarizing, while still allowing questions, approvals, and blockers to be spoken early.
+
+| Completion experiment | Observed behavior |
+| --- | --- |
+| Current prompt; delayed commentary `Done.` | Live spoke the final result before the cue, then said only “Ready for your review when you are.” |
+| Completion-aware prompt; immediate commentary “The backend agent has finished this turn.” | Routine updates stayed quiet, but the final answer began before the cue and continued through it. This does not establish that the cue triggered a summary. |
+| Completion-aware prompt; same commentary cue after a partial failure | Routine updates were narrated, and final speech again began before the cue. The continued answer described the login failure and preserved that nothing was sent or charged. |
+| Current prompt; explicit `session.instructions.append` summary request after 2,025 ms of quiet | A fresh summary began 2,320 ms after the cue. It described the created contract draft and tracking link, the blocked signing step, and the account-card action needed from the user. It repeated information already spoken. |
+
+The tested instruction was: “The backend agent has finished this turn. Give a concise spoken summary now, using the results already provided as context. State what was completed and what remains blocked or needs the user. Do not invent success or repeat routine progress.” All appends were acknowledged and all four sessions closed successfully, totaling 296 voice seconds. The instruction-cue result is one isolated trial, not a reliability estimate; commentary-cue speech must not be counted as a newly triggered summary when it merely continues an utterance already underway.
+
+The acceptance criterion is that the user hears the outcome once, not that the completion cue starts a new summary. The “agent finished” commentary trials were good under that criterion: Live continued the summary already underway. The explicit instruction trial repeated information and is not the chosen implementation. The application uses thinking for streamed context and an ordered commentary completion cue, with startup instructions to fill in missing outcomes without repeating them. Those trials did not establish whether the commentary cue reliably elicits a summary when Live has stayed quiet throughout; nor do they guarantee routine-progress suppression.
+
+A smoke test with the implemented startup prompt used the same synthetic spoken request, real client delegation, thinking fragments, and commentary finish cue over WebSocket. Live skipped “Now building the contract,” narrated the tracking-link progress and substantive clause change, and continued the final summary through the cue without restarting. It covered the draft, link, first signer, and unsent status. All seven appends were acknowledged and the session closed successfully after 68 voice seconds. This checks provider behavior; mocked renderer regressions separately cover streaming boundaries, delayed mapping, completion without new text, duplicate snapshots, cancellation, errors, and cues queued during connection or pause. The live test still narrated one of two routine updates.
+
+### Live validation on 2026-10-08
+
+Fourteen additional fresh `gpt-live-1` sessions used synthetic spoken requests, real client delegations, continuous paced PCM input, and the application prompt. Nine exercised the implemented prompt; five retested after the prompt changes described below. Every session closed successfully: 774 total voice seconds and 53 acknowledged application appends. Audio, transcripts, and event timing were recorded; interruption trials also supplied synthesized user speech during output. These were provider tests over WebSocket, with browser integration covered separately using mocked WebRTC and backend execution.
+
+| Scenario | Observation |
+| --- | --- |
+| Rapid successful completion, before and after prompt changes | Each run covered the draft, link, first signer, and unsent/uncharged status once. Speech began around cue delivery, so these do not isolate the cue from fresh thinking context. |
+| Completion after the summary ended | The cue followed at least two seconds of measured quiet. No transcript or audible PCM followed it during the observation window. |
+| Partial failure and a blocker arriving after an earlier summary | Both communicated the failed signing login and account-card action without claiming signing succeeded. |
+| Approval while paused | Preserved the $12 cost, approval card, and uncharged/unsent status; waited for user approval. |
+| Seven rapid/repeated routine updates, then the result | All seven routine updates remained silent. A single outcome summary followed the cue. |
+| Sparse incremental facts | Initially claimed the tracking link was prepared before that fact arrived, then repeated known outcomes after the cue. The retest avoided those two behaviors but still added a short closure. |
+| Only progress, with no actual result | Initially fabricated that the draft and link were ready. After the prompt change, both independent retests stated that the outcome was unconfirmed or unavailable. One still narrated the routine progress. |
+| Spoken “Stop talking. I'll read the result in the app.” | Both initial and updated prompts stopped the summary. The finish cue still elicited a short acknowledgment, despite the explicit silence instruction. |
+
+The prompt now explicitly says the cue supplies no evidence of success, requires confirmed backend facts, explains what to say when only progress is available, forbids predicting results from partial fragments, and preserves user requests for silence across completion. The retests support the missing-result correction in those samples; they do not establish reliable suppression or factuality. Occasional progress narration, closure acknowledgments, and repeated facts remain observed model limitations. A finish cue after silence can elicit speech, but the initial missing-result trial also demonstrates why speech alone is not a passing outcome.
+
+Fault injection also found a deterministic data-loss bug: a failed reply summarizer dropped the backend result while the completion cue still went through. The bridge now falls back to bounded original thinking text. Regression tests cover rejection, empty output, and cancellation while a failing summarizer is pending. Browser regressions cover two consecutive turns (one cue each), cancelling a running turn before a replacement, and four request-card types. The final focused suite has 103 passing tests; all six browser cases, typecheck, and lint pass (52 pre-existing lint warnings).
+
+The temporary probe and schema-validated aggregate are in `/tmp/gamut-live-commentary-probe/`, with `validation-2026-10-08.json` preserving every run's prompt, observation, source report path, event timing, and transcript. Individual `/tmp/gamut-live-completion-results-*/` directories also retain WAV recordings. Browser commands pipe through `tee`; the combined run is preserved in `/tmp/gamut-voice-final-e2e.txt`.
+
+### Capability prompt audit
 
 The voice summary is an index for delegation, not an exhaustive inventory. The backend's full prompt, tools, skills, configuration, assigned integrations, and product FAQs remain authoritative. When uncertain, voice delegates the user's original question/task for a capability check, preserves whether they requested information or execution, and respects confirmed policy blocks.
 

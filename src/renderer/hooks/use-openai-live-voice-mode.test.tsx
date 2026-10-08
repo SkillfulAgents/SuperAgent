@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   fadeMusic: vi.fn(),
   stream: { activeStartTime: null as number | null, isActive: false, streamingMessage: null as string | null, error: null as string | null },
   interrupt: vi.fn(async () => ({})),
-  instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; setInputRequests: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
+  instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; reportAgentError: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; setInputRequests: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
 }))
 vi.mock('@renderer/lib/voice/shared/speech/hold-sound', () => ({ holdSound: { stopImmediately: mocks.stopMusic, stop: mocks.fadeMusic } }))
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => mocks.stream }))
@@ -28,6 +28,7 @@ vi.mock('@renderer/lib/voice/providers/openai/live-session', () => ({
     analyser = null
     close = vi.fn()
     updateReply = vi.fn()
+    reportAgentError = vi.fn()
     setPaused = vi.fn()
     setInputRequests = vi.fn()
     setMicrophoneMuted = vi.fn()
@@ -106,6 +107,16 @@ describe('Live session hook', () => {
     expect(result.current.transcript).toEqual([])
     act(() => adapter.callbacks.onTranscript(spoken))
     expect(result.current.transcript).toEqual([])
+    unmount()
+  })
+
+  it('forwards execution errors without fabricating a completed reply', async () => {
+    const { adapter, rerender, unmount } = setup()
+    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Prepare the draft.' }) })
+    mocks.stream = { ...mocks.stream, isActive: false, error: 'Signing service unavailable.' }
+    rerender({ active: true, paused: false })
+    expect(adapter.reportAgentError).toHaveBeenCalledExactlyOnceWith('Signing service unavailable.')
+    expect(adapter.updateReply).not.toHaveBeenCalled()
     unmount()
   })
 

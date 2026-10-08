@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({ fetch: vi.fn(), mic: vi.fn() }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mocks.fetch }))
 vi.mock('../../shared/audio-capture', () => ({ acquireMicStream: mocks.mic }))
 import { OpenAILiveConversation, LIVE_SPEECH_RELEASE_MS, LIVE_DISCONNECT_GRACE_MS } from './live-session'
+import { LIVE_TURN_COMPLETE_CUE } from '@shared/lib/voice/live-types'
 
 class FakeChannel {
   readyState = 'open'
@@ -332,31 +333,83 @@ describe('Live WebRTC lifecycle', () => {
     expect(callbacks.onInputSpeaking).not.toHaveBeenCalled()
   })
 
-  it('flushes ordered commentary at coordinator-supplied message boundaries', async () => {
+  it('streams thinking across message boundaries and sends one completion cue even with no final text delta', async () => {
     const { adapter } = setup()
     await adapter.start()
     const channel = FakePeer.last.channel
     channel.receive({ type: 'session.started' })
     adapter.updateReply('First message.', false)
     adapter.nextReplySegment()
+    adapter.updateReply('Second message.', false)
+    await vi.advanceTimersByTimeAsync(1000)
+    const replies = () => channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
+      event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(replies()).toMatchObject([
+      { type: 'session.thinking.append', content: 'First message.' },
+      { type: 'session.thinking.append', content: 'Second message.' },
+    ])
+    adapter.updateReply('Second message.', true)
     adapter.updateReply('Second message.', true)
     await vi.advanceTimersByTimeAsync(1000)
-    const commentary = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
-    expect(commentary.map(event => event.content)).toEqual(['First message.', 'Second message.'])
+    expect(replies()).toMatchObject([
+      { type: 'session.thinking.append', content: 'First message.' },
+      { type: 'session.thinking.append', content: 'Second message.' },
+      { type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE },
+    ])
     adapter.close()
   })
 
-  it('discards buffered speech when the coordinator resets an interrupted reply', async () => {
+  it.each([
+    { complete: false, ready: true },
+    { complete: true, ready: true },
+    { complete: true, ready: false },
+  ])('discards buffered text and queued cues when resetting a reply (complete: $complete, ready: $ready)', async ({ complete, ready }) => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    if (ready) channel.receive({ type: 'session.started' })
+    adapter.updateReply('Obsolete response.', complete)
+    if (!ready) await vi.advanceTimersByTimeAsync(0)
+    adapter.resetReply()
+    adapter.updateReply('Replacement response.', true)
+    await vi.advanceTimersByTimeAsync(1000)
+    if (!ready) channel.receive({ type: 'session.started' })
+    const replies = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
+      event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(replies).toMatchObject([
+      { type: 'session.thinking.append', content: 'Replacement response.' },
+      { type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE },
+    ])
+    adapter.close()
+  })
+
+  it('drops a completion queued before connection if an input request pauses the session', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    adapter.updateReply('The draft needs approval.', true)
+    await vi.advanceTimersByTimeAsync(0)
+    adapter.setPaused(true)
+    adapter.setInputRequests([{ id: 'approval:1', message: 'Approve the $12 cost in the app.' }])
+    channel.receive({ type: 'session.started' })
+    const commentary = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
+    expect(commentary.map(event => event.content)).toEqual(['Application input request: Approve the $12 cost in the app.'])
+    adapter.close()
+  })
+
+  it('announces execution errors directly and discards pending completion', async () => {
     const { adapter } = setup()
     await adapter.start()
     const channel = FakePeer.last.channel
     channel.receive({ type: 'session.started' })
-    adapter.updateReply('Obsolete response.', false)
-    adapter.resetReply()
-    adapter.updateReply('Replacement response.', true)
+    adapter.updateReply('A stale result.', true)
+    adapter.reportAgentError('Signing service unavailable.')
     await vi.advanceTimersByTimeAsync(1000)
-    const commentary = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
-    expect(commentary.map(event => event.content)).toEqual(['Replacement response.'])
+    const replies = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
+      event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(replies).toMatchObject([
+      { type: 'session.commentary.append', content: 'The agent reported an error: Signing service unavailable.' },
+    ])
     adapter.close()
   })
 

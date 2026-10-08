@@ -58,8 +58,8 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
       this.segment = event.segment
       this.conversation.updateReply(event.text, event.complete)
     } else if (event.type === 'error') {
-      this.conversation.nextReplySegment()
-      this.conversation.updateReply(`The agent reported an error: ${event.message}`, true)
+      this.segment = null
+      this.conversation.reportAgentError(event.message)
     } else if (event.type === 'input-requests') {
       this.conversation.setInputRequests(event.requests)
     }
