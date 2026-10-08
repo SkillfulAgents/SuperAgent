@@ -27,8 +27,10 @@ describe('GlobalInstructionsTab', () => {
     render(<GlobalInstructionsTab />)
 
     const editor = screen.getByTestId('global-instructions-editor')
-    expect(editor).toHaveValue('Be kind')
-    expect(editor).toHaveAttribute('readonly')
+    expect(editor).toHaveTextContent('Be kind')
+    expect(editor).toHaveAttribute('aria-label', 'Global guidance')
+    expect(editor).toHaveAttribute('contenteditable', 'false')
+    expect(screen.queryByTestId('formatting-toggle')).not.toBeInTheDocument()
     expect(screen.queryByTestId('global-instructions-save')).not.toBeInTheDocument()
     expect(screen.getByText(/Only admins can edit it/)).toBeInTheDocument()
   })
@@ -44,10 +46,9 @@ describe('GlobalInstructionsTab', () => {
     expect(save).toBeDisabled()
 
     const editor = screen.getByTestId('global-instructions-editor')
-    await userEvent.clear(editor)
-    await userEvent.type(editor, '  Cite sources  ')
+    await userEvent.type(editor, ' and cite sources  ')
     await userEvent.click(save)
 
-    expect(mutateMock).toHaveBeenCalledWith({ globalInstructions: 'Cite sources' }, expect.anything())
+    expect(mutateMock).toHaveBeenCalledWith({ globalInstructions: 'Be kind and cite sources' }, expect.anything())
   })
 })

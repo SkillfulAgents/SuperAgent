@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Textarea } from '@renderer/components/ui/textarea'
+import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { useUser } from '@renderer/context/user-context'
 import { useGlobalInstructions, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { GLOBAL_INSTRUCTIONS_MAX_LENGTH } from '@shared/lib/config/global-instructions-schema'
@@ -35,16 +35,18 @@ export function GlobalInstructionsTab() {
   return (
     <div className="space-y-2">
       <h3 className={SECTION_HEADING}>Global guidance</h3>
-      <Textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        placeholder={canEdit ? 'Guidance every agent should follow, e.g. tone, conventions, or things to never do…' : 'No global guidance has been set.'}
-        className="min-h-[320px] font-mono text-sm"
-        readOnly={!canEdit}
-        disabled={isLoading}
-        aria-label="Global guidance"
-        data-testid="global-instructions-editor"
-      />
+      <div className="rounded-md border border-input px-3 py-2 shadow-sm focus-within:ring-1 focus-within:ring-ring">
+        <MarkdownComposerEditor
+          value={draft}
+          onChange={setDraft}
+          placeholder={canEdit ? 'Guidance every agent should follow, e.g. tone, conventions, or things to never do…' : 'No global guidance has been set.'}
+          minRows={16}
+          disabled={!canEdit || isLoading}
+          dataTestId="global-instructions-editor"
+          ariaLabel="Global guidance"
+          toolbar={canEdit}
+        />
+      </div>
       <div className="flex items-start gap-3 px-1">
         <p className="flex-1 text-[11px] text-muted-foreground leading-relaxed">
           Added to the system prompt of every agent as a &ldquo;Global Guidance&rdquo; section, ahead of each

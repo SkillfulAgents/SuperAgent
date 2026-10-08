@@ -320,6 +320,8 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
             minRows={expanded ? 12 : 3}
             className="mt-5 text-[15px] leading-7"
             dataTestId="todo-draft-editor"
+            toolbar
+            toolbarClassName="sticky top-0 z-10 bg-background pt-3"
           />
         </div>
       </div>
