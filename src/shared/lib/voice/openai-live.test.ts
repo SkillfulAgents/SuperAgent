@@ -129,4 +129,25 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(body.session.input.map((entry: { content: Array<{ text: string }> }) => entry.content[0].text)).toEqual(['Research this', 'Found it'])
   })
 
+  it('treats a slow 404 hangup for an already-ended session as closed', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms)
+      return controller.signal
+    })
+    try {
+      fetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise((resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+        setTimeout(() => resolve(new Response(JSON.stringify({ error: { code: 'session_id_not_found' } }), { status: 404 })), 6000)
+      }))
+      const closing = provider.closeLiveSession('live_ended')
+      await vi.advanceTimersByTimeAsync(6000)
+      await expect(closing).resolves.toBeUndefined()
+      expect(fetchMock).toHaveBeenCalledWith('https://api.openai.com/v1/live/sessions/live_ended/hangup', expect.objectContaining({ method: 'POST' }))
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
+  })
 })
