@@ -135,11 +135,11 @@ function hastText(node: ElementContent): string {
   return ''
 }
 
-function fenceSource(pre: ElementContent | undefined, language: string): string | null {
+function fenceSource(pre: ElementContent | undefined, languages: string[]): string | null {
   const code = pre?.type === 'element' ? pre.children[0] : undefined
   if (code?.type !== 'element' || code.tagName !== 'code') return null
   const classes = code.properties.className
-  if (!Array.isArray(classes) || !classes.includes(`language-${language}`)) return null
+  if (!Array.isArray(classes) || !classes.some((name) => languages.includes(String(name).toLowerCase()))) return null
   return hastText(code)
 }
 
@@ -148,9 +148,9 @@ function fenceSource(pre: ElementContent | undefined, language: string): string 
 const settledPre = (htmlPreview: boolean): Components['pre'] =>
   function SettledPre({ children, node }) {
   const codeBlock = <CodeBlock>{children}</CodeBlock>
-  const html = htmlPreview ? fenceSource(node, 'html') : null
+  const html = htmlPreview ? fenceSource(node, ['language-html', 'language-htm']) : null
   if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />
-  const source = fenceSource(node, 'mermaid')
+  const source = fenceSource(node, ['language-mermaid'])
   if (source === null) return codeBlock
   return (
     <ErrorBoundary fallback={codeBlock}>
@@ -270,6 +270,8 @@ interface MessageItemProps {
    * the list, so the store's flips re-render one row rather than every one.
    */
   voiceReading?: boolean
+  /** The temporary row of a reply still streaming. Its persisted message replaces it, so HTML previews wait for that row and run once. */
+  isStreamingRow?: boolean
 }
 
 function resolveSubagentRun(
@@ -294,7 +296,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -501,7 +503,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           agentSlug={agentSlug}
                           spoken={isBeingRead}
                           spokenOffset={spokenOffsets?.[i]}
-                          htmlPreview={isAssistant}
+                          htmlPreview={isAssistant && !isStreamingRow}
                         />
                       ))}
                       {streamingSplit.tail && (
@@ -521,7 +523,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
                       spoken={isBeingRead}
-                      htmlPreview={isAssistant}
+                      htmlPreview={isAssistant && !isStreamingRow}
                     />
                   )}
                   {isStreaming && (

@@ -1331,6 +1331,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              isStreamingRow
               suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}

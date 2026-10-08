@@ -872,7 +872,15 @@ describe('MessageItem', () => {
       const doc = frame.getAttribute('srcdoc')!
       expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<svg'))
       expect(doc).toContain("default-src 'none'")
+      expect(doc).not.toContain('https:')
       expect(container.querySelector('pre')).toBeNull()
+    })
+
+    it('previews fences tagged HTML or htm', () => {
+      const msg = createAssistantMessage({ content: { text: '```HTML\n<p>Upper</p>\n```\n\n```htm\n<p>Short</p>\n```' } })
+      render(<MessageItem message={msg} />)
+
+      expect(screen.getAllByTitle('HTML preview')).toHaveLength(2)
     })
 
     it('sizes html and body to their content, not the frame', () => {
@@ -883,6 +891,16 @@ describe('MessageItem', () => {
       const reset = doc.indexOf('html,body{height:auto!important;min-height:0!important}')
       expect(reset).toBeGreaterThan(-1)
       expect(reset).toBeLessThan(doc.indexOf('min-height:100vh'))
+    })
+
+    it('keeps html as code in the streaming row, which its persisted message replaces', () => {
+      const msg = createAssistantMessage({ content: { text: `${CHART}\n\nStill writing` } })
+      const { container, rerender } = render(<MessageItem message={msg} isStreaming isStreamingRow />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      rerender(<MessageItem message={msg} isStreaming={false} isStreamingRow />)
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
     })
 
     it('keeps the fence still streaming in as a code block', () => {
@@ -938,7 +956,7 @@ describe('MessageItem', () => {
       expect(frame.style.height).toBe('1200px')
     })
 
-    it('forwards wheel input the frame reports to the chat around it', () => {
+    it('forwards wheel input the frame reports to the chat only while the pointer is on it', () => {
       const msg = createAssistantMessage({ content: { text: '```html\n<p>Weekly spend</p>\n```' } })
       const { container } = render(<MessageItem message={msg} />)
       const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
@@ -950,6 +968,8 @@ describe('MessageItem', () => {
         })
 
       report(window, 40)
+      report(frame.contentWindow, 60)
+      vi.spyOn(frame, 'matches').mockImplementation((selector) => selector === ':hover')
       report(frame.contentWindow, -120)
       expect(wheels).toEqual([-120])
     })

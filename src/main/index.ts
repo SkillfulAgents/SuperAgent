@@ -392,7 +392,6 @@ function createWindow() {
   // installPopupHandler routes external URLs through safeOpenExternal (scheme
   // validation — SUP-214) and is shared with the dashboard popout (SUP-219).
   installPopupHandler(mainWindow.webContents)
-  blockSrcdocFrameNavigation(mainWindow.webContents)
 
   // Load the app
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -1090,6 +1089,9 @@ ipcMain.handle('popup-app-menu', (_event, x: number, y: number) => {
   const menu = Menu.buildFromTemplate(items)
   menu.popup({ window: win, x, y })
 })
+
+// Every window that can render chat (main, popouts, dispatch) gets the guard, including future ones.
+app.on('web-contents-created', (_event, webContents) => blockSrcdocFrameNavigation(webContents))
 
 // Handle OAuth callback URLs (macOS)
 app.on('open-url', (event, url) => {

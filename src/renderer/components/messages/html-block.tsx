@@ -1,22 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { useIsDark } from '@renderer/hooks/use-theme'
 import { CodeCopyButton } from './code-copy-button'
 
-// The same Inter stylesheet the app loads (src/renderer/index.html).
-const APP_FONT_STYLESHEET = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap'
-
-// Scripts and styles are inline; only the app's Google font may load. Nothing else is fetched, posted, or framed.
+// Scripts and styles are inline; nothing is fetched, posted, or framed. The app's web font
+// would need a network exception a script could leak data through, so text uses the font stack's fallbacks.
 // CSP doesn't cover WebRTC, so a script can still reach a STUN host by peer connection.
 const HTML_BLOCK_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; img-src data:; font-src data: https://fonts.gstatic.com; form-action 'none'; base-uri 'none'"
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
 
 const HEIGHT_MESSAGE = 'superagent:html-block-height'
 const WHEEL_MESSAGE = 'superagent:html-block-wheel'
 const INITIAL_HEIGHT = 160
 const MAX_HEIGHT = 1200
+const MAX_REMEMBERED_HEIGHTS = 200
 
 // Remembered per block so switching back to a session doesn't reflow from the initial height.
 const measuredHeights = new Map<string, number>()
+
+function rememberHeight(source: string, height: number): void {
+  measuredHeights.delete(source)
+  measuredHeights.set(source, height)
+  if (measuredHeights.size > MAX_REMEMBERED_HEIGHTS) measuredHeights.delete(measuredHeights.keys().next().value!)
+}
 
 const THEME_TOKENS = [
   'background', 'foreground', 'card', 'card-foreground', 'primary', 'primary-foreground',
@@ -33,7 +38,8 @@ function themeStyle(): string {
     `:root{${vars}}` +
     'html{overflow:hidden;scrollbar-width:thin}' +
     // flow-root keeps child margins inside body, so its height is the content height.
-    'body{display:flow-root}' +
+    // Positioned, so absolute content hanging below it (tooltips, legends) counts toward its height.
+    'body{display:flow-root;position:relative}' +
     // The frame's height follows its content, so viewport-sized html/body (100vh, 100%) would grow it to the cap.
     'html,body{height:auto!important;min-height:0!important}' +
     "html,body{margin:0;background:transparent;color:hsl(var(--foreground));" +
@@ -71,7 +77,6 @@ function renderHtmlBlockDocument(source: string, scheme: 'light' | 'dark'): stri
     `<!DOCTYPE html><html data-theme="${scheme}"><head>` +
     `<meta http-equiv="Content-Security-Policy" content="${HTML_BLOCK_CSP}">` +
     `<meta name="color-scheme" content="${scheme}">` +
-    `<link rel="stylesheet" href="${APP_FONT_STYLESHEET}">` +
     `<style>${themeStyle()}</style>` +
     `<script>${FRAME_SCRIPT}</script>${source}`
   )
@@ -88,10 +93,15 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
 
   // The CSP can't stop the frame loading another page into itself, and that page has no CSP.
   // A second load of the same document means it did, so show the source instead.
-  const onLoad = useCallback(() => {
-    if (loadedDoc.current === srcDoc) setNavigatedAway(true)
-    loadedDoc.current = srcDoc
+  // A new document (theme switch) starts fresh, even if it matches one whose load never finished.
+  useEffect(() => {
+    loadedDoc.current = null
   }, [srcDoc])
+  const onLoad = useCallback((event: SyntheticEvent<HTMLIFrameElement>) => {
+    const doc = event.currentTarget.srcdoc
+    if (loadedDoc.current === doc) setNavigatedAway(true)
+    loadedDoc.current = doc
+  }, [])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -99,12 +109,13 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
       if (!frame || event.source !== frame.contentWindow) return
       const data = event.data as { type?: unknown; height?: unknown; deltaY?: unknown } | null
       if (data?.type === WHEEL_MESSAGE && typeof data.deltaY === 'number' && Number.isFinite(data.deltaY)) {
-        frame.dispatchEvent(new WheelEvent('wheel', { deltaY: data.deltaY, bubbles: true }))
+        // A script can post these on its own; only scroll the chat while the pointer is on the preview.
+        if (frame.matches(':hover')) frame.dispatchEvent(new WheelEvent('wheel', { deltaY: data.deltaY, bubbles: true }))
         return
       }
       if (data?.type !== HEIGHT_MESSAGE || typeof data.height !== 'number' || !Number.isFinite(data.height)) return
       const next = Math.min(Math.max(Math.ceil(data.height), 1), MAX_HEIGHT)
-      measuredHeights.set(source, next)
+      rememberHeight(source, next)
       setHeight(next)
     }
     window.addEventListener('message', onMessage)
