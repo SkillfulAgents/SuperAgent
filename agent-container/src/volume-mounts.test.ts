@@ -2,7 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { parseVolumes, rcloneMountArgs, untilMountAnswers, waitForUploads } from './volume-mounts'
+import * as http from 'http'
+import { parseVolumes, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
 
 describe('parseVolumes', () => {
   it('accepts names that are one path segment', () => {
@@ -68,12 +69,36 @@ describe('remote mount cache policy', () => {
 })
 
 describe('untilMountAnswers', () => {
-  it('stops polling a path that never mounts once the attempt has settled', async () => {
+  it('stops polling a path that never mounts once the attempt has settled, without asking the app', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-'))
     let settled = false
     setTimeout(() => { settled = true }, 50)
-    await expect(untilMountAnswers(dir, fs.statSync(dir).dev, () => settled)).resolves.toBeUndefined()
+    const answers = vi.fn(async () => {})
+    await expect(untilMountAnswers(dir, fs.statSync(dir).dev, () => settled, answers)).resolves.toBeUndefined()
+    expect(answers).not.toHaveBeenCalled()
     fs.rmSync(dir, { recursive: true })
+  })
+})
+
+describe('volumeAnswers', () => {
+  it('asks the app for the volume root alone, with the mount token, and fails on any other answer', async () => {
+    const requests: { method?: string; url?: string; headers: http.IncomingHttpHeaders }[] = []
+    let status = 207
+    const server = http.createServer((req, res) => {
+      requests.push({ method: req.method, url: req.url, headers: req.headers })
+      res.writeHead(status).end('<d:multistatus xmlns:d="DAV:"/>')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    const hostApiUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/api`
+    try {
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret')).resolves.toBeUndefined()
+      expect(requests).toEqual([expect.objectContaining({ method: 'PROPFIND', url: '/api/volumes/v_17', headers: expect.objectContaining({ authorization: 'Bearer secret', depth: '0' }) })])
+      status = 403
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret')).rejects.toThrow('volume answered 403')
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
   })
 })
 
