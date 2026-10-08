@@ -237,7 +237,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the router after all mocks are registered.
 import agents from './agents'
-import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-error'
+import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-failed/agent-container-stop-error'
 
 function appWithAgents() {
   const app = new Hono()

@@ -1,5 +1,5 @@
 import { getModelContextWindowMap } from './model-catalog'
-import { LlmSelectionAccessError } from '../agent-runtime-errors/llm-selection-access-error'
+import { LlmSelectionAccessError } from '../agent-runtime-errors/llm-provider-not-found/llm-selection-access-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'

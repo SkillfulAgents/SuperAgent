@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 
 import { agentRuntimeErrorBodySchema, findAgentRuntimeError } from './agent-runtime-error'
-import { AgentContainerStopError } from './agent-container-stop-error'
-import { LlmSelectionAccessError } from './llm-selection-access-error'
+import { AgentContainerStopError } from './agent-container-stop-failed/agent-container-stop-error'
+import { LlmSelectionAccessError } from './llm-provider-not-found/llm-selection-access-error'
 
 describe('findAgentRuntimeError', () => {
   it('finds the error when a send wraps it as the cause', () => {

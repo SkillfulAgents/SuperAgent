@@ -22,7 +22,7 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-error'
+import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-failed/agent-container-stop-error'
 import {
   CONFIG_DOCS,
   agentCatalog,

@@ -17,7 +17,7 @@ import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
-import { ForkSessionError } from '@shared/lib/agent-runtime-errors/fork-session-error'
+import { ForkSessionError } from '@shared/lib/agent-runtime-errors/session-fork-failed/fork-session-error'
 
 export type ForkSessionOpts = {
   createdByUserId?: string

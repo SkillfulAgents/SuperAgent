@@ -1,5 +1,5 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
-import { readAgentRuntimeError } from '@renderer/lib/agent-runtime-request-error'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'

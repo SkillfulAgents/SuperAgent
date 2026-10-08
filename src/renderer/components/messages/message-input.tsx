@@ -24,7 +24,7 @@ import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, set
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import { UploadError } from '@renderer/components/ui/upload-error'
-import { AgentRuntimeErrorView } from '@renderer/components/agent-runtime-errors/agent-runtime-error-view'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'

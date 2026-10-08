@@ -22,7 +22,7 @@ import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstac
 import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
-import { resolveAgentRuntimeErrorPreview } from '@renderer/components/agent-runtime-errors/registry'
+import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.

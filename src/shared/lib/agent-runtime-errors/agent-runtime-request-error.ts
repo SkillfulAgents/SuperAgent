@@ -1,4 +1,4 @@
-import { agentRuntimeErrorBodySchema, type AgentRuntimeErrorBody } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { agentRuntimeErrorBodySchema, type AgentRuntimeErrorBody } from './agent-runtime-error'
 
 /** A failed request whose body came from `AgentRuntimeError.toHttpResponse()`. */
 export class AgentRuntimeRequestError extends Error {

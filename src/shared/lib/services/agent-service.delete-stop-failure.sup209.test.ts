@@ -62,7 +62,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 // Import after mocking
 import { deleteAgent, agentExists } from './agent-service'
-import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-error'
+import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-failed/agent-container-stop-error'
 import { importAgentDirectories } from '@shared/lib/db/data-migrations/0001-import-agents-from-directories'
 
 describe('agent-service deleteAgent — container stop failure (SUP-209)', () => {

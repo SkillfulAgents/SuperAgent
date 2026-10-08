@@ -9,8 +9,8 @@ const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }))
 vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
-import { AgentRuntimeRequestError, readAgentRuntimeError } from './agent-runtime-request-error'
-import { LlmSelectionAccessError } from '@shared/lib/agent-runtime-errors/llm-selection-access-error'
+import { AgentRuntimeRequestError, readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
+import { LlmSelectionAccessError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-selection-access-error'
 
 beforeEach(() => {
   mockToastError.mockClear()

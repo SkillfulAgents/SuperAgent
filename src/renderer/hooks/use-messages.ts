@@ -1,5 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
-import { readAgentRuntimeError } from '@renderer/lib/agent-runtime-request-error'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
