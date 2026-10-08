@@ -74,13 +74,21 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
   ];
 }
 
-export async function untilMountAnswers(mountPath: string, unmountedDev: number, settled: () => boolean): Promise<void> {
+// One authenticated PROPFIND of the volume root, the request rclone makes first. A 207 proves the app answers and
+// accepts the token without listing anything: a remote source may have to export every document a listing names.
+export async function volumeAnswers(hostApiUrl: string, volumeId: string, token: string): Promise<void> {
+  const response = await fetch(`${hostApiUrl}/volumes/${volumeId}`, { method: 'PROPFIND', headers: { Authorization: `Bearer ${token}`, Depth: '0' } });
+  await response.arrayBuffer();
+  if (response.status !== 207) throw new Error(`volume answered ${response.status}`);
+}
+
+export async function untilMountAnswers(mountPath: string, unmountedDev: number, settled: () => boolean, answers: () => Promise<void>): Promise<void> {
   while ((await fs.promises.stat(mountPath)).dev === unmountedDev) {
     if (settled()) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  // The mount exists even when the app is unreachable. Listing it proves the app answers and accepts the token.
-  await fs.promises.readdir(mountPath);
+  // The mount exists even when the app is unreachable.
+  await answers();
 }
 
 async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
@@ -93,13 +101,15 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
     await fs.promises.mkdir(mountPath, { recursive: true });
     const cache = await createVolumeCache(volume);
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode, caseInsensitive, cache), {
-      env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: process.env.PROXY_TOKEN },
+    const hostApiUrl = process.env.SUPERAGENT_HOST_API_URL ?? '';
+    const token = process.env.PROXY_TOKEN ?? '';
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, hostApiUrl, cacheMode, caseInsensitive, cache), {
+      env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: token },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     rclone = child;
     await Promise.race([
-      untilMountAnswers(mountPath, unmountedDev, () => settled),
+      untilMountAnswers(mountPath, unmountedDev, () => settled, () => volumeAnswers(hostApiUrl, volumeId, token)),
       new Promise((_, reject) => {
         child.once('error', reject);
         child.once('exit', (code) => reject(new Error(`rclone exited with code ${code}`)));
