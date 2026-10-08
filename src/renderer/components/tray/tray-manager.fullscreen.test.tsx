@@ -21,10 +21,21 @@ vi.mock('@renderer/components/browser/browser-tray-content', () => ({
     </div>
   ),
 }))
-vi.mock('@renderer/components/file-preview/file-preview-tray-content', () => ({ FilePreviewTrayContent: () => null }))
+vi.mock('@renderer/components/file-preview/file-preview-tray-content', () => ({
+  FilePreviewTrayContent: ({
+    onToggleExpand,
+    isExpanded,
+  }: {
+    onToggleExpand: () => void
+    isExpanded: boolean
+  }) => (
+    <button onClick={onToggleExpand}>{isExpanded ? 'Exit files full screen' : 'Files full screen'}</button>
+  ),
+}))
 vi.mock('@renderer/components/workflow/workflow-tray-content', () => ({ WorkflowTrayContent: () => null }))
+const filePreview = { openTabs: [] as unknown[], isOpen: false, close: vi.fn() }
 vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ openTabs: [], isOpen: false, close: vi.fn() }),
+  useFilePreview: () => filePreview,
 }))
 vi.mock('@renderer/context/workflow-context', () => ({
   useWorkflow: () => ({ openWorkflows: [], isOpen: false, close: vi.fn(), selectedRunId: null }),
@@ -58,6 +69,25 @@ describe('TrayManager full screen', () => {
     sidebar.open = true
     sidebar.setOpen.mockClear()
     localStorage.clear()
+    filePreview.openTabs = []
+    filePreview.isOpen = false
+  })
+
+  it('puts the file preview in full screen and leaves it when the user switches to the browser', async () => {
+    filePreview.openTabs = [{ kind: 'file', filePath: '/workspace/report.md' }]
+    filePreview.isOpen = true
+    const user = userEvent.setup()
+    render(<TrayManager agentSlug="a" sessionId="s" browserActive={true} />)
+    await flushFrames()
+
+    await user.click(screen.getByText('Files full screen'))
+    expect(drawer()).toHaveAttribute('data-fullscreen')
+    expect(sidebar.setOpen).toHaveBeenLastCalledWith(false)
+
+    await user.click(screen.getByTitle('Browser'))
+    expect(drawer()).not.toHaveAttribute('data-fullscreen')
+    expect(sidebar.setOpen).toHaveBeenLastCalledWith(true)
+    expect(screen.getByText('Full screen')).toBeInTheDocument()
   })
 
   it('leaves full screen and restores the sidebar when the panel is hidden, and reopens at normal size', async () => {

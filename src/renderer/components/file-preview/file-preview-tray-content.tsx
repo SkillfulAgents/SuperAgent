@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { ArrowDownToLine, PanelRight, X } from 'lucide-react'
+import { ArrowDownToLine, Expand, PanelRight, Shrink, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
@@ -17,9 +17,16 @@ import { useFileSize } from '@renderer/hooks/use-file-size'
 interface FilePreviewTrayContentProps {
   sessionId: string
   onClose: () => void
+  isExpanded?: boolean
+  onToggleExpand?: () => void
 }
 
-export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
+export function FilePreviewTrayContent({
+  sessionId,
+  onClose,
+  isExpanded = false,
+  onToggleExpand,
+}: FilePreviewTrayContentProps) {
   const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, commentsFor } = useFilePreview()
   // The body card squares off its top-left corner only while the active tab sits
   // directly above it; the strip is the only thing that knows when that is.
@@ -52,6 +59,17 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           // The drawer's own controls. Compact layouts show the close button;
           // wide layouts show the panel-hide button (see globals.css).
           <div className="flex items-center gap-1" data-testid="file-preview-header">
+            {onToggleExpand && (
+              <button
+                className="inline-flex p-0.5 rounded hover:bg-muted transition-colors"
+                onClick={onToggleExpand}
+                title={isExpanded ? 'Exit full screen' : 'Full screen'}
+                aria-label={isExpanded ? 'Exit full screen' : 'Full screen'}
+                data-testid="file-preview-fullscreen"
+              >
+                {isExpanded ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
+              </button>
+            )}
             <button
               className="file-preview-compact-close hidden p-0.5 rounded hover:bg-muted transition-colors"
               onClick={onClose}

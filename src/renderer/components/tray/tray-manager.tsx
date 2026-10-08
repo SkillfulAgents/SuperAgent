@@ -33,7 +33,7 @@ export function TrayManager({
   const [isOpen, setIsOpen] = useState(false)
   const [userClosed, setUserClosed] = useState(false)
   // Full screen: the drawer covers the tray host and the sidebar folds away,
-  // so the browser gets the whole window. Both come back on exit.
+  // so the browser or file preview gets the whole window. Both come back on exit.
   const [isExpanded, setIsExpanded] = useState(false)
   const sidebarWasOpenRef = useRef(false)
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar()
@@ -98,8 +98,10 @@ export function TrayManager({
     <FilePreviewTrayContent
       sessionId={sessionId}
       onClose={handleCloseFilePreview}
+      isExpanded={isExpanded}
+      onToggleExpand={handleToggleExpand}
     />
-  ), [sessionId, handleCloseFilePreview])
+  ), [sessionId, handleCloseFilePreview, isExpanded, handleToggleExpand])
 
   const closeWorkflow = workflow.close
   const handleCloseWorkflow = useCallback(() => closeWorkflow(), [closeWorkflow])
@@ -183,11 +185,14 @@ export function TrayManager({
     }
   }, [anyAvailable, exitFullScreen])
 
-  // Full screen belongs to the browser tray alone: losing it (the browser went
-  // idle) or leaving it (the user picked Files or Workflow) ends full screen.
+  // Full screen belongs to the tray that entered it: losing that tray (the
+  // browser went idle, the last file closed) or switching trays ends it.
   const activeTrayId = trays.find(t => t.id === selectedTrayId && t.available)?.id ?? availableTrays[0]?.id
+  const lastActiveTrayIdRef = useRef(activeTrayId)
   useEffect(() => {
-    if (activeTrayId !== 'browser') exitFullScreen()
+    if (lastActiveTrayIdRef.current === activeTrayId) return
+    lastActiveTrayIdRef.current = activeTrayId
+    exitFullScreen()
   }, [activeTrayId, exitFullScreen])
 
   // Switch away from unavailable tray
@@ -225,7 +230,7 @@ export function TrayManager({
       storageKey={DRAWER_STORAGE_KEY}
       responsiveFullWidth={activeTray?.id === 'files'}
       wideOverlay={activeTray?.id === 'files' && filePreviewWideLayout === 'overlay'}
-      fullScreen={isExpanded && activeTray?.id === 'browser'}
+      fullScreen={isExpanded && (activeTray?.id === 'browser' || activeTray?.id === 'files')}
     >
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
