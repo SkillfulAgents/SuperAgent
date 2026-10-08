@@ -125,6 +125,8 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## Built-in Exa search')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/exa.md')).toBe(webhook)
     expect(out.includes('Prefer the normal web-search tool')).toBe(webhook)
+    expect(out.includes('## Built-in decisions')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/decisions.md')).toBe(webhook)
     expect(out).not.toContain('v1/deepgram')
     expect(out).not.toContain('v1/openai')
     expect(out).not.toContain('v1/exa')
@@ -133,7 +135,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
   })
 
-  it.each(['audio.md', 'x.md', 'exa.md', 'media-generation.md', 'lead-enrichment.md'])(
+  it.each(['audio.md', 'x.md', 'exa.md', 'decisions.md', 'media-generation.md', 'lead-enrichment.md'])(
     '%s uses Platform service credentials independently of the LLM provider', (filename) => {
       const guide = readFileSync(join(__dirname, '..', 'docs', filename), 'utf8')
       expect(guide).toContain('$PLATFORM_BASE_URL/v1/')
@@ -218,6 +220,16 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('25 MB')
   })
 
+  it('teaches the OpenAI Decisions proxy contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'decisions.md'), 'utf8')
+    expect(guide).toContain('$PLATFORM_BASE_URL/v1/openai/decisions')
+    expect(guide).toContain('`gpt-6-luna`')
+    for (const type of ['`predicate`', '`choice`', '`score`']) expect(guide).toContain(type)
+    // Metering rate and body cap mirror platform/apps/proxy (openai.ts, service-pricing.ts).
+    expect(guide).toContain('$0.10 per 1M input tokens')
+    expect(guide).toContain('1,000,000 bytes')
+  })
+
   it('teaches Exa script usage and bounded search fallback in the guide', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'exa.md'), 'utf8')
     expect(guide).toContain('$PLATFORM_BASE_URL/v1/exa')
@@ -247,6 +259,7 @@ describe('generateSystemPrompt rendering', () => {
       'x.md',
       'audio.md',
       'exa.md',
+      'decisions.md',
     ]
 
     for (const guide of guides) {
