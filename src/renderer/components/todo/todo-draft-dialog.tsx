@@ -18,6 +18,7 @@ import {
 } from '@renderer/hooks/use-todos'
 import { MOD, ShortcutTooltip } from './todo-shortcuts'
 import { AgentDropdown } from '@renderer/components/agents/agent-dropdown'
+import { FormattingToggle, useFormattingToolbar } from '@renderer/components/messages/formatting-toolbar'
 import { useTodoAgents } from './todo-shared'
 
 /** Which draft the dialog shows: a new one (not saved until there is something in it) or a saved one. */
@@ -101,6 +102,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   // then), but its start may begin elsewhere while this is open.
   const alreadyStarting = useStartingTodoIds().has(initial?.id ?? '')
 
+  const [toolbarOpen, toggleToolbar] = useFormattingToolbar()
   const [fields, setFields] = useState<DraftFields>(() => ({
     title: initial?.title ?? '',
     description: initial?.description ?? '',
@@ -320,12 +322,14 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
             minRows={expanded ? 12 : 3}
             className="mt-5 text-[15px] leading-7"
             dataTestId="todo-draft-editor"
+            toolbar={toolbarOpen}
+            toolbarClassName="sticky top-0 z-10 bg-background pt-3"
           />
         </div>
       </div>
 
-      {/* Footer: the agent on the left; dictate and start on the right. */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3">
+      {/* Footer: the agent and formatting on the left; dictate and start on the right. */}
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         <AgentDropdown
           value={fields.agentSlug}
           onValueChange={(slug) => change({ agentSlug: slug })}
@@ -344,7 +348,8 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
             )
           }
         />
-        <div className="flex items-center gap-1.5">
+        <FormattingToggle open={toolbarOpen} onToggle={toggleToolbar} />
+        <div className="ml-auto flex items-center gap-1.5">
           <VoiceInputButton voiceInput={voiceInput} message={fields.description} />
           <Button
             variant="outline"

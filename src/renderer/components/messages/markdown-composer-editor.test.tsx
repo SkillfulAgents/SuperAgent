@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import MarkdownIt from 'markdown-it'
 import {
@@ -11,9 +11,10 @@ import {
   selectAllMarkdownComposer,
   setMarkdownComposerSelection,
 } from './markdown-composer-editor'
+import { useFormattingToolbar } from './formatting-toolbar'
 import { findPotentialSecrets, type SecuredSecret } from '@renderer/lib/secret-detection'
 
-function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
+function ControlledEditor({ initialValue = '', toolbar }: { initialValue?: string; toolbar?: boolean }) {
   const [value, setValue] = useState(initialValue)
   return (
     <>
@@ -22,6 +23,7 @@ function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
         onChange={setValue}
         placeholder="Write a message"
         dataTestId="markdown-editor"
+        toolbar={toolbar}
       />
       <output data-testid="markdown-value">{value}</output>
     </>
@@ -696,4 +698,255 @@ describe('MarkdownComposerEditor block exits', () => {
     expect(screen.getByTestId('markdown-value').textContent).toBe('> onetwo')
   })
 
+})
+
+function editorWith(initialValue: string, from = 1, to = from) {
+  render(<ControlledEditor initialValue={initialValue} />)
+  const editor = screen.getByTestId('markdown-editor')
+  setMarkdownComposerSelection(editor, from, to)
+  return editor
+}
+
+const markdownValue = () => screen.getByTestId('markdown-value').textContent
+
+describe('MarkdownComposerEditor formatting shortcuts', () => {
+  // Real key values: Option changes the character, so the keymap must match on the physical key.
+  const shortcut = (editor: HTMLElement, key: string, keyCode: number, modifier: 'altKey' | 'shiftKey') =>
+    fireEvent.keyDown(editor, { key, keyCode, ctrlKey: true, [modifier]: true })
+  const heading1 = (editor: HTMLElement) => shortcut(editor, '¡', 49, 'altKey')
+  const heading2 = (editor: HTMLElement) => shortcut(editor, '™', 50, 'altKey')
+
+  it('applies block shortcuts to every block in a select-all and keeps it selected', () => {
+    const cases: [string, (editor: HTMLElement) => void, string, string][] = [
+      ['a\n\nb', heading1, '# a\n\n# b', 'a\n\nb'],
+      ['* one\n* two', (editor) => shortcut(editor, '*', 56, 'shiftKey'), 'one\n\ntwo', '* one\n* two'],
+      ['p\n\n```ts\nx\n```', (editor) => shortcut(editor, '•', 56, 'altKey'), '```\np\n```\n\n```ts\nx\n```', 'p\n\nx'],
+    ]
+    for (const [initialValue, press, once, twice] of cases) {
+      const editor = editorWith(initialValue)
+      selectAllMarkdownComposer(editor)
+      press(editor)
+      expect(markdownValue()).toBe(once)
+      press(editor)
+      expect(markdownValue()).toBe(twice)
+      // The select-all survives both presses, so Backspace clears everything.
+      fireEvent.keyDown(editor, { key: 'Backspace' })
+      expect(markdownValue()).toBe('')
+      cleanup()
+    }
+  })
+
+  it('toggles a heading and switches its level', () => {
+    const editor = editorWith('title')
+
+    heading1(editor)
+    expect(markdownValue()).toBe('# title')
+    heading2(editor)
+    expect(markdownValue()).toBe('## title')
+    heading2(editor)
+    expect(markdownValue()).toBe('title')
+  })
+
+  it('makes only the cursor line of a multi-line paragraph a heading', () => {
+    const cases: [string, number, number, string][] = [
+      ['a\nb\nc', 3, 3, 'a\n\n# b\n\nc'],
+      ['a\nb', 2, 2, '# a\n\nb'],
+      ['a\nb', 1, 4, 'a\nb'],
+    ]
+    for (const [initialValue, from, to, expected] of cases) {
+      heading1(editorWith(initialValue, from, to))
+      expect(markdownValue()).toBe(expected)
+      cleanup()
+    }
+  })
+
+  it('keeps the cursor on the line it made a heading, including an empty line', async () => {
+    const user = userEvent.setup()
+    const editor = editorWith('a\nb', 2)
+    heading1(editor)
+    await user.keyboard('X')
+    expect(markdownValue()).toBe('# aX\n\nb')
+    cleanup()
+
+    render(<ControlledEditor />)
+    const blank = screen.getByTestId('markdown-editor')
+    await user.type(blank, 'a')
+    await user.keyboard('{Shift>}{Enter}{Enter}{/Shift}')
+    await user.type(blank, 'b')
+    act(() => { setMarkdownComposerSelection(blank, 3) })
+    heading1(blank)
+    await user.keyboard('Y')
+    expect(markdownValue()).toBe('a\n\n# Y\n\nb')
+  })
+
+  it('ends a heading on Shift+Enter instead of hiding a line break after it', async () => {
+    const user = userEvent.setup()
+    const editor = editorWith('# Title', 6)
+
+    await user.keyboard('{Shift>}{Enter}{/Shift}')
+    await user.type(editor, 'next')
+
+    expect(markdownValue()).toBe('# Title\n\nnext')
+  })
+
+  it('toggles a list and switches between bullet and numbered', () => {
+    const editor = editorWith('one')
+
+    shortcut(editor, '*', 56, 'shiftKey')
+    expect(markdownValue()).toBe('* one')
+    shortcut(editor, '&', 55, 'shiftKey')
+    expect(markdownValue()).toBe('1. one')
+    shortcut(editor, '&', 55, 'shiftKey')
+    expect(markdownValue()).toBe('one')
+  })
+
+  it('keeps each line when toggling a code block on and off above other text', () => {
+    const editor = editorWith('a\nb\n\nnext')
+
+    shortcut(editor, '•', 56, 'altKey')
+    expect(markdownValue()).toBe('```\na\nb\n```\n\nnext')
+    shortcut(editor, '•', 56, 'altKey')
+    expect(markdownValue()).toBe('a\nb\n\nnext')
+  })
+
+  it('leaves a code block made from a Shift+Enter line with one Enter', async () => {
+    const user = userEvent.setup()
+    render(<ControlledEditor />)
+    const editor = screen.getByTestId('markdown-editor')
+    await user.type(editor, 'a')
+    await user.keyboard('{Shift>}{Enter}{/Shift}')
+
+    shortcut(editor, '•', 56, 'altKey')
+    await user.keyboard('{Enter}')
+    await user.type(editor, 'after')
+
+    expect(markdownValue()).toBe('```\na\n```\n\nafter')
+  })
+
+  it('keeps several code blocks selected when turning them back into text', () => {
+    const editor = editorWith('```\na\n```\n\n```\nb\n```', 1, 5)
+
+    shortcut(editor, '•', 56, 'altKey')
+    expect(markdownValue()).toBe('a\n\nb')
+    shortcut(editor, '•', 56, 'altKey')
+    expect(markdownValue()).toBe('```\na\nb\n```')
+    shortcut(editor, '•', 56, 'altKey')
+    expect(markdownValue()).toBe('a\nb')
+  })
+
+  it('puts the caret after a merged code block, so typing keeps the lines', async () => {
+    const user = userEvent.setup()
+    const editor = editorWith('abc\n\ndef', 3, 8)
+
+    shortcut(editor, '•', 56, 'altKey')
+    await user.keyboard('X')
+
+    expect(markdownValue()).toBe('```\nabc\ndefX\n```')
+  })
+
+  it('merges only lines that sit side by side, keeping dividers and quotes between them', () => {
+    const cases: [string, string][] = [
+      ['a\n\n---\n\nb', '```\na\n```\n\n---\n\n```\nb\n```'],
+      ['a\n\n> q\n\nb', '```\na\n```\n\n> ```\n> q\n> ```\n\n```\nb\n```'],
+    ]
+    for (const [initialValue, expected] of cases) {
+      const editor = editorWith(initialValue)
+      selectAllMarkdownComposer(editor)
+      shortcut(editor, '•', 56, 'altKey')
+      expect(markdownValue()).toBe(expected)
+      cleanup()
+    }
+  })
+
+  it('turns autolinks into code, since their text is the address', () => {
+    for (const address of ['https://example.com', 'jeremy@example.com']) {
+      const editor = editorWith(`see <${address}>`)
+      shortcut(editor, '•', 56, 'altKey')
+      expect(markdownValue()).toBe(`\`\`\`\nsee ${address}\n\`\`\``)
+      cleanup()
+    }
+  })
+
+  it('leaves a line with an image or a link alone instead of dropping it', () => {
+    for (const initialValue of ['a ![x](https://example.com/x.png) b', 'a [x](https://example.com) b']) {
+      const editor = editorWith(initialValue)
+      shortcut(editor, '•', 56, 'altKey')
+      expect(markdownValue()).toBe(initialValue)
+      cleanup()
+    }
+  })
+
+  it('turns a heading, quote, list item or code block into normal text', () => {
+    const cases: [string, number, string][] = [['# h', 1, 'h'], ['> q', 2, 'q'], ['* item', 3, 'item'], ['```\nc\n```', 1, 'c']]
+    for (const [initialValue, position, expected] of cases) {
+      const editor = editorWith(initialValue, position)
+      shortcut(editor, 'º', 48, 'altKey')
+      expect(markdownValue()).toBe(expected)
+      cleanup()
+    }
+  })
+})
+
+describe('MarkdownComposerEditor formatting toolbar', () => {
+  const button = (name: string) => screen.getByRole('button', { name })
+
+  it('applies a format from its button and lights the buttons that apply at the cursor', () => {
+    render(<ControlledEditor initialValue="**bold** text" toolbar />)
+    const editor = screen.getByTestId('markdown-editor')
+    act(() => { setMarkdownComposerSelection(editor, 3) })
+    expect(button('Bold')).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(button('Bullet list'))
+    expect(markdownValue()).toBe('* **bold** text')
+    expect(button('Bullet list')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('lifts only the quote or list the button reports', () => {
+    render(<ControlledEditor initialValue="> # h" toolbar />)
+    act(() => { setMarkdownComposerSelection(screen.getByTestId('markdown-editor'), 3) })
+    expect(button('Quote')).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(button('Quote'))
+    expect(markdownValue()).toBe('# h')
+    cleanup()
+
+    render(<ControlledEditor initialValue="* > item" toolbar />)
+    act(() => { setMarkdownComposerSelection(screen.getByTestId('markdown-editor'), 4) })
+    expect(button('Bullet list')).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(button('Bullet list'))
+    expect(markdownValue()).toBe('> item')
+  })
+
+  it('shares one show/hide choice across mounted composers', () => {
+    function Probe({ id, defaultOpen }: { id: string; defaultOpen: boolean }) {
+      const [open, toggle] = useFormattingToolbar(defaultOpen)
+      return <button type="button" data-testid={id} onClick={toggle}>{String(open)}</button>
+    }
+    localStorage.removeItem('composer.formattingToolbar')
+    render(<><Probe id="home" defaultOpen /><Probe id="create" defaultOpen={false} /></>)
+    expect(screen.getByTestId('home')).toHaveTextContent('true')
+    expect(screen.getByTestId('create')).toHaveTextContent('false')
+
+    fireEvent.click(screen.getByTestId('home'))
+    expect(screen.getByTestId('home')).toHaveTextContent('false')
+    expect(screen.getByTestId('create')).toHaveTextContent('false')
+    fireEvent.click(screen.getByTestId('create'))
+    expect(screen.getByTestId('home')).toHaveTextContent('true')
+    expect(screen.getByTestId('create')).toHaveTextContent('true')
+    localStorage.removeItem('composer.formattingToolbar')
+  })
+
+  it('lights the block buttons for a select-all the way the commands see it', () => {
+    render(<ControlledEditor initialValue={'* a\n* b'} toolbar />)
+    act(() => { selectAllMarkdownComposer(screen.getByTestId('markdown-editor')) })
+
+    expect(button('Bullet list')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('disables a button whose format would drop content', () => {
+    render(<ControlledEditor initialValue={'a ![x](https://example.com/x.png) b'} toolbar />)
+    act(() => { setMarkdownComposerSelection(screen.getByTestId('markdown-editor'), 1) })
+
+    expect(button('Code block')).toBeDisabled()
+    expect(button('Bold')).toBeEnabled()
+  })
 })

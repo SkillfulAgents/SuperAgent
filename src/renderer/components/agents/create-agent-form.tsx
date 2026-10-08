@@ -35,6 +35,7 @@ import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import { FormattingToggle, useFormattingToolbar } from '@renderer/components/messages/formatting-toolbar'
 
 /**
  * Ceiling, not a delay: the offer resolves the instant the discoverable list
@@ -229,6 +230,8 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
     [discardWarmAgent, track, draftsStore, navigate, startOnboardingSession, onAgentCreated],
   )
 
+  // Hidden by default here: a first-time user has nothing to format yet.
+  const [toolbarOpen, toggleToolbar] = useFormattingToolbar(false)
   const composer = useMessageComposer({
     agentSlug: '',
     onVoiceTranscript: forfeitHandoffTemplate,
@@ -483,8 +486,12 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           // One line taller on phones: the typewriter placeholder wraps to
           // three lines in a narrow composer, which reads as already full.
           textareaClassName="min-h-[80px] sm:min-h-[60px]"
+          toolbar={toolbarOpen}
           leftActions={(
-            <ComposerOptions state={composerOptions} disabled={isDisabled} />
+            <>
+              <FormattingToggle open={toolbarOpen} onToggle={toggleToolbar} />
+              <ComposerOptions state={composerOptions} disabled={isDisabled} />
+            </>
           )}
           rightActions={(
             <>

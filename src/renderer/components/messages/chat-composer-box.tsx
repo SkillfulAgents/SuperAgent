@@ -70,6 +70,8 @@ interface ChatComposerBoxProps {
   className?: string
   textareaClassName?: string
   secureSecrets?: SecureSecretsProps
+  /** Whether the formatting toolbar shows. Leave unset on composers without the Aa toggle. */
+  toolbar?: boolean
 }
 
 export function ChatComposerBox({
@@ -96,6 +98,7 @@ export function ChatComposerBox({
   className,
   textareaClassName,
   secureSecrets,
+  toolbar,
 }: ChatComposerBoxProps) {
   const internalEditorRef = useRef<HTMLDivElement | null>(null)
   const setEditorRef = useCallback((node: HTMLDivElement | null) => {
@@ -137,6 +140,9 @@ export function ChatComposerBox({
           securedSecrets={securedSecrets}
           onRemoveSecuredSecrets={secureSecrets?.onRemove}
           onEditorElement={setEditorRef}
+          toolbar={toolbar}
+          // Clears the expand button that sits over the top-right corner.
+          toolbarClassName={topRightActions ? 'pr-7' : undefined}
         />
       </div>
       {secureSecrets && potentialSecrets[0] && (
@@ -148,7 +154,8 @@ export function ChatComposerBox({
         />
       )}
       <div className={COMPOSER_ACTIONS_ROW_CLASS}>
-        <div className={COMPOSER_LEFT_ACTIONS_CLASS}>{leftActions}</div>
+        {/* Aa adds an icon to the left group, so the row needs that much more room before it wraps. */}
+        <div className={cn(COMPOSER_LEFT_ACTIONS_CLASS, toolbar !== undefined && 'min-w-[118px]')}>{leftActions}</div>
         <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
       </div>
       {footer}

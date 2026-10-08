@@ -56,6 +56,65 @@ test.describe('composer Markdown blocks', () => {
     await expect(input.locator('ol li')).toHaveCount(2)
   })
 
+  test('applies formatting shortcuts from real keypresses', async ({ page }) => {
+    const input = page.locator('[data-testid="home-message-input"]')
+
+    // Each step continues on a new line: Playwright's fill('') sometimes leaves this editor unchanged.
+    await input.fill('title')
+    await input.press('ControlOrMeta+Alt+Digit1')
+    await expect(input.locator('h1')).toHaveText('title')
+    await input.press('ControlOrMeta+Alt+Digit1')
+    await expect(input.locator('h1')).toHaveCount(0)
+
+    await input.press('Enter')
+    await input.pressSequentially('item')
+    await input.press('ControlOrMeta+Shift+Digit8')
+    await expect(input.locator('ul li')).toHaveText('item')
+
+    await input.press('Enter')
+    await input.press('Enter')
+    await input.press('ControlOrMeta+Shift+KeyS')
+    await input.pressSequentially('gone')
+    await expect(input.locator('s')).toHaveText('gone')
+
+    await input.press('ControlOrMeta+KeyE')
+    await input.pressSequentially('npm')
+    await expect(input.locator('code')).toHaveText('npm')
+  })
+
+  test('shows and hides the formatting toolbar with Aa and applies formats from it', async ({ page }) => {
+    const input = page.locator('[data-testid="home-message-input"]')
+    const toolbar = page.getByRole('group', { name: 'Formatting' })
+    const toggle = page.locator('[data-testid="formatting-toggle"]')
+    const textStyle = page.locator('[data-testid="formatting-text-style"]')
+
+    await expect(toolbar).toBeVisible()
+    await toggle.click()
+    await expect(toolbar).toBeHidden()
+    await toggle.click()
+    await expect(toolbar).toBeVisible()
+
+    await input.click()
+    await input.pressSequentially('Notes')
+    await textStyle.click()
+    await page.getByRole('menuitemradio', { name: /Heading 1/ }).click()
+    await expect(input.locator('h1')).toHaveText('Notes')
+    await expect(textStyle).toHaveText('Heading 1')
+    await expect(input).toBeFocused()
+
+    await input.press('Enter')
+    await input.pressSequentially('item')
+    await toolbar.getByRole('button', { name: 'Bullet list' }).click()
+    await expect(input.locator('ul li')).toHaveText('item')
+    await expect(input).toBeFocused()
+
+    await input.press('Enter')
+    await input.press('Enter')
+    await input.press('ControlOrMeta+b')
+    await input.pressSequentially('bold')
+    await expect(toolbar.getByRole('button', { name: 'Bold' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   test('keeps the caret visible after a long Markdown paste', async ({ page }) => {
     const input = page.locator('[data-testid="home-message-input"]')
     await input.evaluate((element) => {

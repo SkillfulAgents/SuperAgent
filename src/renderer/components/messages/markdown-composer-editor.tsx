@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import MarkdownIt from 'markdown-it'
 import type Token from 'markdown-it/lib/token.mjs'
-import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
+import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, splitBlock, toggleMark, wrapIn } from 'prosemirror-commands'
 import { history, redo, undo } from 'prosemirror-history'
 import {
   InputRule,
@@ -18,17 +18,19 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model'
+import { Fragment, Schema, Slice, type MarkType, type NodeType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
   splitListItem,
+  wrapInList,
 } from 'prosemirror-schema-list'
 import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Command, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
 import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import { FormattingToolbar, type FormatStatus } from './formatting-toolbar'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -45,6 +47,9 @@ export interface MarkdownComposerEditorProps {
   securedSecrets?: SecuredSecret[]
   onRemoveSecuredSecrets?: (secrets: SecuredSecret[]) => void
   onEditorElement?: (element: HTMLDivElement | null) => void
+  /** Shows the formatting toolbar above the text. */
+  toolbar?: boolean
+  toolbarClassName?: string
 }
 
 const CARET_SENTINEL = '\u2063'
@@ -402,6 +407,10 @@ const insertSoftBreak: Command = (state, dispatch) => {
   return true
 }
 
+/** A heading cannot hold a line break, so Shift+Enter there starts a new line like Enter. */
+const splitHeading: Command = (state, dispatch) =>
+  state.selection.$from.parent.type === state.schema.nodes.heading && splitBlock(state, dispatch)
+
 const removeTrailingSoftBreak: Command = (state, dispatch) => {
   if (!state.selection.empty) return false
   const { from, $from } = state.selection
@@ -413,14 +422,14 @@ const removeTrailingSoftBreak: Command = (state, dispatch) => {
   return true
 }
 
-/** Replaces the code block around the cursor with a paragraph, keeping each code line as a line break, and puts the cursor at its start. */
-function codeBlockToText(state: EditorState, $from: ResolvedPos): Transaction {
-  const { nodes } = state.schema
+/** Replaces the code block at `pos` with a paragraph, keeping each code line as a line break, and puts the cursor at its start. */
+function codeBlockToText(tr: Transaction, pos: number, block: ProseMirrorNode): Transaction {
+  const { schema } = block.type
   // setBlockType would collapse the lines into spaces. Paragraphs drop leading whitespace on re-read.
-  const lines = $from.parent.textContent.replace(/\n+$/, '').split('\n').map((line) => line.replace(/^[ \t]+/, ''))
-  const content = lines.flatMap((line, i) => [...(i > 0 ? [nodes.soft_break.create()] : []), ...(line ? [state.schema.text(line)] : [])])
-  const tr = state.tr.replaceWith($from.before(), $from.after(), nodes.paragraph.create(null, content))
-  return tr.setSelection(TextSelection.create(tr.doc, $from.before() + 1))
+  const lines = block.textContent.replace(/\n+$/, '').split('\n').map((line) => line.replace(/^[ \t]+/, ''))
+  const content = lines.flatMap((line, i) => [...(i > 0 ? [schema.nodes.soft_break.create()] : []), ...(line ? [schema.text(line)] : [])])
+  tr.replaceWith(pos, pos + block.nodeSize, schema.nodes.paragraph.create(null, content))
+  return tr.setSelection(TextSelection.create(tr.doc, pos + 1))
 }
 
 /** Enter on an empty last line leaves a code block; in an empty block, it turns it into text. */
@@ -433,7 +442,7 @@ const exitCodeBlockOnEmptyLine: Command = (state, dispatch) => {
   if (!blank && !text.endsWith('\n')) return false
   if (!dispatch) return true
   if (blank) {
-    dispatch(codeBlockToText(state, $from).scrollIntoView())
+    dispatch(codeBlockToText(state.tr, $from.before(), block).scrollIntoView())
     return true
   }
   const { paragraph } = state.schema.nodes
@@ -444,21 +453,230 @@ const exitCodeBlockOnEmptyLine: Command = (state, dispatch) => {
   return true
 }
 
-/** Backspace at the start of a heading or code block, or of a quote's or list item's first paragraph, turns it into plain text. */
-const removeFormattingAtBlockStart: Command = (state, dispatch) => {
-  const { $from, empty } = state.selection
-  if (!empty || $from.parentOffset !== 0) return false
+/** Turns the block kind at the selection start into plain text across the selection: headings, code blocks, or one level of list items or quotes. */
+const removeBlockFormatting: Command = withTextSelection((state, dispatch) => {
   const { nodes } = state.schema
-  if ($from.parent.type === nodes.heading) return setBlockType(nodes.paragraph)(state, dispatch)
-  if ($from.parent.type.spec.code) {
-    if (dispatch) dispatch(codeBlockToText(state, $from).scrollIntoView())
+  const { $from } = state.selection
+  if ($from.parent.type === nodes.heading) {
+    if (dispatch) {
+      const tr = state.tr
+      for (const { node, pos } of selectedTextblocks(state)) if (node.type === nodes.heading) tr.setNodeMarkup(pos, nodes.paragraph)
+      dispatch(tr.scrollIntoView())
+    }
     return true
   }
-  if ($from.index(-1) !== 0) return false
+  if ($from.parent.type.spec.code) {
+    if (dispatch) {
+      const tr = state.tr
+      const blocks = selectedTextblocks(state)
+      for (const { node, pos } of [...blocks].reverse()) if (node.type.spec.code) codeBlockToText(tr, pos, node)
+      // Keep a range selected so the next shortcut acts on every converted block.
+      if (!state.selection.empty) tr.setSelection(TextSelection.between(tr.doc.resolve(blocks[0].pos + 1), tr.doc.resolve(tr.mapping.map(state.selection.to))))
+      dispatch(tr.scrollIntoView())
+    }
+    return true
+  }
+  if ($from.depth === 0) return false
   const container = $from.node(-1).type
   if (container === nodes.list_item) return liftListItem(nodes.list_item)(state, dispatch)
   if (container === nodes.blockquote) return lift(state, dispatch)
   return false
+})
+
+/** Backspace at the start of a heading or code block, or of a quote's or list item's first paragraph, turns it into plain text. */
+const removeFormattingAtBlockStart: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  if (!empty || $from.parentOffset !== 0) return false
+  const { heading } = state.schema.nodes
+  if ($from.parent.type !== heading && !$from.parent.type.spec.code && $from.index(-1) !== 0) return false
+  return removeBlockFormatting(state, dispatch)
+}
+
+type Format = { label: string; shortcut?: string } & (
+  | { kind: 'block'; isActive: (state: EditorState) => boolean; apply: Command; remove?: Command }
+  | { kind: 'mark'; mark: MarkType }
+)
+
+/** A select-all as the block commands need it: a text selection over every block. */
+function asTextSelection(state: EditorState): EditorState {
+  const { selection } = state
+  return selection instanceof AllSelection ? state.apply(state.tr.setSelection(TextSelection.between(selection.$from, selection.$to))) : state
+}
+
+/** A select-all starts at the document, not in a block, so block commands see it as a text selection over every block. */
+function withTextSelection(command: Command): Command {
+  return (state, dispatch, view) => {
+    if (!(state.selection instanceof AllSelection)) return command(state, dispatch, view)
+    return command(asTextSelection(state), dispatch && ((tr) => dispatch(tr.setSelection(new AllSelection(tr.doc)))), view)
+  }
+}
+
+/** A shortcut or toolbar button makes the text that format, and pressing it again returns it to plain text. */
+function toggle(format: Format): Command {
+  if (format.kind === 'mark') return toggleMark(format.mark)
+  const remove = format.remove ?? removeBlockFormatting
+  return withTextSelection((state, dispatch) =>
+    format.isActive(state) ? remove(state, dispatch) : format.apply(state, dispatch))
+}
+
+function isFormatActive(format: Format, state: EditorState): boolean {
+  if (format.kind === 'block') return format.isActive(state)
+  const { from, to, empty, $from } = state.selection
+  return empty ? !!format.mark.isInSet(state.storedMarks ?? $from.marks()) : state.doc.rangeHasMark(from, to, format.mark)
+}
+
+function selectedTextblocks(state: EditorState): Array<{ node: ProseMirrorNode; pos: number }> {
+  const blocks: Array<{ node: ProseMirrorNode; pos: number }> = []
+  state.doc.nodesBetween(state.selection.from, state.selection.to, (node, pos) => {
+    if (node.isTextblock) blocks.push({ node, pos })
+  })
+  return blocks
+}
+
+/** A textblock's text with each soft or hard break as a newline. */
+function blockText(node: ProseMirrorNode): string {
+  const { soft_break, hard_break } = node.type.schema.nodes
+  return node.textBetween(0, node.content.size, '', (leaf) => (leaf.type === soft_break || leaf.type === hard_break ? '\n' : ''))
+}
+
+function enclosingList($pos: ResolvedPos): { node: ProseMirrorNode; pos: number } | null {
+  const { bullet_list, ordered_list } = $pos.doc.type.schema.nodes
+  for (let depth = $pos.depth; depth > 0; depth--) {
+    const node = $pos.node(depth)
+    if (node.type === bullet_list || node.type === ordered_list) return { node, pos: $pos.before(depth) }
+  }
+  return null
+}
+
+function headingFormat(level: number, shortcut: string): Format {
+  const { heading } = markdownSchema.nodes
+  return {
+    kind: 'block',
+    label: `Heading ${level}`,
+    shortcut,
+    isActive: (state) => {
+      const blocks = selectedTextblocks(state)
+      return blocks.length > 0 && blocks.every(({ node }) => node.type === heading && node.attrs.level === level)
+    },
+    apply: (state, dispatch) => {
+      const blocks = selectedTextblocks(state)
+      if (!blocks.some(({ node }) => blockText(node).includes('\n'))) return setBlockType(heading, { level })(state, dispatch)
+      // A heading holds one line, so it takes the selected line out of a multi-line paragraph; merging lines would lose them.
+      const { $from, $to } = state.selection
+      const block = blocks[0].node
+      if (blocks.length > 1 || block.type.spec.code || blockText(state.doc.cut($from.pos, $to.pos)).includes('\n')) return false
+      if (!dispatch) return true
+      const tr = state.tr
+      let before = -1
+      let after = -1
+      block.forEach((child, offset) => {
+        if (child.type.name !== 'soft_break' && child.type.name !== 'hard_break') return
+        const pos = $from.start() + offset
+        if (pos < $from.pos) before = pos
+        else if (after === -1) after = pos
+      })
+      // Later position first, so the earlier one stays valid.
+      if (after !== -1) tr.delete(after, after + 1).split(after)
+      if (before !== -1) tr.delete(before, before + 1).split(before)
+      // Removing the break and splitting there moves the line's start one position later.
+      const shift = before === -1 ? 0 : 1
+      tr.setBlockType($from.pos + shift, $from.pos + shift, heading, { level })
+      dispatch(tr.setSelection(TextSelection.create(tr.doc, state.selection.anchor + shift, state.selection.head + shift)).scrollIntoView())
+      return true
+    },
+  }
+}
+
+function listFormat(listType: NodeType, label: string, shortcut: string): Format {
+  return {
+    kind: 'block',
+    label,
+    shortcut,
+    isActive: (state) => enclosingList(state.selection.$from)?.node.type === listType,
+    remove: liftListItem(markdownSchema.nodes.list_item),
+    apply: (state, dispatch) => {
+      const list = enclosingList(state.selection.$from)
+      if (!list) return wrapInList(listType, { tight: true })(state, dispatch)
+      if (dispatch) dispatch(state.tr.setNodeMarkup(list.pos, listType, { tight: list.node.attrs.tight }).scrollIntoView())
+      return true
+    },
+  }
+}
+
+/** Turns each selected textblock into a code block, keeping its line breaks as code lines. */
+const textblocksToCode: Command = (state, dispatch) => {
+  const blocks = selectedTextblocks(state)
+  // Code holds plain text, so an image, or a link whose text hides its URL, would be lost. An <autolink> shows its address.
+  const { image } = state.schema.nodes
+  const { link } = state.schema.marks
+  const losesContent = (child: ProseMirrorNode) =>
+    child.type === image || child.marks.some((mark) => mark.type === link && mark.attrs.href !== child.text && mark.attrs.href !== `mailto:${child.text}`)
+  if (!blocks.length || blocks.some(({ node }) => node.content.content.some(losesContent))) return false
+  if (!dispatch) return true
+  const { soft_break, hard_break, code_block } = state.schema.nodes
+  const tr = state.tr
+  const last = blocks[blocks.length - 1]
+  // Selected lines side by side become one code block, as fencing them with ``` would; an existing code block keeps its own fence.
+  const $first = state.doc.resolve(blocks[0].pos)
+  const $last = state.doc.resolve(last.pos)
+  const adjacent = blocks.every(({ pos }) => state.doc.resolve(pos).parent === $first.parent) && $last.index() - $first.index() === blocks.length - 1
+  if (blocks.length > 1 && adjacent && !blocks.some(({ node }) => node.type.spec.code)) {
+    const text = blocks.map(({ node }) => blockText(node).replaceAll(CARET_SENTINEL, '')).join('\n')
+    tr.replaceWith(blocks[0].pos, last.pos + last.node.nodeSize, code_block.create(null, text ? state.schema.text(text) : null))
+    // Caret at the end, so typing next cannot replace lines that were not selected.
+    dispatch(tr.setSelection(TextSelection.create(tr.doc, blocks[0].pos + 1 + text.length)).scrollIntoView())
+    return true
+  }
+  state.doc.nodesBetween(blocks[0].pos, last.pos + last.node.nodeSize, (node, pos) => {
+    if (node.type === soft_break || node.type === hard_break) {
+      tr.replaceWith(tr.mapping.map(pos), tr.mapping.map(pos + 1), state.schema.text('\n'))
+    }
+    // A caret sentinel after a line break would sit after the last code line and block the Enter exit.
+    const sentinel = node.text?.indexOf(CARET_SENTINEL) ?? -1
+    if (sentinel !== -1) tr.delete(tr.mapping.map(pos + sentinel), tr.mapping.map(pos + sentinel + 1))
+  })
+  // Passing the existing attrs keeps an already-code block's language tag.
+  dispatch(tr.setBlockType(tr.selection.from, tr.selection.to, code_block, (node) => node.attrs).scrollIntoView())
+  return true
+}
+
+const NORMAL_TEXT_SHORTCUT = 'Mod-Alt-0'
+const { nodes: formatNodes, marks: formatMarks } = markdownSchema
+const formats = {
+  bold: { kind: 'mark', label: 'Bold', mark: formatMarks.strong, shortcut: 'Mod-b' },
+  italic: { kind: 'mark', label: 'Italic', mark: formatMarks.em, shortcut: 'Mod-i' },
+  strike: { kind: 'mark', label: 'Strikethrough', mark: formatMarks.strike, shortcut: 'Mod-Shift-s' },
+  code: { kind: 'mark', label: 'Inline code', mark: formatMarks.code, shortcut: 'Mod-e' },
+  heading1: headingFormat(1, 'Mod-Alt-1'),
+  heading2: headingFormat(2, 'Mod-Alt-2'),
+  heading3: headingFormat(3, 'Mod-Alt-3'),
+  bulletList: listFormat(formatNodes.bullet_list, 'Bullet list', 'Mod-Shift-8'),
+  orderedList: listFormat(formatNodes.ordered_list, 'Numbered list', 'Mod-Shift-7'),
+  quote: {
+    kind: 'block',
+    label: 'Quote',
+    // Only a block sitting directly in a quote, which is what lifting it out undoes.
+    isActive: (state) => state.selection.$from.depth > 0 && state.selection.$from.node(-1).type === formatNodes.blockquote,
+    apply: wrapIn(formatNodes.blockquote),
+    remove: lift,
+  },
+  codeBlock: { kind: 'block', label: 'Code block', shortcut: 'Mod-Alt-8', isActive: (state) => !!state.selection.$from.parent.type.spec.code, apply: textblocksToCode },
+} satisfies Record<string, Format>
+
+const formatEntries: [string, Format][] = Object.entries(formats)
+const formatsByName = new Map(formatEntries)
+const toolbarFormats = formatEntries.map(([name, format]) => ({ name, label: format.label, shortcut: format.shortcut }))
+
+/** What the toolbar shows for `state`: which formats apply at the cursor and which can apply. */
+function formatStatus(editorState: EditorState): FormatStatus {
+  const state = asTextSelection(editorState)
+  return {
+    active: formatEntries.filter(([, format]) => isFormatActive(format, state)).map(([name]) => name),
+    enabled: [
+      ...formatEntries.filter(([, format]) => toggle(format)(state)).map(([name]) => name),
+      ...(state.selection.$from.parent.type === formatNodes.heading ? ['text'] : []),
+    ],
+  }
 }
 
 /** Backspace on an empty paragraph below a list joins it into the text above instead of adding an item. */
@@ -549,16 +767,16 @@ function buildInputRules() {
 }
 
 function buildKeymap() {
-  const { nodes, marks } = markdownSchema
+  const { nodes } = markdownSchema
   return keymap({
     Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule, removeFormattingAtBlockStart, returnUpFromEmptyLine),
     Enter: chainCommands(codeFenceCommand, exitCodeBlockOnEmptyLine, newlineInCode, splitListItem(nodes.list_item)),
-    'Shift-Enter': chainCommands(newlineInCode, insertSoftBreak),
+    'Shift-Enter': chainCommands(newlineInCode, splitHeading, insertSoftBreak),
     Tab: sinkListItem(nodes.list_item),
     'Shift-Tab': liftListItem(nodes.list_item),
-    'Mod-b': toggleMark(marks.strong),
-    'Mod-i': toggleMark(marks.em),
-    'Mod-`': toggleMark(marks.code),
+    ...Object.fromEntries(formatEntries.flatMap(([, format]) => (format.shortcut ? [[format.shortcut, toggle(format)]] : []))),
+    'Mod-`': toggle(formats.code),
+    [NORMAL_TEXT_SHORTCUT]: removeBlockFormatting,
     'Mod-z': undo,
     'Shift-Mod-z': redo,
     'Mod-y': redo,
@@ -734,6 +952,8 @@ export function MarkdownComposerEditor({
   securedSecrets = [],
   onRemoveSecuredSecrets,
   onEditorElement,
+  toolbar = false,
+  toolbarClassName,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
     'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
@@ -751,8 +971,25 @@ export function MarkdownComposerEditor({
     potentialSecrets,
     securedSecrets,
     onRemoveSecuredSecrets,
+    toolbar,
   })
   const lastMarkdownRef = useRef(value)
+  const [status, setStatus] = useState<FormatStatus | null>(null)
+  const statusKeyRef = useRef('')
+  // Re-render the toolbar only when what it shows changes, not on every keystroke.
+  const publishStatus = (state: EditorState) => {
+    const next = formatStatus(state)
+    const key = `${next.active.join()}|${next.enabled.join()}`
+    if (key === statusKeyRef.current) return
+    statusKeyRef.current = key
+    setStatus(next)
+  }
+  const runCommand = (command: Command) => {
+    const view = viewRef.current
+    if (!view) return
+    command(view.state, view.dispatch)
+    view.focus()
+  }
 
   latestRef.current = {
     onChange,
@@ -763,6 +1000,7 @@ export function MarkdownComposerEditor({
     potentialSecrets,
     securedSecrets,
     onRemoveSecuredSecrets,
+    toolbar,
   }
 
   useLayoutEffect(() => {
@@ -784,6 +1022,8 @@ export function MarkdownComposerEditor({
         history(),
         buildCaretSentinelPlugin(),
         secretPlugin,
+        // Runs after every state change, including the controlled-value reset, so pressed buttons never go stale.
+        new Plugin({ view: () => ({ update: (view) => { if (latestRef.current.toolbar) publishStatus(view.state) } }) }),
       ],
     })
 
@@ -959,5 +1199,34 @@ export function MarkdownComposerEditor({
     view.dispatch(view.state.tr.setMeta(secretDecorationsMeta, true).setMeta('addToHistory', false))
   }, [potentialSecrets, securedSecrets])
 
-  return <div ref={hostRef} className="contents" />
+  // Before paint, so the toolbar appears with the editor instead of a frame later.
+  useLayoutEffect(() => {
+    if (toolbar) {
+      viewRef.current?.dispatch(viewRef.current.state.tr)
+    } else {
+      statusKeyRef.current = ''
+      setStatus(null)
+    }
+  }, [toolbar])
+
+  return (
+    <>
+      {toolbar && status && (
+        <FormattingToolbar
+          formats={toolbarFormats}
+          status={status}
+          disabled={disabled}
+          className={toolbarClassName}
+          onFormat={(name) => {
+            const format = formatsByName.get(name)
+            if (format) runCommand(toggle(format))
+          }}
+          normalTextShortcut={NORMAL_TEXT_SHORTCUT}
+          onNormalText={() => runCommand(removeBlockFormatting)}
+          onMenuClose={() => viewRef.current?.focus()}
+        />
+      )}
+      <div ref={hostRef} className="contents" />
+    </>
+  )
 }
