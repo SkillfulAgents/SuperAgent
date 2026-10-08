@@ -7,7 +7,14 @@ import { parseVolumes, rcloneMountArgs, untilMountAnswers, waitForUploads } from
 describe('parseVolumes', () => {
   it('accepts names that are one path segment', () => {
     const raw = JSON.stringify([{ volumeId: 'v_17', name: 'team brain' }])
-    expect(parseVolumes(raw)).toEqual([{ volumeId: 'v_17', name: 'team brain' }])
+    expect(parseVolumes(raw)).toEqual([{ volumeId: 'v_17', name: 'team brain', cacheMode: 'local' }])
+  })
+
+  it('accepts a remote cache policy and rejects unknown modes', () => {
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'cloud', cacheMode: 'remote' }]))).toEqual([
+      { volumeId: 'v1', name: 'cloud', cacheMode: 'remote' },
+    ])
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'cloud', cacheMode: 'forever' }]))).toEqual([])
   })
 
   it.each(['..', 'a/b'])('rejects the whole list when a name is %j', (name) => {
@@ -32,6 +39,20 @@ describe('rcloneMountArgs', () => {
       '--file-perms', '0777',
       '--rc', '--rc-addr', 'unix:///tmp/rclone-v_17.sock', '--rc-no-auth',
     ])
+  })
+})
+
+describe('remote mount cache policy', () => {
+  it('caches directory listings and file reads while preserving the correctness settings', () => {
+    const args = rcloneMountArgs('cloud', '/mounts/cloud', 'http://host/api', 'remote')
+    const option = (name: string) => args[args.indexOf(name) + 1]
+    expect(option('--dir-cache-time')).toBe('1m')
+    expect(option('--vfs-cache-mode')).toBe('full')
+    expect(option('--vfs-cache-max-size')).toBe('512M')
+    expect(option('--vfs-cache-max-age')).toBe('1h')
+    expect(option('--webdav-vendor')).toBe('rclone')
+    expect(option('--vfs-handle-caching')).toBe('0')
+    expect(option('--vfs-write-back')).toBe('1s')
   })
 })
 

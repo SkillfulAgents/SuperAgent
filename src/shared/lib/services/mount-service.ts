@@ -87,7 +87,9 @@ async function judgeVolumes(slug: string) {
 export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
   const judged = await judgeVolumes(slug)
   return {
-    volumes: judged.flatMap(({ row, reason }) => reason === null ? [{ volumeId: row.id, name: row.name }] : []),
+    volumes: judged.flatMap(({ row, reason }) => reason === null ? [{
+      volumeId: row.id, name: row.name, cacheMode: instantiateVolume(row)?.cacheMode ?? 'local',
+    }] : []),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
 }
