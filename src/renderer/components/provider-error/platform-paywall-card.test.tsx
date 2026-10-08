@@ -36,6 +36,12 @@ vi.mock('@renderer/components/home/home-empty-clouds', () => ({
   HomeEmptyClouds: () => null,
 }))
 
+vi.mock('./paywall-subscription-options', () => ({
+  PaywallSubscriptionOptions: ({ onResumed }: { onResumed: (recovery: { attemptId: string; provider: string }) => void }) => (
+    <button data-testid="paywall-subscriptions" onClick={() => onResumed({ attemptId: 'attempt', provider: 'claude-subscription' })}>Connect an existing subscription</button>
+  ),
+}))
+
 const openExternalUrl = vi.fn()
 vi.mock('@renderer/lib/open-external', () => ({
   openExternalUrl: (url: string) => openExternalUrl(url),
@@ -152,7 +158,7 @@ function renderCard(
   dismissible = false,
 ) {
   return render(
-    <Slot message={message} presentation={presentation} live={live} dismissible={dismissible} />,
+    <Slot message={message} presentation={presentation} live={live} dismissible={dismissible} session={{ sessionId: 's', agentSlug: 'a' }} />,
     { wrapper: Wrapper },
   )
 }
@@ -189,13 +195,60 @@ describe('PlatformPaywallCard', () => {
     delete (window as { electronAPI?: unknown }).electronAPI
   })
 
+  it.each(['owner', 'member'])('offers existing subscriptions for an unsubscribed %s', async role => {
+    platformAuth.role = role
+    fetchBilling.mockResolvedValue(billing({ subscription: { status: 'none', paymentStatus: null, currentPeriodEnd: null, creditScope: 'seat' } }))
+    renderCard()
+    expect(await screen.findByTestId('paywall-subscriptions')).toBeVisible()
+    expect(screen.getByTestId('composer')).not.toBeVisible()
+    act(() => { screen.getByTestId('paywall-subscriptions').click() })
+    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
+    expect(mocks.track).toHaveBeenCalledWith('paywall_cleared', expect.objectContaining({
+      paywallId: expect.any(String), attemptId: 'attempt', provider: 'claude-subscription',
+      paywallType: 'subscription', resolution: 'subscription',
+    }))
+  })
+
+  it('uses the explicit subscription-required error even without a billing snapshot', async () => {
+    fetchBilling.mockRejectedValue(new Error('Billing unavailable'))
+    renderCard('API Error: 402 {"subscription_required":true}')
+    expect(await screen.findByTestId('paywall-subscriptions')).toBeVisible()
+  })
+
+  it.each([
+    ['top-up', billing()],
+    ['add card', billing({ hasPaymentMethod: false })],
+    ['payment failure', billing({ subscription: { status: 'past_due', paymentStatus: 'past_due', currentPeriodEnd: null, creditScope: 'seat' } })],
+    ['unknown subscription', { connected: true }],
+  ] as const)('does not offer existing subscriptions for %s', async (_label, snapshot) => {
+    platformAuth.role = 'owner'
+    fetchBilling.mockResolvedValue(snapshot)
+    renderCard()
+    await waitFor(() => expect(screen.queryByTestId('paywall-actions-loading')).not.toBeInTheDocument())
+    expect(screen.queryByTestId('paywall-subscriptions')).not.toBeInTheDocument()
+  })
+
+  it('does not offer subscription recovery on a historical card without a current session', async () => {
+    fetchBilling.mockResolvedValue(billing({ subscription: { status: 'none', paymentStatus: null, currentPeriodEnd: null, creditScope: 'seat' } }))
+    render(<Slot message={'API Error: 402 {"subscription_required":true}'} presentation={PRESENTATION} />, { wrapper: Wrapper })
+    await screen.findByText('Workspace billing needs attention')
+    expect(screen.queryByTestId('paywall-subscriptions')).not.toBeInTheDocument()
+  })
+
   it('tracks the paywall being shown and its CTA click', async () => {
     renderCard()
     await waitFor(() => expect(screen.getByText('Workspace billing needs attention')).toBeInTheDocument())
-    expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
+    expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({
+      paywallId: expect.any(String), entryPoint: 'platform_paywall', ctaKind: 'ask_admin',
+      blocked: true, placement: 'composer', role: 'member', live: true,
+    }))
     expect(mocks.track).toHaveBeenCalledTimes(1)
     act(() => { screen.getByRole('button', { name: 'Go to billing' }).click() })
-    expect(mocks.track).toHaveBeenCalledWith('paywall_cta_clicked', { ctaKind: 'ask_admin' })
+    const paywallId = mocks.track.mock.calls[0][1].paywallId
+    expect(mocks.track).toHaveBeenCalledWith('paywall_cta_clicked', expect.objectContaining({
+      paywallId, ctaKind: 'ask_admin', surface: 'external', action: 'open_billing',
+    }))
     expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
   })
@@ -245,7 +298,7 @@ describe('PlatformPaywallCard', () => {
     await screen.findByText('Workspace billing needs attention')
     expect(screen.getByTestId('composer')).not.toBeVisible()
     act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-    expect(mocks.track).toHaveBeenCalledWith('paywall_dismissed', { ctaKind: 'ask_admin', handedOff: false })
+    expect(mocks.track).toHaveBeenCalledWith('paywall_dismissed', expect.objectContaining({ ctaKind: 'ask_admin', handedOff: false }))
     expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
     expect(screen.getByTestId('composer')).toBeVisible()
   })
@@ -289,7 +342,7 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.getByText("Your team's shared credit is used up")).toBeInTheDocument())
       expect(screen.getByText('Your team has used its shared monthly credit. Ask a workspace admin to add usage credit.')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Go to billing' })).toBeInTheDocument()
-      expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
+      expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({ ctaKind: 'ask_admin', blocked: true, placement: 'composer' }))
     })
 
     it('keeps the plan and payment cards unchanged for a pooled org', async () => {
@@ -305,7 +358,7 @@ describe('PlatformPaywallCard', () => {
       renderCard()
       await waitFor(() => expect(screen.getByText('Workspace billing needs attention')).toBeInTheDocument())
       expect(screen.queryByText(/shared/)).not.toBeInTheDocument()
-      expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
+      expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({ ctaKind: 'ask_admin', blocked: true, placement: 'composer' }))
     })
 
     it('describes the plan\'s usage as shared when a pooled org is asked to subscribe', async () => {
@@ -500,6 +553,26 @@ describe('PlatformPaywallCard', () => {
     beforeEach(() => {
       platformAuth.role = 'owner'
       platformAuth.platformControlled = true
+    })
+
+    it('attributes trusted panel opens and fallback clicks to the same paywall', async () => {
+      renderCard('API Error: 402 {"subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      const paywallId = mocks.track.mock.calls.find(([event]) => event === 'paywall_shown')![1].paywallId
+      postEmbedMessage(HOSTILE_ORIGIN, 'open-billing')
+      postEmbedMessage(PLATFORM_ORIGIN, 'open-billing', {}, null)
+      expect(mocks.track).not.toHaveBeenCalledWith('paywall_cta_clicked', expect.anything())
+      postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
+      expect(mocks.track).toHaveBeenCalledWith('paywall_cta_clicked', expect.objectContaining({
+        paywallId, paywallType: 'subscription', surface: 'embedded', action: 'open_panel',
+      }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'close')
+      expect(mocks.track).toHaveBeenCalledWith('paywall_billing_closed', expect.objectContaining({ paywallId, surface: 'embedded' }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
+      act(() => { screen.getByRole('button', { name: 'Open billing in a new tab' }).click() })
+      expect(mocks.track).toHaveBeenCalledWith('paywall_cta_clicked', expect.objectContaining({
+        paywallId, surface: 'external', action: 'embed_fallback',
+      }))
     })
 
     it('renders the CTA frame in place of the CTA button', async () => {
@@ -777,6 +850,9 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
       expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
+      act(() => { client.setQueryData(['platform-billing'], billing({ access: ALLOWED, hasPaymentMethod: false })) })
+      await act(async () => {})
+      expect(mocks.track.mock.calls.filter(([event]) => event === 'paywall_cleared')).toHaveLength(1)
     })
 
     it('keeps the expanded panel and holds the toast while a settings save is pending, then releases on the settled update', async () => {
@@ -798,7 +874,7 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
       expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledTimes(1)
-      expect(mocks.track).toHaveBeenCalledWith('paywall_cleared', { ctaKind: 'topup', handedOff: false })
+      expect(mocks.track).toHaveBeenCalledWith('paywall_cleared', expect.objectContaining({ ctaKind: 'topup', handedOff: false, resolution: 'billing' }))
     })
 
     it('keeps the open panel when the 5s poll clears billing before the platform reports the outcome, then holds through a late pending failure', async () => {
