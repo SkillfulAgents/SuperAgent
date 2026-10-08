@@ -4,21 +4,12 @@ import * as http from 'http';
 import * as path from 'path';
 import { promisify } from 'util';
 import { z } from 'zod';
+import { volumesEnvSchema, type ContainerMount } from './volume-mounts-schema';
 
 const execFileAsync = promisify(execFile);
 
 const MOUNTS_DIR = '/mounts';
 const MOUNT_TIMEOUT_MS = 10_000;
-
-// Each name becomes one folder under /mounts, so it must be a single path segment.
-const volumesEnvSchema = z.array(
-  z.object({
-    volumeId: z.string().regex(/^[A-Za-z0-9_-]+$/),
-    name: z.string().min(1).refine((name) => name !== '.' && name !== '..' && !/[/\0]/.test(name)),
-  }),
-);
-
-type ContainerMount = z.infer<typeof volumesEnvSchema>[number];
 
 let mounted: (ContainerMount & { rclone: ChildProcess })[] = [];
 
@@ -36,7 +27,7 @@ function controlSocket(volumeId: string): string {
   return `/tmp/rclone-${volumeId}.sock`;
 }
 
-export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string): string[] {
+export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local'): string[] {
   return [
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
@@ -48,13 +39,17 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     // ran 15x slower than through a bind mount. Not 0, so retries after a server error still back off. Retries
     // back off from that 1ms, so 13 of them ride out an app restart as long as the default 10 did from 10ms.
     '--webdav-pacer-min-sleep', '1ms', '--low-level-retries', '13',
-    '--vfs-cache-mode', 'writes',
+    '--vfs-cache-mode', cacheMode === 'remote' ? 'full' : 'writes',
+    // Remote reads benefit from a disk cache; keep its footprint bounded per mount.
+    ...(cacheMode === 'remote' ? ['--vfs-cache-max-size', '512M', '--vfs-cache-max-age', '1h'] : []),
     // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
     // downloading the new contents.
     '--vfs-handle-caching', '0',
     // Every upload goes through rclone's queue, so a rename made right after close (as git and editors do) carries onto it.
     '--vfs-write-back', '1s',
-    '--dir-cache-time', '1s',
+    // Local edits must appear promptly; remote listings are expensive. Writes through
+    // this mount invalidate its cache, while outside changes appear after expiry.
+    '--dir-cache-time', cacheMode === 'remote' ? '5m' : '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
     // Shutdown reads the upload queue through this socket and starts what is waiting. Any claude process can use it,
@@ -72,7 +67,7 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
   await fs.promises.readdir(mountPath);
 }
 
-async function mountVolume({ volumeId, name }: ContainerMount): Promise<ChildProcess | undefined> {
+async function mountVolume({ volumeId, name, cacheMode }: ContainerMount): Promise<ChildProcess | undefined> {
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -80,7 +75,7 @@ async function mountVolume({ volumeId, name }: ContainerMount): Promise<ChildPro
   try {
     await fs.promises.mkdir(mountPath, { recursive: true });
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? ''), {
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode), {
       env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: process.env.PROXY_TOKEN },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
