@@ -1,6 +1,7 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq, inArray } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { SESSION_CHALLENGE } from '@shared/lib/auth/session-challenge'
 import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
@@ -75,7 +76,7 @@ export function Authenticated(): MiddlewareHandler {
 
     const auth = await getAuthLazy()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    if (!session) return c.json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': SESSION_CHALLENGE })
 
     c.set('user' as never, session.user as never)
     c.set(REQUEST_SESSION_CONTEXT_KEY as never, session.session as never)
