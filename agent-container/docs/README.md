@@ -40,6 +40,7 @@ itself important.
 - `gohighlevel.md`
 - `audio.md`
 - `exa.md`
+- `decisions.md`
 
 `session-history.md` is the one guide with executable companions: the two
 readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the

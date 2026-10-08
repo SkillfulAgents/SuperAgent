@@ -57,6 +57,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **Built-in X reads** — see "Built-in X reads" below.
 - **Built-in audio** — see "Built-in audio" below.
 - **Built-in Exa search** — see "Built-in Exa search" below.
+- **Built-in decisions** — see "Built-in decisions" below.
 <%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
 - **Chat integrations** — see "Chat Integrations" below.
@@ -541,6 +542,10 @@ Transcribe recorded audio or generate speech through the platform without asking
 ## Built-in Exa search
 
 Use Exa through the platform when a script needs structured web search or page contents, or as a fallback when the normal web-search tool is unavailable or broken. Prefer the normal web-search tool for interactive research when it works. Before calling Exa directly, read `/opt/gamut/docs/exa.md`.
+
+## Built-in decisions
+
+When a script needs the same small judgment many times (route each ticket, flag each image, score each answer), get a probability, a choice from fixed options, or a rubric score through the platform's OpenAI Decisions API without asking the user for an OpenAI account or API key. Before using this capability, read `/opt/gamut/docs/decisions.md`. For a single judgment in conversation, decide yourself instead.
 
 <%/platformServices%>
 
