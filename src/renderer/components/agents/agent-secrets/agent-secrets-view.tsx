@@ -4,6 +4,7 @@ import { Eye, EyeOff, KeyRound, MoreHorizontal, Pencil, Plus, Trash2 } from 'luc
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -25,7 +26,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
-import { keyToEnvVar } from '@shared/lib/utils/secrets'
+import { guessSecretServiceName, keyToEnvVar } from '@shared/lib/utils/secrets'
 import { cn } from '@shared/lib/utils/cn'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -348,7 +349,10 @@ function SecretRow({
         </div>
         <div className="flex-1 min-w-0">
           <div className="font-medium text-sm truncate">{secret.key}</div>
-          <div className="text-xs text-muted-foreground font-mono truncate">{secret.envVar}</div>
+          <div className="text-xs text-muted-foreground truncate">
+            <span className="font-mono">{secret.envVar}</span>
+            {secret.homeName && <span> · On agent home as {secret.homeName}</span>}
+          </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span
@@ -463,6 +467,8 @@ function SecretDialog({
   const [value, setValue] = useState('')
   const [valueTouched, setValueTouched] = useState(false)
   const [showValue, setShowValue] = useState(false)
+  const [showOnHome, setShowOnHome] = useState(false)
+  const [homeName, setHomeName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const createSecret = useCreateSecret()
   const updateSecret = useUpdateSecret()
@@ -476,6 +482,8 @@ function SecretDialog({
       setValue('')
       setValueTouched(false)
       setShowValue(false)
+      setShowOnHome(false)
+      setHomeName('')
       setError(null)
       return
     }
@@ -484,7 +492,9 @@ function SecretDialog({
     setValueTouched(false)
     setKey(secret?.key ?? '')
     setValue('')
-  }, [open, agentSlug, secret?.id, secret?.key])
+    setShowOnHome(!!secret?.homeName)
+    setHomeName(secret?.homeName ?? '')
+  }, [open, agentSlug, secret?.id, secret?.key, secret?.homeName])
 
   const envVarPreview = key ? keyToEnvVar(key) : ''
   const isInvalidKey = !!key.trim() && !envVarPreview
@@ -498,7 +508,9 @@ function SecretDialog({
   // here too — the server rejects them, this gives instant feedback (SUP-239).
   const isReserved = !!envVarPreview && isReservedEnvVar(envVarPreview)
   const valueChanged = valueTouched && value.length > 0
-  const hasChanges = !isEdit || isKeyChanged || valueChanged
+  const nextHomeName = showOnHome && homeName.trim() ? homeName.trim() : null
+  const homeNameChanged = isEdit && nextHomeName !== (secret!.homeName ?? null)
+  const hasChanges = !isEdit || isKeyChanged || valueChanged || homeNameChanged
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -530,10 +542,16 @@ function SecretDialog({
           secretId: secret!.id,
           ...(isKeyChanged ? { key: key.trim() } : {}),
           ...(valueChanged ? { value } : {}),
+          ...(homeNameChanged ? { homeName: nextHomeName } : {}),
         })
         onSaved?.(valueChanged ? value : undefined, updated)
       } else {
-        await createSecret.mutateAsync({ agentSlug, key: key.trim(), value })
+        await createSecret.mutateAsync({
+          agentSlug,
+          key: key.trim(),
+          value,
+          ...(nextHomeName ? { homeName: nextHomeName } : {}),
+        })
       }
       onOpenChange(false)
     } catch (err) {
@@ -611,6 +629,33 @@ function SecretDialog({
                   {showValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="secret-dialog-show-on-home"
+                checked={showOnHome}
+                onCheckedChange={(checked) => {
+                  setShowOnHome(checked === true)
+                  if (checked === true && !homeName.trim() && envVarPreview) {
+                    setHomeName(guessSecretServiceName(envVarPreview))
+                  }
+                }}
+                data-testid="secret-dialog-show-on-home"
+              />
+              <Label htmlFor="secret-dialog-show-on-home" className="shrink-0 font-normal">
+                Show on agent home as
+              </Label>
+              <Input
+                value={homeName}
+                onChange={(e) => setHomeName(e.target.value)}
+                disabled={!showOnHome}
+                maxLength={60}
+                placeholder="e.g. GitHub"
+                aria-label="Name on agent home"
+                autoComplete="off"
+                data-testid="secret-dialog-home-name"
+              />
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}

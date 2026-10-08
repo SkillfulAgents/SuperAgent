@@ -1,14 +1,15 @@
 import { useState } from 'react'
-import { ExternalLink, Plug, Link2, Blocks, Mail, type LucideIcon } from 'lucide-react'
+import { ExternalLink, Plug, Link2, Blocks, Mail, KeyRound, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 
-type FallbackType = 'oauth' | 'mcp' | 'blocks' | 'request'
+type FallbackType = 'oauth' | 'mcp' | 'blocks' | 'request' | 'key'
 
 const FALLBACK_ICONS: Record<FallbackType, LucideIcon> = {
   oauth: ExternalLink,
   mcp: Plug,
   blocks: Blocks,
   request: Link2,
+  key: KeyRound,
 }
 
 interface ServiceIconProps {

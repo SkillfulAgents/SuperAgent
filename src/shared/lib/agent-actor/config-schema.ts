@@ -9,6 +9,7 @@ import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
 import { claudeSettingsWithHooksSchema } from '@shared/lib/services/agent-hooks-schema'
 import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
 import { sessionMetadataMapSchema } from '@shared/lib/services/session-metadata-schema'
+import { secretConnectionsSchema } from '@shared/lib/services/secret-connections-schema'
 
 /**
  * Which skillset template an agent was installed from. Strict on the fields
@@ -50,6 +51,8 @@ export const CONFIG_DOCS = {
   instructions: { kind: 'text', path: 'AGENTS.md', legacyPath: 'CLAUDE.md', shared: false },
   /** The agent's `.env`. The container's `POST /env` writes it too, and must be able to read it. */
   secrets: { kind: 'text', path: '.env', shared: true, mode: 0o666 },
+  /** Which secrets show on the agent home, and under what service name. Entries for deleted secrets are ignored. */
+  secretConnections: { kind: 'json', path: 'secret-connections.json', shared: false, schema: secretConnectionsSchema },
   /** Per-agent defaults for new sessions. The agent may edit it by hand; the host re-reads before every write. */
   preferences: { kind: 'json', path: 'agent-preferences.json', shared: false, schema: agentPreferencesSchema },
   /**

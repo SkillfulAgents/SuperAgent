@@ -5,11 +5,14 @@ import { Key, Eye, EyeOff, Globe, ArrowUpRight } from 'lucide-react'
 import { useRequestHandler } from '../requests/use-request-handler'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Checkbox } from '@renderer/components/ui/checkbox'
+import { Label } from '@renderer/components/ui/label'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DeclineButton } from '../requests/decline-button'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
+import { guessSecretServiceName } from '@shared/lib/utils/secrets'
 
 interface SecretRequestItemProps {
   toolUseId: string
@@ -41,6 +44,8 @@ export function SecretRequestItem({
 }: SecretRequestItemProps) {
   const [value, setValue] = useState('')
   const [showValue, setShowValue] = useState(false)
+  const [showOnHome, setShowOnHome] = useState(true)
+  const [homeName, setHomeName] = useState(() => guessSecretServiceName(secretName))
   const { status, error, submit } = useRequestHandler(onComplete)
 
   const postSecret = async (body: Record<string, unknown>) => {
@@ -57,7 +62,11 @@ export function SecretRequestItem({
 
   const handleProvide = () => {
     if (!value.trim()) return
-    submit(() => postSecret({ value: value.trim() }), 'provided')
+    const name = homeName.trim()
+    submit(
+      () => postSecret({ value: value.trim(), ...(showOnHome && name ? { homeName: name } : {}) }),
+      'provided',
+    )
   }
 
   const handleDecline = (reason?: string) => {
@@ -164,6 +173,30 @@ export function SecretRequestItem({
             </button>
             </div>
           </div>
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <Checkbox
+            id={`secret-show-on-home-${toolUseId}`}
+            checked={showOnHome}
+            onCheckedChange={(checked) => setShowOnHome(checked === true)}
+            disabled={status === 'submitting'}
+            data-testid="secret-show-on-home"
+          />
+          <Label
+            htmlFor={`secret-show-on-home-${toolUseId}`}
+            className="shrink-0 text-xs font-normal text-muted-foreground"
+          >
+            Show on agent home as
+          </Label>
+          <Input
+            value={homeName}
+            onChange={(e) => setHomeName(e.target.value)}
+            disabled={!showOnHome || status === 'submitting'}
+            maxLength={60}
+            aria-label="Name on agent home"
+            className="h-7 bg-white border-border text-xs"
+            data-testid="secret-home-name"
+          />
         </div>
       </div>
 

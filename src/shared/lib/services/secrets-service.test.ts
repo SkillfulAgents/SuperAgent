@@ -13,8 +13,10 @@ import {
   deleteSecret,
   hasSecrets,
   getSecretEnvVars,
+  listSecretHomeNames,
+  updateSecretHomeName,
 } from './secrets-service'
-import { keyToEnvVar } from '@shared/lib/utils/secrets'
+import { guessSecretServiceName, keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   SAMPLE_ENV_FILE,
   SAMPLE_ENV_FILE_WITH_SPECIAL_CHARS,
@@ -267,6 +269,18 @@ describe('keyToEnvVar', () => {
   it('handles numbers', () => {
     expect(keyToEnvVar('Key123')).toBe('KEY123')
     expect(keyToEnvVar('123Key')).toBe('123KEY')
+  })
+})
+
+describe('guessSecretServiceName', () => {
+  it('drops credential words from the end of the env var', () => {
+    expect(guessSecretServiceName('GITHUB_TOKEN')).toBe('Github')
+    expect(guessSecretServiceName('LINEAR_API_KEY')).toBe('Linear')
+    expect(guessSecretServiceName('GOOGLE_MAPS_API_KEY')).toBe('Google Maps')
+  })
+
+  it('keeps the name when nothing else is left', () => {
+    expect(guessSecretServiceName('TOKEN')).toBe('Token')
   })
 })
 
@@ -625,6 +639,32 @@ describe('secrets service integration', () => {
 
       const envVars = await getSecretEnvVars('test-agent')
       expect(envVars.sort()).toEqual(['VAR_A', 'VAR_B'])
+    })
+  })
+
+  describe('secret home names', () => {
+    const homeFile = () =>
+      path.join(testDir, 'agents', 'test-agent', 'workspace', 'secret-connections.json')
+
+    it('sets, moves on rename, and clears a home name', async () => {
+      await updateSecretHomeName('test-agent', 'GITHUB_TOKEN', 'GITHUB_TOKEN', 'GitHub')
+      expect(await listSecretHomeNames('test-agent')).toEqual({ GITHUB_TOKEN: 'GitHub' })
+
+      await updateSecretHomeName('test-agent', 'GITHUB_TOKEN', 'GH_TOKEN', undefined)
+      expect(await listSecretHomeNames('test-agent')).toEqual({ GH_TOKEN: 'GitHub' })
+
+      await updateSecretHomeName('test-agent', 'GH_TOKEN', 'GH_TOKEN', null)
+      expect(await listSecretHomeNames('test-agent')).toEqual({})
+    })
+
+    it('does not create the file for a secret that was never listed', async () => {
+      await updateSecretHomeName('test-agent', 'OTHER_KEY', 'OTHER_KEY', null)
+      expect(fs.existsSync(homeFile())).toBe(false)
+    })
+
+    it('reads a corrupt file as no home names', async () => {
+      await fs.promises.writeFile(homeFile(), 'not json')
+      expect(await listSecretHomeNames('test-agent')).toEqual({})
     })
   })
 })

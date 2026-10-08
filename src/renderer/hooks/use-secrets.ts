@@ -31,16 +31,18 @@ export function useCreateSecret() {
       agentSlug,
       key,
       value,
+      homeName,
     }: {
       agentSlug: string
       key: string
       value: string
+      homeName?: string
       location?: 'settings' | 'composer'
     }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/secrets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, value }),
+        body: JSON.stringify({ key, value, homeName }),
       })
       if (!res.ok) {
         const error = await res.json()
@@ -67,16 +69,19 @@ export function useUpdateSecret() {
       secretId,
       key,
       value,
+      homeName,
     }: {
       agentSlug: string
       secretId: string
       key?: string
       value?: string
+      /** `null` removes the secret from the agent home. */
+      homeName?: string | null
     }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/secrets/${secretId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, value }),
+        body: JSON.stringify({ key, value, homeName }),
       })
       if (!res.ok) {
         const error = await res.json()

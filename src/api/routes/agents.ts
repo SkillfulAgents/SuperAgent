@@ -94,7 +94,10 @@ import {
   updateSecret,
   deleteSecret,
   getSecretEnvVars,
+  listSecretHomeNames,
+  updateSecretHomeName,
 } from '@shared/lib/services/secrets-service'
+import { secretHomeNameSchema } from '@shared/lib/services/secret-connections-schema'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
@@ -3496,6 +3499,10 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, secretName, value, decline, declineReason } = body
+    const parsedHomeName = secretHomeNameSchema.optional().safeParse(body.homeName)
+    if (!parsedHomeName.success) {
+      return c.json({ error: 'Invalid homeName' }, 400)
+    }
 
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
@@ -3544,6 +3551,9 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       envVar: secretName,
       value,
     })
+    if (parsedHomeName.data) {
+      await updateSecretHomeName(agentSlug, secretName, secretName, parsedHomeName.data)
+    }
 
     // Set environment variable in container FIRST
     console.log(`[provide-secret] Setting env var ${secretName} in container`)
@@ -4733,12 +4743,13 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
     // Only user-managed secrets — reserved runtime vars (e.g. CONNECTED_ACCOUNTS)
     // that the container writes into the same .env are system-managed and must
     // not surface as user-editable secrets (SUP-239 bug 3).
-    const secrets = await listUserSecrets(slug)
+    const [secrets, homeNames] = await Promise.all([listUserSecrets(slug), listSecretHomeNames(slug)])
     const response = secrets.map((secret) => ({
       id: secret.envVar,
       key: secret.key,
       envVar: secret.envVar,
       hasValue: true,
+      homeName: homeNames[secret.envVar],
     }))
 
     return c.json(response)
@@ -4809,7 +4820,7 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
     if (!parsedBody.success) {
       return c.json({ error: 'Invalid request body' }, 400)
     }
-    const { key, value } = parsedBody.data
+    const { key, value, homeName } = parsedBody.data
 
     if (!key.trim()) {
       return c.json({ error: 'Key is required' }, 400)
@@ -4840,9 +4851,12 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
       envVar,
       value,
     })
+    if (homeName) {
+      await updateSecretHomeName(slug, envVar, envVar, homeName)
+    }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: existing ? 'updated' : 'created', details: { key: key.trim() } })
-    return c.json({ id: envVar, key: key.trim(), envVar, hasValue: true }, 201)
+    return c.json({ id: envVar, key: key.trim(), envVar, hasValue: true, homeName }, 201)
   } catch (error) {
     console.error('Failed to create secret:', error)
     return c.json({ error: secretsErrorMessage(error, 'Failed to create secret') }, 500)
@@ -4860,7 +4874,7 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     if (!parsedBody.success) {
       return c.json({ error: 'Invalid request body' }, 400)
     }
-    const { key, value } = parsedBody.data
+    const { key, value, homeName } = parsedBody.data
 
     const result = await updateSecret(slug, envVar, { key, value })
     if (result.status === 'not_found') {
@@ -4883,8 +4897,12 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     }
 
     const updated = result.secret
+    if (homeName !== undefined || updated.envVar !== envVar) {
+      await updateSecretHomeName(slug, envVar, updated.envVar, homeName)
+    }
+    const homeNames = await listSecretHomeNames(slug)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${updated.envVar}`, action: 'updated', details: { key: updated.key } })
-    return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
+    return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true, homeName: homeNames[updated.envVar] })
   } catch (error) {
     console.error('Failed to update secret:', error)
     return c.json({ error: secretsErrorMessage(error, 'Failed to update secret') }, 500)
@@ -4903,6 +4921,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
     if (!deleted) {
       return c.json({ error: 'Secret not found' }, 404)
     }
+    await updateSecretHomeName(slug, envVar, envVar, null)
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'deleted' })
     return c.body(null, 204)

@@ -8,7 +8,7 @@
  * container can read.
  */
 
-import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { agentRegistry, ConfigDocError, WorkspaceFileError } from '@shared/lib/agent-actor'
 import { AgentSecret } from '@shared/lib/types/agent'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
@@ -313,6 +313,45 @@ export async function deleteSecret(agentSlug: string, envVar: string): Promise<b
     }
 
     return { next: serializeEnvFile(filtered), result: true }
+  })
+}
+
+/**
+ * Home names by env var. The agent can hand-edit the file, so an unreadable
+ * one hides the names instead of breaking the secrets list.
+ */
+export async function listSecretHomeNames(agentSlug: string): Promise<Record<string, string>> {
+  let doc
+  try {
+    doc = await agentRegistry.get(agentSlug).config.get('secretConnections')
+  } catch (err) {
+    if (err instanceof ConfigDocError) {
+      console.warn(`[secrets] ${agentSlug} secret-connections.json unreadable: ${err.message}`)
+      return {}
+    }
+    throw err
+  }
+  return Object.fromEntries(Object.entries(doc ?? {}).map(([envVar, entry]) => [envVar, entry.name]))
+}
+
+/**
+ * Set (`name`), clear (`null`), or keep (`undefined`) the home name of a
+ * secret, moving it from `from` to `to` when the secret was renamed.
+ */
+export async function updateSecretHomeName(
+  agentSlug: string,
+  from: string,
+  to: string,
+  name: string | null | undefined,
+): Promise<void> {
+  await agentRegistry.get(agentSlug).config.update('secretConnections', (current) => {
+    const existing = current?.[from]
+    const nextName = name === undefined ? existing?.name : name
+    if (!existing && !nextName) return current
+    const next = { ...current }
+    delete next[from]
+    if (nextName) next[to] = { ...existing, name: nextName }
+    return next
   })
 }
 

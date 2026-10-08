@@ -76,6 +76,26 @@ describe('SecretRequestItem', () => {
     expect(defaultProps.onComplete).toHaveBeenCalled()
   })
 
+  it('sends the guessed home name, or none when the checkbox is cleared', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => ({}) })
+
+    const { unmount } = render(<SecretRequestItem {...defaultProps} />)
+    expect(screen.getByTestId('secret-home-name')).toHaveValue('Openai')
+    await user.type(screen.getByPlaceholderText('Paste OPENAI_API_KEY'), 'sk-test-123')
+    await user.click(screen.getByTestId('secret-provide-btn'))
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledTimes(1))
+    expect(JSON.parse(mockApiFetch.mock.calls[0][1].body)).toMatchObject({ homeName: 'Openai' })
+    unmount()
+
+    render(<SecretRequestItem {...defaultProps} />)
+    await user.click(screen.getByTestId('secret-show-on-home'))
+    await user.type(screen.getByPlaceholderText('Paste OPENAI_API_KEY'), 'sk-test-123')
+    await user.click(screen.getByTestId('secret-provide-btn'))
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(mockApiFetch.mock.calls[1][1].body)).not.toHaveProperty('homeName')
+  })
+
   it('declines secret request', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })

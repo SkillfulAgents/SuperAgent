@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { cn } from '@shared/lib/utils/cn'
 
-type IntegrationIconFallback = 'oauth' | 'mcp' | 'blocks'
+type IntegrationIconFallback = 'oauth' | 'mcp' | 'blocks' | 'key'
 
 interface IntegrationListProps {
   children: ReactNode

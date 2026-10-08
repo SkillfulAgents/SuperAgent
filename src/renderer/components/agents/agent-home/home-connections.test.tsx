@@ -51,6 +51,7 @@ type AccountFixture = Omit<typeof ACCOUNT, 'status'> & {
   status: 'active' | 'expired' | 'revoked'
 }
 let accountResponse: AccountFixture[] = [ACCOUNT]
+let secretsResponse: Array<{ id: string; key: string; envVar: string; hasValue: true; homeName?: string }> = []
 
 function jsonResponse(body: unknown, ok = true): Response {
   return {
@@ -67,11 +68,15 @@ describe('HomeConnections — row navigation', () => {
     oauthReconnectMocks.reconnect.mockReset()
     oauthReconnectMocks.cancelReconnect.mockReset()
     accountResponse = [ACCOUNT]
+    secretsResponse = []
 
     mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
       const method = init?.method ?? 'GET'
       if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
         return Promise.resolve(jsonResponse({ accounts: accountResponse }))
+      }
+      if (path === '/api/agents/test-agent/secrets' && method === 'GET') {
+        return Promise.resolve(jsonResponse(secretsResponse))
       }
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [] }))
@@ -111,6 +116,23 @@ describe('HomeConnections — row navigation', () => {
       params: { slug: 'test-agent' },
       search: { detail: 'account-acc-1', source: 'home' },
     })
+  })
+
+  it('lists only secrets marked for the home under Keys and opens the Secrets page', async () => {
+    secretsResponse = [
+      { id: 'LINEAR_API_KEY', key: 'LINEAR_API_KEY', envVar: 'LINEAR_API_KEY', hasValue: true, homeName: 'Linear' },
+      { id: 'DB_PASSWORD', key: 'DB_PASSWORD', envVar: 'DB_PASSWORD', hasValue: true },
+    ]
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByText('Linear')).toBeInTheDocument()
+    expect(screen.getByText('LINEAR_API_KEY')).toBeInTheDocument()
+    expect(screen.queryByText('DB_PASSWORD')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open Linear secret' }))
+
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/secrets', params: { slug: 'test-agent' } })
   })
 
   it('opens the connections page (no deep link) from the Manage Connections button', async () => {
@@ -157,6 +179,9 @@ describe('HomeConnections — row navigation', () => {
       }
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [{ kind: 'remote-mcp', mappingId: 'map-m1' }] }))
+      }
+      if (path === '/api/agents/test-agent/secrets' && method === 'GET') {
+        return Promise.resolve(jsonResponse([]))
       }
       if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
         return Promise.resolve(jsonResponse({

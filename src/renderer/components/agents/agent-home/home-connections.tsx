@@ -8,6 +8,8 @@ import { AccountStatusBadge } from '@renderer/components/connections/account-sta
 import { useAgentConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useAgentRemoteMcps, type RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
+import { useAgentSecrets } from '@renderer/hooks/use-secrets'
+import { useUser } from '@renderer/context/user-context'
 import { HomeCollapsible } from './home-collapsible'
 import { formatDistanceToNow } from 'date-fns'
 import { safeDate } from '@renderer/components/connections/utils'
@@ -48,6 +50,10 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
+  // Same gate as the Secrets page: only agent owners see saved secrets.
+  const { isAuthMode, rolesReady, canAdminAgent } = useUser()
+  const canSeeSecrets = !isAuthMode || (rolesReady && canAdminAgent(agentSlug))
+  const { data: secrets } = useAgentSecrets(canSeeSecrets ? agentSlug : null)
   const navigate = useNavigate()
   const {
     reconnect: oauthReconnect,
@@ -110,9 +116,17 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
     return rows
   }, [accountsData, mcpsData])
 
+  const homeKeys = useMemo(
+    () => (secrets ?? [])
+      .filter((secret): secret is typeof secret & { homeName: string } => !!secret.homeName)
+      .sort((a, b) => a.homeName.localeCompare(b.homeName)),
+    [secrets],
+  )
+  const hasConnections = connections.length > 0 || homeKeys.length > 0
+
   return (
     <HomeCollapsible title="Connections" className={className}>
-      {connections.length > 0 ? (
+      {hasConnections ? (<>
         <div className="mt-2 divide-y divide-border/50">
           {connections.map((conn) => (
             <IntegrationRow
@@ -184,7 +198,34 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
             />
           ))}
         </div>
-      ) : (
+        {homeKeys.length > 0 && (
+          <div className="mt-3" data-testid="home-secret-keys">
+            <p className="px-4 text-xs font-medium text-muted-foreground">Keys</p>
+            <div className="mt-1 divide-y divide-border/50">
+              {homeKeys.map((secret) => (
+                <IntegrationRow
+                  key={secret.id}
+                  iconSlug={secret.homeName.toLowerCase().replace(/[^a-z0-9]/g, '')}
+                  iconFallback="key"
+                  name={secret.homeName}
+                  subtitle={
+                    <>
+                      <span className="shrink-0">Secret</span>
+                      <span className="shrink-0">·</span>
+                      <span className="truncate font-mono">{secret.envVar}</span>
+                    </>
+                  }
+                  onActivate={() => {
+                    void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
+                  }}
+                  ariaLabel={`Open ${secret.homeName} secret`}
+                  right={<RowHoverChevron />}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+      </>) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No connections yet</p>
           <p className="text-xs mt-1">
@@ -193,7 +234,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
         </div>
       )}
       <div className="flex items-center justify-between mt-3 px-4 pb-1">
-        {connections.length === 0 && <FeaturedServicesStack />}
+        {!hasConnections && <FeaturedServicesStack />}
         <div className="ml-auto">
           <Button
             type="button"
@@ -204,8 +245,8 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
             }}
             data-testid="home-connections-open-page"
           >
-            {connections.length > 0 ? <Settings2 /> : <Plus />}
-            {connections.length > 0 ? 'Manage Connections' : 'Add Connection'}
+            {hasConnections ? <Settings2 /> : <Plus />}
+            {hasConnections ? 'Manage Connections' : 'Add Connection'}
           </Button>
         </div>
       </div>

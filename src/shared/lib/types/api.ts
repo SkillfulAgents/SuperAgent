@@ -330,6 +330,8 @@ export interface ApiSecretDisplay {
   key: string
   envVar: string
   hasValue: boolean
+  /** Service name shown on the agent home; absent when the secret is not listed there. */
+  homeName?: string
 }
 
 /**
