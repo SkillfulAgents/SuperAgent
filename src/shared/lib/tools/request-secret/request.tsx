@@ -18,6 +18,8 @@ interface SecretRequestItemProps {
   toolUseId: string
   secretName: string
   reason?: string
+  serviceName?: string
+  showAsConnection?: boolean
   sessionId: string
   agentSlug: string
   readOnly?: boolean
@@ -37,6 +39,8 @@ export function SecretRequestItem({
   toolUseId,
   secretName,
   reason,
+  serviceName,
+  showAsConnection,
   sessionId,
   agentSlug,
   readOnly,
@@ -44,8 +48,8 @@ export function SecretRequestItem({
 }: SecretRequestItemProps) {
   const [value, setValue] = useState('')
   const [showValue, setShowValue] = useState(false)
-  const [showOnHome, setShowOnHome] = useState(true)
-  const [homeName, setHomeName] = useState(() => guessSecretServiceName(secretName))
+  const [showOnHome, setShowOnHome] = useState(showAsConnection ?? true)
+  const [homeName, setHomeName] = useState(() => serviceName?.trim() || guessSecretServiceName(secretName))
   const { status, error, submit } = useRequestHandler(onComplete)
 
   const postSecret = async (body: Record<string, unknown>) => {

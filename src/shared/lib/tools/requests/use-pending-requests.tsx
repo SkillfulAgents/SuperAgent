@@ -20,7 +20,7 @@ interface UsePendingRequestsArgs {
 }
 
 type PendingRequestBuckets = {
-  secretRequests: { toolUseId: string; secretName: string; reason?: string }[]
+  secretRequests: { toolUseId: string; secretName: string; reason?: string; serviceName?: string; showAsConnection?: boolean }[]
   connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[]
   questionRequests: { toolUseId: string; questions: Question[] }[]
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
@@ -113,6 +113,8 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         toolUseId: toolCall.id,
         secretName: input.secretName,
         reason: typeof input.reason === 'string' ? input.reason : undefined,
+        serviceName: typeof input.serviceName === 'string' ? input.serviceName : undefined,
+        showAsConnection: typeof input.showAsConnection === 'boolean' ? input.showAsConnection : undefined,
       })
     }
   } else if (kind === 'connected_account') {
@@ -384,6 +386,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
             toolUseId: request.id,
             secretName: payload.secretName,
             reason: typeof payload.reason === 'string' ? payload.reason : undefined,
+            serviceName: typeof payload.serviceName === 'string' ? payload.serviceName : undefined,
+            showAsConnection: typeof payload.showAsConnection === 'boolean' ? payload.showAsConnection : undefined,
           })
         }
         break
@@ -783,6 +787,8 @@ export function usePendingRequests({
         toolUseId: r.toolUseId,
         secretName: r.secretName,
         reason: r.reason,
+        serviceName: r.serviceName,
+        showAsConnection: r.showAsConnection,
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }

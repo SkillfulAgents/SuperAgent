@@ -96,6 +96,12 @@ describe('SecretRequestItem', () => {
     expect(JSON.parse(mockApiFetch.mock.calls[1][1].body)).not.toHaveProperty('homeName')
   })
 
+  it('uses the service name and connection choice the agent passed', () => {
+    render(<SecretRequestItem {...defaultProps} serviceName="OpenAI" showAsConnection={false} />)
+    expect(screen.getByTestId('secret-home-name')).toHaveValue('OpenAI')
+    expect(screen.getByTestId('secret-show-on-home')).not.toBeChecked()
+  })
+
   it('declines secret request', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })

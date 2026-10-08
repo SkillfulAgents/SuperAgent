@@ -279,6 +279,11 @@ describe('guessSecretServiceName', () => {
     expect(guessSecretServiceName('GOOGLE_MAPS_API_KEY')).toBe('Google Maps')
   })
 
+  it('keeps the casing the user typed', () => {
+    expect(guessSecretServiceName('GitHub Token')).toBe('GitHub')
+    expect(guessSecretServiceName('OpenAI api key')).toBe('OpenAI')
+  })
+
   it('keeps the name when nothing else is left', () => {
     expect(guessSecretServiceName('TOKEN')).toBe('Token')
   })

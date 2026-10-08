@@ -9,7 +9,7 @@ export type Question = {
 }
 
 export type PendingRequestDescriptor =
-  | { kind: 'secret'; key: string; toolUseId: string; secretName: string; reason?: string; onComplete: () => void }
+  | { kind: 'secret'; key: string; toolUseId: string; secretName: string; reason?: string; serviceName?: string; showAsConnection?: boolean; onComplete: () => void }
   | { kind: 'connected_account'; key: string; toolUseId: string; toolkit: string; reason?: string; onComplete: () => void }
   | { kind: 'remote_mcp'; key: string; toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string; onComplete: () => void }
   | { kind: 'question'; key: string; toolUseId: string; questions: Question[]; onComplete: () => void }

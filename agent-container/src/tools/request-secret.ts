@@ -33,6 +33,14 @@ Always check your available environment variables first (listed at the start of 
       .describe(
         "A question for the user following the pattern 'Add {secretName} so the agent can {purpose}?'. Never use first person. Must end with '?'. Example: 'Add GITHUB_TOKEN so the agent can authenticate with the GitHub API?'"
       ),
+    serviceName: z
+      .string()
+      .optional()
+      .describe('The service this secret is for, with its usual spelling (e.g., "GitHub", "OpenAI"). Prefills the name shown on the agent home.'),
+    showAsConnection: z
+      .boolean()
+      .optional()
+      .describe('Whether to suggest listing this secret as a connection on the agent home. True for a service API key or token; false for passwords, database URLs, and other non-service values. Defaults to true. The user can change it.'),
   },
   async (args) => {
     console.log(`[request_secret] Requesting secret ${args.secretName}`)

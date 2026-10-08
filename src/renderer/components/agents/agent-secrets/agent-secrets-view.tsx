@@ -637,8 +637,8 @@ function SecretDialog({
                 checked={showOnHome}
                 onCheckedChange={(checked) => {
                   setShowOnHome(checked === true)
-                  if (checked === true && !homeName.trim() && envVarPreview) {
-                    setHomeName(guessSecretServiceName(envVarPreview))
+                  if (checked === true && !homeName.trim() && key.trim()) {
+                    setHomeName(guessSecretServiceName(key.trim()))
                   }
                 }}
                 data-testid="secret-dialog-show-on-home"

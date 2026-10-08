@@ -4279,7 +4279,12 @@ class MessagePersister {
         sessionId,
         'secret',
         toolUseId,
-        { secretName: input.secretName, reason: input.reason },
+        {
+          secretName: input.secretName,
+          reason: input.reason,
+          serviceName: input.serviceName,
+          showAsConnection: input.showAsConnection,
+        },
         { agentSlug, parentToolUseId },
       )
     } catch (error) {

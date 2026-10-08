@@ -341,6 +341,8 @@ If you need an API key, token, or password that is not available in your environ
 **Parameters:**
 - `secretName` (required): The environment variable name for the secret (use UPPER_SNAKE_CASE, e.g., `GITHUB_TOKEN`, `OPENAI_API_KEY`)
 - `reason` (optional): Explain why you need this secret - helps the user understand the request
+- `serviceName` (optional): The service the secret is for, spelled as the service spells it (e.g., `GitHub`, `OpenAI`). Shown as the connection name on the agent home
+- `showAsConnection` (optional, default true): Set `false` for values that are not a service credential (a password, a database URL)
 
 **How it works:**
 1. Call the tool with the secret name and reason

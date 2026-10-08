@@ -3,6 +3,8 @@ import { waitingInputNotification, type RequestDefinition } from '../requests/de
 export interface RequestSecretInput {
   secretName?: string
   reason?: string
+  serviceName?: string
+  showAsConnection?: boolean
 }
 
 function parseInput(input: unknown): RequestSecretInput {

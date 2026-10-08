@@ -716,6 +716,7 @@ describe('MessageInput', () => {
         agentSlug: 'agent-1',
         key: 'GitHub Token',
         value: key,
+        homeName: 'GitHub',
         location: 'composer',
       })
     })

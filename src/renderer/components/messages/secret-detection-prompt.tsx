@@ -3,6 +3,7 @@ import { KeyRound, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -14,7 +15,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { useCreateSecret } from '@renderer/hooks/use-secrets'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
-import { keyToEnvVar } from '@shared/lib/utils/secrets'
+import { guessSecretServiceName, keyToEnvVar } from '@shared/lib/utils/secrets'
 import type { PotentialSecret } from '@renderer/lib/secret-detection'
 
 interface SecretDetectionPromptProps {
@@ -34,18 +35,24 @@ export function SecretDetectionPrompt({
   const [key, setKey] = useState('')
   const [value, setValue] = useState(candidate.value)
   const [error, setError] = useState('')
+  const [showOnHome, setShowOnHome] = useState(true)
+  // Follows the key name until the user types their own.
+  const [homeNameOverride, setHomeNameOverride] = useState<string | null>(null)
   const createSecret = useCreateSecret()
   const id = useId()
   const keyInputId = `${id}-key-name`
   const valueInputId = `${id}-secret-value`
   const envVar = keyToEnvVar(key.trim())
   const isReserved = !!envVar && isReservedEnvVar(envVar)
+  const homeName = homeNameOverride ?? (key.trim() ? guessSecretServiceName(key.trim()) : '')
 
   useEffect(() => {
     if (!open) return
     setKey('')
     setValue(candidate.value)
     setError('')
+    setShowOnHome(true)
+    setHomeNameOverride(null)
   }, [candidate, open])
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -61,6 +68,7 @@ export function SecretDetectionPrompt({
         agentSlug,
         key: key.trim(),
         value,
+        ...(showOnHome && homeName.trim() ? { homeName: homeName.trim() } : {}),
         location: 'composer',
       })
       onSecure(candidate, { key: saved.key, envVar: saved.envVar })
@@ -118,6 +126,25 @@ export function SecretDetectionPrompt({
                   onChange={(event) => setValue(event.target.value)}
                   autoComplete="off"
                   className="font-mono"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`${id}-show-on-home`}
+                  checked={showOnHome}
+                  onCheckedChange={(checked) => setShowOnHome(checked === true)}
+                />
+                <Label htmlFor={`${id}-show-on-home`} className="shrink-0 font-normal">
+                  Show on agent home as
+                </Label>
+                <Input
+                  value={homeName}
+                  onChange={(event) => setHomeNameOverride(event.target.value)}
+                  disabled={!showOnHome}
+                  maxLength={60}
+                  placeholder="e.g., GitHub"
+                  aria-label="Name on agent home"
+                  autoComplete="off"
                 />
               </div>
               {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
