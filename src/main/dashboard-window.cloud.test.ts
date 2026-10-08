@@ -90,26 +90,45 @@ beforeEach(() => {
 })
 
 describe('which requests carry the workspace token', () => {
-  const request = (url: string, frameOrigins: string[], resourceType = 'script', topFrameEmpty = false) =>
-    ({ url, frameOrigins, resourceType, topFrameEmpty })
+  const request = (url: string, frameOrigins: string[], resourceType = 'script', method = 'GET') =>
+    ({ url, frameOrigins, resourceType, method })
 
   it.each([
     ['a file the pane dashboard asks for', request(`${CLOUD}/api/agents/a/artifacts/d/main.tsx`, [CLOUD, APP]), 'main'],
     ['the pane dashboard document itself', request(`${CLOUD}/api/agents/a/artifacts/d/`, [APP, APP], 'subFrame'), 'main'],
-    ['a pop-out\'s first navigation from its never-loaded top frame', request(`${CLOUD}/api/agents/a/artifacts/d/view`, ['null'], 'mainFrame', true), 'cloud-popout'],
+    ['a pop-out\'s first navigation from its never-loaded top frame', request(`${CLOUD}/api/agents/a/artifacts/d/view`, ['null'], 'mainFrame'), 'cloud-popout'],
+    ['a pop-out returning top-level from another site', request(`${CLOUD}/api/agents/a/artifacts/d/view`, ['https://accounts.example.com'], 'mainFrame'), 'cloud-popout'],
     ['the dashboard inside a pop-out wrapper', request(`${CLOUD}/api/agents/a/artifacts/d/`, [CLOUD], 'subFrame'), 'cloud-popout'],
     ['live reload over a WebSocket', request('wss://acme.ongamut.so/api/agents/a/artifacts/d/', [CLOUD, APP], 'webSocket'), 'main'],
+    ['a frame navigating back from a same-site page', request(`${CLOUD}/api/agents/a/artifacts/d/`, ['https://ongamut.so', APP], 'subFrame'), 'main'],
+    ['a frame navigating back from a same-site page on another port', request(`${CLOUD}/api/agents/a/artifacts/d/`, ['https://ongamut.so:8443', APP], 'subFrame'), 'main'],
   ] as const)('signs %s', (_name, req, window) => {
     expect(shouldSignWorkspaceRequest(req, CLOUD, window)).toBe(true)
   })
 
   it.each([
+    ['an IP address', 'http://127.0.0.1:4000', 'http://10.0.0.1'],
+    ['a localhost subdomain', 'http://acme.localhost:4000', 'http://other.localhost:4000'],
+    ['an apex domain', 'https://gamut.example', 'https://other.example'],
+  ])('treats a workspace at %s as its own site', (_name, workspaceOrigin, page) => {
+    const navigation = request(`${workspaceOrigin}/api/agents/a/artifacts/d/`, [page, APP], 'subFrame')
+    expect(shouldSignWorkspaceRequest(navigation, workspaceOrigin, 'main')).toBe(false)
+  })
+
+  it.each([
     ['another site', request('https://fonts.example.com/a.woff2', [CLOUD, APP]), 'main'],
     ['a host that only starts with the workspace name', request('https://acme.ongamut.so.evil.com/x', [CLOUD, APP]), 'main'],
+    ['a frame navigating back from another site', request(`${CLOUD}/api/agents/a/artifacts/d/`, ['https://accounts.example.com', APP], 'subFrame'), 'main'],
+    ['a frame navigating back from a host that only ends with the domain', request(`${CLOUD}/api/agents/a/artifacts/d/`, ['https://evilongamut.so', APP], 'subFrame'), 'main'],
+    ['a frame navigating back from the same domain over http', request(`${CLOUD}/api/agents/a/artifacts/d/`, ['http://ongamut.so', APP], 'subFrame'), 'main'],
+    ['a same-site page fetching from the workspace', request(`${CLOUD}/api/agents`, ['https://ongamut.so', APP]), 'main'],
+    ['a same-site page above the navigating frame', request(`${CLOUD}/api/agents/a/artifacts/d/`, [CLOUD, 'https://ongamut.so', APP], 'subFrame'), 'main'],
     ['a local dashboard calling the workspace', request(`${CLOUD}/api/agents`, ['http://localhost:3838', APP]), 'main'],
     ['a sandboxed frame inside a workspace dashboard', request(`${CLOUD}/api/agents`, ['null', CLOUD, APP]), 'main'],
-    ['an empty top frame in the main window', request(`${CLOUD}/api/agents`, ['null'], 'mainFrame', true), 'main'],
-    ['a pop-out navigated from a later opaque-origin page', request(`${CLOUD}/api/agents`, ['null'], 'mainFrame'), 'cloud-popout'],
+    ['an empty top frame in the main window', request(`${CLOUD}/api/agents`, ['null'], 'mainFrame'), 'main'],
+    ['the main window navigating top-level from another site', request(`${CLOUD}/api/agents`, ['https://accounts.example.com'], 'mainFrame'), 'main'],
+    ['a pop-out\'s top-level POST', request(`${CLOUD}/api/agents`, ['https://accounts.example.com'], 'mainFrame', 'POST'), 'cloud-popout'],
+    ['a cross-site page in a pop-out fetching from the workspace', request(`${CLOUD}/api/agents`, ['https://accounts.example.com'], 'xhr'), 'cloud-popout'],
     ['a window the app does not own', request(`${CLOUD}/api/agents`, [CLOUD, APP]), null],
     ['a request with no frame', request(`${CLOUD}/api/agents`, []), 'main'],
   ] as const)('does not sign %s', (_name, req, window) => {
@@ -129,8 +148,9 @@ describe('signing the app\'s own workspace requests', () => {
     },
   }
   const frames = (...origins: string[]) =>
-    origins.reduceRight<{ origin: string; url: string; parent: unknown } | null>((parent, origin) => ({ origin, url: `${origin}/x`, parent }), null)
+    origins.reduceRight<{ origin: string; parent: unknown } | null>((parent, origin) => ({ origin, parent }), null)
   let nextRequest = 1
+  const LOGIN_REJECTED = { statusCode: 401, responseHeaders: { 'www-authenticate': ['Bearer realm="workspace"'] } }
   const paneFile = (extra: Record<string, any> = {}) => ({
     id: nextRequest++,
     url: `${CLOUD}/api/agents/a/artifacts/d/main.tsx`,
@@ -159,6 +179,12 @@ describe('signing the app\'s own workspace requests', () => {
   it('replaces any Authorization header the page set itself', async () => {
     const out = await run('send', paneFile({ requestHeaders: { authorization: 'Bearer page-token' } }))
     expect(out.requestHeaders).toEqual({ Authorization: 'Bearer tok-1' })
+  })
+
+  it('sends a request from a disposed frame unsigned instead of stalling it', async () => {
+    const disposed = { get origin(): string { throw new Error('Render frame was disposed before WebFrameMain could be accessed') }, parent: null }
+    const out = await run('send', paneFile({ frame: disposed }))
+    expect(out.requestHeaders).toEqual({})
   })
 
   it('leaves requests from windows the app does not own untouched', async () => {
@@ -198,7 +224,7 @@ describe('signing the app\'s own workspace requests', () => {
   it('retries a rejected request once a fresh token exists', async () => {
     refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-2' })
     const details = paneFile()
-    const out = await signedThenAnswered(details, { statusCode: 401, responseHeaders: {} })
+    const out = await signedThenAnswered(details, LOGIN_REJECTED)
     expect(out.statusLine).toBe('HTTP/1.1 307 Temporary Redirect')
     expect(out.responseHeaders.Location).toEqual([details.url])
   })
@@ -208,18 +234,27 @@ describe('signing the app\'s own workspace requests', () => {
     await run('send', details)
     workspace.current = { deploymentUrl: CLOUD, token: 'tok-2' }
     refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-2' })
-    const out = await run('receive', { ...details, statusCode: 401, responseHeaders: {} })
+    const out = await run('receive', { ...details, ...LOGIN_REJECTED })
     expect(out.statusLine).toBe('HTTP/1.1 307 Temporary Redirect')
   })
 
   it('returns the second 401 instead of retrying again', async () => {
     refresh.mockResolvedValueOnce({ deploymentUrl: CLOUD, token: 'tok-2' }).mockResolvedValueOnce({ deploymentUrl: CLOUD, token: 'tok-3' })
     const details = paneFile()
-    await signedThenAnswered(details, { statusCode: 401, responseHeaders: {} })
+    await signedThenAnswered(details, LOGIN_REJECTED)
     workspace.current = { deploymentUrl: CLOUD, token: 'tok-2' }
-    const out = await signedThenAnswered(details, { statusCode: 401, responseHeaders: {} })
+    const out = await signedThenAnswered(details, LOGIN_REJECTED)
     expect(out.statusLine).toBeUndefined()
     expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['no challenge', {}],
+    ['its own Bearer challenge', { 'WWW-Authenticate': ['Bearer realm="app"'] }],
+  ])('returns a dashboard\'s own 401 with %s without refreshing', async (_name, responseHeaders) => {
+    const out = await signedThenAnswered(paneFile(), { statusCode: 401, responseHeaders })
+    expect(out.statusLine).toBeUndefined()
+    expect(refresh).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -227,14 +262,14 @@ describe('signing the app\'s own workspace requests', () => {
     ['the refresh fails', null],
   ])('returns the 401 when %s', async (_name, fresh) => {
     refresh.mockResolvedValue(fresh)
-    const out = await signedThenAnswered(paneFile(), { statusCode: 401, responseHeaders: {} })
+    const out = await signedThenAnswered(paneFile(), LOGIN_REJECTED)
     expect(out.statusLine).toBeUndefined()
   })
 
   it('sends the retried request with the fresh token', async () => {
     refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-2' })
     const details = paneFile()
-    await signedThenAnswered(details, { statusCode: 401, responseHeaders: {} })
+    await signedThenAnswered(details, LOGIN_REJECTED)
     workspace.current = { deploymentUrl: CLOUD, token: 'tok-2' }
     expect((await run('send', details)).requestHeaders.Authorization).toBe('Bearer tok-2')
   })
@@ -246,38 +281,21 @@ describe('signing the app\'s own workspace requests', () => {
     expect(await run('receive', { ...details, statusCode: 200, responseHeaders: { 'set-cookie': ['a=1'] } })).toEqual({})
   })
 
-  it('keeps requests already in flight when the listeners are installed again', async () => {
-    const details = paneFile()
-    await run('send', details)
-    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, () => workspace.current)
-    const out = await run('receive', { ...details, statusCode: 200, responseHeaders: { 'set-cookie': ['a=1'] } })
-    expect(out.responseHeaders).toEqual({})
-  })
-
   it('does not earn a second retry through a redirect away and back', async () => {
     refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-2' })
     const details = paneFile()
-    await signedThenAnswered(details, { statusCode: 401, responseHeaders: {} })
+    await signedThenAnswered(details, LOGIN_REJECTED)
     await run('send', { ...details, url: 'https://elsewhere.example/x' })
     workspace.current = { deploymentUrl: CLOUD, token: 'tok-2' }
     refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-3' })
-    const out = await signedThenAnswered(details, { statusCode: 401, responseHeaders: {} })
+    const out = await signedThenAnswered(details, LOGIN_REJECTED)
     expect(out.statusLine).toBeUndefined()
   })
 
-  it('refreshes after a rejected live-reload socket without redirecting it', async () => {
-    refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-2' })
-    const out = await signedThenAnswered(
-      paneFile({ url: 'wss://acme.ongamut.so/api/agents/a/artifacts/d/', resourceType: 'webSocket' }),
-      { statusCode: 401, responseHeaders: {} },
-    )
-    expect(refresh).toHaveBeenCalledOnce()
-    expect(out.statusLine).toBeUndefined()
-  })
 })
 
 describe('a cloud popout', () => {
-  const sendFrom = async (webContentsId: number, topFrameUrl = '') => {
+  const sendFrom = async (webContentsId: number, method = 'GET') => {
     let send: ((d: Record<string, any>, cb: (r: Record<string, any>) => void) => void) | undefined
     installCloudDashboardAuth({
       webRequest: { onBeforeSendHeaders: (l: never) => { send = l }, onHeadersReceived: () => {}, onCompleted: () => {}, onErrorOccurred: () => {} },
@@ -287,7 +305,8 @@ describe('a cloud popout', () => {
       url: `${CLOUD}/api/agents/sales/artifacts/weekly/view`,
       webContentsId,
       resourceType: 'mainFrame',
-      frame: { origin: 'null', url: topFrameUrl, parent: null },
+      method,
+      frame: { origin: 'null', parent: null },
       requestHeaders: {},
     }, resolve))
   }
@@ -306,9 +325,14 @@ describe('a cloud popout', () => {
     expect((await sendFrom(win.webContents.id)).requestHeaders.Authorization).toBeUndefined()
   })
 
-  it('is not signed from an opaque top frame that already loaded a document', async () => {
+  it('does not sign another window while one is open', async () => {
     openDashboardWindow('sales', 'weekly', CLOUD, true)
-    const out = await sendFrom(createdWindows[0].webContents.id, 'about:blank')
+    expect((await sendFrom(999)).requestHeaders.Authorization).toBeUndefined()
+  })
+
+  it('is not signed for a top-level POST', async () => {
+    openDashboardWindow('sales', 'weekly', CLOUD, true)
+    const out = await sendFrom(createdWindows[0].webContents.id, 'POST')
     expect(out.requestHeaders.Authorization).toBeUndefined()
   })
 

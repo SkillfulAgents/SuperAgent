@@ -577,9 +577,13 @@ the root or routes against its startup address rendered blank.
 Main signs these requests in place of the browser's cookie
 (`installCloudDashboardAuth`): only to the workspace origin, only from the main
 window or a cloud popout, only when every frame up to the window is the app or
-the workspace, and only while the target is cloud. Local dashboards share the
+the workspace (or where a browser would send the workspace's Lax cookie: a frame
+returning from a same-site page, a popout's top-level GET), and only while the
+target is cloud. Local dashboards share the
 session and never get the token. As with the proxy, signed responses lose
-`set-cookie` and `set-auth-token`, and a 401 re-mints and retries once.
+`set-cookie` and `set-auth-token`. A 401 carrying the workspace's session
+challenge (`Bearer realm="workspace"`) re-mints and retries once. A dashboard's
+own 401 is returned as-is.
 
 Popouts open at `deploymentUrl` in cloud mode. The dedup key includes the base
 URL (two deployments can hold an agent of the same slug), and

@@ -1,6 +1,9 @@
 import { BrowserWindow, type Session, type WebContents } from 'electron'
+import { isIP } from 'node:net'
 import { refreshCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { CREDENTIAL_RESPONSE_HEADERS } from '../api/routes/cloud-proxy'
 import { buildDashboardViewUrl } from '@shared/lib/dashboard-url'
+import { SESSION_CHALLENGE } from '@shared/lib/auth/session-challenge'
 import { DASHBOARD_CHROME_HEIGHT, dashboardChromeScript } from './dashboard-window-chrome'
 import { safeOpenExternal } from './safe-open-external'
 
@@ -9,7 +12,7 @@ import { safeOpenExternal } from './safe-open-external'
 // an agent of the same slug, and reusing a window across them would show the
 // wrong one's dashboard under the right one's name. The raw join is fine as a
 // dedup key — only the loaded URL needs per-segment encoding.
-const dashboardWindows: Map<string, BrowserWindow> = new Map()
+const dashboardWindows: Map<string, { win: BrowserWindow; webContentsId: number; cloud: boolean }> = new Map()
 
 function installDashboardChrome(win: BrowserWindow, titlePrefix = ''): void {
   const script = dashboardChromeScript(process.platform, titlePrefix)
@@ -51,17 +54,31 @@ const RENDERER_ORIGIN = process.env.ELECTRON_RENDERER_URL
   ? new URL(process.env.ELECTRON_RENDERER_URL).origin
   : 'file://'
 
-const cloudPopoutIds = new Set<number>()
-
 export type OwnedWindow = 'main' | 'cloud-popout' | null
 
 export interface WorkspaceRequest {
   url: string
   resourceType: string
+  method: string
   /** The requesting frame's origin first, up to the window's top frame. */
   frameOrigins: readonly string[]
-  /** The window's top frame has never committed a document. */
-  topFrameEmpty: boolean
+}
+
+/**
+ * Whether a page is on the workspace's site, as a SameSite cookie judges it.
+ * Every workspace host is `<slug>.<ingress domain>`, and no ingress domain is
+ * a public suffix, so the site is the host minus its first label. A host that
+ * would leave one label (localhost, an apex) or an IP is its own site.
+ */
+function isWorkspaceSite(origin: string, workspaceOrigin: string): boolean {
+  if (!URL.canParse(origin)) return false
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- checked by canParse above
+  const page = new URL(origin)
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- the workspace origin was parsed on read
+  const { protocol, hostname } = new URL(workspaceOrigin)
+  const parent = hostname.slice(hostname.indexOf('.') + 1)
+  const site = isIP(hostname) || !parent.includes('.') ? hostname : parent
+  return page.protocol === protocol && (page.hostname === site || page.hostname.endsWith(`.${site}`))
 }
 
 /**
@@ -74,39 +91,38 @@ export function shouldSignWorkspaceRequest(request: WorkspaceRequest, workspaceO
   const socketOrigin = workspaceOrigin.replace(/^http/, 'ws')
   if (!request.url.startsWith(`${workspaceOrigin}/`) && !request.url.startsWith(`${socketOrigin}/`)) return false
   const { frameOrigins } = request
+  const navigation = request.resourceType === 'mainFrame' || request.resourceType === 'subFrame'
   return frameOrigins.length > 0 && frameOrigins.every((origin, i) =>
     origin === RENDERER_ORIGIN
     || origin === workspaceOrigin
-    // A popout's first navigation starts from its never-loaded top frame.
-    || (window === 'cloud-popout' && origin === 'null' && i === frameOrigins.length - 1
-      && request.resourceType === 'mainFrame' && request.topFrameEmpty))
+    // Where a browser's Lax cookie goes too: a frame navigating back from a
+    // same-site page, and a popout's own top-level GET from anywhere.
+    || (i === 0 && navigation && isWorkspaceSite(origin, workspaceOrigin))
+    || (window === 'cloud-popout' && request.resourceType === 'mainFrame' && request.method === 'GET'))
 }
 
 interface RequestDetails {
   id: number
   url: string
   resourceType: string
+  method: string
   webContentsId?: number
-  frame?: { origin: string; url: string; parent: RequestDetails['frame'] } | null
+  frame?: { origin: string; parent: RequestDetails['frame'] } | null
 }
 
-function workspaceRequestOf({ url, resourceType, frame }: RequestDetails): WorkspaceRequest {
+function workspaceRequestOf({ url, resourceType, method, frame }: RequestDetails): WorkspaceRequest | null {
   const frameOrigins: string[] = []
-  let top = frame
-  for (let f = frame; f; f = f.parent) {
-    frameOrigins.push(f.origin)
-    top = f
+  try {
+    for (let f = frame; f; f = f.parent) frameOrigins.push(f.origin)
+    return { url, resourceType, method, frameOrigins }
+  } catch {
+    // A frame already disposed in the renderer throws on access. Its request is not signed.
+    return null
   }
-  return { url, resourceType, frameOrigins, topFrameEmpty: top?.url === '' }
 }
 
-// The same credentials the cloud proxy keeps out of the renderer.
-const CREDENTIAL_RESPONSE_HEADERS = new Set(['set-cookie', 'set-auth-token'])
-
-// Per request in flight: the token this hop carried (null when it was not
-// signed) and whether it was retried. Module-level so a reinstall on window
-// re-create keeps requests already in flight.
-const signedRequests = new Map<number, { token: string | null; retried: boolean }>()
+const isSessionRejection = (headers: Record<string, string[]>) =>
+  Object.entries(headers).some(([name, values]) => name.toLowerCase() === 'www-authenticate' && values.includes(SESSION_CHALLENGE))
 
 const withoutHeaders = <T>(headers: Record<string, T>, names: ReadonlySet<string>) =>
   Object.fromEntries(Object.entries(headers).filter(([name]) => !names.has(name.toLowerCase())))
@@ -123,10 +139,15 @@ export function installCloudDashboardAuth(
   mainWebContentsId: () => number | null,
   currentWorkspace: () => { deploymentUrl: string; token: string } | null,
 ): void {
+  // Per request in flight: the token this hop carried (null when it was not
+  // signed) and whether it was retried.
+  const signedRequests = new Map<number, { token: string | null; retried: boolean }>()
+  const isCloudPopout = (id: number) =>
+    [...dashboardWindows.values()].some((entry) => entry.cloud && entry.webContentsId === id)
   const windowOf = (id: number | undefined): OwnedWindow =>
     id === undefined ? null
       : id === mainWebContentsId() ? 'main'
-        : cloudPopoutIds.has(id) ? 'cloud-popout' : null
+        : isCloudPopout(id) ? 'cloud-popout' : null
 
   target.webRequest.onBeforeSendHeaders((details, callback) => {
     const window = windowOf(details.webContentsId)
@@ -135,7 +156,8 @@ export function installCloudDashboardAuth(
     // A page's own Authorization never reaches the workspace, and ours never
     // follows a redirect away from it.
     const requestHeaders = withoutHeaders(details.requestHeaders, new Set(['authorization']))
-    if (!workspace || !shouldSignWorkspaceRequest(workspaceRequestOf(details), workspace.deploymentUrl, window)) {
+    const request = workspace && workspaceRequestOf(details)
+    if (!workspace || !request || !shouldSignWorkspaceRequest(request, workspace.deploymentUrl, window)) {
       if (earlier) earlier.token = null
       callback({ requestHeaders: earlier ? requestHeaders : details.requestHeaders })
       return
@@ -151,16 +173,15 @@ export function installCloudDashboardAuth(
       return
     }
     const responseHeaders = withoutHeaders(details.responseHeaders ?? {}, CREDENTIAL_RESPONSE_HEADERS)
-    if (details.statusCode !== 401 || request.retried) {
+    if (details.statusCode !== 401 || request.retried || !isSessionRejection(responseHeaders)) {
       callback({ responseHeaders })
       return
     }
-    // Same recovery as the cloud proxy: re-mint, then retry once. A socket
-    // cannot be redirected; its next reconnect picks up the fresh token.
+    // Same recovery as the cloud proxy: re-mint, then retry once.
     request.retried = true
     const sentWith = request.token
     void refreshCloudProxyTarget().then((fresh) => {
-      callback(fresh && fresh.token !== sentWith && details.resourceType !== 'webSocket'
+      callback(fresh && fresh.token !== sentWith
         ? { statusLine: 'HTTP/1.1 307 Temporary Redirect', responseHeaders: { ...responseHeaders, Location: [details.url] } }
         : { responseHeaders })
     })
@@ -181,7 +202,7 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
   const key = `${apiBaseUrl}|${agentSlug}/${dashboardSlug}`
 
   // Focus existing window if already open
-  const existing = dashboardWindows.get(key)
+  const existing = dashboardWindows.get(key)?.win
   if (existing && !existing.isDestroyed()) {
     existing.show()
     existing.focus()
@@ -223,23 +244,18 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
   // workspace marker in both the native/taskbar title and the app-owned title
   // bar above the dashboard iframe.
   if (cloud) {
-    cloudPopoutIds.add(win.webContents.id)
     win.on('page-title-updated', (event, title) => {
       event.preventDefault()
       win.setTitle(`Cloud workspace — ${title}`)
     })
   }
   win.loadURL(url)
-  dashboardWindows.set(key, win)
-  const id = win.webContents.id
-  win.on('closed', () => {
-    dashboardWindows.delete(key)
-    cloudPopoutIds.delete(id)
-  })
+  dashboardWindows.set(key, { win, webContentsId: win.webContents.id, cloud })
+  win.on('closed', () => dashboardWindows.delete(key))
 }
 
 export function closeAllDashboardWindows() {
-  for (const win of dashboardWindows.values()) {
+  for (const { win } of dashboardWindows.values()) {
     if (!win.isDestroyed()) win.close()
   }
   dashboardWindows.clear()

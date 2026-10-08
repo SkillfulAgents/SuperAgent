@@ -135,6 +135,7 @@ describe('Auth Middleware', () => {
       const app = buildAppNoParam(Authenticated())
       const res = await request(app, '/')
       expect(res.status).toBe(401)
+      expect(res.headers.get('WWW-Authenticate')).toBe('Bearer realm="workspace"')
       expect(await res.json()).toEqual({ error: 'Unauthorized' })
     })
 

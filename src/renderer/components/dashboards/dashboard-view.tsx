@@ -118,9 +118,11 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     if (iframeRef.current) {
       setRefreshing(true)
       setFrameLoading(true)
-      iframeRef.current.src = iframeSrc
+      // A fresh frame, not a new src: a frame that wandered off the workspace
+      // would otherwise reload as that other site's navigation, unsigned.
+      setFrameAttempt((attempt) => attempt + 1)
     }
-  }, [iframeSrc])
+  }, [])
 
   const handlePopOut = useCallback(() => {
     openDashboardExternal(dashboardAgentSlug, dashboardSlug, dashboard?.name)

@@ -125,6 +125,7 @@ import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-pro
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
+import { resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
@@ -349,18 +350,6 @@ function createWindow() {
     const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
     return allowed.includes(permission)
   })
-  installCloudDashboardAuth(
-    session.defaultSession,
-    () => mainWindow?.webContents.id ?? null,
-    () => {
-      // Cloud is the active target exactly when this resolves (see `activeApiTarget`).
-      const workspace = readPreferredApiTarget() === 'cloud' ? cloudProxyTarget() : null
-      // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
-      // by origin, the form Chromium reports frames in.
-      // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
-      return workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin }
-    },
-  )
 
   // Spellcheck context menu — show correction suggestions on right-click
   mainWindow.webContents.on('context-menu', (_event, params) => {
@@ -1649,6 +1638,27 @@ function focusMainWindowOnSession(agentSlug: string, sessionId: string): void {
 }
 
 app.whenReady().then(() => {
+  // Installed here, not with the main window: a dashboard link queued at cold
+  // start opens its popout before the main window exists.
+  // Read per request, so re-derived only when settings change: every settings
+  // write replaces the cached object.
+  let signing: { settings: ReturnType<typeof getSettings>; workspace: { token: string; deploymentUrl: string } | null } | null = null
+  installCloudDashboardAuth(
+    session.defaultSession,
+    () => mainWindow?.webContents.id ?? null,
+    () => {
+      const settings = getSettings()
+      if (signing?.settings !== settings) {
+        const target = cloudProxyTarget()
+        const workspace = resolveApiTarget(readPreferredApiTarget(), target?.deploymentUrl ?? null).target === 'cloud' ? target : null
+        // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
+        // by origin, the form Chromium reports frames in.
+        // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
+        signing = { settings, workspace: workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin } }
+      }
+      return signing.workspace
+    },
+  )
 
   app.on('activate', () => {
     // On macOS, re-create window when dock icon is clicked
