@@ -6,7 +6,19 @@ const state = vi.hoisted(() => ({
   db: null as TestDatabase['db'] | null,
   settings: {} as AppSettings,
   metadata: {} as { llmProviderId?: string; model?: string },
+  signedOutConnection: null as string | null,
 }))
+vi.mock('@shared/lib/llm-provider/connection-runtime', async original => {
+  const actual = await original<typeof import('@shared/lib/llm-provider/connection-runtime')>()
+  const { CredentialRefreshError } = await import('../../../../agent-container/src/credential-refresh-error')
+  return {
+    ...actual,
+    connectionRuntime: async (...args: Parameters<typeof actual.connectionRuntime>) => {
+      if (args[0].llmProviderId === state.signedOutConnection) throw new CredentialRefreshError(401)
+      return actual.connectionRuntime(...args)
+    },
+  }
+})
 vi.mock('../db', () => ({ get db() { return state.db } }))
 vi.mock('../config/settings', async original => ({
   ...(await original<typeof import('../config/settings')>()),
@@ -24,6 +36,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
   }) },
 }))
 import { BaseContainerClient } from './base-container-client'
+import { findAgentRuntimeError } from '../agent-runtime-errors/agent-runtime-error'
+import { ProviderReconnectRequiredError } from '../agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 import { saveConnection, setGlobalSelection } from '../llm-provider/connections'
 
 class Client extends BaseContainerClient {
@@ -40,6 +54,7 @@ beforeEach(async () => {
   state.db = handle.db
   state.settings = {} as AppSettings
   state.metadata = {}
+  state.signedOutConnection = null
   for (const name of ['first', 'second']) {
     const id = await saveConnection({ name, provider: 'generic', config: {
       apiKeys: { genericApiKey: `${name}-key`, genericBaseUrl: `https://${name}.example` },
@@ -67,6 +82,25 @@ it('sends the default runtime for prewarming even when the session picks a diffe
     prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low',
       llmRuntime: { llmProviderId: first, model: 'model-a', env: { ANTHROPIC_AUTH_TOKEN: 'first-key' } } },
   })
+})
+
+it('starts the session without prewarming when only the default provider is signed out', async () => {
+  state.signedOutConnection = first
+  await new Client({ agentId: 'agent' }).createSession({
+    initialMessage: 'hello', model: 'model-b', llmProviderId: second,
+    prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low' },
+  })
+  expect(requests[0]).toMatchObject({ llmRuntime: { llmProviderId: second, model: 'model-b' } })
+  expect(requests[0].prewarmDefaults).toBeUndefined()
+})
+
+it('asks to reconnect when the selected provider itself is signed out', async () => {
+  state.signedOutConnection = second
+  await expect(new Client({ agentId: 'agent' }).createSession({
+    initialMessage: 'hello', model: 'model-b', llmProviderId: second,
+    prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low' },
+  }).catch((error: unknown) => error)).resolves.toSatisfy((error) => findAgentRuntimeError(error) instanceof ProviderReconnectRequiredError)
+  expect(requests).toEqual([])
 })
 
 it('honors a provider-only switch and persists the resolved provider/model pair', async () => {

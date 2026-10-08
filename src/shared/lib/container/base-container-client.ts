@@ -1,7 +1,8 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
-import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
@@ -1256,12 +1257,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Resolve stored selections (bare aliases or concrete ids) to the active
       // provider's concrete wire id before the container ever sees them.
       const selected = await resolveExecutionSelection(storedSelection(options.model, options.llmProviderId))
-      const llmRuntime = await connectionRuntime(selected, this.config.agentId)
+      const llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
       const warmSelection = options.prewarmDefaults
         ? await resolveExecutionSelection(storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId))
         : null
       const warmRuntime = warmSelection
-        ? await connectionRuntime(warmSelection, this.config.agentId)
+        ? await prewarmConnectionRuntime(warmSelection, this.config.agentId)
         : undefined
       const resolvedModel = llmRuntime.model
       const resolvedBrowserModel = llmRuntime.browserModel
@@ -1461,7 +1462,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // A queued follow-up belongs to the running turn. It must not resolve a
     // deleted connection, rotate credentials, or rebuild the active query.
     const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
-    let llmRuntime: Awaited<ReturnType<typeof connectionRuntime>> | undefined
+    let llmRuntime: ConnectionRuntime | undefined
     if (!preserveRuntime) {
       try {
         const { agentRegistry } = await import('@shared/lib/agent-actor')
@@ -1475,7 +1476,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           storedSelection(metadata?.model, metadata?.llmProviderId),
           storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
         )
-        llmRuntime = await connectionRuntime(selected, this.config.agentId)
+        llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
         rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
         await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
       } catch (error) {
