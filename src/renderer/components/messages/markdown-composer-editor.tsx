@@ -47,7 +47,9 @@ export interface MarkdownComposerEditorProps {
   securedSecrets?: SecuredSecret[]
   onRemoveSecuredSecrets?: (secrets: SecuredSecret[]) => void
   onEditorElement?: (element: HTMLDivElement | null) => void
-  /** Shows the formatting toolbar above the text. */
+  /** Names the text box for screen readers. Defaults to the placeholder. */
+  ariaLabel?: string
+  /** Offers the formatting toolbar above the text, behind an Aa button. */
   toolbar?: boolean
   toolbarClassName?: string
 }
@@ -917,13 +919,13 @@ function buildSecretDecorationsPlugin(
   })
 }
 
-function setEditorA11yState(view: EditorView, placeholder: string, disabled: boolean) {
+function setEditorA11yState(view: EditorView, placeholder: string, disabled: boolean, label = placeholder) {
   const isEmpty = view.state.doc.childCount === 1
     && view.state.doc.firstChild?.type.name === 'paragraph'
     && view.state.doc.firstChild.content.size === 0
   view.dom.dataset.empty = String(isEmpty)
   view.dom.dataset.placeholder = placeholder
-  view.dom.setAttribute('aria-label', placeholder)
+  view.dom.setAttribute('aria-label', label)
   view.dom.setAttribute('aria-disabled', String(disabled))
   view.dom.setAttribute('placeholder', placeholder)
 }
@@ -945,6 +947,7 @@ export function MarkdownComposerEditor({
   disabled = false,
   autoFocus = false,
   dataTestId,
+  ariaLabel,
   minRows = 2,
   enterKeyHint,
   className,
@@ -967,6 +970,7 @@ export function MarkdownComposerEditor({
     onKeyDown,
     value,
     placeholder,
+    ariaLabel,
     disabled,
     potentialSecrets,
     securedSecrets,
@@ -996,6 +1000,7 @@ export function MarkdownComposerEditor({
     onKeyDown,
     value,
     placeholder,
+    ariaLabel,
     disabled,
     potentialSecrets,
     securedSecrets,
@@ -1118,7 +1123,7 @@ export function MarkdownComposerEditor({
       dispatchTransaction: (tr) => {
         const nextState = view.state.apply(tr)
         view.updateState(nextState)
-        setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
+        setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled, latestRef.current.ariaLabel)
         if (!tr.docChanged) return
         const markdown = serializeComposerMarkdown(
           nextState.doc,
@@ -1150,7 +1155,7 @@ export function MarkdownComposerEditor({
 
     viewRef.current = view
     editorViews.set(view.dom, view)
-    setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
+    setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled, latestRef.current.ariaLabel)
     onEditorElement?.(view.dom as HTMLDivElement)
     if (autoFocus) requestAnimationFrame(() => view.focus())
 
@@ -1175,15 +1180,15 @@ export function MarkdownComposerEditor({
     tr.setSelection(TextSelection.atEnd(tr.doc))
     view.updateState(view.state.apply(tr))
     lastMarkdownRef.current = value
-    setEditorA11yState(view, placeholder, disabled)
-  }, [disabled, placeholder, value])
+    setEditorA11yState(view, placeholder, disabled, ariaLabel)
+  }, [ariaLabel, disabled, placeholder, value])
 
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.setProps({ editable: () => !disabled })
-    setEditorA11yState(view, placeholder, disabled)
-  }, [disabled, placeholder])
+    setEditorA11yState(view, placeholder, disabled, ariaLabel)
+  }, [ariaLabel, disabled, placeholder])
 
   useEffect(() => {
     const view = viewRef.current

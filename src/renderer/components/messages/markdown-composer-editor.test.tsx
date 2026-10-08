@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import MarkdownIt from 'markdown-it'
@@ -11,7 +11,6 @@ import {
   selectAllMarkdownComposer,
   setMarkdownComposerSelection,
 } from './markdown-composer-editor'
-import { useFormattingToolbar } from './formatting-toolbar'
 import { findPotentialSecrets, type SecuredSecret } from '@renderer/lib/secret-detection'
 
 function ControlledEditor({ initialValue = '', toolbar }: { initialValue?: string; toolbar?: boolean }) {
@@ -888,6 +887,7 @@ describe('MarkdownComposerEditor formatting shortcuts', () => {
 })
 
 describe('MarkdownComposerEditor formatting toolbar', () => {
+  afterEach(() => localStorage.removeItem('composer.formattingToolbar'))
   const button = (name: string) => screen.getByRole('button', { name })
 
   it('applies a format from its button and lights the buttons that apply at the cursor', () => {
@@ -916,23 +916,16 @@ describe('MarkdownComposerEditor formatting toolbar', () => {
     expect(markdownValue()).toBe('> item')
   })
 
-  it('shares one show/hide choice across mounted composers', () => {
-    function Probe({ id, defaultOpen }: { id: string; defaultOpen: boolean }) {
-      const [open, toggle] = useFormattingToolbar(defaultOpen)
-      return <button type="button" data-testid={id} onClick={toggle}>{String(open)}</button>
-    }
-    localStorage.removeItem('composer.formattingToolbar')
-    render(<><Probe id="home" defaultOpen /><Probe id="create" defaultOpen={false} /></>)
-    expect(screen.getByTestId('home')).toHaveTextContent('true')
-    expect(screen.getByTestId('create')).toHaveTextContent('false')
+  it('shows the toolbar until Aa hides it, one choice shared by mounted editors', () => {
+    render(<><ControlledEditor toolbar /><ControlledEditor toolbar /></>)
+    const toolbars = () => screen.queryAllByRole('group', { name: 'Formatting' })
+    expect(toolbars()).toHaveLength(2)
 
-    fireEvent.click(screen.getByTestId('home'))
-    expect(screen.getByTestId('home')).toHaveTextContent('false')
-    expect(screen.getByTestId('create')).toHaveTextContent('false')
-    fireEvent.click(screen.getByTestId('create'))
-    expect(screen.getByTestId('home')).toHaveTextContent('true')
-    expect(screen.getByTestId('create')).toHaveTextContent('true')
-    localStorage.removeItem('composer.formattingToolbar')
+    fireEvent.click(screen.getAllByTestId('formatting-toggle')[0])
+    expect(toolbars()).toHaveLength(0)
+    expect(document.querySelectorAll('[data-state="closed"][aria-label="Formatting"]')).toHaveLength(2)
+    fireEvent.click(screen.getAllByTestId('formatting-toggle')[1])
+    expect(toolbars()).toHaveLength(2)
   })
 
   it('lights the block buttons for a select-all the way the commands see it', () => {

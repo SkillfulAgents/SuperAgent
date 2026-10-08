@@ -64,7 +64,6 @@ import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
-import { FormattingToggle, useFormattingToolbar } from '@renderer/components/messages/formatting-toolbar'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -113,7 +112,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const { data: sessionsData } = useSessions(agent.slug)
   const { data: agentPrefs } = useAgentPreferences(agent.slug)
   const carryover = useNewSessionCarryover(agent.slug)
-  const [toolbarOpen, toggleToolbar] = useFormattingToolbar()
   const composerOptions = useComposerOptions({
     initialModel: carryover?.model,
     initialEffort: carryover?.effort,
@@ -470,7 +468,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
-                  toolbar={toolbarOpen}
                   textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
@@ -501,7 +498,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <FormattingToggle open={toolbarOpen} onToggle={toggleToolbar} />
                       <ComposerOptions
                         state={composerOptions}
                         disabled={isDisabled}

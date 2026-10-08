@@ -83,7 +83,10 @@ test.describe('composer Markdown blocks', () => {
   })
 
   test('shows and hides the formatting toolbar with Aa and applies formats from it', async ({ page }) => {
-    const input = page.locator('[data-testid="home-message-input"]')
+    await expect(page.locator('[data-testid="formatting-toggle"]')).toHaveCount(0)
+    await page.getByRole('button', { name: 'System Prompt' }).click()
+    const input = page.locator('[data-testid="system-prompt-editor"]')
+    await expect(input).toBeFocused()
     const toolbar = page.getByRole('group', { name: 'Formatting' })
     const toggle = page.locator('[data-testid="formatting-toggle"]')
     const textStyle = page.locator('[data-testid="formatting-text-style"]')
@@ -91,10 +94,13 @@ test.describe('composer Markdown blocks', () => {
     await expect(toolbar).toBeVisible()
     await toggle.click()
     await expect(toolbar).toBeHidden()
+    await expect(page.locator('[aria-label="Formatting"]')).toHaveCSS('clip-path', 'inset(0px 100% 0px 0px)')
     await toggle.click()
     await expect(toolbar).toBeVisible()
 
     await input.click()
+    await input.press('ControlOrMeta+a')
+    await input.press('Backspace')
     await input.pressSequentially('Notes')
     await textStyle.click()
     await page.getByRole('menuitemradio', { name: /Heading 1/ }).click()

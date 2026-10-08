@@ -7,8 +7,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
+import { cn } from '@shared/lib/utils'
 import { Button } from '@renderer/components/ui/button'
-import { Textarea } from '@renderer/components/ui/textarea'
+import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 
@@ -43,7 +44,7 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl" data-testid="system-prompt-dialog">
+      <DialogContent className="sm:max-w-2xl" onOpenAutoFocus={(e) => e.preventDefault()} data-testid="system-prompt-dialog">
         <DialogHeader>
           <DialogTitle>System Prompt</DialogTitle>
           <DialogDescription>
@@ -51,13 +52,20 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
-          <Textarea
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-            placeholder="Enter custom instructions for this agent..."
-            className="min-h-[300px] font-mono text-sm"
-            disabled={locked}
-          />
+          {/* The toolbar row carries the top padding, since it sticks to the top while the box scrolls. */}
+          <div className={cn('max-h-[60vh] overflow-y-auto rounded-md border border-input px-3 pb-2 shadow-sm focus-within:ring-1 focus-within:ring-ring', locked && 'pt-2')}>
+            <MarkdownComposerEditor
+              value={instructions}
+              onChange={setInstructions}
+              placeholder="Enter custom instructions for this agent..."
+              minRows={14}
+              disabled={locked}
+              autoFocus
+              dataTestId="system-prompt-editor"
+              toolbar={!locked}
+              toolbarClassName="sticky top-0 z-10 bg-background pt-2"
+            />
+          </div>
           {locked && (
             <div
               className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-background/80 backdrop-blur-sm"
