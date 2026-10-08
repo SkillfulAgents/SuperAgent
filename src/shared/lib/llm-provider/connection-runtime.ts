@@ -1,4 +1,5 @@
 import { getModelContextWindowMap } from './model-catalog'
+import { LlmSelectionAccessError } from '../agent-runtime-errors/llm-selection-access-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'
@@ -38,10 +39,6 @@ export async function resolveConnectionRuntimeInherit(
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
-export class LlmSelectionAccessError extends Error {
-  constructor() { super('LLM provider not found') }
-}
-
 export async function assertConnectionSelectionAccess(
   llmProviderId: string | null | undefined,
   currentId?: string | null

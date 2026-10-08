@@ -22,6 +22,7 @@ import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstac
 import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
+import { resolveAgentRuntimeErrorPreview } from '@renderer/components/agent-runtime-errors/registry'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -35,6 +36,8 @@ declare module '@tanstack/react-query' {
        * Sentry.
        */
       skipGlobalErrorToast?: boolean
+      /** Skip the toast for an AgentRuntimeError with a preview; the caller renders it inline. */
+      agentRuntimeErrorsShownInline?: boolean
       /** Override the global error toast text for this mutation. */
       errorMessage?: string
     }
@@ -60,6 +63,7 @@ function messageFromError(error: unknown): string {
 export function handleMutationError(error: unknown, meta?: MutationMeta): void {
   captureRendererException(error, { tags: { source: 'mutation' } })
   if (meta?.skipGlobalErrorToast) return
+  if (meta?.agentRuntimeErrorsShownInline && resolveAgentRuntimeErrorPreview(error)) return
   toast.error(meta?.errorMessage ?? messageFromError(error))
 }
 

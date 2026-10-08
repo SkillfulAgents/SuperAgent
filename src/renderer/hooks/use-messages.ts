@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { readAgentRuntimeError } from '@renderer/lib/agent-runtime-request-error'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -299,10 +300,12 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 export function useSendMessage(options: {
   /** No error toast: the caller handles (or accepts) a failed send. */
   quiet?: boolean
+  /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
+  agentRuntimeErrorsShownInline?: boolean
 } = {}) {
   const queryClient = useQueryClient()
   return useMutation({
-    ...(options.quiet ? { meta: { skipGlobalErrorToast: true } } : {}),
+    meta: { skipGlobalErrorToast: options.quiet, agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
     mutationFn: async (data: {
       sessionId: string
       agentSlug: string
@@ -329,7 +332,7 @@ export function useSendMessage(options: {
           ...(data.shouldQuery === false ? { shouldQuery: false } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to send message')
+      if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to send message')
       // uuid is the server-assigned message id, used to materialize the
       // optimistic pending copy by exact id match.
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>

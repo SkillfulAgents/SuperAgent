@@ -9,6 +9,8 @@ const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }))
 vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
+import { AgentRuntimeRequestError, readAgentRuntimeError } from './agent-runtime-request-error'
+import { LlmSelectionAccessError } from '@shared/lib/agent-runtime-errors/llm-selection-access-error'
 
 beforeEach(() => {
   mockToastError.mockClear()
@@ -37,6 +39,22 @@ describe('handleMutationError', () => {
   it('falls back to a generic message for a non-Error / empty value', () => {
     handleMutationError(undefined)
     expect(mockToastError).toHaveBeenCalledWith('Something went wrong. Please try again.')
+  })
+
+  it('toasts the server message for an AgentRuntimeError whose code has no preview', async () => {
+    const error = await readAgentRuntimeError(new LlmSelectionAccessError().toHttpResponse(), 'Failed to send message')
+    expect(error).toBeInstanceOf(AgentRuntimeRequestError)
+    expect(error).toMatchObject({ status: 404, code: 'llm_provider_not_found' })
+
+    handleMutationError(error, { agentRuntimeErrorsShownInline: true })
+    expect(mockToastError).toHaveBeenCalledWith('LLM provider not found')
+  })
+
+  it('keeps the fallback message for an error body without a code', async () => {
+    const res = new Response(JSON.stringify({ error: 'Failed to send message' }), { status: 500 })
+    const error = await readAgentRuntimeError(res, 'Failed to send message')
+    expect(error).not.toBeInstanceOf(AgentRuntimeRequestError)
+    expect(error.message).toBe('Failed to send message')
   })
 
   it('passes through a thrown string', () => {

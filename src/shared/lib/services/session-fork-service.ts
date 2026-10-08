@@ -17,16 +17,7 @@ import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
-
-export class ForkSessionError extends Error {
-  constructor(
-    readonly status: 404 | 409 | 500,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'ForkSessionError'
-  }
-}
+import { ForkSessionError } from '@shared/lib/agent-runtime-errors/fork-session-error'
 
 export type ForkSessionOpts = {
   createdByUserId?: string

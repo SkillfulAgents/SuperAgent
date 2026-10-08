@@ -113,7 +113,6 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgent: vi.fn(async () => ({ frontmatter: { name: 'Agent' } })),
   updateAgent: vi.fn(), deleteAgent: vi.fn(),
   agentExists: vi.fn(async () => true),
-  AgentContainerStopError: class extends Error {},
 }))
 
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
