@@ -1,5 +1,5 @@
 import { ProviderSelect } from './provider-select'
-import { resolveSelection, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
+import { resolveSelection, type ConnectionInfo, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 import { memo, useContext, useMemo, type ReactNode } from 'react'
 import { Check, ChevronDown, RotateCcw, Settings } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
@@ -12,11 +12,12 @@ import { useUser } from '@renderer/context/user-context'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
+import { ModelTooltip } from '@renderer/components/messages/model-tooltip'
 import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'emptyLabel'> {
+interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'connection' | 'emptyLabel'> {
   agentSlug?: string
   llmProviderId?: string | null
   globalOnly?: boolean
@@ -34,6 +35,8 @@ interface ModelPickerPopoverProps {
   webProvider?: string
   /** Rendered above the model list (e.g. a connection switcher). */
   header?: ReactNode
+  /** The connection the selection runs on, named in the trigger's tooltip. */
+  connection?: ConnectionInfo
   /** Adds a top row that stores '' — for hosts where "no model" means inherit. */
   emptyLabel?: string
   /** Show the effort picker alongside the model. Off by default for model-only knobs. */
@@ -114,6 +117,7 @@ function SettingsModelSelectImpl({
       model={selectedModel}
       onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
       webProvider={settings?.webProvider}
+      connection={onSelectionChange ? selectedConnection : undefined}
       header={onSelectionChange && <ProviderSelect connections={providers} value={selectedConnection?.id} directApiOnly={directApiOnly} disabled={pickerProps.disabled} onChange={id => {
         const next = choices.find(c => c.id === id)
         if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
@@ -129,6 +133,7 @@ export function ModelPickerPopover({
   onPick,
   webProvider,
   header,
+  connection,
   emptyLabel,
   includeEffort = false,
   effort = 'medium',
@@ -158,34 +163,36 @@ export function ModelPickerPopover({
   else if (resolved?.family) triggerLabel = `${resolved.label} · pinned`
   else if (resolved) triggerLabel = resolved.label
   else if (emptyLabel !== undefined && !model) triggerLabel = emptyLabel
+  const detail = includeEffort ? ` · ${EFFORT_LABELS[effort]}${includeSpeed && speed !== 'normal' ? ` · ${SPEED_LABELS[speed]}` : ''}` : ''
 
   return (
     // Uncontrolled: picks never dismiss (matching the composer) — model and
     // effort get set in one visit and the popover closes on outside click /
     // Escape / trigger toggle — so Radix owns the open state.
     <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          className="h-[34px] gap-1.5 px-2 text-xs font-medium"
-          aria-label={`Model: ${triggerLabel ?? 'select'}. Click to change.`}
-          data-testid="settings-model-trigger"
-        >
-          <span>
-            {triggerLabel ?? 'Select model'}
-            {includeEffort && (
-              <span className="text-muted-foreground">
-                {' · '}{EFFORT_LABELS[effort]}
-                {includeSpeed && speed !== 'normal' ? ` · ${SPEED_LABELS[speed]}` : ''}
-              </span>
-            )}
-          </span>
-          <ChevronDown className="h-3.5 w-3.5" />
-        </Button>
-      </PopoverTrigger>
+      <ModelTooltip line={resolved && triggerLabel ? `${triggerLabel}${isLatestSelected ? ` (${resolved.label})` : ''}${detail}` : undefined} connection={connection}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            className="h-[34px] gap-1.5 px-2 text-xs font-medium"
+            aria-label={`Model: ${triggerLabel ?? 'select'}. Click to change.`}
+            data-testid="settings-model-trigger"
+          >
+            <span>
+              {triggerLabel ?? 'Select model'}
+              {includeEffort && (
+                <span className="text-muted-foreground">
+                  {detail}
+                </span>
+              )}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5" />
+          </Button>
+        </PopoverTrigger>
+      </ModelTooltip>
       <PopoverContent
         className="group/picker flex w-64 flex-col px-1 py-2 data-[side=bottom]:flex-col-reverse"
         align={align}
