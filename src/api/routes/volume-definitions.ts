@@ -3,6 +3,9 @@ import { DropboxMountableVolume } from '@shared/lib/volumes/dropbox-mountable-vo
 import { requireDropboxAccount } from '@shared/lib/volumes/dropbox-client'
 import { DropboxUnavailableError } from '@shared/lib/volumes/dropbox-error'
 import { dropboxBrowseSchema, dropboxFoldersSchema } from '@shared/lib/volumes/dropbox-schema'
+import { driveChildren, driveTopLevel } from '@shared/lib/volumes/google-drive-mountable-volume'
+import { requireGoogleDriveAccount } from '@shared/lib/volumes/google-drive-client'
+import { googleDriveBrowseSchema, googleDriveFoldersSchema } from '@shared/lib/volumes/google-drive-schema'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { z } from 'zod'
 import { Authenticated } from '../middleware/auth'
@@ -37,6 +40,17 @@ routes.get('/dropbox/folders', async c => {
   })
   if (!result.success) throw new DropboxUnavailableError()
   return c.json(result.data)
+})
+
+// Without a folder: My Drive and each shared drive, the picker's top level. With one: its subfolders.
+routes.get('/googledrive/folders', async c => {
+  const { accountId, folderId } = googleDriveBrowseSchema.parse(c.req.query())
+  await requireGoogleDriveAccount(accountId, volumeViewer(c))
+  if (folderId) {
+    const folders = await driveChildren(accountId, folderId, { foldersOnly: true })
+    return c.json(googleDriveFoldersSchema.parse({ folders: folders.map(({ id, name }) => ({ id, name })) }))
+  }
+  return c.json(googleDriveFoldersSchema.parse({ folders: await driveTopLevel(accountId) }))
 })
 
 routes.get('/', async c => c.json(await listVolumeDefinitions(volumeViewer(c))))

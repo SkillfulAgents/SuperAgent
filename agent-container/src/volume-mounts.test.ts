@@ -65,6 +65,9 @@ describe('remote mount cache policy', () => {
     expect(option('--vfs-handle-caching')).toBe('0')
     expect(option('--attr-timeout')).toBe('0s')
     expect(option('--vfs-write-back')).toBe('1s')
+    expect(args).not.toContain('--ignore-size')
+    expect(rcloneMountArgs('drive', '/mounts/drive', 'http://host/api', 'remote', false, true)).toContain('--ignore-size')
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'd', name: 'drive', cacheMode: 'remote', ignoreSize: true }]))[0]?.ignoreSize).toBe(true)
   })
 })
 

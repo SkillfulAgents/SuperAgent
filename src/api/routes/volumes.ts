@@ -51,7 +51,7 @@ async function serve(c: Context<Env>, volumeId: string): Promise<Response> {
       }
       case 'PUT':
         allowStreamingUpload(c.env?.incoming)
-        await ops.write(path, c.req.raw.body ?? new Blob([]).stream())
+        await ops.write(path, c.req.raw.body ?? new Blob([]).stream(), c.req.raw.signal)
         return c.body(null, 201)
       case 'DELETE':
         await ops.delete(path)

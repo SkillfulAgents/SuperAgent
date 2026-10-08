@@ -39,6 +39,8 @@ export abstract class BaseMountableVolume<C> {
   abstract readonly cacheMode: VolumeCacheMode
   /** Case semantics belong to the source, independently of its cache policy. */
   readonly caseInsensitive: boolean = false
+  /** Whether the source can store an upload at a size other than the bytes sent. */
+  readonly ignoreSize: boolean = false
 
   constructor(readonly id: string, readonly name: string, readonly config: C) {}
 
@@ -61,8 +63,8 @@ export abstract class BaseMountableVolume<C> {
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */
   health(): Promise<VolumeEntry> { return this.stat('') }
   abstract read(path: string): Promise<VolumeFile>
-  /** Replace a whole file. */
-  abstract write(path: string, body: ReadableStream<Uint8Array>): Promise<void>
+  /** Replace a whole file. `signal` aborts when the client stops waiting for the write. */
+  abstract write(path: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void>
   /** Remove a file or an empty folder. */
   abstract delete(path: string): Promise<void>
   abstract mkdir(path: string): Promise<void>

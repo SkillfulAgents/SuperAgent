@@ -1,5 +1,5 @@
 /** Every source a volume can come from. A new source adds its id here. */
-export const VOLUME_TYPES = ['local', 'dropbox'] as const
+export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive'] as const
 export type VolumeType = (typeof VOLUME_TYPES)[number]
 
 /** A volume as stored: `type` picks its implementation, and only that type's schema reads `config`. */
@@ -47,6 +47,8 @@ export interface ContainerVolume {
   cacheMode?: VolumeCacheMode
   /** Lets rclone recognize aliases of the same file before replacing a target. */
   caseInsensitive?: boolean
+  /** Lets rclone keep a file whose stored size differs from the bytes it sent. */
+  ignoreSize?: boolean
 }
 
 /** Why a volume is not in the container. */

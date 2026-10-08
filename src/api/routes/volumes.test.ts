@@ -26,7 +26,7 @@ import type { BaseMountableVolume, VolumeFile } from '@shared/lib/volumes/base-m
 import volumes from './volumes'
 
 function volumeReading(file: VolumeFile): BaseMountableVolume<unknown> {
-  return { id: 'stand-in', name: 'stand-in', type: 'local', cacheMode: 'local', caseInsensitive: false, config: null, mountPath: '/mounts/stand-in', hostPath: null, sourceLabel: null, list: vi.fn(), stat: vi.fn(), health: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
+  return { id: 'stand-in', name: 'stand-in', type: 'local', cacheMode: 'local', caseInsensitive: false, ignoreSize: false, config: null, mountPath: '/mounts/stand-in', hostPath: null, sourceLabel: null, list: vi.fn(), stat: vi.fn(), health: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
 }
 
 function request(url: string, init: RequestInit & { headers?: Record<string, string> } = {}) {
