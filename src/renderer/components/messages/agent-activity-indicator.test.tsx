@@ -65,7 +65,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 // from its blocking projection (same predicate as the server status).
 type MockPendingRequest = { id: string; kind: string; blocking: boolean; autoApproved: boolean }
 let mockPendingUserRequests: MockPendingRequest[] = []
-vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
+vi.mock('@shared/lib/tools/requests/use-pending-user-requests', () => ({
   usePendingUserRequests: () => ({ data: mockPendingUserRequests }),
 }))
 

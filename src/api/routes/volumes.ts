@@ -9,7 +9,8 @@ type Env = { Variables: { agentSlug: string } }
 
 const volumes = new Hono<Env>()
 
-// IsAgent: the container's proxy token names the agent; a volume is served only to the agent it is attached to.
+// The URL id names an attachment. The agent token and attachment must match;
+// a definition being public never grants an unattached agent WebDAV access.
 volumes.use('*', IsAgent())
 
 async function serve(c: Context<Env>, volumeId: string): Promise<Response> {

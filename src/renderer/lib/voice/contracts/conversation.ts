@@ -19,11 +19,17 @@ export interface VoiceAgentState {
   awaiting: boolean
   toolsUsed: boolean
 }
+/** Display context only; never includes a submitted answer or credential. */
+export interface VoiceInputRequest {
+  id: string
+  message: string
+}
 export type VoiceAgentEvent =
   | { type: 'state'; state: VoiceAgentState }
   | { type: 'reset' }
   | { type: 'reply'; segment: number; text: string; complete: boolean }
   | { type: 'error'; message: string }
+  | { type: 'input-requests'; requests: readonly VoiceInputRequest[] }
 
 export interface VoiceConversationSnapshot {
   phase: VoiceModePhase

@@ -58,7 +58,7 @@ import {
   type SessionDashboardDispatch,
 } from '@shared/lib/dashboard-dispatch-schema'
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
@@ -71,7 +71,7 @@ import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
-} from '@shared/lib/user-input/request-schema'
+} from '@shared/lib/tools/requests/request-schema'
 import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
@@ -81,7 +81,10 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
+import { addMountSchema } from '@shared/lib/services/mount-schema'
+import { VolumeError } from '@shared/lib/services/volume-service'
+import { volumeViewer } from '../lib/volume-access'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -6302,15 +6305,20 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { type, config, restart } = await c.req.json<{ type: string; config: unknown; restart?: boolean }>()
-
     let mount
+    let restart: boolean | undefined
     try {
-      mount = await addMount(agentSlug, type, config)
-    } catch (err: any) {
-      return c.json({ error: err.message || 'Invalid path' }, 400)
+      const input = addMountSchema.parse(await c.req.json())
+      restart = input.restart
+      mount = 'volumeId' in input
+        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
+        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
+    } catch (err) {
+      if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
+      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
+      throw err
     }
-    const summary = volumeSummary(mount)
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
 
     if (restart) {
       const cachedInfo = agentRegistry.get(agentSlug).container.status()

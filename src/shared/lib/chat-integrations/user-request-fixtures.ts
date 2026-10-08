@@ -8,7 +8,7 @@
  * the real MessagePersister.)
  */
 
-import { pendingUserInputRequestSchema } from '@shared/lib/user-input/request-schema'
+import { pendingUserInputRequestSchema } from '@shared/lib/tools/requests/request-schema'
 
 /** The exact event the persister puts on the wire when a request opens. */
 export function createdEvent(

@@ -19,6 +19,8 @@ export interface ProviderErrorComponentProps {
   live?: boolean
   /** When true, the card shows Dismiss. Default false. */
   dismissible?: boolean
+  /** Present only on a current session's error, where recovery can continue that chat. */
+  session?: { sessionId: string; agentSlug: string }
 }
 
 export const DEFAULT_ERROR_COMPONENT = 'default'

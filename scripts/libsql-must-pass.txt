@@ -47,3 +47,10 @@ src/shared/lib/db/data-migrations/0005-rename-claude-md-to-agents-md.test.ts
 src/shared/lib/services/user-settings-experiments.test.ts
 src/shared/lib/services/todo-service.test.ts
 src/api/routes/todos.test.ts
+src/shared/lib/services/mount-service.test.ts
+src/shared/lib/services/mount-service.atomic.test.ts
+src/shared/lib/services/volume-service.test.ts
+src/shared/lib/db/data-migrations/0006-import-volume-definitions.test.ts
+src/api/routes/volumes.test.ts
+src/api/routes/volume-definitions.test.ts
+src/shared/lib/volumes/volumes.e2e.test.ts

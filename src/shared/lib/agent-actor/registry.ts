@@ -1,6 +1,6 @@
 import { containerHost } from '@shared/lib/container/container-host'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'

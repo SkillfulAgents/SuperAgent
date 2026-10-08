@@ -3,6 +3,11 @@ import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+
+let handle: TestDatabase
+vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 
 const mockValidateProxyToken = vi.fn()
 vi.mock('@shared/lib/proxy/token-store', () => ({
@@ -44,11 +49,14 @@ describe('/api/volumes', () => {
     folder = path.join(tmpDir, 'notes')
     fs.mkdirSync(folder)
     fs.writeFileSync(path.join(folder, 'a.txt'), 'hello world')
-    volumeId = (await addMount('agent-a', 'local', { path: folder })).id
+    handle = await createTestDatabase()
+    await handle.db.insert(agents).values(['agent-a', 'agent-b'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
+    volumeId = (await addMount('agent-a', 'local', { path: folder }, { userId: null, admin: true })).id
     mockValidateProxyToken.mockResolvedValue('agent-a')
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await handle.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
   })
@@ -60,8 +68,8 @@ describe('/api/volumes', () => {
   })
 
   it('403s a row of the agent of a type this version does not know', async () => {
-    const file = path.join(tmpDir, 'agents', 'agent-a', 'mounts.json')
-    fs.writeFileSync(file, JSON.stringify([...JSON.parse(fs.readFileSync(file, 'utf-8')), { id: 'drive', name: 'drive', type: 'not-a-type', config: {} }]))
+    await handle.db.insert(volumeDefinitions).values({ id: 'drive', name: 'drive', type: 'not-a-type', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
+    await handle.db.insert(agentVolumes).values({ id: 'drive', name: 'drive', volumeId: 'drive', agentSlug: 'agent-a', createdAt: new Date() }).run()
     expect((await request('drive/', { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)
   })
 

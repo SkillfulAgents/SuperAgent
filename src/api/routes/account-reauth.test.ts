@@ -45,7 +45,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() })
 
 import accountReauth from './account-reauth'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }

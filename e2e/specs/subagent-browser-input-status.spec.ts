@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { mockBrowserStream } from '../helpers/browser-stream'
 import {
   createAgent,
   gotoAgentHome,
@@ -49,6 +50,52 @@ test.describe('Subagent Browser Input Status', () => {
 
     // THE BUG: agent status stayed 'working' for subagent-originated requests
     await agentPage.waitForStatus('awaiting_input', 15000)
+  })
+
+  test('preview and thread actions stay in sync across consecutive subagent requests', async ({ page }, testInfo) => {
+    const sessionId = page.url().match(/\/sessions\/([^/?#]+)/)?.[1]
+    if (!sessionId) throw new Error('Expected an established session')
+    await page.route('**/api/agents/*/browser/status', (route) =>
+      route.fulfill({ json: { active: true, sessionId } }),
+    )
+    await mockBrowserStream(page, 800, 450)
+
+    const preview = page.getByTestId('browser-drawer-panel')
+    await expect(preview).toBeVisible()
+    // This node must survive both requests: remounting the tray masked the bug.
+    await preview.evaluate((node) => node.setAttribute('data-request-test', 'same-preview'))
+
+    for (const action of ['browser-tray-complete-btn', 'browser-input-decline-btn']) {
+      await sessionPage.sendMessage(`subagent browser input ${uniqueSuffix(testInfo)}`)
+      await expect(page.getByTestId('browser-input-request')).toBeVisible({ timeout: 15000 })
+      await expect(preview).toHaveAttribute('data-request-test', 'same-preview')
+      const controls = [
+        page.getByTestId('browser-tray-complete-btn'),
+        page.getByTestId('browser-tray-decline-btn'),
+        page.getByTestId('browser-input-complete-btn'),
+        page.getByTestId('browser-input-decline-btn'),
+      ]
+      for (const control of controls) await expect(control).toBeEnabled()
+
+      let release!: () => void
+      const held = new Promise<void>((resolve) => { release = resolve })
+      const decisionRoute = '**/api/agents/*/sessions/*/complete-browser-input'
+      await page.route(decisionRoute, async (route) => {
+        await held
+        await route.continue()
+      })
+      try {
+        await page.getByTestId(action).click()
+        for (const control of controls) await expect(control).toBeDisabled()
+      } finally {
+        release()
+      }
+
+      await expect(page.getByTestId('browser-input-request')).toHaveCount(0, { timeout: 10000 })
+      await expect(page.getByTestId('browser-tray-complete-btn')).toHaveCount(0)
+      await agentPage.waitForStatus('idle', 15000)
+      await page.unroute(decisionRoute)
+    }
   })
 
   test('completing the request clears awaiting while the subagent resumes, then the session settles', async ({ page }, testInfo) => {

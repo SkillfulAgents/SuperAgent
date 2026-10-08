@@ -1,17 +1,6 @@
 import { z } from 'zod'
-import { VOLUME_TYPES, type StoredVolume } from '@shared/lib/types/mount'
-import type { LocalVolumeConfig } from '@shared/lib/volumes/local-mountable-volume'
-
-/**
- * Schema for a single stored volume in mounts.json, applied per row at the file
- * boundary. A row it refuses is skipped on read and written back as it was.
- */
-export const storedVolumeSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  type: z.enum(VOLUME_TYPES),
-  config: z.unknown(),
-}) satisfies z.ZodType<StoredVolume>
+import type { StoredVolume } from '@shared/lib/types/mount'
+import type { LocalVolumeConfig } from '@shared/lib/volumes/volume-config-schema'
 
 // A row written before volumes had a type is a local folder, named by its container path.
 const folderRowSchema = z
@@ -21,11 +10,31 @@ const folderRowSchema = z
     return { id, name: containerPath.replace(/^\/mounts\//, ''), type: 'local', config }
   })
 
-/** One row of mounts.json: a stored volume, or a folder row from before types. */
-export const storedVolumeRowSchema = z.union([storedVolumeSchema, folderRowSchema])
-
-/** The id and name of any row with them, a row of a type this version does not know included. */
-export const rowIdentitySchema = z.object({ id: z.string(), name: z.string() })
-
 /** mounts.json as a list of rows, each parsed on its own so a row this version cannot read costs only itself. */
 export const mountsFileSchema = z.array(z.unknown())
+
+export const volumeNameSchema = z.string().min(1).max(255)
+  .refine(name => name !== '.' && name !== '..' && !/[/\\\0]/.test(name), 'Use a single folder name')
+
+export const createVolumeSchema = z.object({
+  type: z.string(),
+  config: z.unknown(),
+  name: volumeNameSchema.optional(),
+  visibility: z.enum(['private', 'public']).optional(),
+}).strict()
+
+export const updateVolumeSchema = z.object({
+  name: volumeNameSchema,
+  visibility: z.enum(['private', 'public']).optional(),
+}).strict()
+
+export const addMountSchema = z.union([
+  z.object({ volumeId: z.string().min(1), restart: z.boolean().optional() }).strict(),
+  createVolumeSchema.extend({ restart: z.boolean().optional() }),
+])
+
+/** Preserve future source types during import without interpreting their config. */
+export const legacyVolumeRowSchema = z.union([
+  z.object({ id: z.string().min(1), name: z.string(), type: z.string(), config: z.json() }),
+  folderRowSchema,
+])

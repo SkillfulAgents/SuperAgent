@@ -230,6 +230,8 @@ RUN install -m 4755 /usr/bin/fusermount3 /usr/local/bin/fusermount3
 # fusermount3 unmounts for a non-root user only with /etc/mtab, which Docker
 # creates at run time and Apple Container does not.
 RUN ln -sf /proc/self/mounts /etc/mtab
+# Volumes show every file as executable, so git in a repo under /mounts ignores the executable bit.
+COPY --chown=root:root git.sh /usr/local/bin/git
 COPY --chown=root:root start.sh /usr/local/bin/gamut-start
 
 # Switch to non-root user

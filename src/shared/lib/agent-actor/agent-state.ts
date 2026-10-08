@@ -8,7 +8,7 @@
  * (`userInputRequestManager` and friends) reach them through the directory
  * the registry attaches.
  */
-import { AgentInputRequests, type UserInputTransitionSink } from '@shared/lib/user-input/agent-input-requests'
+import { AgentInputRequests, type UserInputTransitionSink } from '@shared/lib/tools/requests/agent-input-requests'
 import { AgentReviews } from '@shared/lib/proxy/agent-reviews'
 import {
   createAccountReauthWaits,

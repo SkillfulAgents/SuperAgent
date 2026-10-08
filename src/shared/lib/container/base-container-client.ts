@@ -35,7 +35,7 @@ import type {
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { z } from 'zod'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
-import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
+import { getAgentCapabilitySettings, getGlobalInstructions, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { getActiveWebProvider } from '../web-provider'
@@ -1286,6 +1286,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // caller inherits them. Never taken from the request — a caller (or the
       // agent itself) must not be able to loosen its own policy.
       const capabilityPolicies = getAgentCapabilitySettings()
+      // Same per-session resolution for the org-wide guidance in the prompt.
+      const globalInstructions = getGlobalInstructions()
 
       const controller = new AbortController()
       timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -1319,6 +1321,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
+          globalInstructions,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
             llmRuntime: warmRuntime,
             llmProviderId: warmRuntime.llmProviderId,
@@ -1487,6 +1490,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // Refreshed on every message so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
     const capabilityPolicies = getAgentCapabilitySettings()
+    // Also refreshed per message; a change re-queries so the prompt picks it up.
+    const globalInstructions = getGlobalInstructions()
 
     try {
       const controller = new AbortController()
@@ -1507,6 +1512,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
             ...(isAutomated !== undefined ? { isAutomated } : {}),
             capabilityPolicies,
+          globalInstructions,
           }),
           signal: controller.signal,
         }

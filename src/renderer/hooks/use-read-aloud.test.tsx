@@ -785,3 +785,57 @@ describe('useSpokenWordHighlight with a custom cursor and live spans', () => {
     expect(lit()).toEqual(['Hi', 'there', 'friend'])
   })
 })
+
+describe('readAloud unlocked audio output', () => {
+  const contexts: { state: string; close: ReturnType<typeof vi.fn> }[] = []
+  beforeEach(() => {
+    contexts.length = 0
+    players.length = 0
+    apiFetch.mockReset()
+    readAloud.stop()
+    vi.stubGlobal('AudioContext', class {
+      state = 'running'
+      destination = {}
+      close = vi.fn(async () => { this.state = 'closed' })
+      resume = vi.fn(async () => {})
+      constructor() { contexts.push(this) }
+    })
+  })
+  afterEach(() => {
+    readAloud.stop()
+    readAloud.releaseUnlockedAudio()
+    vi.unstubAllGlobals()
+  })
+
+  // An open context keeps Safari's tab speaker icon on.
+  it('releaseUnlockedAudio() closes a context nothing adopted', () => {
+    readAloud.unlockAudio()
+    expect(contexts).toHaveLength(1)
+    readAloud.releaseUnlockedAudio()
+    expect(contexts[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('Live taking the audio closes the unlocked context', () => {
+    readAloud.unlockAudio()
+    const release = readAloud.suspend()
+    expect(contexts[0].close).toHaveBeenCalledOnce()
+    release()
+  })
+
+  it('a speed change with nothing to restart closes the context it unlocked', () => {
+    readAloud.unlockAudio()
+    readAloud.restart()
+    expect(contexts[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('a stream adopts the unlocked context rather than closing it', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'openai', connection: { transport: 'http' }, voice: 'marin', speed: 1 }))
+    readAloud.unlockAudio()
+    readAloud.beginStream('s1')
+    readAloud.pushStream('s1', 'Hello there. ')
+    await vi.waitFor(() => expect(players).toHaveLength(1))
+    readAloud.releaseUnlockedAudio()
+    expect(contexts).toHaveLength(1)
+    expect(contexts[0].close).not.toHaveBeenCalled()
+  })
+})

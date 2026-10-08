@@ -40,13 +40,25 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
   return [
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
+    // Plain WebDAV gives rclone no modification time, so a cached copy is checked against the app by size alone and a
+    // same-size edit on the host is missed. The rclone vendor setting reads modification times. The app ignores the
+    // X-OC-Mtime header it adds to uploads.
+    '--webdav-vendor', 'rclone',
+    // rclone waits 10ms between WebDAV requests by default, while the app answers in about 1ms, so git on a mount
+    // ran 15x slower than through a bind mount. Not 0, so retries after a server error still back off. Retries
+    // back off from that 1ms, so 13 of them ride out an app restart as long as the default 10 did from 10ms.
+    '--webdav-pacer-min-sleep', '1ms', '--low-level-retries', '13',
     '--vfs-cache-mode', 'writes',
-    '--vfs-write-back', '0s',
+    // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
+    // downloading the new contents.
+    '--vfs-handle-caching', '0',
+    // Every upload goes through rclone's queue, so a rename made right after close (as git and editors do) carries onto it.
+    '--vfs-write-back', '1s',
     '--dir-cache-time', '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
-    // Shutdown asks this socket which uploads are still running. Any claude process can use it, including to quit
-    // rclone, which claude can already do by killing it.
+    // Shutdown reads the upload queue through this socket and starts what is waiting. Any claude process can use it,
+    // including to quit rclone, which claude can already do by killing it.
     '--rc', '--rc-addr', `unix://${controlSocket(volumeId)}`, '--rc-no-auth',
   ];
 }
@@ -101,25 +113,52 @@ export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
   });
 }
 
-function uploadsRunning(volumeId: string): Promise<string[]> {
+function rc(volumeId: string, command: string, params: object = {}): Promise<unknown> {
   return new Promise((resolve) => {
-    const req = http.request({ socketPath: controlSocket(volumeId), path: '/core/stats', method: 'POST' }, (res) => {
+    const req = http.request({ socketPath: controlSocket(volumeId), path: `/${command}`, method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => resolve((JSON.parse(body).transferring ?? []).map((t: { name: string }) => t.name)));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          resolve(body);
+        }
+      });
+      res.on('error', () => resolve(undefined));
     });
-    // No answer means rclone is gone, so nothing is uploading.
-    req.on('error', () => resolve([]));
-    req.end();
+    // No answer means rclone is gone.
+    req.on('error', () => resolve(undefined));
+    req.end(JSON.stringify(params));
   });
 }
 
-// A closed file keeps uploading in the background, and rclone drops that upload when stopped.
-// Returns what was still uploading once the deadline passes.
+const uploadQueueSchema = z.object({
+  queue: z.array(z.object({ id: z.number(), name: z.string(), expiry: z.number(), uploading: z.boolean() })),
+});
+
+// Starts every waiting upload now rather than after the write-back delay, and returns all still queued or uploading.
+async function startQueuedUploads(volumeId: string): Promise<string[]> {
+  const reply = await rc(volumeId, 'vfs/queue');
+  // A gone rclone has nothing left to upload.
+  if (reply === undefined) return [];
+  const parsed = uploadQueueSchema.safeParse(reply);
+  if (!parsed.success) {
+    console.error('[volumes] Unexpected vfs/queue reply:', reply);
+    return [];
+  }
+  const { queue } = parsed.data;
+  const waiting = queue.filter((u) => !u.uploading && u.expiry > 0);
+  await Promise.all(waiting.map((u) => rc(volumeId, 'vfs/queue-set-expiry', { id: u.id, expiry: 0 })));
+  return queue.map((u) => u.name);
+}
+
+// A closed file uploads in the background, and rclone drops that upload when stopped.
+// Returns what was still pending once the deadline passes.
 export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number): Promise<string[]> {
   let pending: string[] = [];
   while (Date.now() < deadline) {
-    // A just-closed file shows up as a transfer a few ms later, so an answer right away can miss it.
+    // FUSE queues a file after close() has returned, so an answer right away can miss it.
     await new Promise((resolve) => setTimeout(resolve, 250));
     pending = await uploads();
     if (pending.length === 0) return [];
@@ -129,7 +168,7 @@ export async function waitForUploads(uploads: () => Promise<string[]>, deadline:
 
 export async function unmountVolumes(deadline: number): Promise<void> {
   await Promise.all(mounted.map(async ({ volumeId, name, rclone }) => {
-    const pending = await waitForUploads(() => uploadsRunning(volumeId), deadline);
+    const pending = await waitForUploads(() => startQueuedUploads(volumeId), deadline);
     if (pending.length > 0) console.error(`[volumes] Unmounting /mounts/${name} with uploads unfinished:`, pending);
     // SIGTERM makes rclone unmount.
     const exited = new Promise((resolve) => rclone.once('exit', resolve));

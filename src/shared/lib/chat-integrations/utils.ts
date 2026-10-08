@@ -3,7 +3,7 @@
  */
 
 import type { AppLinkContext } from '../agent-integrations/app-link'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 
 // Event types that need the desktop app (OAuth callbacks, browser input, script approval, etc.).
 // secret_request / file_request are here too: neither is wired to complete in chat, and a secret

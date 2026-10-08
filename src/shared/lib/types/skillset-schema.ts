@@ -250,6 +250,8 @@ export const PlatformAccountInfoSchema = z.object({
 })
 export type ParsedPlatformAccountInfo = z.infer<typeof PlatformAccountInfoSchema>
 
+export type SubscriptionCreditScope = 'seat' | 'org'
+
 // Shape returned by the platform proxy's `GET /v1/billing` route. Validated at
 // the boundary before it's surfaced to the renderer. `configured: false` means
 // the org has no billing workspace yet.
@@ -259,6 +261,13 @@ export const PlatformBillingInfoSchema = z.object({
     status: z.string().nullish().transform((v) => v ?? null),
     paymentStatus: z.string().nullish().transform((v) => v ?? null),
     currentPeriodEnd: z.string().nullish().transform((v) => v ?? null),
+    // Who the monthly subscription credit belongs to. `org` = one pool shared by
+    // every member (`seat` then carries the org's numbers, the same for everyone).
+    // Missing (older proxy) or unknown values read as the per-seat default.
+    creditScope: z
+      .string()
+      .nullish()
+      .transform((v): SubscriptionCreditScope => (v === 'org' ? 'org' : 'seat')),
   }),
   seat: z
     .object({

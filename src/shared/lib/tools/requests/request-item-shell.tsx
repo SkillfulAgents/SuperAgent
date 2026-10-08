@@ -1,0 +1,229 @@
+import { Children, isValidElement, type ReactNode } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
+import { linkify } from '@renderer/lib/linkify'
+import { RequestItemActions, RequestItemErrorContext } from './request-item-actions'
+import { usePagination } from './pending-request-stack'
+import { StopSessionButton } from '@renderer/components/messages/stop-session-button'
+
+export type RequestTheme = 'blue' | 'orange'
+
+export const THEME_CLASSES: Record<RequestTheme, { waitBadge: string }> = {
+  blue: { waitBadge: 'text-blue-600 dark:text-blue-400' },
+  orange: { waitBadge: 'text-orange-600 dark:text-orange-400' },
+}
+
+// Pending requests sit on top of the scrolling transcript. Keep every shell
+// fully opaque so message content cannot bleed through interactive controls.
+const REQUEST_CARD_CLASS = 'border rounded-[12px] bg-card shadow-md text-sm'
+
+// When the title and the header controls do not fit on one line, the controls wrap above the title.
+// With the wrap reversed, items-end is the top edge, so a single line still aligns to the top.
+const HEADER_ROW_CLASS = 'flex flex-wrap-reverse items-end gap-x-3 gap-y-2'
+
+interface CompletedConfig {
+  icon: ReactNode
+  label: ReactNode
+  statusLabel: string
+  isSuccess: boolean
+}
+
+interface ReadOnlyConfig {
+  description?: ReactNode
+  extraContent?: ReactNode
+}
+
+interface RequestItemShellProps {
+  title: ReactNode
+  /** Optional helper text rendered directly under the title with consistent
+   *  typography and spacing (text-xs muted, mt-1). Omit to skip. */
+  subtitle?: ReactNode
+  icon?: ReactNode
+  theme: RequestTheme
+
+  completed?: CompletedConfig | null
+  readOnly?: ReadOnlyConfig | false
+
+  waitingText?: string
+  headerRight?: ReactNode
+  children: ReactNode
+  error?: string | null
+
+  /** When provided alongside `agentSlug`, shows an X button next to the
+   *  header pagination/right area that interrupts the session. */
+  sessionId?: string
+  agentSlug?: string
+
+  'data-testid'?: string
+  'data-status'?: string
+  'data-secret-name'?: string
+}
+
+export function RequestItemShell({
+  title,
+  subtitle,
+  icon,
+  theme,
+  completed,
+  readOnly,
+  waitingText = 'Waiting for response',
+  headerRight,
+  children,
+  error,
+  sessionId,
+  agentSlug,
+  ...dataAttrs
+}: RequestItemShellProps) {
+  const themeClasses = THEME_CLASSES[theme]
+  const pagination = usePagination()
+
+  if (completed) {
+    return (
+      <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
+        <div className="flex items-center gap-2 p-4">
+          {completed.icon}
+          <span className="text-sm">{completed.label}</span>
+          <span className={cn('ml-auto text-xs', completed.isSuccess ? 'text-green-600' : 'text-red-600')}>
+            {completed.statusLabel}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  const titleNode = (
+    // 8rem: a lone close button fits beside the title, the wider paging wraps above it.
+    <div className="flex min-w-0 grow basis-32 items-start gap-2">
+      {icon && (
+        <span className="mt-0.5 shrink-0 text-muted-foreground [&_svg]:h-4 [&_svg]:w-4">
+          {icon}
+        </span>
+      )}
+      <div className="flex-1 min-w-0 break-words text-sm font-medium leading-5 text-foreground whitespace-pre-line">
+        {typeof title === 'string' ? linkify(title) : title}
+      </div>
+    </div>
+  )
+
+  const subtitleNode = subtitle ? (
+    <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>
+  ) : null
+
+  if (readOnly) {
+    const roConfig = typeof readOnly === 'object' ? readOnly : {}
+    return (
+      <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
+        <div className="flex items-start gap-3 p-4">
+          <div className="flex-1 min-w-0">
+            <div className={HEADER_ROW_CLASS}>
+              {titleNode}
+              <span className={cn('ml-auto text-xs shrink-0', themeClasses.waitBadge)}>
+                {waitingText}
+              </span>
+            </div>
+            {subtitleNode}
+            {roConfig.description}
+            {roConfig.extraContent}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const paginationControls = pagination && pagination.count > 1 ? (
+    <div
+      className="inline-flex items-center gap-0.5 px-0.5 text-foreground"
+      data-testid="request-stack-pagination"
+      data-current-index={pagination.currentIndex}
+      data-count={pagination.count}
+    >
+      <button
+        type="button"
+        onClick={pagination.goPrev}
+        disabled={pagination.currentIndex === 0}
+        data-testid="request-stack-prev"
+        className={cn(
+          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+          pagination.currentIndex === 0 ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
+        )}
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+      </button>
+      <span className="min-w-10 text-center text-xs font-medium">
+        {pagination.currentIndex + 1} of {pagination.count}
+      </span>
+      <button
+        type="button"
+        onClick={pagination.goNext}
+        disabled={pagination.currentIndex === pagination.count - 1}
+        data-testid="request-stack-next"
+        className={cn(
+          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+          pagination.currentIndex === pagination.count - 1 ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
+        )}
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  ) : null
+
+  const headerRightContent = paginationControls ?? headerRight
+  const showStopButton = !!(sessionId && agentSlug)
+
+  // Action rows used to be sticky children of this scroll container. Safari
+  // can fail to paint that combination when the whole request card lives in
+  // the absolutely-positioned composer overlay. Split direct action rows into
+  // a real, non-scrolling footer instead. Inline action rows belong to their
+  // surrounding content and deliberately stay in the scrolling body.
+  const childNodes = Children.toArray(children)
+  const bodyChildren: ReactNode[] = []
+  const footerActions: ReactNode[] = []
+  for (const child of childNodes) {
+    if (
+      isValidElement<{ inline?: boolean }>(child) &&
+      child.type === RequestItemActions &&
+      !child.props.inline
+    ) {
+      footerActions.push(child)
+    } else {
+      bodyChildren.push(child)
+    }
+  }
+
+  return (
+    <div
+      className={cn('flex max-h-[50vh] flex-col overflow-hidden', REQUEST_CARD_CLASS)}
+      {...dataAttrs}
+    >
+      <div className="min-h-0 overflow-y-auto p-4" data-request-item-body>
+        <div className="flex-1 min-w-0">
+          <div className={HEADER_ROW_CLASS}>
+            {titleNode}
+            {(headerRightContent || showStopButton) && (
+              <div className="ml-auto flex items-center shrink-0">
+                {headerRightContent}
+                {showStopButton && (
+                  <>
+                    {headerRightContent && (
+                      <div className="ml-[5px] mr-[9px] h-4 w-px bg-border" aria-hidden />
+                    )}
+                    <StopSessionButton sessionId={sessionId!} agentSlug={agentSlug!} />
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          {subtitleNode}
+          <RequestItemErrorContext.Provider value={error ?? null}>
+            {bodyChildren}
+          </RequestItemErrorContext.Provider>
+        </div>
+      </div>
+      {footerActions.length > 0 && (
+        <RequestItemErrorContext.Provider value={error ?? null}>
+          {footerActions}
+        </RequestItemErrorContext.Provider>
+      )}
+    </div>
+  )
+}

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { UserInputRequestKind } from '@shared/lib/user-input/request-schema'
+import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.

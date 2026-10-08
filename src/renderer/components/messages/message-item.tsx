@@ -128,6 +128,7 @@ const MARKDOWN_COMPONENTS: Components = {
 }
 
 const MermaidDiagram = lazy(() => import('./mermaid-diagram').then(m => ({ default: m.MermaidDiagram })))
+const MathBlock = lazy(() => import('./math-block').then(m => ({ default: m.MathBlock })))
 
 function hastText(node: ElementContent): string {
   if (node.type === 'text') return node.value
@@ -143,22 +144,30 @@ function fenceSource(pre: ElementContent | undefined, languages: string[]): stri
   return hastText(code)
 }
 
-// Only settled blocks draw diagrams or run HTML: a fence still streaming in the
+const RENDERED_FENCES = [
+  { languages: ['language-mermaid'], Render: MermaidDiagram },
+  { languages: ['language-math'], Render: MathBlock },
+]
+
+// Only settled blocks render diagrams, equations, or HTML: a fence still streaming in the
 // tail would re-render incomplete output on every delta, so it stays a code block.
 const settledPre = (htmlPreview: boolean): Components['pre'] =>
   function SettledPre({ children, node }) {
   const codeBlock = <CodeBlock>{children}</CodeBlock>
   const html = htmlPreview ? fenceSource(node, ['language-html', 'language-htm']) : null
   if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />
-  const source = fenceSource(node, ['language-mermaid'])
-  if (source === null) return codeBlock
-  return (
-    <ErrorBoundary fallback={codeBlock}>
-      <Suspense fallback={codeBlock}>
-        <MermaidDiagram source={source} fallback={codeBlock} />
-      </Suspense>
-    </ErrorBoundary>
-  )
+  for (const { languages, Render } of RENDERED_FENCES) {
+    const source = fenceSource(node, languages)
+    if (source === null) continue
+    return (
+      <ErrorBoundary fallback={codeBlock}>
+        <Suspense fallback={codeBlock}>
+          <Render source={source} fallback={codeBlock} />
+        </Suspense>
+      </ErrorBoundary>
+    )
+  }
+  return codeBlock
 }
 
 const SETTLED_MARKDOWN_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, pre: settledPre(false) }

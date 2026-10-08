@@ -991,4 +991,49 @@ describe('MessageItem', () => {
       expect(wheels).toEqual([-120])
     })
   })
+
+  describe('math code fences', () => {
+    const fence = (source: string) => '```math\n' + source + '\n```'
+    const EULER = fence('e^{i\\pi} + 1 = 0')
+
+    it('renders a settled math fence as a display equation', async () => {
+      const msg = createAssistantMessage({ content: { text: `Euler's identity:\n\n${EULER}` } })
+      render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('.katex-display')).not.toBeNull()
+      expect(block.querySelector('annotation')).toHaveTextContent('e^{i\\pi} + 1 = 0')
+      expect(block.closest('pre')).toBeNull()
+      expect(screen.getByText("Euler's identity:")).toBeInTheDocument()
+    })
+
+    it('keeps invalid LaTeX as a code block', async () => {
+      const broken = fence('\\frac{1}{')
+      const msg = createAssistantMessage({ content: { text: `${EULER}\n\n${broken}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      await screen.findByTestId('math-block')
+      expect(screen.getAllByTestId('math-block')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('\\frac{1}{')
+    })
+
+    it('does not turn links into anchors', async () => {
+      const msg = createAssistantMessage({ content: { text: fence('\\href{https://example.com}{x}') } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('a')).toBeNull()
+      expect(container.querySelector('a[href="https://example.com"]')).toBeNull()
+    })
+
+    it('keeps the fence still streaming in as a code block', async () => {
+      const text = EULER + '\n\n```math\na^2 + b^2'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      await screen.findByTestId('math-block')
+      expect(screen.getAllByTestId('math-block')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('a^2 + b^2')
+    })
+  })
 })

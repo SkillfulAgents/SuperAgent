@@ -533,6 +533,32 @@ export const agents = sqliteTable('agents', {
   workspaceHandle: text('workspace_handle'),
 })
 
+// Reusable sources. A NULL owner makes a volume available to every user.
+export const volumeDefinitions = sqliteTable('volume_definitions', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  config: text('config').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+
+// An attachment owns its mount name and WebDAV identity; renaming a definition
+// never changes a running agent's /mounts/<name> path.
+export const agentVolumes = sqliteTable('agent_volumes', {
+  id: text('id').notNull(),
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.id] }),
+  agentVolumeUnique: uniqueIndex('agent_volumes_source_unique').on(table.agentSlug, table.volumeId),
+  agentNameUnique: uniqueIndex('agent_volumes_name_unique').on(table.agentSlug, table.name),
+  volumeIdx: index('agent_volumes_volume_idx').on(table.volumeId),
+}))
+
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
   id: text('id').primaryKey(),

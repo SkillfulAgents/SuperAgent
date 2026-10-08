@@ -15,7 +15,7 @@ const clearBrowserActive = vi.fn()
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   clearBrowserActive: (...args: unknown[]) => clearBrowserActive(...args),
 }))
-vi.mock('@renderer/components/messages/use-pending-requests', () => ({
+vi.mock('@shared/lib/tools/requests/use-pending-requests', () => ({
   usePendingBrowserInputRequests: () => ({ requests: [], dismiss: vi.fn() }),
 }))
 vi.mock('@renderer/context/user-context', () => ({

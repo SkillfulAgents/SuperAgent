@@ -1,7 +1,7 @@
 import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
-import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '../user-input/request-schema'
+import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '@shared/lib/tools/requests/request-schema'
 import type { IntegrationMessagePresentation } from './message-display-schema'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'

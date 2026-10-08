@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event'
 // --- controllable mock state (hoisted so the vi.mock factories can read it) ---
 const state = vi.hoisted(() => ({
   agents: [] as { slug: string; name: string; lastActivityAt?: string }[],
+  speed: 'normal',
 }))
 
 const composerMock = vi.hoisted(() => ({
@@ -69,6 +70,7 @@ vi.mock('@renderer/components/messages/composer-options', () => ({
   useComposerOptions: () => ({
     model: 'sonnet',
     effort: 'high',
+    speed: state.speed,
     catalog: [{ family: 'sonnet', isLatest: true, label: 'Sonnet', icon: 'sonnet', supportedEfforts: ['low', 'high'] }],
     setModel: vi.fn(),
     setEffort: vi.fn(),
@@ -131,6 +133,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   // Reset controllable state to defaults.
   state.agents = [{ slug: 'a1', name: 'Agent One', lastActivityAt: '2024-01-01T00:00:00Z' }]
+  state.speed = 'normal'
   composerMock.message = ''
   composerMock.attachments = []
   composerMock.isUploading = false
@@ -147,6 +150,13 @@ afterEach(() => {
 })
 
 describe('QuickDispatch', () => {
+  it('shows a non-normal speed on the model button, as the composer does', () => {
+    state.speed = 'fast'
+    installElectronAPI()
+    render(<QuickDispatch />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('High · Fast')
+  })
+
   it('defaults to the most-recently-active agent', async () => {
     state.agents = [
       { slug: 'old', name: 'Older', lastActivityAt: '2024-01-01T00:00:00Z' },

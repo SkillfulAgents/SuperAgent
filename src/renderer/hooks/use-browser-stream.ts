@@ -4,7 +4,7 @@ import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-st
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
-import { usePendingBrowserInputRequests } from '@renderer/components/messages/use-pending-requests'
+import { usePendingBrowserInputRequests } from '@shared/lib/tools/requests/use-pending-requests'
 import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
@@ -61,7 +61,7 @@ export function useBrowserStream({
   const failedReconnectsRef = useRef(0)
 
   const { requests: pendingBrowserInputRequests, dismiss: dismissBrowserInputRequest } =
-    usePendingBrowserInputRequests(sessionId, agentSlug, isActive)
+    usePendingBrowserInputRequests(sessionId, agentSlug)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
   const latestRequestId = pendingBrowserInputRequests.length > 0
     ? pendingBrowserInputRequests[pendingBrowserInputRequests.length - 1].toolUseId

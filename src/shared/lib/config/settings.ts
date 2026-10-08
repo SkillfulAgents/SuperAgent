@@ -13,6 +13,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
+import { globalInstructionsSchema } from './global-instructions-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
@@ -325,6 +326,11 @@ export interface AppSettings {
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
   /**
+   * Guidance appended to every agent's system prompt (its "Global Guidance"
+   * section). Admin-edited; readable by every signed-in user.
+   */
+  globalInstructions?: string
+  /**
    * Desktop-only: whether the UI drives this machine or the org's cloud
    * workspace. Main-owned rather than per-renderer so the main window and the
    * quick-dispatch launcher can never disagree — see `api-target-preference.ts`.
@@ -636,6 +642,15 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
         else console.warn(`Invalid agentCapabilities.${key} in settings.json; using default:`, raw)
       }
       return out
+    })(),
+    // A hand-edited non-string (or one past the bound) must not reach every
+    // agent's prompt; drop it rather than failing the whole settings load.
+    globalInstructions: (() => {
+      if (loaded.globalInstructions === undefined) return undefined
+      const parsed = globalInstructionsSchema.safeParse(loaded.globalInstructions)
+      if (parsed.success) return parsed.data
+      console.warn('Invalid globalInstructions in settings.json; ignoring it')
+      return undefined
     })(),
   }
 }
@@ -984,6 +999,11 @@ export function getApnsRelayConfig(): { url: string | null; enabled: boolean } {
 export function getAgentCapabilitySettings(): AgentCapabilitySettings {
   const settings = getSettings()
   return settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
+}
+
+/** The global guidance every agent receives; '' when none is set. */
+export function getGlobalInstructions(): string {
+  return getSettings().globalInstructions ?? ''
 }
 
 export { DEFAULT_SETTINGS }

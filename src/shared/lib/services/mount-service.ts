@@ -1,154 +1,99 @@
-import path from 'path'
-import fs from 'fs'
-import crypto from 'crypto'
-import {
-  readJsonFileStrict,
-  writeJsonFileAtomic,
-  withFileLock,
-} from '@shared/lib/utils/file-storage'
-import { containerHost } from '@shared/lib/agent-actor'
-import { captureException } from '@shared/lib/error-reporting'
-import type { ContainerVolume, NotMountedReason, NotMountedVolume, StoredVolume, VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
-import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
-import type { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
-import { mountsFileSchema, rowIdentitySchema, storedVolumeRowSchema } from './mount-schema'
+import { randomUUID } from 'node:crypto'
+import { and, asc, eq, exists, sql } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
+import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
+import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
+import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
 
-// The agent's volumes are host-only state, so the file sits at the agent's host
-// path (from the container host, not the actor).
-function getMountsFilePath(slug: string): string {
-  return path.join(containerHost.agentHostPath(slug), 'mounts.json')
+export { volumeSummary } from '@shared/lib/volumes/volume-health'
+
+/** Allocate inside the INSERT so concurrent attachments cannot claim the same
+ * name. With N existing mounts, N+1 candidate suffixes always suffice. */
+function availableMountName(slug: string, base: string) {
+  return sql<string>`(with recursive candidates(n) as (
+    select 1 union all select n + 1 from candidates
+    where n <= (select count(*) from ${agentVolumes} where ${agentVolumes.agentSlug} = ${slug})
+  ) select case when n = 1 then ${base} else ${base} || '-' || n end from candidates
+    where not exists (select 1 from ${agentVolumes}
+      where ${agentVolumes.agentSlug} = ${slug}
+      and ${agentVolumes.name} = case when n = 1 then ${base} else ${base} || '-' || n end)
+    order by n limit 1)`
 }
 
-/**
- * Strict read for the read-modify-write paths (addMount/removeMount): an absent
- * file is `[]`, but a corrupt/torn `mounts.json` or IO error THROWS so the write
- * aborts instead of clobbering the file with just the new/remaining mount (the
- * previous catch-all swallowed bad reads, so the next write dropped every prior
- * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
- * A row this version cannot read, such as one of a type from a newer version,
- * is left out of `volumes` and kept in `rows`, so a write puts it back as it was.
- */
-async function readMountsStrict(slug: string): Promise<{ rows: unknown[]; volumes: StoredVolume[] }> {
-  const rows = await readJsonFileStrict(getMountsFilePath(slug), mountsFileSchema, [])
-  return { rows, volumes: rows.flatMap((row) => storedVolumeRowSchema.safeParse(row).data ?? []) }
+export async function getMounts(slug: string): Promise<MountedVolume[]> {
+  const rows = await db.select({ volume: volumeDefinitions, mount: agentVolumes })
+    .from(agentVolumes).innerJoin(volumeDefinitions, eq(agentVolumes.volumeId, volumeDefinitions.id))
+    .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
+  return rows.flatMap(({ volume, mount }) => {
+    const stored = storedDefinition(volume)
+    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id }] : []
+  })
 }
 
-// A row this version reads is written in the current shape, and any other row as it was.
-function rowToWrite(row: unknown): unknown {
-  return storedVolumeRowSchema.safeParse(row).data ?? row
+/** The folder picker creates a source and attaches it atomically. */
+export async function addMount(
+  slug: string, type: string, config: unknown, viewer: VolumeViewer,
+  options: { name?: string; visibility?: 'public' | 'private' } = {},
+): Promise<MountedVolume> {
+  const row = await prepareVolumeDefinition({ type, config, ...options }, viewer)
+  const id = randomUUID()
+  await batch([
+    db.insert(volumeDefinitions).values(row),
+    db.insert(agentVolumes).values({ id, agentSlug: slug, volumeId: row.id, name: availableMountName(slug, row.name), createdAt: new Date() }),
+  ])
+  const mount = (await getMounts(slug)).find(m => m.id === id)
+  if (!mount) throw new VolumeError('Mount could not be loaded', 404)
+  return mount
 }
 
-// A row's id and name, read or not: an unread row still holds its name and can still be removed.
-function rowIdentity(row: unknown): { id: string; name: string } | undefined {
-  return storedVolumeRowSchema.safeParse(row).data ?? rowIdentitySchema.safeParse(row).data
-}
-
-/**
- * Read the agent's mounts for READ-ONLY consumers (the mounts UI, health checks,
- * and CONTAINER START). Tolerant: an absent file is `[]`, and a corrupt/unreadable
- * file degrades to `[]` (logged + captured) rather than throwing — a bad
- * mounts.json must not brick `listVolumes` (which runs on every container
- * start) or 500 the mounts route. This never writes, so degrading to `[]` is safe;
- * writes go through addMount/removeMount, which use the strict read and abort on
- * corruption instead of overwriting.
- */
-export async function getMounts(slug: string): Promise<StoredVolume[]> {
-  try {
-    const { rows, volumes } = await readMountsStrict(slug)
-    const skipped = rows.length - volumes.length
-    if (skipped > 0) console.warn(`mounts.json for agent ${slug} has ${skipped} row(s) this version cannot read; leaving them out and keeping them in the file`)
-    return volumes
-  } catch (error) {
-    console.error(`Unreadable mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
-    captureException(error, { tags: { area: 'mounts', op: 'read' }, extra: { agentSlug: slug } })
-    return []
+/** An existing source is referenced, never copied. Visibility is checked in the
+ * INSERT itself, so a concurrent access change cannot be bypassed. */
+export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer): Promise<MountedVolume> {
+  const selection = and(eq(volumeDefinitions.id, volumeId), selectableVolumes(viewer))
+  const source = await db.select().from(volumeDefinitions).where(selection).get()
+  if (!source) throw new VolumeError('Volume not found', 404)
+  const stored = storedDefinition(source)
+  if (!stored || !instantiateVolume(stored)) throw new VolumeError('Volume configuration is unavailable', 400)
+  const result = await insertWhere(agentVolumes, {
+    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), createdAt: new Date(),
+  }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
+    .onConflictDoNothing({ target: [agentVolumes.agentSlug, agentVolumes.volumeId] }).run()
+  // Idempotent attachment still requires current visibility.
+  if (changesOf(result) === 0 && !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection).get()) {
+    throw new VolumeError('Volume not found', 404)
   }
+  const mount = (await getMounts(slug)).find(m => m.volumeId === volumeId)
+  if (!mount) throw new VolumeError('Mount could not be loaded', 404)
+  return mount
 }
 
-async function writeMounts(slug: string, rows: unknown[]): Promise<void> {
-  const filePath = getMountsFilePath(slug)
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
-  // Atomic temp-file + rename: an interrupted write can never truncate
-  // mounts.json into the half-state the old reader would have swallowed.
-  await writeJsonFileAtomic(filePath, rows.map(rowToWrite))
+export async function removeMount(slug: string, mountId: string): Promise<void> {
+  await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
 }
 
-export async function addMount(slug: string, type: string, config: unknown): Promise<StoredVolume> {
-  const prepared = await prepareVolume(type, config)
-
-  // The read-modify-write must not interleave with a concurrent add/remove for
-  // the same agent (the old sync code got this for free by never yielding).
-  return withFileLock(getMountsFilePath(slug), async () => {
-    const { rows } = await readMountsStrict(slug)
-
-    // Pick the volume name, append -2, -3, etc. on collision
-    const taken = new Set(rows.map((row) => rowIdentity(row)?.name))
-    let name = prepared.name
-    let suffix = 2
-    while (taken.has(name)) {
-      name = `${prepared.name}-${suffix}`
-      suffix++
-    }
-
-    const mount: StoredVolume = { id: crypto.randomUUID(), name, type: prepared.type, config: prepared.config }
-
-    await writeMounts(slug, [...rows, mount])
-    return mount
-  })
-}
-
-export function removeMount(slug: string, mountId: string): Promise<void> {
-  return withFileLock(getMountsFilePath(slug), async () => {
-    const { rows } = await readMountsStrict(slug)
-    await writeMounts(slug, rows.filter((row) => rowIdentity(row)?.id !== mountId))
-  })
-}
-
-/**
- * Each mounts.json row is one agent's volume and its id is the volume id, so a
- * volume not attached to this agent resolves to nothing.
- */
-export async function resolveVolume(slug: string, volumeId: string): Promise<BaseMountableVolume<unknown> | null> {
-  const row = (await getMounts(slug)).find((m) => m.id === volumeId)
+/** The attachment is the grant; knowing a shared definition's id grants no access. */
+export async function resolveVolume(slug: string, mountId: string) {
+  const row = (await getMounts(slug)).find(m => m.id === mountId)
   return row ? instantiateVolume(row) : null
 }
 
-async function rootProblem(volume: BaseMountableVolume<unknown>): Promise<NotMountedReason | null> {
-  try {
-    return (await volume.stat('')).kind === 'directory' ? null : 'not found'
-  } catch (error) {
-    if (error instanceof WorkspaceFileError && error.code === 'not-found') return 'not found'
-    if (error instanceof WorkspaceFileError && error.code === 'not-accessible') return 'not accessible'
-    return 'unreadable'
-  }
-}
-
-// The card and the container start both read this, so they agree.
-async function judgeVolumes(slug: string): Promise<{ row: StoredVolume; volume: BaseMountableVolume<unknown> | null; reason: NotMountedReason | null }[]> {
-  return Promise.all((await getMounts(slug)).map(async (row) => {
-    const volume = instantiateVolume(row)
-    // The image drops the whole SUPERAGENT_VOLUMES list over an empty name.
-    const reason = row.name === '' ? 'invalid name' : volume ? await rootProblem(volume) : 'unreadable'
-    return { row, volume, reason }
-  }))
+async function judgeVolumes(slug: string) {
+  return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row) })))
 }
 
 export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
   const judged = await judgeVolumes(slug)
   return {
-    volumes: judged.flatMap(({ row, reason }) => (reason === null ? [{ volumeId: row.id, name: row.name }] : [])),
-    notMounted: judged.flatMap(({ row, reason }) => (reason === null ? [] : [{ name: row.name, reason }])),
+    volumes: judged.flatMap(({ row, reason }) => reason === null ? [{ volumeId: row.id, name: row.name }] : []),
+    notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
 }
 
-export function volumeSummary(row: StoredVolume, volume = instantiateVolume(row)): VolumeSummary {
-  return { id: row.id, name: row.name, type: row.type, hostPath: volume?.hostPath ?? null }
-}
-
-export async function getMountsWithHealth(slug: string): Promise<VolumeSummaryWithHealth[]> {
-  return (await judgeVolumes(slug)).map(({ row, volume, reason }) => ({
-    ...volumeSummary(row, volume),
-    health: reason === null ? ('ok' as const) : ('missing' as const),
+export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
+  return (await judgeVolumes(slug)).map(({ row, reason }) => ({
+    ...volumeSummary(row), volumeId: row.volumeId, health: reason === null ? 'ok' : 'missing',
   }))
 }

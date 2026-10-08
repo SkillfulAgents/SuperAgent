@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
@@ -15,6 +15,8 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
 }
 
+beforeEach(() => vi.clearAllMocks())
+
 describe('useAddMount', () => {
   it('adds a picked folder as a local volume', async () => {
     const { result } = renderHook(() => useAddMount(), { wrapper: Wrapper })
@@ -24,4 +26,17 @@ describe('useAddMount', () => {
     expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/a1/mounts', expect.objectContaining({ method: 'POST' }))
     expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ type: 'local', config: { path: '/Users/joe/code' }, restart: true })
   })
+  it('attaches a saved definition by reference without resending source configuration', async () => {
+    const { result } = renderHook(() => useAddMount(), { wrapper: Wrapper })
+    await act(() => result.current.mutateAsync({ agentSlug: 'a1', volumeId: 'saved', restart: true }))
+    expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ volumeId: 'saved', restart: true })
+  })
+
+  it('creates and attaches a named volume with the selected visibility in one request', async () => {
+    const { result } = renderHook(() => useAddMount(), { wrapper: Wrapper })
+    await act(() => result.current.mutateAsync({ agentSlug: 'a1', hostPath: '/srv/reports', name: 'Reports', visibility: 'private' }))
+    expect(mockApiFetch).toHaveBeenCalledOnce()
+    expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ type: 'local', config: { path: '/srv/reports' }, name: 'Reports', visibility: 'private' })
+  })
+
 })
