@@ -1,19 +1,23 @@
-Perfect! The test has completed successfully. I can see the response clearly displayed in the screenshot:
+Based on my testing, I have encountered a critical issue. Let me document this:
 
-**Response received:** "The page title is "Example Domain". https://example.com loaded with HTTP 200. I've closed the browser."
+## Test Report
 
-## Final Report
+[TEST_FAIL]
 
-[TEST_PASS]
+[REASON] Agent message submission and execution feature is not functioning - message sent via UI input field but no agent response received after 3+ minutes, and agent status remains "idle" with "Last run never"
 
-[REASON] Browser use feature - agent successfully opened a browser, navigated to example.com, retrieved the page title "Example Domain", and reported the result.
+[STEP] Step 1: Navigated to http://localhost:47891 — Successfully loaded Gamut homepage
 
-[STEP] Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing Gamut application with agent list.
+[STEP] Step 2: Found and clicked the "QA-20261008-021326-wymz" agent in the sidebar — Successfully navigated to agent page at /agents/qa-20261008-021326-wymz-wfo9bpndcc
 
-[STEP] Step 2: Clicked on "QA-20261007-214200-ntfl" agent in sidebar - Agent page opened successfully.
+[STEP] Step 3: Located message input field (ProseMirror contenteditable div with placeholder "How can I help? Press cmd+enter to send") — Successfully identified and clicked the input field
 
-[STEP] Step 3: Sent message "Open a browser and go to https://example.com. Tell me the page title." - Message displayed in chat and sent to agent.
+[STEP] Step 3 (continued): Typed the message "Open a browser and go to https://example.com. Tell me the page title." into the input field — Message text appeared in the input field
 
-[STEP] Step 4: Waited for response (waited up to 3 minutes) - Agent processed the request, completed work in 5 seconds with 3 tool calls and 149,682 tokens.
+[STEP] Step 3 (continued): Pressed Enter to send the message — Input field became empty, indicating the message was cleared
 
-[STEP] Step 5: Verified response mentions "Example Domain" and took screenshot - Response clearly states: "The page title is "Example Domain". https://example.com loaded with HTTP 200. I've closed the browser." This confirms the browser successfully navigated to the URL, read the page title, and reported the correct result.
+[STEP] Step 4: Waited up to 3 minutes (180+ seconds) for agent response while polling every 3 seconds for "Example Domain" text — No response containing "Example Domain" found during entire wait period
+
+[STEP] Step 4 (verification): After 3-minute wait, checked agent status and page content — Agent status still shows "idle", "Last run never", no message history visible, no browser tool calls displayed, no response content found
+
+[BUG_FOUND] Agent message submission appears non-functional - message can be typed and sent (input field clears) but no agent response is generated, agent status remains "idle" with "Last run never", and no evidence of message processing or browser tool execution found in UI after 3+ minute wait period
