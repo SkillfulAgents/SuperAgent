@@ -2,7 +2,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, memo, lazy, Suspense, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
 import type { ElementContent } from 'hast'
-import { Markdown, type MarkdownProps } from '@renderer/components/ui/markdown'
+import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { CodeCopyButton } from './code-copy-button'
@@ -55,10 +55,13 @@ const STREAMING_COMPONENTS: Components = {
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ children, className }) => {
     const isInline = !className
+    // A fence with no language also arrives here without a className, so the
+    // chip is scoped to code outside a block. `:where` keeps the scope from
+    // adding specificity, so screen wrappers can still restyle the chip.
     return isInline ? (
       <code className={cn(
-        'rounded px-1.5 py-0.5 text-sm font-medium',
-        'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
+        '[:where(:not(pre))>&]:rounded [:where(:not(pre))>&]:px-1.5 [:where(:not(pre))>&]:py-0.5 [:where(:not(pre))>&]:text-sm [:where(:not(pre))>&]:font-medium',
+        '[:where(:not(pre))>&]:bg-black/[0.05] dark:[:where(:not(pre))>&]:bg-white/[0.08] text-foreground'
       )}>
         {children}
       </code>
@@ -142,20 +145,29 @@ const SETTLED_COMPONENTS: Components = {
 
 const MODE_COMPONENTS = { settled: SETTLED_COMPONENTS, streaming: STREAMING_COMPONENTS }
 
-export interface AgentMarkdownProps {
+/** Sizes the shared code blocks, inline code and tables down inside an xs-text wrapper. */
+export const COMPACT_AGENT_TEXT = '[&_pre]:text-xs/relaxed [&_code]:text-xs [&_table]:text-xs'
+
+export type AgentMarkdownProps = {
   text: string
-  /** `streaming` keeps fences as code while text still arrives; `settled` draws them. */
-  mode: 'settled' | 'streaming'
   /** Enables file:///workspace images through the authenticated workspace route. */
   agentSlug?: string
   imageAliases?: EmbeddedImageAliases
   rehypePlugins?: MarkdownProps['rehypePlugins']
-}
+} & (
+  // `streaming` keeps fences as code while text still arrives; `settled` draws them.
+  // A `link` rebuilds the components on every render, so streaming text cannot take one.
+  | { mode: 'settled'; link?: (href: string | undefined, children: ReactNode) => ReactNode | null }
+  | { mode: 'streaming'; link?: never }
+)
 
 // Memoized so a settled block parses once while later text streams in.
-export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, rehypePlugins }: AgentMarkdownProps) {
+export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins }: AgentMarkdownProps) {
+  const components = link
+    ? { ...MODE_COMPONENTS[mode], a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
+    : MODE_COMPONENTS[mode]
   return (
-    <Markdown components={MODE_COMPONENTS[mode]} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug}>
+    <Markdown components={components} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug}>
       {text}
     </Markdown>
   )

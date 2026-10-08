@@ -124,6 +124,9 @@ const config: Config = {
 					// A plain 2px rule. The plugin's 0.25rem (4px) bar reads as a slab
 					// next to 14px text, and stacks badly on nested quotes.
 					blockquote: { borderInlineStartWidth: '2px' },
+					// The plugin wraps inline code in literal backticks; the chip already marks it.
+					'code::before': { content: 'none' },
+					'code::after': { content: 'none' },
 				},
 			},
 			// Heading scale for `prose-sm`, the size every markdown surface uses. The

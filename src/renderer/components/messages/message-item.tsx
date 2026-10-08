@@ -316,7 +316,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
-                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} agentSlug={agentSlug} />
               </MessageErrorBoundary>
             ))}
           </div>
@@ -473,7 +473,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {isAssistant && workflowResults.length > 0 && (
           <div className="w-full space-y-2">
             {workflowResults.map((wf, idx) => (
-              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} agentSlug={agentSlug} />
             ))}
           </div>
         )}
