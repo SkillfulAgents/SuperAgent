@@ -18,6 +18,11 @@ vi.mock('sonner', () => ({
   toast: (...args: any[]) => toastMock(...args),
 }))
 
+const userSettingsMock = vi.fn((): { data: Record<string, unknown>; isLoading: boolean } => ({ data: {}, isLoading: false }))
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => userSettingsMock(),
+}))
+
 const downloadUpdate = vi.fn()
 const installUpdate = vi.fn()
 
@@ -54,6 +59,25 @@ describe('UpdateToastNotifier', () => {
     toastMock.mockReturnValue('toast-id-1')
     downloadUpdate.mockClear()
     installUpdate.mockClear()
+    userSettingsMock.mockReturnValue({ data: {}, isLoading: false })
+  })
+
+  it('stays quiet during a background download and toasts only when ready to install', async () => {
+    userSettingsMock.mockReturnValue({ data: { preinstallUpdates: true }, isLoading: false })
+    const api = installElectronAPI({ state: 'idle' })
+    await act(async () => {
+      render(createElement(wrapper, null, createElement(UpdateToastNotifier)))
+    })
+
+    await act(async () => { api.push({ state: 'available', version: '1.2.3' }) })
+    await act(async () => { api.push({ state: 'downloading', version: '1.2.3', progress: 43 }) })
+    expect(toastMock).not.toHaveBeenCalled()
+
+    await act(async () => { api.push({ state: 'downloaded', version: '1.2.3' }) })
+    expect(toastMock).toHaveBeenCalledTimes(1)
+    const [message, opts] = toastMock.mock.calls[0] as [string, any]
+    expect(message).toContain('1.2.3 is ready to install')
+    expect(opts.action.label).toBe('Restart & Update')
   })
 
   it('does not toast for the initial idle state', async () => {

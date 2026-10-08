@@ -1,14 +1,40 @@
 import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
+import { useUserSettings } from '@renderer/hooks/use-user-settings'
 
 export function UpdateToastNotifier() {
   const status = useUpdateStatus()
+  const { data: userSettings, isLoading: isUserSettingsLoading } = useUserSettings()
+  const backgroundDownload = userSettings?.autoCheckUpdates !== false && !!userSettings?.preinstallUpdates
   const lastToastedVersion = useRef<string | null>(null)
   const toastIdRef = useRef<string | number | null>(null)
 
   useEffect(() => {
+    if (isUserSettingsLoading) return
     const onDismiss = () => { toastIdRef.current = null }
+    const showReadyToInstall = (version: string | undefined) => {
+      toastIdRef.current = toast(`Version ${version ?? ''} is ready to install`, {
+        id: toastIdRef.current ?? undefined,
+        description: 'Restart Gamut to apply the update.',
+        duration: Infinity,
+        closeButton: true,
+        onDismiss,
+        action: {
+          label: 'Restart & Update',
+          onClick: () => window.electronAPI?.installUpdate(),
+        },
+      })
+    }
+
+    // Background download: stay quiet until the update and its image are ready.
+    if (backgroundDownload) {
+      if (status.state !== 'downloaded' || !status.version) return
+      if (lastToastedVersion.current === status.version) return
+      lastToastedVersion.current = status.version
+      showReadyToInstall(status.version)
+      return
+    }
 
     if (status.state === 'available' && status.version) {
       // Only toast once per new version. If the user dismissed an earlier
@@ -46,19 +72,9 @@ export function UpdateToastNotifier() {
         onDismiss,
       })
     } else if (status.state === 'downloaded') {
-      toast(`Version ${status.version ?? ''} is ready to install`, {
-        id: toastIdRef.current,
-        description: 'Restart Gamut to apply the update.',
-        duration: Infinity,
-        closeButton: true,
-        onDismiss,
-        action: {
-          label: 'Restart & Update',
-          onClick: () => window.electronAPI?.installUpdate(),
-        },
-      })
+      showReadyToInstall(status.version)
     }
-  }, [status.state, status.version, status.progress])
+  }, [status.state, status.version, status.progress, isUserSettingsLoading, backgroundDownload])
 
   return null
 }
