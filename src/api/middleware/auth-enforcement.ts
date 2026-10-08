@@ -44,7 +44,7 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
   // --- Signup enforcement ---
   if (path === '/api/auth/sign-up/email') {
     // First-user bypass: allow the very first user to register regardless of settings
-    // (needed to bootstrap the system — first user becomes admin)
+    // (needed to bootstrap a self-hosted system, where the first user becomes admin)
     let isFirstUser = false
     try {
       const result = await db.select({ count: sql<number>`count(*)` }).from(user).get()

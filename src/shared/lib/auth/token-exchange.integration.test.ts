@@ -452,15 +452,51 @@ describe('replay prevention', () => {
 })
 
 describe('provisioning and identity mapping', () => {
-  it('promotes the first exchanged user to admin', async () => {
+  it('takes the first exchanged user role from the platform, not from being first', async () => {
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(200)
     const user = sqlite
       .prepare(`SELECT role, email, email_verified FROM user`)
       .get() as { role: string; email: string; email_verified: number }
-    expect(user.role).toBe('admin')
+    expect(user.role).toBe('user')
     expect(user.email).toBe('member@example.com')
     expect(user.email_verified).toBe(1)
+  })
+
+  it('copies the platform role onto the deployment user at every exchange', async () => {
+    const roleOf = (email: string) =>
+      (sqlite.prepare('SELECT role FROM user WHERE email = ?').get(email) as { role: string }).role
+    const as = (role: string) => signGrant({ payload: { role } })
+
+    expect((await exchangeRequest(await as('owner'))).status).toBe(200)
+    expect(roleOf('member@example.com')).toBe('admin')
+    expect((await exchangeRequest(await as('member'))).status).toBe(200)
+    expect(roleOf('member@example.com')).toBe('user')
+    expect((await exchangeRequest(await as('admin'))).status).toBe(200)
+    expect(roleOf('member@example.com')).toBe('admin')
+    captureExceptionMock.mockClear()
+    expect((await exchangeRequest(await as('superadmin'))).status).toBe(200)
+    expect(roleOf('member@example.com')).toBe('user')
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { component: 'platform-role' } }),
+    )
+    expect((await exchangeRequest(await as('admin'))).status).toBe(200)
+    captureExceptionMock.mockClear()
+    expect((await exchangeRequest(await signGrant({ payload: { role: undefined } }))).status).toBe(200)
+    expect(roleOf('member@example.com')).toBe('user')
+    expect(captureExceptionMock).toHaveBeenCalled()
+  })
+
+  it('makes a platform admin or owner who is not the first user a deployment admin', async () => {
+    expect((await exchangeRequest(await signGrant())).status).toBe(200)
+    for (const [n, role] of [[2, 'admin'], [3, 'owner']] as const) {
+      const grant = await signGrant({
+        payload: { sub: `sub_${n}`, user_id: `platform-user-uuid-${n}`, email: `${role}@example.com`, role },
+      })
+      expect((await exchangeRequest(grant)).status).toBe(200)
+      expect((sqlite.prepare('SELECT role FROM user WHERE email = ?').get(`${role}@example.com`) as { role: string }).role).toBe('admin')
+    }
   })
 
   it('keeps the (providerId, sub) mapping stable across email changes', async () => {
