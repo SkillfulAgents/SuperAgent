@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useBlocker, useNavigate } from '@tanstack/react-router'
 import { Brain, ChevronRight, FileText, Loader2, Pencil, RefreshCw } from 'lucide-react'
-import { Markdown } from '@renderer/components/ui/markdown'
+import { AgentMarkdown } from '@renderer/components/messages/agent-markdown'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
@@ -156,16 +156,17 @@ function MemoryDetail({ agentSlug, path, entries, onBack, onSelect }: {
               {memory.data.description && <p className="text-sm text-muted-foreground">{memory.data.description}</p>}
               {save.isSuccess && <p role="status" className="text-sm text-muted-foreground">Memory saved.</p>}
               <div className="prose prose-sm max-w-none break-words rounded-xl border p-5 dark:prose-invert">
-                <Markdown components={{
-                  a: ({ href, children }) => {
+                <AgentMarkdown
+                  text={memory.data.body || '*This memory is empty.*'}
+                  mode="settled"
+                  agentSlug={agentSlug}
+                  link={(href, children) => {
                     const target = entries.find(entry => entry.path === href || entry.path === `${path.split('/').slice(0, -1).join('/')}/${href}`)
-                    return target ? (
-                      <button type="button" className="text-primary underline" onClick={() => onSelect(target.path)}>{children}</button>
-                    ) : href && /^https?:\/\//.test(href) ? (
-                      <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
-                    ) : <span>{children}</span>
-                  },
-                }}>{memory.data.body || '*This memory is empty.*'}</Markdown>
+                    if (target) return <button type="button" className="text-primary underline" onClick={() => onSelect(target.path)}>{children}</button>
+                    // A link with a scheme takes the shared anchor; a relative link to no memory stays text.
+                    return href && /^[a-z][a-z0-9+.-]*:/i.test(href) ? null : <span>{children}</span>
+                  }}
+                />
               </div>
             </>
           )}

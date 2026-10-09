@@ -86,10 +86,10 @@ test.describe('File Preview', () => {
     }).toBeLessThanOrEqual(1)
   })
 
-  test('agent home bookmark preview overlays the wide page', async ({ page }) => {
+  test('agent home bookmark preview overlays the wide page and draws diagrams', async ({ page }) => {
     await agentPage.createAgent(`HomeFilePreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
-    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report')
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report\n\n```mermaid\nflowchart LR\n  A --> B\n```')
 
     const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
       data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
@@ -101,6 +101,7 @@ test.describe('File Preview', () => {
     await expect(bookmark).toBeVisible({ timeout: 10000 })
     await bookmark.click()
     await expect(markdown(page).getByRole('heading', { name: 'Daily Report' })).toBeVisible({ timeout: 10000 })
+    await expect(markdown(page).getByTestId('mermaid-diagram')).toBeVisible({ timeout: 10000 })
 
     const homeBox = await page.getByTestId('agent-home').boundingBox()
     const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
