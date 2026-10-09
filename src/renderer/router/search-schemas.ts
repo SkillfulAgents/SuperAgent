@@ -116,6 +116,7 @@ export const SETTINGS_TABS = [
   'runtime',
   'browser',
   'web',
+  'decision',
   'volumes',
   'capabilities',
   'global-guidance',
