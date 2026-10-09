@@ -101,7 +101,8 @@ export interface MockScenario {
   execute(
     sessionId: string,
     client: MockContainerClient,
-    userMessage: string
+    userMessage: string,
+    uuid?: string
   ): void
 }
 
@@ -750,7 +751,15 @@ export class DelayedTextResponseScenario implements MockScenario {
 export class HookBlockScenario implements MockScenario {
   constructor(private reason: string) {}
 
-  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string, uuid?: string): void {
+    // The real CLI names the blocked command in its lifecycle frames and in the
+    // result's user_message_uuids.
+    const lifecycle = (state: string) => {
+      if (uuid) client.emitStreamMessage(sessionId, { type: 'command_lifecycle', content: { type: 'command_lifecycle', command_uuid: uuid, state } })
+    }
+    const blocked = `UserPromptSubmit operation blocked by hook:\n${this.reason}\n\nOriginal prompt: ${userMessage}`
+    lifecycle('queued')
+    lifecycle('started')
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'system',
@@ -758,7 +767,7 @@ export class HookBlockScenario implements MockScenario {
           type: 'system',
           subtype: 'informational',
           uuid: randomUUID(),
-          content: `UserPromptSubmit operation blocked by hook:\n${this.reason}\n\nOriginal prompt: ${userMessage}`,
+          content: blocked,
           level: 'warning',
           prevent_continuation: true,
         },
@@ -768,8 +777,9 @@ export class HookBlockScenario implements MockScenario {
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'result',
-        content: { type: 'result', subtype: 'success', num_turns: 0, duration_api_ms: 0 },
+        content: { type: 'result', subtype: 'success', num_turns: 0, duration_api_ms: 0, result: blocked, user_message_uuids: uuid ? [uuid] : [] },
       })
+      lifecycle('completed')
     }, 160)
   }
 }
@@ -3304,7 +3314,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // masking a regression of the capabilities handshake that the host
         // actually relies on (the exact failure that already shipped once).
         this.busySessions.add(sessionId)
-        scenario.execute(sessionId, this.scenarioView(sessionId), options.initialMessage!)
+        scenario.execute(sessionId, this.scenarioView(sessionId), options.initialMessage!, options.initialMessageUuid)
       }, 100)  // Brief delay to ensure subscription is set up
     }
 
@@ -3523,7 +3533,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // publish — so emitting 'running' here mirrors the runtime.
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
-    scenario.execute(sessionId, this.scenarioView(sessionId), content)
+    scenario.execute(sessionId, this.scenarioView(sessionId), content, uuid)
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {

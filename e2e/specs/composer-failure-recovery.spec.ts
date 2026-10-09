@@ -137,6 +137,30 @@ test.describe('Composer failure recovery', () => {
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 
+  test('a prompt a hook blocked returns to the composer without waiting for idle', async ({ page }) => {
+    // The mock agent replays a UserPromptSubmit hook blocking the prompt: it
+    // never reaches the model and gets no message entry. The page clock is paused, so
+    // the client's idle grace cannot return the text. Only the server
+    // reporting the message discarded can.
+    await page.clock.install()
+    await page.reload()
+    await sessionPage.waitForInputEnabled()
+    await page.clock.pauseAt(new Date(Date.now() + 1000))
+
+    const text = 'please trip the breaker, the text returns'
+    await sessionPage.typeMessage(text)
+    const sent = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && /\/sessions\/[^/]+\/messages$/.test(res.url())
+    )
+    await sessionPage.getSendButton().click()
+    // The send succeeded, so a failed-send restore is not what returns the text.
+    expect((await sent).status()).toBe(201)
+
+    await expect(sessionPage.getMessageInput()).toHaveText(text, { timeout: 10000 })
+    await expect(page.getByTestId('pending-user-message')).toHaveCount(0)
+    await expect(sessionPage.getUserMessages()).toHaveCount(1)
+  })
+
   test('a slow successful send is not yanked back into the composer', async ({ page }) => {
     // Regression for the restored-successful-send bug: sending into a session
     // whose container is waking means the server spends seconds before it

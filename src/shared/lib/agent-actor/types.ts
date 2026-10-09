@@ -389,6 +389,8 @@ export interface SessionOps {
   setSlashCommands(sessionId: string, commands: SlashCommandInfo[]): void
   /** `messagePersister.getActiveBackgroundTasks` */
   backgroundTasks(sessionId: string): ActiveBackgroundTaskSnapshot[]
+  /** `messagePersister.getRecentDiscards` */
+  recentDiscards(sessionId: string): string[]
   /** `messagePersister.getActiveSubagents` — running and completed subagents for the current turn. */
   activeSubagents(sessionId: string): ActiveSubagentSnapshot[]
 

@@ -3,6 +3,7 @@ import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-m
 import * as path from 'path'
 import { promises as fs } from 'fs'
 import type { ContainerClient, StreamMessage } from './types'
+import { parseCommandLifecycle } from './command-lifecycle'
 
 // Replay of real SUPERAGENT_CAPTURE_DIR captures taken on claude-agent-sdk
 // 0.3.206 / CLI 2.1.206 (the sdk206-* fixtures). These are the first captures
@@ -535,5 +536,20 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(fin.isActive).toBe(false)
       expect(fin.sessionIdleCount).toBe(0)
     })
+  })
+})
+
+// Frames from a probe of claude-agent-sdk 0.3.284: a UserPromptSubmit hook blocks a prompt
+// sent to an idle session. The command never reaches the model and gets no
+// message entry, so the host reports it discarded and its sender gets the text back.
+describe('sdk284-hook-blocked-prompt', () => {
+  it('reports the blocked command discarded', async () => {
+    const { streamEntries, sseEvents } = await replayTracked('sdk284-hook-blocked-prompt')
+    const blocked = parseCommandLifecycle(streamEntries[0].message.content)?.commandUuid
+    expect(blocked).toBeDefined()
+    const discarded = sseEvents
+      .filter((e) => e['type'] === 'command_lifecycle' && e['state'] === 'discarded')
+      .map((e) => e['commandUuid'])
+    expect(discarded).toEqual([blocked])
   })
 })

@@ -3225,6 +3225,15 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         event: 'message',
       })
 
+      // Replay discards sent before this client connected, so its waiting
+      // bubbles still get their text back.
+      for (const commandUuid of agentRegistry.get(agentSlug).sessions.recentDiscards(sessionId)) {
+        await stream.writeSSE({
+          data: JSON.stringify({ type: 'command_lifecycle', commandUuid, state: 'discarded' }),
+          event: 'message',
+        })
+      }
+
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
       const grabbedApp = agentRegistry.get(agentSlugForStream).inputs.computerUse.grabbedApp()
