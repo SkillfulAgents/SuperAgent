@@ -64,7 +64,6 @@ export class OpenAILiveConversation {
   private bridge: OpenAILiveBridge
   private replyText = ''
   private replyFed = 0
-  private replyComplete = false
   private replyTimer: ReturnType<typeof setTimeout> | undefined
   private inputRequests: readonly VoiceInputRequest[] = []
   private announcedInputRequests = new Set<string>()
@@ -257,14 +256,17 @@ export class OpenAILiveConversation {
   // A request card closes the mic only: the reply keeps playing, as chained speech reads its text to the end.
   setPaused(paused: boolean) {
     this.updatingPause = true
-    this.paused = paused
-    if (paused) this.clearInputSpeech()
-    this.bridge.setPaused(paused)
-    this.gateMicrophone()
-    this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
-      ? 'The application is waiting for user input. Finish what you are saying and briefly announce any new application input requests supplied in commentary, then wait for the user to complete them in the application. Do not delegate until the application resumes.'
-      : 'The application is ready for voice conversation. Continue listening and responding normally.' })
-    this.updatingPause = false
+    try {
+      this.paused = paused
+      if (paused) this.clearInputSpeech()
+      this.bridge.setPaused(paused)
+      this.gateMicrophone()
+      this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
+        ? 'The application is waiting for user input. Finish what you are saying and briefly announce any new application input requests supplied in commentary, then wait for the user to complete them in the application. Do not delegate until the application resumes.'
+        : 'The application is ready for voice conversation. Continue listening and responding normally.' })
+    } finally {
+      this.updatingPause = false
+    }
     this.drainCommands()
   }
 
@@ -314,10 +316,9 @@ export class OpenAILiveConversation {
     clearTimeout(this.replyTimer)
     this.replyText = ''
     this.replyFed = 0
-    this.replyComplete = false
   }
 
-  /** Same cumulative text as read-aloud; complete requires explicit runtime settlement. */
+  /** A message boundary flushes text; only a separate outcome can finish work. */
   updateReply(text: string, complete = false) {
     if (this.closed) return
     const changed = text !== this.replyText
@@ -326,8 +327,14 @@ export class OpenAILiveConversation {
     clearTimeout(this.replyTimer)
     if (complete || text.length - this.replyFed >= 1200) this.flushReply()
     else this.replyTimer = setTimeout(() => this.flushReply(), 1000)
-    if (complete && (!this.replyComplete || changed)) this.bridge.completeReply()
-    this.replyComplete = complete
+  }
+
+  finishTurn(outcome: 'completed' | 'cancelled') {
+    if (this.closed) return
+    clearTimeout(this.replyTimer)
+    this.flushReply()
+    this.bridge.cancelCompletion()
+    if (outcome === 'completed') this.bridge.completeReply()
   }
 
   /** The shared coordinator supplies message boundaries; no text-prefix guessing here. */
@@ -337,7 +344,6 @@ export class OpenAILiveConversation {
     this.flushReply()
     this.replyText = ''
     this.replyFed = 0
-    this.replyComplete = false
   }
 
   /** Execution errors need attention, without claiming the backend turn finished. */
@@ -346,7 +352,6 @@ export class OpenAILiveConversation {
     this.flushReply()
     this.replyText = ''
     this.replyFed = 0
-    this.replyComplete = false
     this.bridge.reportAgentError(message)
   }
 

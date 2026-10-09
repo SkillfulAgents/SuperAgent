@@ -1,3 +1,4 @@
+import { executionEnded } from '@shared/lib/container/session-execution-schema'
 import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult, VoiceTurnPolicy } from '../contracts/conversation'
 
 export const VOICE_TURN_START_TIMEOUT_MS = 15_000
@@ -18,6 +19,11 @@ interface CoordinatorDependencies {
   onIssue(message: string | null): void
 }
 
+function outcomeKey(snapshot: VoiceAgentSnapshot): string | null {
+  const execution = snapshot.execution
+  return execution && executionEnded(execution) ? `${execution.turnId}:${execution.phase}` : null
+}
+
 /** One owner for ordering agent commands, acknowledging turns, and filtering stale replies. */
 export class VoiceAgentCoordinator {
   private closed = false
@@ -35,7 +41,8 @@ export class VoiceAgentCoordinator {
   private staleText: string | null
   private fedText = ''
   private fedComplete = false
-  private fedSettled = false
+  private terminalKey: string | null = null
+  private turnId: string | null = null
   private segment = 0
   private commands = 0
   private queue: Promise<VoiceCommandResult> | null = null
@@ -52,15 +59,21 @@ export class VoiceAgentCoordinator {
   constructor(private dependencies: CoordinatorDependencies, policy: Partial<VoiceTurnPolicy> = {}) {
     this.policy = { ...DEFAULT_TURN_POLICY, ...policy }
     this.latest = dependencies.snapshot()
-    this.followingTurn = this.latest.active
+    this.followingTurn = this.latest.active || !!this.latest.background
+    this.turnId = this.latest.execution?.turnId ?? null
+    this.terminalKey = outcomeKey(this.latest)
     this.previousStart = this.latest.startedAt
     this.staleText = this.latest.text
     this.sawIdle = !this.latest.active
   }
 
   start(expectTurn: boolean) {
+    if (expectTurn && this.latest.execution && executionEnded(this.latest.execution)) {
+      this.terminalKey = null
+      this.staleText = null
+    }
     this.followingTurn ||= expectTurn
-    this.awaiting = expectTurn && !this.latest.active
+    this.awaiting = expectTurn && !this.latest.active && !(this.latest.execution && executionEnded(this.latest.execution))
     this.update(this.latest)
     this.armWait()
   }
@@ -73,7 +86,6 @@ export class VoiceAgentCoordinator {
     this.dependencies.onEvent({ type: 'reset' })
     this.fedText = ''
     this.fedComplete = false
-    this.fedSettled = false
     this.segment++
     this.staleText = this.dependencies.snapshot().text
     this.clearWait()
@@ -196,17 +208,18 @@ export class VoiceAgentCoordinator {
     // Pausing speech does not pause backend execution or acknowledgment.
     this.acknowledge(snapshot)
     if (this.paused) { this.publishState(); return }
-    const newTurn = snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
+    const newTurn = snapshot.execution?.turnId
+      ? snapshot.execution.turnId !== this.turnId
+      : snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
     if (newTurn) {
       this.previousStart = snapshot.startedAt
+      this.turnId = snapshot.execution?.turnId ?? null
       this.toolsUsed = false
-      if (this.fedText) {
-        this.staleText = this.fedText
-        this.fedText = ''
-        this.fedComplete = false
-        this.fedSettled = false
-        this.segment++
-      }
+      if (this.fedText) this.staleText = this.fedText
+      if (snapshot.execution && executionEnded(snapshot.execution)) this.staleText = null
+      this.fedText = ''
+      this.fedComplete = false
+      this.segment++
     }
     if (snapshot.error) {
       this.clearWait()
@@ -214,7 +227,7 @@ export class VoiceAgentCoordinator {
       this.dependencies.onIssue(snapshot.error)
       // The error snapshot can contain the last confirmation of a side effect.
       // Deliver it before the error, without emitting a completion cue.
-      if (this.followingTurn && !this.cancelled) this.feedReply(snapshot, false, false)
+      if (this.followingTurn && !this.cancelled) this.feedReply(snapshot, false)
       if (snapshot.error !== this.lastError) this.dependencies.onEvent({ type: 'error', message: snapshot.error })
       this.lastError = snapshot.error
       this.publishState()
@@ -222,11 +235,12 @@ export class VoiceAgentCoordinator {
     }
     this.lastError = null
     if (this.cancelled) { this.publishState(); return }
-    if (snapshot.active) this.followingTurn = true
+    if (snapshot.active || snapshot.background) this.followingTurn = true
     if (!this.followingTurn) {
       // Persisted history can arrive after entering an idle conversation.
       // It is context, not newly generated speech.
       this.staleText = snapshot.text
+      this.terminalKey = outcomeKey(snapshot)
       this.publishState()
       return
     }
@@ -235,7 +249,19 @@ export class VoiceAgentCoordinator {
     // Publish the final text before the idle state: adapters may finish their
     // playback stream as soon as they observe an idle agent.
     if (!this.awaiting) {
-      this.feedReply(snapshot, !snapshot.active, snapshot.settled === true && !snapshot.active)
+      const terminalKey = outcomeKey(snapshot)
+      if (terminalKey && terminalKey === this.terminalKey) {
+        this.publishState()
+        return
+      }
+      this.feedReply(snapshot, !snapshot.active)
+      const execution = snapshot.execution
+      if (execution?.turnId && terminalKey) {
+        this.terminalKey = terminalKey
+        if (execution.phase === 'completed' || execution.phase === 'cancelled') {
+          this.dependencies.onEvent({ type: 'turn-ended', turnId: execution.turnId, outcome: execution.phase })
+        }
+      }
     }
     this.publishState()
     // Only clear the recoverable handoff warning; execution errors belong to
@@ -243,23 +269,16 @@ export class VoiceAgentCoordinator {
     if (snapshot.active || freshText) this.clearWarning()
   }
 
-  private feedReply(snapshot: VoiceAgentSnapshot, complete: boolean, settled: boolean) {
-    if (snapshot.text === this.staleText) {
-      if (!settled || this.fedSettled) return
-      // A settled turn can have no textual result. Do not replay old history
-      // as its answer, but still deliver the terminal boundary.
-      this.fedComplete = complete
-      this.fedSettled = true
-      this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: this.fedText, complete, settled })
-      return
-    }
+  private feedReply(snapshot: VoiceAgentSnapshot, complete: boolean) {
+    if (snapshot.text === this.staleText) return
     this.staleText = null
-    if (snapshot.text === this.fedText && complete === this.fedComplete && settled === this.fedSettled) return
+    // A foreground wake can precede its first token. Reopening the old text
+    // would make the chained reader replay the response it already finished.
+    if (snapshot.text === this.fedText && (!complete || complete === this.fedComplete)) return
     if (this.fedText && !snapshot.text.startsWith(this.fedText)) this.segment++
     this.fedText = snapshot.text
     this.fedComplete = complete
-    this.fedSettled = settled
-    this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: snapshot.text, complete, settled })
+    this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: snapshot.text, complete })
   }
 
   private acknowledge(snapshot: VoiceAgentSnapshot) {
@@ -267,8 +286,11 @@ export class VoiceAgentCoordinator {
     const freshText = !!snapshot.text && snapshot.text !== this.staleText
     if (snapshot.active || freshText) this.clearWarning()
     if (!this.awaiting) return
-    const newTurn = snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
-    if (snapshot.error || freshText || (snapshot.active && (this.sawIdle || newTurn))) {
+    const newTurn = snapshot.execution?.turnId
+      ? snapshot.execution.turnId !== this.turnId
+      : snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
+    const terminal = outcomeKey(snapshot)
+    if (snapshot.error || freshText || (terminal && terminal !== this.terminalKey) || (newTurn && snapshot.execution) || (snapshot.active && (this.sawIdle || newTurn))) {
       this.awaiting = false
       this.pendingAccepted = false
       this.resumeWait = false
@@ -283,7 +305,7 @@ export class VoiceAgentCoordinator {
   }
 
   private publishState() {
-    const next = { active: !this.cancelled && this.latest.active, awaiting: this.awaiting, toolsUsed: this.toolsUsed }
+    const next = { active: !this.cancelled && this.latest.active, awaiting: this.awaiting, toolsUsed: this.toolsUsed, background: !this.cancelled && !!this.latest.background }
     this.dependencies.onState(next)
     this.dependencies.onEvent({ type: 'state', state: next })
   }
@@ -305,7 +327,7 @@ export class VoiceAgentCoordinator {
     // for a bounded, silent wait rather than handing it to the person at once.
     // A reply that arrived during the pause means the turn is over.
     const replyArrived = !!snapshot.text && snapshot.text !== this.staleText && snapshot.text !== this.fedText
-    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error && !snapshot.settled) {
+    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error && !(snapshot.execution && executionEnded(snapshot.execution))) {
       this.awaiting = true
       this.resumeWait = true
       this.sawIdle = true
@@ -316,7 +338,6 @@ export class VoiceAgentCoordinator {
       this.staleText = snapshot.text
       this.fedText = ''
       this.fedComplete = false
-      this.fedSettled = false
       this.segment++
     }
     this.update(snapshot)

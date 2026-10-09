@@ -67,6 +67,36 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Live WebRTC lifecycle', () => {
+  it('flushes text at a message boundary without announcing completion', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    adapter.updateReply('I started the background research.', true)
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(sent.some(e => e.content === 'I started the background research.' && e.type === 'session.thinking.append')).toBe(true)
+    expect(sent.some(e => e.content === LIVE_TURN_COMPLETE_CUE)).toBe(false)
+    adapter.close()
+  })
+
+  it('releases the pause guard when microphone gating throws', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    const gate = vi.spyOn(adapter as unknown as { gateMicrophone(): void }, 'gateMicrophone')
+      .mockImplementationOnce(() => { throw new Error('Track detached') })
+    expect(() => adapter.setPaused(true)).toThrow('Track detached')
+    gate.mockRestore()
+    adapter.setPaused(false)
+    adapter.updateReply('Recovered.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.send.mock.calls.map(([text]) => JSON.parse(text)).some(e => e.content === LIVE_TURN_COMPLETE_CUE)).toBe(true)
+    adapter.close()
+  })
+
   it('announces each new input request once while paused, without reopening the mic or submitting an answer', async () => {
     const { adapter, callbacks } = setup()
     await adapter.start()
@@ -349,6 +379,7 @@ describe('Live WebRTC lifecycle', () => {
       { type: 'session.thinking.append', content: 'Second message.' },
     ])
     adapter.updateReply('Second message.', true)
+    adapter.finishTurn('completed')
     adapter.updateReply('Second message.', true)
     await vi.advanceTimersByTimeAsync(1000)
     expect(replies()).toMatchObject([
@@ -369,9 +400,11 @@ describe('Live WebRTC lifecycle', () => {
     const channel = FakePeer.last.channel
     if (ready) channel.receive({ type: 'session.started' })
     adapter.updateReply('Obsolete response.', complete)
+    if (complete) adapter.finishTurn('completed')
     if (!ready) await vi.advanceTimersByTimeAsync(0)
     adapter.resetReply()
     adapter.updateReply('Replacement response.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(1000)
     if (!ready) channel.receive({ type: 'session.started' })
     const replies = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
@@ -388,6 +421,7 @@ describe('Live WebRTC lifecycle', () => {
     await adapter.start()
     const channel = FakePeer.last.channel
     adapter.updateReply('The draft needs approval.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     adapter.setPaused(true)
     adapter.setInputRequests([{ id: 'approval:1', message: 'Approve the $12 cost in the app.' }])
@@ -409,6 +443,7 @@ describe('Live WebRTC lifecycle', () => {
     const channel = FakePeer.last.channel
     channel.receive({ type: 'session.started' })
     adapter.updateReply('Invoice 42 was sent.', true)
+    adapter.finishTurn('completed')
     adapter.reportAgentError('Signing service unavailable.')
     await vi.advanceTimersByTimeAsync(1000)
     const replies = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
@@ -418,6 +453,7 @@ describe('Live WebRTC lifecycle', () => {
       { type: 'session.commentary.append', content: 'The agent reported an error: Signing service unavailable.' },
     ])
     adapter.updateReply('Recovered.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     const recovered = channel.send.mock.calls.map(([text]) => JSON.parse(text))
     expect(recovered.at(-2).content).toBe('Recovered.')
@@ -472,8 +508,10 @@ describe('Live WebRTC lifecycle', () => {
     const channel = FakePeer.last.channel
     if (ready) channel.receive({ type: 'session.started' })
     adapter.updateReply('The draft is saved.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     adapter.updateReply('The draft is saved. Nothing was sent.', true)
+    adapter.finishTurn('completed')
     adapter.updateReply('The draft is saved. Nothing was sent.', true)
     await vi.advanceTimersByTimeAsync(0)
     if (!ready) channel.receive({ type: 'session.started' })
@@ -492,6 +530,7 @@ describe('Live WebRTC lifecycle', () => {
     let finish!: (value: Response) => void
     mocks.fetch.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     adapter.updateReply('Detailed findings. '.repeat(100), true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     adapter.setPaused(true)
     finish(new Response(JSON.stringify({ text: 'The draft was saved.' })))
@@ -516,6 +555,7 @@ describe('Live WebRTC lifecycle', () => {
       adapter.nextReplySegment()
     }
     adapter.updateReply('Payment failed. Do not resend invoices.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     adapter.setPaused(true)
     channel.receive({ type: 'session.started' })
@@ -568,6 +608,7 @@ describe('Live WebRTC lifecycle', () => {
     FakePeer.last.channel.receive({ type: 'session.started' })
     FakePeer.last.channel.send.mockImplementation(() => { throw new Error('Transport unavailable') })
     adapter.updateReply('Invoice 42 sent.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     expect(callbacks.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('Could not deliver voice updates'))
     expect(callbacks.onClosed).toHaveBeenCalledOnce()
@@ -578,6 +619,7 @@ describe('Live WebRTC lifecycle', () => {
     const { adapter } = setup()
     await adapter.start()
     adapter.updateReply('Partial result.', true)
+    adapter.finishTurn('completed')
     await vi.advanceTimersByTimeAsync(0)
     adapter.setBusy(true)
     FakePeer.last.channel.receive({ type: 'session.started' })

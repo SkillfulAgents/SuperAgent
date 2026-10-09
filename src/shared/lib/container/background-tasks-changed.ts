@@ -3,6 +3,7 @@
 // this way). The container's SessionManager consumes the full settlement
 // tracker; the persister consumes the snapshot parsing re-exported here.
 export {
+  DEFAULT_WAKE_GRACE_MS,
   parseBackgroundTasksChanged,
   TERMINAL_TASK_UPDATED_STATUSES,
   TERMINAL_TASK_NOTIFICATION_STATUSES,

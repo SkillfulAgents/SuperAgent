@@ -1,4 +1,5 @@
 import type { VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
+import type { SessionExecution } from '@shared/lib/container/session-execution-schema'
 
 export type VoiceModePhase = 'listening' | 'thinking' | 'speaking'
 export type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
@@ -13,13 +14,15 @@ export interface VoiceAgentSnapshot {
   startedAt: number | null
   toolsRunning: boolean
   error: string | null
-  /** An explicit settled runtime event, with no streaming or background work. */
-  settled?: boolean
+  /** Foreground activity alone controls interruption and chained playback. */
+  background?: boolean
+  execution?: SessionExecution | null
 }
 export interface VoiceAgentState {
   active: boolean
   awaiting: boolean
   toolsUsed: boolean
+  background?: boolean
 }
 /** Display context only; never includes a submitted answer or credential. */
 export interface VoiceInputRequest {
@@ -29,7 +32,8 @@ export interface VoiceInputRequest {
 export type VoiceAgentEvent =
   | { type: 'state'; state: VoiceAgentState }
   | { type: 'reset' }
-  | { type: 'reply'; segment: number; text: string; complete: boolean; settled?: boolean }
+  | { type: 'reply'; segment: number; text: string; complete: boolean }
+  | { type: 'turn-ended'; turnId: string; outcome: 'completed' | 'cancelled' }
   | { type: 'error'; message: string }
   | { type: 'input-requests'; requests: readonly VoiceInputRequest[] }
 

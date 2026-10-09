@@ -69,7 +69,7 @@ describe('session voice engine selection', () => {
     expect(result.current.error).toBeNull()
     const latestEngine = mocks.create.mock.results.at(-1)!.value
     expect(latestEngine.acceptAgentEvent).toHaveBeenCalledWith({
-      type: 'state', state: { active: false, awaiting: false, toolsUsed: false },
+      type: 'state', state: { active: false, awaiting: false, toolsUsed: false, background: false },
     })
     unmount()
   })

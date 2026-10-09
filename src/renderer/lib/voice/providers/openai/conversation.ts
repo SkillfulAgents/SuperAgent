@@ -50,14 +50,16 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
     if (this.closed) return
     if (event.type === 'state') {
       this.state = event.state
-      this.conversation.setBusy(this.state.active || this.state.awaiting)
+      this.conversation.setBusy(this.state.active || !!this.state.background || this.state.awaiting)
     } else if (event.type === 'reset') {
       this.segment = null
       this.conversation.resetReply()
     } else if (event.type === 'reply') {
       if (this.segment !== null && this.segment !== event.segment) this.conversation.nextReplySegment()
       this.segment = event.segment
-      this.conversation.updateReply(event.text, event.settled === true)
+      this.conversation.updateReply(event.text, event.complete)
+    } else if (event.type === 'turn-ended') {
+      this.conversation.finishTurn(event.outcome)
     } else if (event.type === 'error') {
       this.segment = null
       this.conversation.reportAgentError(event.message)
@@ -76,10 +78,10 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   private publish() {
     if (this.closed) return
     this.events.onSnapshot({
-      phase: this.assistantSpeaking ? 'speaking' : !this.ready || this.state.active || this.state.awaiting ? 'thinking' : 'listening',
+      phase: this.assistantSpeaking ? 'speaking' : !this.ready || this.state.active || this.state.background || this.state.awaiting ? 'thinking' : 'listening',
       ready: this.ready, userSpeaking: this.userSpeaking, assistantSpeaking: this.assistantSpeaking,
       utterance: this.utterance, transcript: this.transcript,
-      hold: { allowed: this.ready && !this.paused && this.state.active, delayMs: 700 },
+      hold: { allowed: this.ready && !this.paused && (this.state.active || !!this.state.background), delayMs: 700 },
     })
   }
 }

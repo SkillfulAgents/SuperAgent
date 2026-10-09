@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { SessionExecution } from '@shared/lib/container/session-execution-schema'
 import { renderHook, act } from '@testing-library/react'
 
 interface ListenerEvents {
@@ -89,7 +90,7 @@ const reader = vi.hoisted(() => {
 vi.mock('@renderer/lib/voice/services/read-aloud', () => ({ readAloud: reader, voiceStreamId: (sessionId: string) => `voice:${sessionId}` }))
 
 const stream = vi.hoisted(() => ({
-  state: { isActive: false, streamingMessage: null as string | null, streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string }> },
+  state: { execution: null as SessionExecution | null, isActive: false, streamingMessage: null as string | null, streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string }> },
 }))
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => stream.state }))
 
@@ -147,7 +148,7 @@ describe('useVoiceMode', () => {
     reader.duckStream.mockClear()
     reader.stop.mockClear()
     interruptSession.mutate.mockClear()
-    stream.state = { isActive: false, streamingMessage: null, streamingToolUses: [] }
+    stream.state = { execution: null, isActive: false, streamingMessage: null, streamingToolUses: [] }
   })
 
   it('opens the mic, shows what is heard, and sends it when the person pauses', async () => {
@@ -205,6 +206,26 @@ describe('useVoiceMode', () => {
     act(() => reader.set({ activeId: null, status: 'idle' }))
     expect(result.current.phase).toBe('listening')
     expect(listener.discard).not.toHaveBeenCalled()
+  })
+
+  it('flushes the last sentence during background waiting and does not interrupt background work', async () => {
+    const { listener, setStream, unmount } = setup()
+    await flush()
+    const execution: SessionExecution = { epoch: 'host', revision: 1, turnId: 'turn-1', phase: 'running', backgroundTaskCount: 1, responseText: '', error: null }
+    setStream({ isActive: true, streamingMessage: 'Research is running in the background.', execution })
+    expect(reader.endStream).not.toHaveBeenCalled()
+    setStream({ execution: { ...execution, phase: 'waiting_background' } })
+    expect(reader.endStream).toHaveBeenCalledWith(STREAM_ID)
+    act(() => reader.set({ activeId: null, status: 'idle' }))
+    const starts = reader.beginStream.mock.calls.length
+    setStream({ execution: { ...execution, phase: 'running' } })
+    expect(reader.beginStream).toHaveBeenCalledTimes(starts)
+    setStream({ execution: { ...execution, phase: 'waiting_background' } })
+    act(() => listener.hear('Please also check the second report'))
+    act(() => listener.events.onSpeechEnded())
+    await flush()
+    expect(interruptSession.mutate).not.toHaveBeenCalled()
+    unmount()
   })
 
   it('drops words heard well before the agent finished, keeps words heard as it did', async () => {
@@ -334,7 +355,7 @@ describe('useVoiceMode', () => {
 
   it('never re-reads the previous reply after the next send', async () => {
     const { listener, setStream } = setup()
-    stream.state = { streamingToolUses: [], isActive: false, streamingMessage: 'Old reply, still on screen.' }
+    stream.state = { execution: null, streamingToolUses: [], isActive: false, streamingMessage: 'Old reply, still on screen.' }
     act(() => listener.hear('next question'))
     act(() => listener.events.onSpeechEnded())
     await flush()
@@ -651,7 +672,7 @@ describe('useVoiceMode', () => {
   })
 
   it('entered while the agent is already replying, it reads what follows', () => {
-    stream.state = { streamingToolUses: [], isActive: true, streamingMessage: 'Half way through. ' }
+    stream.state = { execution: null, streamingToolUses: [], isActive: true, streamingMessage: 'Half way through. ' }
     const { result, setStream } = setup()
     expect(result.current.phase).toBe('thinking')
     expect(reader.beginStream).not.toHaveBeenCalled()

@@ -1,4 +1,6 @@
 import { withSessionSendContext } from './session-send-context'
+import { SessionExecutionTracker } from './session-execution'
+import type { SessionExecution } from './session-execution-schema'
 import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { z } from 'zod'
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
@@ -22,7 +24,7 @@ import {
 } from '@shared/lib/tools/requests/request-schema'
 import { classifyResult } from './result-classification'
 import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind } from './runtime-death'
-import { parseBackgroundTasksChanged } from './background-tasks-changed'
+import { DEFAULT_WAKE_GRACE_MS, parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
 import {
@@ -252,6 +254,7 @@ function isInterruptedTurnContent(content: { type?: unknown; subtype?: unknown }
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
 // This class only handles SSE streaming updates to the frontend, not persistence.
 interface StreamingState {
+  execution?: SessionExecutionTracker
   currentText: string
   isStreaming: boolean
   currentToolUse: { id: string; name: string } | null
@@ -675,6 +678,7 @@ class MessagePersister {
     // Initialize state
     this.streamingStates.set(ctx.key, {
       sessionId,
+      execution: prior?.execution,
       currentText: '',
       isStreaming: false,
       currentToolUse: null,
@@ -808,6 +812,7 @@ class MessagePersister {
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(agentSlug: string, sessionId: string, state: StreamingState): void {
+    const outcome = state.isInterrupted ? 'cancelled' : state.lastResultCleanSuccess ? 'completed' : undefined
     // The session is truly settled: persist the automation outcome for a turn
     // that ended in a clean success. (Failures were already persisted at their
     // result — an error ends the turn immediately. Interrupts never set the
@@ -823,7 +828,7 @@ class MessagePersister {
     // — e.g. the markSessionIdle revert after markSessionActive's sync picked
     // up an open agent-scoped review.
     state.isAwaitingInput = false
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false })
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false, outcome })
     this.broadcastGlobal({
       type: 'session_idle',
       sessionId,
@@ -879,6 +884,7 @@ class MessagePersister {
         await this.subscribeToSession(agentSlug, sessionId, client, sessionId)
       }
       const before = { ...this.streamingStates.get(key)! }
+      const executionBefore = before.execution?.snapshot
       this.markSessionActive(agentSlug, sessionId)
       const marked = this.streamingStates.get(key)!
       const generation = marked.activityGeneration
@@ -909,6 +915,10 @@ class MessagePersister {
               state.lastResultCleanSuccess = before.lastResultCleanSuccess
               state.lastApiErrorCode = before.lastApiErrorCode
               state.isInterrupted = before.isInterrupted
+              if (!outputArrived && executionBefore) {
+                state.execution?.restore(executionBefore)
+                this.broadcastToSSE(agentSlug, sessionId, { type: 'execution_changed' })
+              }
             }
             // The final idle may have arrived while the failed send was in
             // flight and its result guard was cleared. Apply it now as well.
@@ -948,7 +958,11 @@ class MessagePersister {
     // or interrupted run racing a fresh message, or an event before any
     // turn output — must not finalize, or it fires a spurious
     // session_idle (and a bogus completion notification).
-    if (state.isActive && state.lastResultSubtype !== null) {
+    // A fresh foreground response can arrive without a running/active edge.
+    // Its result still supplies terminal proof; an earlier completed receipt
+    // cannot enter `finishing` again without new output first.
+    const freshCompletedOutput = state.lastResultCleanSuccess && state.execution?.snapshot.phase === 'finishing'
+    if ((state.isActive || freshCompletedOutput) && state.lastResultSubtype !== null) {
       const openBackgroundWork = this.openBackgroundWorkCount(state)
       if (openBackgroundWork > 0) {
         // Idle here does NOT mean "settled". activeBackgroundTasks holds
@@ -963,6 +977,7 @@ class MessagePersister {
         // terminal signal (task_notification / task_updated) clears each
         // task, and the subsequent, truly-settled idle finalizes.
         state.waitingBackground = true
+        state.isActive = true
         this.broadcastToSSE(agentSlug, sessionId, {
           type: 'session_waiting_background',
           backgroundTaskCount: openBackgroundWork,
@@ -1687,7 +1702,7 @@ class MessagePersister {
     }
 
     // Broadcast to session-specific clients
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false })
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false, outcome: 'cancelled' })
 
     // Also broadcast globally so sidebar updates regardless of which session is being viewed
     if (agentSlug) {
@@ -2172,6 +2187,7 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(agentSlug: string, sessionId: string, data: unknown): void {
     const key = sessionKeyOf(agentSlug, sessionId)
+    data = this.withExecutionSnapshot(agentSlug, sessionId, data)
     void this.capture?.recordOutput(sessionId, data)
     // Turn boundaries settle whatever the last turn left parked. That is the
     // only request bookkeeping on the broadcast path — registration itself
@@ -2213,6 +2229,47 @@ class MessagePersister {
         }
       })
     }
+  }
+
+  /** Reconnects and heartbeats read the same retained verdict as live events. */
+  getSessionExecution(agentSlug: string, sessionId: string): SessionExecution | null {
+    return this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))?.execution?.snapshot ?? null
+  }
+
+  private withExecutionSnapshot(agentSlug: string, sessionId: string, data: unknown): unknown {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state || !data || typeof data !== 'object') return data
+    const event = data as { type?: string; text?: string; error?: string; outcome?: 'completed' | 'cancelled'; interrupted?: boolean; initialization?: boolean }
+    const execution = state.execution ??= new SessionExecutionTracker()
+    const before = execution.snapshot
+    if ((event.type === 'stream_start' && !event.initialization) || event.type === 'stream_delta' || event.type === 'tool_use_start' || event.type === 'tool_use_streaming') {
+      this.cancelSettleAfterStop(state)
+    }
+    switch (event.type) {
+      case 'session_active':
+      case 'execution_running': execution.start(); break
+      case 'stream_start': if (!event.initialization) execution.outputStart(); break
+      case 'stream_delta': execution.output(event.text ?? ''); break
+      case 'tool_use_start':
+      case 'tool_use_streaming': execution.start(); break
+      case 'turn_output_complete': execution.outputComplete(); break
+      case 'session_waiting_background':
+        if (event.interrupted) execution.finish('cancelled', execution.snapshot.responseText || state.lastAssistantText)
+        else execution.waitForBackground()
+        break
+      case 'session_error': execution.finish('failed', execution.snapshot.responseText || state.lastAssistantText, event.error ?? 'An unknown error occurred'); break
+      case 'session_idle':
+        if (event.outcome) execution.finish(event.outcome, state.lastAssistantText || execution.snapshot.responseText)
+        else execution.idle()
+        break
+    }
+    execution.backgroundTasks(this.openBackgroundWorkCount(state))
+    const after = execution.snapshot
+    // Text deltas keep flowing normally. Lifecycle changes carry the whole
+    // snapshot; terminal and recovery frames also retain the final response.
+    const lifecycleChanged = before.phase !== after.phase || before.turnId !== after.turnId || before.backgroundTaskCount !== after.backgroundTaskCount
+    return lifecycleChanged || event.type === 'session_idle' || event.type === 'session_error' || event.type === 'execution_changed'
+      ? { ...data, execution: after } : data
   }
 
   // Handle incoming message from container
@@ -2464,6 +2521,7 @@ class MessagePersister {
           }
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'stream_start',
+            initialization: true,
             slashCommands: state.slashCommands.length > 0 ? state.slashCommands : undefined,
           })
         } else if (content.subtype === 'status') {
@@ -2707,6 +2765,7 @@ class MessagePersister {
             // The wake turn a stopped task was waiting on: the runtime will
             // settle this session itself.
             this.cancelSettleAfterStop(state)
+            this.broadcastToSSE(agentSlug, sessionId, { type: 'execution_running' })
           }
           if (content.state === 'running' && !state.isActive) {
             // The runtime started a turn we didn't initiate via POST (e.g. a
@@ -3481,6 +3540,12 @@ class MessagePersister {
       backgroundTasks: backgroundTaskList(state),
     })
     this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+    // A missing terminal/idle frame must not pin the renderer indefinitely.
+    // The host owns the same bounded wake grace as the container's settlement
+    // tracker. Never infer completion from the empty task list in the client.
+    if (state.waitingBackground && state.runtimeState === 'idle' && this.openBackgroundWorkCount(state) === 0) {
+      this.scheduleSettleAfterStop(agentSlug, sessionId, state, DEFAULT_WAKE_GRACE_MS)
+    }
   }
 
   // Clear a finished background task (backgrounded Bash OR a dynamic workflow),
@@ -3503,16 +3568,18 @@ class MessagePersister {
   // observed ~20ms after the stopped notification; Bash stops never wake.
   private static readonly SETTLE_AFTER_STOP_GRACE_MS = 1500
 
-  private scheduleSettleAfterStop(agentSlug: string, sessionId: string, state: StreamingState): void {
+  private scheduleSettleAfterStop(agentSlug: string, sessionId: string, state: StreamingState, graceMs = MessagePersister.SETTLE_AFTER_STOP_GRACE_MS): void {
     this.cancelSettleAfterStop(state)
     state.settleAfterStopTimer = setTimeout(() => {
       state.settleAfterStopTimer = null
       // Still the live state, still parked with nothing running.
       if (this.streamingStates.get(sessionKeyOf(agentSlug, sessionId)) !== state) return
       if (!state.isActive || state.runtimeState !== 'idle' || this.openBackgroundWorkCount(state) > 0) return
+      // A completion wake can produce foreground output without `running`.
+      if (state.queuedTurnCount > 0) return
       console.log(`[MessagePersister] Session ${sessionId}: last background task stopped while idle — settling`)
       this.finalizeIdle(agentSlug, sessionId, state)
-    }, MessagePersister.SETTLE_AFTER_STOP_GRACE_MS)
+    }, graceMs)
   }
 
   private cancelSettleAfterStop(state: StreamingState): void {
