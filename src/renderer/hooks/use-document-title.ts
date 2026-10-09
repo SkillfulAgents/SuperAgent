@@ -61,6 +61,7 @@ const SETTINGS_TAB_TITLES = {
   runtime: 'Container Runtime',
   browser: 'Browser Use',
   web: 'Web Search',
+  decision: 'Decision Model',
   capabilities: 'Subagents',
   'global-guidance': 'Global Guidance',
   'computer-use': 'Computer Use',

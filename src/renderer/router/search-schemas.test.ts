@@ -92,6 +92,9 @@ describe('settingsTabSchema', () => {
     expect(settingsTabSchema.safeParse('global-guidance').success).toBe(true)
     expect(settingsTabSchema.safeParse('capabilities').success).toBe(true)
   })
+  it('includes the decision model route', () => {
+    expect(settingsTabSchema.safeParse('decision').success).toBe(true)
+  })
 })
 
 describe('settingsSearchSchema (from close-target)', () => {
