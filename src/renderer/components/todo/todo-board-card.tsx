@@ -1,7 +1,9 @@
-import { Check, Loader2 } from 'lucide-react'
+import { Check, Loader2, MoonStar } from 'lucide-react'
+import { formatDistanceToNowStrict } from 'date-fns'
 import { cn } from '@shared/lib/utils/cn'
 import { TODO_ASK_LABELS, todoDisplayTitle } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
+import { ActivityOrb } from '@renderer/components/messages/activity-orb'
 import type { TodoView } from '@renderer/hooks/use-todos'
 import type { TodoCardAction } from './todo-card-action'
 import { ShortcutTooltip } from './todo-shortcuts'
@@ -11,9 +13,22 @@ const PILL = 'ml-auto inline-flex h-5 shrink-0 items-center rounded-full px-2 te
 
 /**
  * What a card in Needs you wants: blocked work says what it is waiting for
- * (orange); work with output to look at says so (blue).
+ * (orange); work with output to look at says so (blue), unless the agent is
+ * asleep until a scheduled wake, which says how long (gray).
  */
 function AskPill({ todo }: { todo: TodoView }) {
+  if (todo.column === 'has_updates' && todo.pendingWakeAt !== null) {
+    return (
+      <span
+        className={cn(PILL, 'gap-1 bg-muted text-muted-foreground')}
+        title={`Resumes ${formatDistanceToNowStrict(todo.pendingWakeAt, { addSuffix: true })}`}
+        data-testid="todo-card-waiting"
+      >
+        <MoonStar className="h-3 w-3" />
+        Waiting for {formatDistanceToNowStrict(todo.pendingWakeAt)}
+      </span>
+    )
+  }
   if (todo.column === 'has_updates') {
     return (
       <span className={cn(PILL, 'bg-blue-500/10 text-blue-700 dark:text-blue-400')} data-testid="todo-card-updates">
@@ -48,6 +63,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
   onHover?: (todo: TodoView) => void
 }) {
   const title = todoDisplayTitle(todo)
+  const agentName = agent?.name ?? (todo.column === 'drafts' && todo.newAgent ? 'New Agent' : undefined)
   const finished = todo.column === 'done' || todo.column === 'archived'
   const sep = <span aria-hidden="true">·</span>
   // Finished work whose session was deleted has nothing left to open, and a
@@ -104,14 +120,19 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
         </p>
 
         <p className="flex h-5 min-w-0 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground">
-          {agent && (
-            <span className="min-w-[2.5rem] truncate text-foreground/80">{agent.name}</span>
+          {todo.column === 'working' && (
+            <span className="shrink-0" data-testid="todo-card-orb">
+              <ActivityOrb state="working" size={14} />
+            </span>
+          )}
+          {agentName && (
+            <span className="min-w-[2.5rem] truncate text-foreground/80">{agentName}</span>
           )}
 
           {todo.column === 'drafts' && (
             starting ? (
               <>
-                {agent && sep}
+                {agentName && sep}
                 <span className="inline-flex shrink-0 items-center gap-1" data-testid="todo-card-starting">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Starting…
@@ -119,7 +140,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
               </>
             ) : (
               <>
-                {agent && sep}
+                {agentName && sep}
                 <span className="shrink-0">Edited {when(todo.updatedAt)}</span>
               </>
             )
@@ -130,7 +151,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
 
           {todo.column === 'working' && (
             <>
-              {agent && sep}
+              {agentName && sep}
               <span className="todo-shimmer min-w-0 flex-1 truncate" data-testid="todo-card-status">Working…</span>
             </>
           )}

@@ -560,5 +560,17 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791396692104,
     "hash": "da77e2d0b25863a67be69d795f493e621854e8803599b49766e79460819d9fe6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `new_agent` integer DEFAULT false NOT NULL;",
+      "\nALTER TABLE `todos` ADD `model` text;",
+      "\nALTER TABLE `todos` ADD `llm_provider_id` text;",
+      "\nALTER TABLE `todos` ADD `effort` text;",
+      "\nALTER TABLE `todos` ADD `speed` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1791587287364,
+    "hash": "ccb3ac557a4bd7f0eef3ed27cf5565d1aef1081f89551803b42299e6e31ee1a6"
   }
 ]
