@@ -241,6 +241,9 @@ export function NotificationsView() {
   const markAllRead = useMarkAllNotificationsRead()
   const markAllPlatformRead = useMarkAllPlatformNotificationsRead()
   const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
+  // The badge count skips non-actionable types (e.g. scheduled task started), but
+  // the list still shows them as unread and read-all clears them.
+  const hasUnread = unreadCount > 0 || (data?.items ?? []).some((n) => !n.isRead)
 
   const agentNameBySlug = useMemo(
     () => new Map(agents?.map((a) => [a.slug, a.name]) ?? []),
@@ -296,7 +299,7 @@ export function NotificationsView() {
             variant="outline"
             size="sm"
             onClick={handleMarkAllRead}
-            disabled={markAllRead.isPending || markAllPlatformRead.isPending || unreadCount === 0}
+            disabled={markAllRead.isPending || markAllPlatformRead.isPending || !hasUnread}
             data-testid="notifications-mark-all-read"
           >
             <CheckCheck className="h-3.5 w-3.5 mr-1.5" />
