@@ -29,7 +29,7 @@ function controlSocket(volumeId: string): string {
   return `/tmp/rclone-${volumeId}.sock`;
 }
 
-export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, ignoreSize = false, cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
+export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, ignoreSize = false, dirCacheSeconds?: number, cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
   return [
     // mount's bazil FUSE adapter caches newly created entries for a minute,
     // regardless of --attr-timeout. After a directory rename/refresh those
@@ -69,7 +69,7 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     '--vfs-write-back', '1s',
     // Local edits must appear promptly; remote listings are expensive. Writes through
     // this mount invalidate its cache, while outside changes appear after expiry.
-    '--dir-cache-time', cacheMode === 'remote' ? '5m' : '1s',
+    '--dir-cache-time', dirCacheSeconds ? `${dirCacheSeconds}s` : cacheMode === 'remote' ? '5m' : '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
     // Shutdown reads the upload queue through this socket and starts what is waiting. Any claude process can use it,
@@ -96,7 +96,7 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
 }
 
 async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
-  const { volumeId, name, cacheMode, caseInsensitive, ignoreSize } = volume;
+  const { volumeId, name, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds } = volume;
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -107,7 +107,7 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
     const hostApiUrl = process.env.SUPERAGENT_HOST_API_URL ?? '';
     const token = process.env.PROXY_TOKEN ?? '';
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, hostApiUrl, cacheMode, caseInsensitive, ignoreSize, cache), {
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, hostApiUrl, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds, cache), {
       env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: token },
       stdio: ['ignore', 'inherit', 'inherit'],
     });

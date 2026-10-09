@@ -49,6 +49,8 @@ export interface ContainerVolume {
   caseInsensitive?: boolean
   /** Lets rclone keep a file whose stored size differs from the bytes it sent. */
   ignoreSize?: boolean
+  /** How long rclone trusts a folder listing. Older hosts omit it, and the cache policy's default applies. */
+  dirCacheSeconds?: number
 }
 
 /** Why a volume is not in the container. */

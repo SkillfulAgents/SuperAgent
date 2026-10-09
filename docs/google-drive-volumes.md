@@ -96,6 +96,17 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   copy saves into its Google file. A folder, or a converted copy as the source,
   never replaces anything. A move between two names of the same file, such as a
   file and a shortcut to it, does nothing.
+- rclone deletes a file one second after its overwrite fails or is cancelled. A delete
+  of a path whose overwrite failed in the last 5 seconds leaves the file as it was, so
+  a refused save (a quota refusal, a Sheet Drive cannot convert) never trashes the
+  Google file. A new file whose upload rclone cancelled while Drive committed it is
+  trashed, since rclone sends it again under its new name.
+- Drive mounts trust a folder listing for 30 seconds, not the 5 minutes of other
+  remote mounts, because people edit Drive files in Google's editors while agents
+  work. rclone ends each read at the size it last listed. A read that ends short of a
+  file's current end can only come from a stale size, so the WebDAV route answers
+  416. The agent sees an I/O error until the folder is listed again, never a file
+  cut short.
 - Delete moves to trash. A folder is trashed only when empty, because trashing a
   folder trashes its contents. A move or rename is one update call that changes
   parent and name; a taken destination is a conflict that keeps both entries.
