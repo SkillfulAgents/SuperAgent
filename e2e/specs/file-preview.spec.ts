@@ -361,7 +361,7 @@ test.describe('File Preview', () => {
 
     const composer = sessionPage.getMessageInput()
     await expect(composer).toContainText('File feedback on data.csv:')
-    await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com"):')
+    await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com")')
     await expect(composer).toContainText('This email looks wrong')
     await expect(composer).toBeFocused()
     await expect(sessionPage.getUserMessages()).toHaveCount(userMessageCount)
@@ -476,7 +476,7 @@ test.describe('File Preview', () => {
     await tray.getByRole('button', { name: 'Submit' }).click()
     const composer = sessionPage.getMessageInput()
     await expect(composer).toContainText('File feedback on clip.mp4:')
-    await expect(composer).toContainText('At 0:00.00 at position (50%, 50%):')
+    await expect(composer).toContainText('At 0:00.00 at position (50%, 50%)')
     await expect(composer).toContainText('Trim the intro here')
   })
 

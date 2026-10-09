@@ -115,8 +115,8 @@ export function CsvRenderer({ url, filePath, agentSlug, commentsEnabled = true }
   const commentsByCell = useMemo(() => {
     const map = new Map<string, number[]>()
     fileComments?.forEach((c, i) => {
-      if (c.cell) {
-        const key = `${c.cell.row}:${c.cell.col}`
+      if (c.anchor.kind === 'cell') {
+        const key = `${c.anchor.cell.row}:${c.anchor.cell.col}`
         const list = map.get(key)
         if (list) list.push(i + 1)
         else map.set(key, [i + 1])

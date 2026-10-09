@@ -62,6 +62,11 @@ const open = (props: { autoListen?: boolean; onClose?: () => void } = {}) => ren
 const tick = () => act(() => new Promise((resolve) => setTimeout(resolve)))
 
 describe('CommentOverlay', () => {
+  it('heads the box with the anchor description', () => {
+    render(<CommentOverlay selection={{ text: '', rect: new DOMRect(), timestamp: 4.2, x: 40, y: 60 }} filePath="/workspace/clip.mp4" agentSlug="test-agent" onClose={() => {}} autoEdit />)
+    expect(screen.getByText('At 0:04.20 at position (40%, 60%)')).toBeVisible()
+  })
+
   it('adds on Enter, not on Shift+Enter', () => {
     render(
       <CommentOverlay
