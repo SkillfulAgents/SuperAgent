@@ -57,9 +57,10 @@ describe('Google Drive change feed', () => {
 
   /** Start the feed, then read the folder after it, so the listing is one the feed can vouch for. */
   async function started() {
+    feed.keepFresh('a')
     await listings.list('a', key('f'), read)
     await tick(4_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     expect(startCalls()).toBe(1)
     listings.forget(key('f'))
@@ -69,7 +70,7 @@ describe('Google Drive change feed', () => {
   it('keeps a listing current past its expiry while polls find nothing in its folder', async () => {
     await started()
     await tick(12_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     expect(changeCalls()).toBe(1)
     // Read at 4 s, it would expire at 19 s. The poll at 16 s vouches for it as of 6 s.
@@ -79,13 +80,23 @@ describe('Google Drive change feed', () => {
     await tick(2_000)
     await listings.list('a', key('f'), read)
     expect(read).toHaveBeenCalledTimes(3)
+    // Polls go on at most every 3 s while the account is in use, whatever it reads.
+    feed.keepFresh('a')
+    await settle()
+    feed.keepFresh('a')
+    await settle()
+    expect(changeCalls()).toBe(2)
+    await tick(3_000)
+    feed.keepFresh('a')
+    await settle()
+    expect(changeCalls()).toBe(3)
   })
 
   it('drops a listing a change touches, so the next read goes to Drive', async () => {
     await started()
     pages = [{ changes: [changed('n', 'new.txt', ['f'])], newStartPageToken: 't2' }]
     await tick(12_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     expect(listings.recent(key('f'), Infinity)).toBeUndefined()
     await listings.list('a', key('f'), read)
@@ -93,12 +104,13 @@ describe('Google Drive change feed', () => {
   })
 
   it('never vouches for a listing read before the feed started', async () => {
+    feed.keepFresh('a')
     await listings.list('a', key('f'), read)
     await tick(4_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     await tick(12_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     expect(changeCalls()).toBe(1)
     expect(listings.recent(key('f'), Infinity)?.readAt).toBe(0)
@@ -110,7 +122,7 @@ describe('Google Drive change feed', () => {
     async function overlap(page: unknown) {
       let answerPoll = (_page: unknown) => {}
       request.mockImplementationOnce(async () => new Promise(resolve => { answerPoll = body => resolve(Response.json(body)) }))
-      feed.keepFresh('a', key('f'))
+      feed.keepFresh('a')
       await tick(200)
       listings.forget(key('f'))
       let answerRead = (_files: DriveFile[]) => {}
@@ -124,33 +136,40 @@ describe('Google Drive change feed', () => {
     await tick(12_000)
     await overlap({ changes: [], newStartPageToken: 't2' })
     await tick(12_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     // Read at 16.2 s, after the poll that arrived at 16.5 s was sent. The poll at 28.5 s vouches for it as of 18.5 s.
     expect(listings.recent(key('f'), Infinity)?.readAt).toBe(18_500)
     await tick(4_000)
     await overlap({ changes: [changed('n', 'new.txt', ['f'])], newStartPageToken: 't3' })
     await tick(4_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     expect(listings.recent(key('f'), Infinity)).toBeUndefined()
   })
 
-  it('starts again after a failed poll, and reads every folder again rather than page through a long backlog', async () => {
+  it('keeps its place after a failed poll, starts again after a minute without one, and reads every folder again past a long backlog', async () => {
     await started()
-    request.mockImplementationOnce(async () => { throw new Error('upstream') })
+    request.mockImplementationOnce(async () => { throw new Error('rate limited') })
     await tick(12_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     await tick(4_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
-    expect(startCalls()).toBe(2)
+    expect(startCalls()).toBe(1)
+    expect(listings.recent(key('f'), Infinity)?.readAt).toBe(10_000)
     pages = [{ changes: [], nextPageToken: 'p2' }, { changes: [], nextPageToken: 'p3' }, { changes: [], nextPageToken: 'p4' }]
     await tick(4_000)
-    feed.keepFresh('a', key('f'))
+    feed.keepFresh('a')
     await settle()
     expect(listings.recent(key('f'), Infinity)).toBeUndefined()
+    expect(startCalls()).toBe(2)
+    request.mockImplementation(async (_account, req: { path: string }) => {
+      if (req.path === 'drive/v3/changes') throw new Error('rate limited')
+      return Response.json({ startPageToken: 't9' })
+    })
+    for (let i = 0; i < 20; i++) { await tick(4_000); feed.keepFresh('a'); await settle() }
     expect(startCalls()).toBe(3)
   })
 })
