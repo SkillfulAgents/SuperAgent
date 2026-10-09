@@ -3381,6 +3381,37 @@ describe('useMessageStream — workflow drawer reducers', () => {
 
     expect(typeof result.current.workflows[0].completedAt).toBe('number')
   })
+
+  it('reconnect settles runs that ended while away and adds runs that started while away', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const first = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started({ toolUseId: 'tu-first', runId: 'wf_first', name: 'design' }) })
+
+    // Switching to another session closes this session's stream.
+    first.unmount()
+    expect(es().readyState).toBe(MockEventSource.CLOSED)
+
+    // While away, wf_first finished and wf_second started. Coming back opens a new stream.
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const reopened = MockEventSource.instances[MockEventSource.instances.length - 1]
+    expect(reopened).not.toBe(es())
+    act(() => {
+      reopened.simulateMessage({
+        type: 'connected',
+        isActive: true,
+        backgroundTasks: [
+          { taskId: 'task-second', startedAt: 2000, isWorkflow: true, taskType: 'local_workflow', runId: 'wf_second' },
+        ],
+      })
+    })
+
+    const byId = Object.fromEntries(result.current.workflows.map(w => [w.runId, w]))
+    expect(typeof byId.wf_first.completedAt).toBe('number')
+    expect(byId.wf_second).toMatchObject({ startedAt: 2000, agents: {} })
+    expect(byId.wf_second.completedAt).toBeUndefined()
+  })
 })
 
 describe('useMessageStream — extended thinking blocks', () => {

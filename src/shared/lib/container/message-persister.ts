@@ -140,6 +140,8 @@ export interface ActiveBackgroundTaskSnapshot {
   isSubagent?: boolean
   taskType?: string
   description?: string
+  /** A workflow's on-disk `wf_…` run id, once its tool result has landed. */
+  runId?: string
 }
 
 function backgroundTaskSnapshot(taskId: string, info: BackgroundTaskInfo): ActiveBackgroundTaskSnapshot {
@@ -150,6 +152,7 @@ function backgroundTaskSnapshot(taskId: string, info: BackgroundTaskInfo): Activ
     isSubagent: info.isSubagent,
     taskType: info.taskType,
     description: info.description,
+    runId: info.runId,
   }
 }
 

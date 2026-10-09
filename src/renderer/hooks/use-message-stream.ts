@@ -201,6 +201,32 @@ export interface WorkflowRunLive {
 const EMPTY_WORKFLOWS: WorkflowRunLive[] = []
 const sessionWorkflows = new Map<string, WorkflowRunLive[]>()
 
+// Run start/finish events are one-shot, and a session's stream is closed while
+// another session is open. The connected snapshot lists the runs still live:
+// settle the ones it no longer lists and add any that started while away.
+export function reconcileWorkflowRuns(
+  runs: WorkflowRunLive[],
+  tasks: BackgroundTaskRef[],
+  now: number,
+): WorkflowRunLive[] {
+  const live = new Map<string, BackgroundTaskRef>()
+  for (const task of tasks) {
+    if (task.isWorkflow && task.runId) live.set(task.runId, task)
+  }
+  let changed = false
+  const next = runs.map((run) => {
+    if (run.completedAt !== undefined || live.has(run.runId)) return run
+    changed = true
+    return { ...run, completedAt: now }
+  })
+  for (const [runId, task] of live) {
+    if (next.some((run) => run.runId === runId)) continue
+    changed = true
+    next.push({ toolUseId: '', runId, startedAt: task.startedAt, agents: {} })
+  }
+  return changed ? next : runs
+}
+
 // `done`/`failed` are terminal and sticky: a later `running`/`progress` snapshot must
 // never downgrade them (snapshots can momentarily lag or reorder).
 function mergeAgentStatus(prev: WorkflowAgentLiveStatus | undefined, next: WorkflowAgentLiveStatus): WorkflowAgentLiveStatus {
@@ -495,6 +521,10 @@ function getOrCreateEventSource(
             data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
+        if (Array.isArray(data.backgroundTasks)) {
+          const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+          sessionWorkflows.set(sessionId, reconcileWorkflowRuns(runs, data.backgroundTasks, Date.now()))
+        }
         // Reconcile against the persisted transcript on every (re)connect. A client
         // that opens the stream AFTER the agent already broadcast events (common for a
         // freshly-created session, or any reconnect) misses those one-shot broadcasts —

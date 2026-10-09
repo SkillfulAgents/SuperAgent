@@ -16,6 +16,8 @@ export interface BackgroundTaskRef {
   taskType?: string
   /** The runtime's own description — the label when the transcript has no launching call. */
   description?: string
+  /** A workflow's `wf_…` run id. */
+  runId?: string
 }
 
 export interface BackgroundTaskLabel {
