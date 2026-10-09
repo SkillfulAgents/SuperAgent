@@ -3570,4 +3570,28 @@ describe('typing leases', () => {
       vi.useRealTimers()
     }
   })
+
+  it('tells workspace listeners about writes, reply ends, and reconnects, and nothing else', async () => {
+    const { useMessageStream, subscribeWorkspaceWrites } = await getHookModule()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const writes: string[] = []
+    const unsubscribe = subscribeWorkspaceWrites('session-1', (write) => writes.push(write))
+    const es = MockEventSource.instances[0]
+
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'stream_start' })
+      es.simulateMessage({ type: 'tool_call', toolUseId: 't0' })
+      es.simulateMessage({ type: 'tool_result', toolUseId: 't1', result: 'ok', isError: false })
+      es.simulateMessage({ type: 'tool_result', toolUseId: 't2', result: 'ok', isError: false, workspaceWrite: '/workspace/notes.md' })
+      es.simulateMessage({ type: 'turn_output_complete' })
+      es.simulateMessage({ type: 'session_error', error: 'boom' })
+      es.simulateMessage({ type: 'session_idle' })
+    })
+    expect(writes).toEqual(['any', '/workspace/notes.md', 'any', 'any'])
+
+    unsubscribe()
+    act(() => es.simulateMessage({ type: 'tool_result', toolUseId: 't3', workspaceWrite: 'any' }))
+    expect(writes).toHaveLength(4)
+  })
 })

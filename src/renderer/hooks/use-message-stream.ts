@@ -203,7 +203,8 @@ const EMPTY_WORKFLOWS: WorkflowRunLive[] = []
 const sessionWorkflows = new Map<string, WorkflowRunLive[]>()
 
 // Called in stream order with what the agent may have just written: a file from
-// a finished tool call, or 'any' when the call ran code or the turn ended.
+// a finished tool call, or 'any' when the call ran code, the turn ended, or the
+// stream (re)connected and may have missed writes.
 type WorkspaceWriteListener = (write: WorkspaceWrite) => void
 const workspaceWriteListeners = new Map<string, Set<WorkspaceWriteListener>>()
 
@@ -464,6 +465,7 @@ function getOrCreateEventSource(
       // All other events preserve the current isActive value
 
       if (data.type === 'connected') {
+        emitWorkspaceWrite(sessionId, 'any')
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)

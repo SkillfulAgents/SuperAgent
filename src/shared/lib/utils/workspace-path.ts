@@ -29,3 +29,26 @@ export function getPathName(filePath: string): string {
 export function toWorkspaceRelativePath(filePath: string): string {
   return filePath.replace(/^\/workspace(?=\/|$)\/?/, '').replace(/\/+$/, '')
 }
+
+/**
+ * One spelling for a file path inside the workspace, relative, so two
+ * spellings of the same file compare equal: `/workspace//out/./a.md`,
+ * `out/b/../a.md` and `/workspace/out/a.md` all give `out/a.md`. Null for a
+ * path outside the workspace, one that climbs above it, or the root itself.
+ */
+export function canonicalWorkspacePath(filePath: string): string | null {
+  let rest = filePath
+  if (rest === '/workspace' || rest.startsWith('/workspace/')) rest = rest.slice('/workspace'.length)
+  else if (rest.startsWith('/')) return null
+  const segments: string[] = []
+  for (const segment of rest.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      if (segments.length === 0) return null
+      segments.pop()
+    } else {
+      segments.push(segment)
+    }
+  }
+  return segments.length > 0 ? segments.join('/') : null
+}

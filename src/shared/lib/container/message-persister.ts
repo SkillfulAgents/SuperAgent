@@ -1654,6 +1654,7 @@ class MessagePersister {
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
+      state.pendingWorkspaceWrites.clear()
       state.isRecovering = false
       state.coalescedUserMessages = undefined
       if (processKept) {
@@ -3538,6 +3539,7 @@ class MessagePersister {
   // the outgoing process's identity.
   private handleProcessRestarted(sessionId: string, state: StreamingState, instance: unknown): void {
     this.dropProcessLocalBackgroundState(sessionId, state)
+    state.pendingWorkspaceWrites.clear()
     if (typeof instance === 'string' && instance !== '') state.processInstanceId = instance
   }
 

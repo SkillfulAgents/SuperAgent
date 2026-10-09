@@ -260,6 +260,23 @@ test.describe('File Preview', () => {
     await expect(markdown(page).getByRole('heading', { name: 'Version 2' })).toBeVisible({ timeout: 10000 })
   })
 
+  test('an open file reloads when the agent edits it', async ({ page }) => {
+    await agentPage.createAgent(`FileReload ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+
+    // The mock holds the reply open for 8s after the Edit's result, so the new text
+    // arriving inside 5s comes from the tool result, not from the reply ending.
+    await sessionPage.sendMessage('edit report')
+    await expect(markdown(page).getByText('New line.')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByText('Old line.')).toHaveCount(0)
+  })
+
   test('renders CSV as a table and supports the raw toggle', async ({ page }) => {
     await agentPage.createAgent(`CsvPreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)

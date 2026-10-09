@@ -139,7 +139,7 @@ export function ConversationDetail({
           No messages yet. The next message from {row.title} on {providerName} starts a new conversation.
         </div>
       ) : (
-        <FilePreviewProvider sessionId={openWindowId as string}>
+        <FilePreviewProvider sessionId={openWindowId as string} agentSlug={agentSlug}>
           {/* MessageList (via SessionThread) reads WorkflowContext, so provide it
               here as the live session view does - scoped to this window's session. */}
           <WorkflowProvider sessionId={openWindowId as string}>

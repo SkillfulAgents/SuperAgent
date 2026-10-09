@@ -192,17 +192,26 @@ export function isPreviewableImage(filePath: string): boolean {
   return !filePath.endsWith('/') && previewKind(filePath) === 'image'
 }
 
-const LIVE_PREVIEWS: ReadonlySet<PreviewKind> = new Set(['markdown', 'text', 'csv', 'image'])
-
 /**
- * Previews that reload in place when the agent writes the file. Video, audio,
- * PDF and HTML previews remount on a new URL, which would restart playback or
- * reset the page on every write, so they keep reloading only when the file is
- * reopened.
+ * Whether each preview reloads in place when the agent writes the file. Video,
+ * audio, PDF and HTML previews remount on a new URL, which would restart
+ * playback or reset the page on every write, so they reload only when the file
+ * is reopened. Keyed by every kind, so a new kind cannot skip the decision.
  */
+const RELOADS_ON_WRITE: Record<PreviewKind, boolean> = {
+  markdown: true,
+  text: true,
+  csv: true,
+  image: true,
+  html: false,
+  video: false,
+  audio: false,
+  pdf: false,
+}
+
 export function refreshesOnWorkspaceWrite(filePath: string): boolean {
   const kind = previewKind(filePath)
-  return kind !== null && LIVE_PREVIEWS.has(kind)
+  return kind !== null && RELOADS_ON_WRITE[kind]
 }
 
 const BINARY_EXTS = new Set([

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
-import { getPathName, toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
+import { canonicalWorkspacePath, getPathName } from '@shared/lib/utils/workspace-path'
 import type { WorkspaceWrite } from '@shared/lib/tools/workspace-write'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { subscribeWorkspaceWrites } from '@renderer/hooks/use-message-stream'
@@ -167,8 +167,8 @@ export function refreshWrittenTabs(
   let changed = false
   const next = tabs.map(tab => {
     if (tab.kind !== 'file' || tab.agentSlug !== agentSlug) return tab
-    // A delivered file's tab keeps the path the agent wrote, with or without the /workspace prefix.
-    if (write !== 'any' && toWorkspaceRelativePath(tab.filePath) !== toWorkspaceRelativePath(write)) return tab
+    // A delivered file's tab keeps the path as the agent spelled it.
+    if (write !== 'any' && canonicalWorkspacePath(tab.filePath) !== canonicalWorkspacePath(write)) return tab
     if (!refreshesOnWorkspaceWrite(tab.filePath)) return tab
     changed = true
     return { ...tab, version }

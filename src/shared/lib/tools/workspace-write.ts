@@ -1,11 +1,13 @@
+import { canonicalWorkspacePath } from '@shared/lib/utils/workspace-path'
+
 /**
  * What a finished tool call may have written in the agent's workspace: one file,
  * or `'any'` for tools that run arbitrary code and can touch anything. Null means
  * the tool cannot write files, so nothing showing a workspace file needs to look
  * again.
  *
- * Paths come back exactly as the tools take them, absolute under `/workspace`.
- * A path outside the workspace is null: no preview can be showing it.
+ * Paths come back in one spelling, absolute under `/workspace`, whatever form the
+ * tool was given. A path outside the workspace is null: no preview can be showing it.
  */
 export type WorkspaceWrite = string | 'any'
 
@@ -31,5 +33,7 @@ export function workspaceWriteOf(toolName: string, rawInput: string): WorkspaceW
   }
   if (typeof input !== 'object' || input === null) return null
   const path: unknown = Reflect.get(input, field)
-  return typeof path === 'string' && path.startsWith('/workspace/') ? path : null
+  if (typeof path !== 'string') return null
+  const relative = canonicalWorkspacePath(path)
+  return relative === null ? null : `/workspace/${relative}`
 }

@@ -493,9 +493,10 @@ describe('refreshWrittenTabs', () => {
   const versions = (tabs: PreviewTab[]) => tabs.map(t => (t as FileTab).version)
 
   it('reloads the open tab the agent wrote, in either path form', () => {
-    const tabs = [tab('/workspace/notes.md'), tab('out/plan.md'), tab('/workspace/other.md')]
+    const tabs = [tab('/workspace/notes.md'), tab('out/plan.md'), tab('./docs//guide.md')]
     expect(versions(refreshWrittenTabs(tabs, 'agent-1', '/workspace/notes.md', 2))).toEqual([2, 1, 1])
     expect(versions(refreshWrittenTabs(tabs, 'agent-1', '/workspace/out/plan.md', 2))).toEqual([1, 2, 1])
+    expect(versions(refreshWrittenTabs(tabs, 'agent-1', '/workspace/docs/guide.md', 2))).toEqual([1, 1, 2])
   })
 
   it('reloads every live tab of that agent when the agent may have written anything', () => {

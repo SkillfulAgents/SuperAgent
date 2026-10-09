@@ -7,6 +7,8 @@ describe('workspaceWriteOf', () => {
     ['Write', { file_path: '/workspace/out/report.md', content: '#' }, '/workspace/out/report.md'],
     ['MultiEdit', { file_path: '/workspace/plan.md', edits: [] }, '/workspace/plan.md'],
     ['NotebookEdit', { notebook_path: '/workspace/a.ipynb', new_source: '' }, '/workspace/a.ipynb'],
+    ['Edit', { file_path: '/workspace/./out//notes.md' }, '/workspace/out/notes.md'],
+    ['Write', { file_path: 'out/notes.md' }, '/workspace/out/notes.md'],
   ])('%s names the file it wrote', (tool, input, expected) => {
     expect(workspaceWriteOf(tool, JSON.stringify(input))).toBe(expected)
   })
@@ -20,6 +22,8 @@ describe('workspaceWriteOf', () => {
     ['mcp__user-input__deliver_file', JSON.stringify({ filePath: '/workspace/notes.md' })],
     ['Edit', JSON.stringify({ file_path: '/mounts/Gamut/notes.md' })],
     ['Edit', JSON.stringify({ file_path: '/workspaceX/notes.md' })],
+    ['Edit', JSON.stringify({ file_path: '/workspace/../etc/passwd' })],
+    ['Edit', JSON.stringify({ file_path: '/workspace' })],
     ['Edit', JSON.stringify({})],
     ['Edit', 'null'],
     ['Edit', '{"file_path": "/workspace/no'],
