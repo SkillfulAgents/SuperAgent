@@ -50,6 +50,7 @@ import {
   getSkillsetIndex,
   getSkillsetRepoDir,
   refreshSkillset,
+  BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
@@ -1285,10 +1286,12 @@ export async function refreshSkillsetCaches(
  */
 export async function refreshAgentTemplates(
   skillsets: SkillsetConfig[],
+  options: { background?: boolean } = {},
 ): Promise<void> {
+  const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
   for (const ss of skillsets) {
     try {
-      await refreshSkillset(toSkillsetRefFromConfig(ss))
+      await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       captureException(error, { tags: { area: 'template-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
