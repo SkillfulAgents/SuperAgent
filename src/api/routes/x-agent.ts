@@ -742,14 +742,14 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
 // ----------------------------------------------------------------------------
 
 const invokeBodySchema = z.object({
-  slug: z.string(),
+  slug: z.string().optional(),
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
   attachments: xAgentAttachmentsSchema.optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
-  // can reject calls from sessions that were themselves invoked by another agent
-  // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
+  // can reject calls from sessions that were themselves invoked by an agent
+  // (one-hop rule).
   _callerSessionId: z.string().optional(),
 })
 
@@ -772,14 +772,10 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   } = c.req.valid('json')
 
   // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
-  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug ?? callerSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
-  if (targetSlug === callerSlug) {
-    return c.json({ error: 'Agent cannot invoke itself' }, 400)
-  }
-
-  // One-hop rule: sessions started by another agent cannot invoke further.
+  // One-hop rule: sessions started by an agent invoke cannot invoke further.
   const callerMeta = _callerSessionId
     ? await agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
     : null
@@ -787,7 +783,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json(
       {
         error:
-          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke other agents. ` +
+          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke agents. ` +
           'Cross-agent invocation is one hop deep.',
       },
       403,

@@ -392,7 +392,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             </div>
           )}
 
-          {/* Global toggles (apply to every agent in the workspace) */}
+          {/* Global toggles */}
           <div className="space-y-2">
             <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
             <div className="rounded-md border p-3">
@@ -422,12 +422,24 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             <div className="rounded-md border p-3" data-testid="x-agent-policy-global-invoke">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to send messages to all other agents
+                  Allow this agent to send messages to all agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalInvoke}
                   onChange={handleChange('invoke', null)}
                   disabled={pendingKeys.has(policyKey('invoke', null))}
+                />
+              </div>
+            </div>
+            <div className="rounded-md border p-3" data-testid="x-agent-policy-self-invoke">
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1 text-xs font-medium">
+                  Allow this agent to send messages to its own sessions
+                </span>
+                <PolicyDecisionDropdown
+                  value={getDecision('invoke', agentSlug)}
+                  onChange={handleChange('invoke', agentSlug)}
+                  disabled={pendingKeys.has(policyKey('invoke', agentSlug))}
                 />
               </div>
             </div>
