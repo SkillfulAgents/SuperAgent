@@ -19,7 +19,7 @@ export const DROPBOX_UPLOAD_CHUNK_BYTES = 512 * 1024
 /** Serialize namespace commits across overlapping mounts. Body reads and upload
  * staging never hold this lock; Dropbox locks the namespace only at commit too. */
 function mutate<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
-  return serialize(accountId, async () => {
+  return serialize([accountId], async () => {
     dropboxReadCache.invalidate(accountId)
     dropboxHealthCache.invalidate(accountId)
     try { return await operation() } finally {

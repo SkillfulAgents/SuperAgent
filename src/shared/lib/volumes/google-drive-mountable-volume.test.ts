@@ -10,8 +10,9 @@ const { request, upload, requireAccount, TooLarge } = vi.hoisted(() => ({
 vi.mock('./google-drive-client', () => ({ driveRequest: request, driveUpload: upload, requireGoogleDriveAccount: requireAccount, DriveExportTooLargeError: TooLarge }))
 let exportCache: GoogleDriveExportCache
 vi.mock('./google-drive-export-cache', async importOriginal => ({ ...await importOriginal<object>(), get googleDriveExportCache() { return exportCache } }))
-import { GoogleDriveMountableVolume, googleDriveListingCache, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
+import { GoogleDriveMountableVolume, googleDriveListingCache, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { GoogleDriveExportCache } from './google-drive-export-cache'
+import { DRIVE_FILE_FIELDS } from './google-drive-schema'
 
 const FOLDER = 'application/vnd.google-apps.folder'
 const at = '2026-10-07T12:00:00Z'
@@ -36,7 +37,11 @@ function serve(options: { folders?: Record<string, unknown[]>; exports?: Record<
     const one = /^drive\/v3\/files\/([^/]+)$/.exec(req.path)
     if (one && req.method === 'GET' && req.query?.alt === 'media') return new Response(options.content?.[one[1]] ?? 'hello world')
     if (one && req.method === 'GET') return Response.json(options.targets?.[one[1]] ?? options.root ?? folder('root1', 'Team'))
-    return Response.json(null)
+    // A change answers with the file as Drive now stores it.
+    const json = req.json as { name?: string; mimeType?: string }
+    if (req.method === 'POST') return Response.json({ id: 'made', name: json.name, mimeType: json.mimeType, modifiedTime: at })
+    const known = Object.values(options.folders ?? {}).flat().find(file => (file as { id: string }).id === one?.[1])
+    return Response.json({ ...known as object, ...json })
   })
 }
 const calls = () => request.mock.calls.map(([, req]) => `${req.method} ${req.path}`)
@@ -45,27 +50,137 @@ const exportsOf = () => calls().filter(call => call.endsWith('/export'))
 beforeEach(() => {
   vi.resetAllMocks()
   googleDriveListingCache.invalidate('account')
+  googleDriveRootChecks.clear()
   exportCache = new GoogleDriveExportCache()
   requireAccount.mockResolvedValue({})
-  upload.mockResolvedValue(undefined)
+  upload.mockImplementation(async (_account, session: { path: string; json: { name?: string } }, _body, options?: { publish?: (send: () => Promise<unknown>) => Promise<unknown> }) => {
+    const id = session.json.name ? `made_${session.json.name.replace(/\W/g, '_')}` : session.path.split('/').at(-1)!
+    const stored = blob(id, session.json.name ?? 'updated', 1)
+    return options?.publish ? options.publish(async () => stored) : stored
+  })
 })
 
 describe('Google Drive filesystem', () => {
-  it('deletes what the folder holds now, not a cached entry renamed in Drive since', async () => {
+  it('deletes what the folder holds now: never a cached name renamed in Drive since, and finds the new name', async () => {
     serve({ folders: { root1: [blob('n', 'notes.txt')] } })
     await volume().stat('notes.txt')
     serve({ folders: { root1: [blob('n', 'keep.txt')] } })
     await expect(volume().delete('notes.txt')).rejects.toMatchObject({ code: 'not-found' })
     expect(calls()).not.toContain('PATCH drive/v3/files/n')
+    serve({ folders: { root1: [blob('n', 'notes.txt')] } })
+    await volume().stat('notes.txt')
+    serve({ folders: { root1: [blob('n', 'keep.txt')] } })
+    await volume().delete('keep.txt')
+    expect(calls()).toContain('PATCH drive/v3/files/n')
   })
 
-  it('re-reads only the folders a change touches, so a burst of writes keeps its ancestors cached', async () => {
+  it('re-reads only the folders a change touches, and caches what the change made instead of re-listing', async () => {
     serve({ folders: { root1: [folder('a', 'a')], a: [folder('b', 'b')], b: [] } })
+    const listings = () => calls().filter(call => call === 'GET drive/v3/files').length
     await volume().write('a/b/one.txt', new Blob(['x']).stream())
     await volume().write('a/b/two.txt', new Blob(['x']).stream())
-    const listings = calls().filter(call => call === 'GET drive/v3/files').length
-    // root1 and a once each to resolve, b fresh for each write's name check.
-    expect(listings).toBe(4)
+    await volume().mkdir('a/b/c')
+    // root1, a and b once each. Each change checks against the listing the previous one left.
+    expect(listings()).toBe(3)
+    expect((await volume().list('a/b')).map(entry => entry.name)).toEqual(['one.txt', 'two.txt', 'c'])
+    // A folder this app made starts empty, so listing it reads nothing.
+    expect(await volume().list('a/b/c')).toEqual([])
+    expect(listings()).toBe(3)
+    // A failed change leaves Drive's state unknown, so the folder is read again.
+    upload.mockImplementationOnce(async (_account, _session, _body, options) => options.publish(async () => { throw new Error('upstream') }))
+    await expect(volume().write('a/b/three.txt', new Blob(['x']).stream())).rejects.toThrow('upstream')
+    await volume().list('a/b')
+    expect(listings()).toBe(4)
+  })
+
+  it('checks the root once per 5 s for writes at the top level, sharing a check in flight', async () => {
+    vi.useFakeTimers()
+    try {
+      serve({ folders: { root1: [] } })
+      const rootChecks = () => calls().filter(call => call === 'GET drive/v3/files/root1').length
+      await Promise.all([volume().write('one.txt', new Blob(['x']).stream()), volume().write('two.txt', new Blob(['x']).stream())])
+      await volume().write('four.txt', new Blob(['x']).stream())
+      expect(rootChecks()).toBe(1)
+      vi.advanceTimersByTime(6000)
+      await volume().write('three.txt', new Blob(['x']).stream())
+      expect(rootChecks()).toBe(2)
+      // A root found trashed is checked again by the next write, not remembered.
+      vi.advanceTimersByTime(6000)
+      serve({ folders: { root1: [] }, root: folder('root1', 'Team', { trashed: true }) })
+      await expect(volume().write('five.txt', new Blob(['x']).stream())).rejects.toMatchObject({ code: 'not-found' })
+      serve({ folders: { root1: [] } })
+      await volume().write('six.txt', new Blob(['x']).stream())
+      expect(rootChecks()).toBe(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never seeds a made folder over a listing read, or a read begun, since it was made', async () => {
+    const key = JSON.stringify(['account', 'f'])
+    googleDriveListingCache.put('account', key, [{ id: 'x', name: 'x.txt', mimeType: 'text/plain', modifiedTime: at }], Date.now())
+    googleDriveListingCache.seed('account', key, [], Date.now())
+    expect(googleDriveListingCache.cached(key)).toHaveLength(1)
+    googleDriveListingCache.forget(key)
+    let answer = (_files: unknown[]) => {}
+    const reading = googleDriveListingCache.list('account', key, () => new Promise(resolve => { answer = resolve as typeof answer }))
+    googleDriveListingCache.seed('account', key, [], Date.now())
+    answer([{ id: 'y', name: 'y.txt', mimeType: 'text/plain', modifiedTime: at }])
+    await reading
+    expect(googleDriveListingCache.cached(key)).toHaveLength(1)
+  })
+
+  it('trusts a listing for 5 s from its last Drive read, however often changes update it', async () => {
+    vi.useFakeTimers()
+    try {
+      serve({ folders: { root1: [] } })
+      const listings = () => calls().filter(call => call === 'GET drive/v3/files').length
+      await volume().write('one.txt', new Blob(['x']).stream())
+      vi.advanceTimersByTime(3000)
+      await volume().write('two.txt', new Blob(['x']).stream())
+      expect(listings()).toBe(1)
+      vi.advanceTimersByTime(3000)
+      await volume().write('three.txt', new Blob(['x']).stream())
+      expect(listings()).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds only the folders a change touches: a held change blocks its own folder, not another', async () => {
+    serve({ folders: { root1: [folder('a', 'a'), folder('b', 'b')], a: [], b: [] } })
+    let release = () => {}
+    const held = new Promise<void>(resolve => { release = resolve })
+    const answer = request.getMockImplementation()!
+    request.mockImplementation(async (account, req, options) => {
+      if (req.method === 'POST' && (req.json as { name: string }).name === 'slow') await held
+      return answer(account, req, options)
+    })
+    const slow = volume().mkdir('a/slow')
+    await vi.waitFor(() => expect(calls()).toContain('POST drive/v3/files'))
+    await volume().mkdir('b/quick')
+    let queuedDone = false
+    const queued = volume().mkdir('a/next').then(() => { queuedDone = true })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(queuedDone).toBe(false)
+    release()
+    await Promise.all([slow, queued])
+  })
+
+  it('makes one Drive file when two uploads of a new name race, refusing the one that finishes second', async () => {
+    serve({ folders: { root1: [] } })
+    let release = () => {}
+    const uploading = new Promise<void>(resolve => { release = resolve })
+    const sent = vi.fn()
+    upload.mockImplementation(async (_account, _session, _body, options) => {
+      await uploading
+      return options.publish(async () => { sent(); return blob('x', 'x.txt', 1) })
+    })
+    const writes = Promise.allSettled([volume().write('x.txt', new Blob(['1']).stream()), volume().write('x.txt', new Blob(['2']).stream())])
+    await vi.waitFor(() => expect(upload).toHaveBeenCalledTimes(2))
+    release()
+    expect((await writes).map(result => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect(sent).toHaveBeenCalledOnce()
   })
 
   it('resolves paths without exporting, lists with export sizes once per version, and shares listings across adapters', async () => {
@@ -117,12 +232,12 @@ describe('Google Drive filesystem', () => {
     expect(upload).not.toHaveBeenCalled()
     for (const name of ['Plan', 'Link']) {
       await volume().write(name, new Blob(['x']).stream())
-      expect(upload).toHaveBeenLastCalledWith('account', { method: 'POST', path: 'upload/drive/v3/files', json: { name, parents: ['root1'] } }, expect.any(ReadableStream), { agentSlug: 'agent', signal: undefined })
+      expect(upload).toHaveBeenLastCalledWith('account', { method: 'POST', path: 'upload/drive/v3/files', json: { name, parents: ['root1'] } }, expect.any(ReadableStream), expect.objectContaining({ agentSlug: 'agent' }))
     }
     await volume().write('notes.txt', new Blob(['x']).stream())
-    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/n', json: {} }, expect.any(ReadableStream), { agentSlug: 'agent', signal: undefined })
+    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/n', json: {} }, expect.any(ReadableStream), expect.objectContaining({ agentSlug: 'agent', signal: undefined }))
     await volume().write('Plan.md', new Blob(['x']).stream())
-    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/doc1', json: {}, contentType: 'text/markdown' }, expect.any(ReadableStream), { agentSlug: 'agent' })
+    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/doc1', json: {}, contentType: 'text/markdown' }, expect.any(ReadableStream), expect.objectContaining({ agentSlug: 'agent' }))
     await volume().write('Sub/new.txt', new Blob(['x']).stream())
     expect(upload).toHaveBeenLastCalledWith('account', expect.objectContaining({ json: { name: 'new.txt', parents: ['sub'] } }), expect.anything(), expect.anything())
     expect(calls().filter(call => call.includes('/export') || call.startsWith('PATCH'))).toEqual([])
@@ -150,7 +265,7 @@ describe('Google Drive filesystem', () => {
     for (const name of ['Link', 'Plan', 'Plan.md', 'Sub']) await expect(volume().mkdir(name)).rejects.toMatchObject({ code: 'already-exists' })
     expect(calls().filter(call => call.startsWith('POST'))).toEqual([])
     await volume().mkdir('Fresh')
-    expect(request).toHaveBeenLastCalledWith('account', { method: 'POST', path: 'drive/v3/files', json: { name: 'Fresh', mimeType: FOLDER, parents: ['root1'] } }, expect.anything())
+    expect(request).toHaveBeenLastCalledWith('account', { method: 'POST', path: 'drive/v3/files', query: { fields: DRIVE_FILE_FIELDS }, json: { name: 'Fresh', mimeType: FOLDER, parents: ['root1'] } }, expect.anything())
     expect(await volume().list('Sub')).toEqual([])
     await expect(volume().delete('Sub')).rejects.toMatchObject({ code: 'not-empty' })
     await volume().delete('Empty')
@@ -170,9 +285,9 @@ describe('Google Drive filesystem', () => {
     await expect(volume().move('notes.txt', 'missing/notes.txt')).rejects.toMatchObject({ code: 'not-a-directory' })
     expect(calls().filter(call => call.startsWith('PATCH'))).toEqual([])
     await volume().move('Plan (Google Doc).md', 'Roadmap.md')
-    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/doc1', json: { name: 'Roadmap' }, query: {} }, expect.anything())
+    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/doc1', json: { name: 'Roadmap' }, query: { fields: DRIVE_FILE_FIELDS } }, expect.anything())
     await volume().move('notes.txt', 'Sub/notes.txt')
-    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/n', json: { name: 'notes.txt' }, query: { addParents: 'sub', removeParents: 'root1' } }, expect.anything())
+    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/n', json: { name: 'notes.txt' }, query: { fields: DRIVE_FILE_FIELDS, addParents: 'sub', removeParents: 'root1' } }, expect.anything())
   })
 
   it('saves by rename: a file moved onto a file replaces its content, a Doc copy saves into the Doc, then the source is trashed', async () => {
@@ -205,7 +320,8 @@ describe('Google Drive filesystem', () => {
     await volume().write('Plan link.md', new Blob(['x']).stream())
     expect(upload).toHaveBeenLastCalledWith('account', expect.objectContaining({ path: 'upload/drive/v3/files/doc9', contentType: 'text/markdown' }), expect.anything(), expect.anything())
     await volume().move('Team docs', 'Renamed')
-    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/s1', json: { name: 'Renamed' }, query: {} }, expect.anything())
+    expect(request).toHaveBeenLastCalledWith('account', expect.objectContaining({ method: 'PATCH', path: 'drive/v3/files/s1', json: { name: 'Renamed' } }), expect.anything())
+    expect((await volume().list('')).map(entry => entry.name)).toContain('Renamed')
     await volume().delete('Plan link.md')
     expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/s2', json: { trashed: true } }, expect.anything())
     // A file moved onto its own shortcut is the same file: nothing is copied or trashed.
@@ -214,6 +330,13 @@ describe('Google Drive filesystem', () => {
     await volume().move('local.txt', 'local alias')
     await volume().move('local alias', 'local.txt')
     expect(changes()).toBe(before)
+    // The listing kept after each change shows a saved shortcut under its own name, and deleting it keeps the file.
+    await volume().write('local alias', new Blob(['x']).stream())
+    expect((await volume().list('')).map(entry => entry.name)).toEqual(expect.arrayContaining(['local.txt', 'local alias']))
+    await volume().delete('local alias')
+    const names = (await volume().list('')).map(entry => entry.name)
+    expect(names).toContain('local.txt')
+    expect(names).not.toContain('local alias')
   })
 
   it('reports a trashed root as not found and checks revoked accounts even on cache hits', async () => {

@@ -3,9 +3,12 @@ const MAX_DIRECTORIES = 256
 const MAX_ENTRIES = 8_000
 interface Listing<T> {
   accountId: string
-  expiresAt: number
+  /** When the source was last read for these entries. Updates a change makes keep it, so a listing
+   * changes hands as current only for as long as its read is. */
+  readAt: number
   entries: T[]
 }
+const expired = (listing: Listing<unknown>) => listing.readAt + TTL_MS <= Date.now()
 
 /** Shared across request-scoped adapters of one remote source. Each source builds
  * its own listing key. Cache each directory briefly; rclone owns the longer-lived
@@ -36,10 +39,38 @@ export class RemoteListingCache<T> {
   cached(key: string): T[] | undefined {
     const listing = this.directories.get(key)
     if (!listing) return undefined
-    if (listing.expiresAt <= Date.now()) { this.remove(key); return undefined }
+    if (expired(listing)) { this.remove(key); return undefined }
     this.directories.delete(key)
     this.directories.set(key, listing)
     return listing.entries
+  }
+
+  /** The retained listing under `key` if the source was read for it within the last `ms`. */
+  recent(key: string, ms: number): { entries: T[]; readAt: number } | undefined {
+    const listing = this.directories.get(key)
+    return listing && listing.readAt >= Date.now() - ms ? listing : undefined
+  }
+
+  /** Retain the listing of a folder just made, unless it was read, or a read of it began, since. */
+  seed(accountId: string, key: string, entries: T[], readAt: number): void {
+    if (this.directories.has(key) || this.pending.has(key)) return
+    this.store(accountId, key, entries, readAt)
+  }
+
+  /** Retain a listing a change just updated, over any read in flight. `readAt` is when its entries were read. */
+  put(accountId: string, key: string, entries: T[], readAt: number): void {
+    this.pending.delete(key)
+    this.store(accountId, key, entries, readAt)
+  }
+
+  private store(accountId: string, key: string, entries: T[], readAt: number): void {
+    // Oversized directories are not retained.
+    if (entries.length > MAX_ENTRIES) { this.remove(key); return }
+    for (const [key, listing] of this.directories) if (expired(listing)) this.remove(key)
+    this.remove(key)
+    this.directories.set(key, { accountId, entries, readAt })
+    this.entryCount += entries.length
+    while (this.directories.size > MAX_DIRECTORIES || this.entryCount > MAX_ENTRIES) this.remove(this.directories.keys().next().value!)
   }
 
   async list(accountId: string, key: string, read: () => Promise<T[]>): Promise<T[]> {
@@ -49,16 +80,11 @@ export class RemoteListingCache<T> {
     if (pending) return pending.promise
     const token = Symbol()
     const promise = (async () => {
+      const readAt = Date.now()
       const entries = await read()
       // A mutation detaches in-flight requests. Their results can finish their
       // original reads, but must not repopulate the cache after invalidation.
-      if (this.pending.get(key)?.token === token && entries.length <= MAX_ENTRIES) {
-        for (const [key, listing] of this.directories) if (listing.expiresAt <= Date.now()) this.remove(key)
-        this.remove(key)
-        this.directories.set(key, { accountId, entries, expiresAt: Date.now() + TTL_MS })
-        this.entryCount += entries.length
-        while (this.directories.size > MAX_DIRECTORIES || this.entryCount > MAX_ENTRIES) this.remove(this.directories.keys().next().value!)
-      }
+      if (this.pending.get(key)?.token === token) this.store(accountId, key, entries, readAt)
       // Oversized directories are returned in full, without retaining their data.
       return entries
     })().finally(() => { if (this.pending.get(key)?.token === token) this.pending.delete(key) })
@@ -69,11 +95,12 @@ export class RemoteListingCache<T> {
 
 const mutations = new Map<string, Promise<unknown>>()
 
-/** Run one change at a time per account, across all its mounts, including overlapping folders. */
-export async function serialize<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
-  const pending = (mutations.get(accountId) ?? Promise.resolve()).catch(() => {}).then(operation)
-  mutations.set(accountId, pending)
+/** Run one change at a time per key: a change waits for every earlier change sharing any of its keys.
+ * All keys are claimed at once, so two changes never each hold part of what the other waits for. */
+export async function serialize<T>(keys: string[], operation: () => Promise<T>): Promise<T> {
+  const pending = Promise.all(keys.map(key => (mutations.get(key) ?? Promise.resolve()).catch(() => {}))).then(operation)
+  for (const key of keys) mutations.set(key, pending)
   try { return await pending } finally {
-    if (mutations.get(accountId) === pending) mutations.delete(accountId)
+    for (const key of keys) if (mutations.get(key) === pending) mutations.delete(key)
   }
 }

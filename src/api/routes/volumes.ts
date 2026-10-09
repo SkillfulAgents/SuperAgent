@@ -57,6 +57,9 @@ async function serve(c: Context<Env>, volumeId: string): Promise<Response> {
         await ops.delete(path)
         return c.body(null, 204)
       case 'MKCOL':
+        // rclone makes the parent folder before every upload. One that exists answers from the
+        // volume's cached listing, without waiting for the account's changes or calling the source.
+        if (path && (await ops.stat(path).catch(() => null))?.kind === 'directory') throw new WorkspaceFileError('already-exists')
         await ops.mkdir(path)
         return c.body(null, 201)
       case 'MOVE': {

@@ -82,8 +82,8 @@ beforeEach(async () => {
     if (url.pathname === '/drive/v3/files/team') return Response.json(root)
     if (url.pathname === '/drive/v3/files/notes') return new Response('hello world')
     if (url.pathname === '/drive/v3/files/doc1/export') return new Response('# Plan')
+    if (url.searchParams.get('upload_id') === 'session') return Response.json({ id: 'new', name: 'x', mimeType: 'application/octet-stream', modifiedTime: at })
     if (url.pathname === '/upload/drive/v3/files') return new Response(null, { headers: { Location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session' } })
-    if (url.searchParams.get('upload_id') === 'session') return Response.json({ id: 'new' })
     return Response.json(null)
   })
 })
@@ -129,6 +129,10 @@ describe('Google Drive volume access and transport', () => {
     // The Doc's own name makes a new real file beside it; the Doc is never updated.
     expect((await dav(mount.id, 'Plan', 'PUT', 'agent-a', 'changed')).status).toBe(201)
     expect(forward.mock.calls.some(([call]) => call.method === 'PATCH')).toBe(false)
+    // rclone makes the parent folder before every upload. An existing one answers from the cached listing.
+    forward.mockClear()
+    expect((await dav(mount.id, 'Sub', 'MKCOL')).status).toBe(405)
+    expect(forward).not.toHaveBeenCalled()
     expect(policy).not.toHaveBeenCalled()
     expect(resourceCreator).toHaveBeenCalledWith('alice')
     const audit = await handle.db.select().from(proxyAuditLog).all()

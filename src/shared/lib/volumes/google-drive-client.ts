@@ -1,5 +1,5 @@
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { driveErrorSchema, driveFileSizeSchema } from './google-drive-schema'
+import { DRIVE_FILE_FIELDS, driveErrorSchema, driveFileSchema, type DriveFile } from './google-drive-schema'
 import { getAccountProviderByName } from '@shared/lib/account-providers/provider-factory'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { writeProxyAuditEntry } from '@shared/lib/proxy/audit'
@@ -101,17 +101,20 @@ async function driveRequestOnce(accountId: string, request: DriveRequest, option
   }
 }
 
-/** A resumable upload: open a session, then send the body in chunks, the last one
- * carrying the total. An empty body is one empty request. */
+/** A resumable upload: open a session, then send the body in chunks, the last one carrying the total.
+ * Sending the last chunk makes the change, and `publish` wraps that step alone, so a caller can check
+ * and serialize it without holding anything across the upload. An empty body is one empty request.
+ * Resolves to the file as stored. */
 export async function driveUpload(
   accountId: string, session: { method: 'POST' | 'PATCH'; path: string; json: unknown; contentType?: string },
-  body: ReadableStream<Uint8Array>, options: { agentSlug?: string; signal?: AbortSignal } = {},
-): Promise<void> {
+  body: ReadableStream<Uint8Array>,
+  options: { agentSlug?: string; signal?: AbortSignal; publish?: (send: () => Promise<DriveFile>) => Promise<DriveFile> } = {},
+): Promise<DriveFile> {
   // Naming the content type of a copy makes Drive convert it back into the Google file.
   const { contentType, ...open } = session
   const opened = await driveRequest(accountId, {
-    ...open, query: { uploadType: 'resumable', fields: 'id,size' }, ...(contentType ? { headers: { 'X-Upload-Content-Type': contentType } } : {}),
-  }, options)
+    ...open, query: { uploadType: 'resumable', fields: DRIVE_FILE_FIELDS }, ...(contentType ? { headers: { 'X-Upload-Content-Type': contentType } } : {}),
+  }, { agentSlug: options.agentSlug })
   await opened.body?.cancel()
   const location = opened.headers.get('location')
   if (!location) throw new Error('Google Drive returned no upload session')
@@ -135,11 +138,15 @@ export async function driveUpload(
     last = bytes
   }
   const total = offset + (last?.byteLength ?? 0)
-  const done = last ? await put(last, `bytes ${offset}-${total - 1}/${total}`) : await put(new ArrayBuffer(0))
-  if (done.status === 308) throw new Error('Google Drive did not complete the upload')
-  // A converted file is stored in Google's form, so only a plain file's stored size must match what was sent.
-  const stored = driveFileSizeSchema.safeParse(await done.json().catch(() => null))
-  if (!contentType && stored.success && stored.data.size !== undefined && stored.data.size !== total) {
-    throw new Error(`Google Drive stored ${stored.data.size} of ${total} bytes`)
-  }
+  const publish = options.publish ?? (send => send())
+  // A cancelled upload never waits for the change it would have made.
+  if (options.signal?.aborted) throw new Error('Upload cancelled by the client')
+  return publish(async () => {
+    const done = last ? await put(last, `bytes ${offset}-${total - 1}/${total}`) : await put(new ArrayBuffer(0))
+    if (done.status === 308) throw new Error('Google Drive did not complete the upload')
+    // A converted file is stored in Google's form, so only a plain file's stored size must match what was sent.
+    const stored = driveFileSchema.parse(await done.json())
+    if (!contentType && stored.size !== undefined && stored.size !== total) throw new Error(`Google Drive stored ${stored.size} of ${total} bytes`)
+    return stored
+  })
 }
