@@ -854,6 +854,12 @@ export const todos = sqliteTable('todos', {
   title: text('title').notNull(),
   description: text('description').notNull().default(''),
   agentSlug: text('agent_slug'),
+  // A draft to be given to an agent created for it on start, named from its
+  // brief. Never set together with agentSlug: the start assigns the new agent.
+  newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
+  // The model to start it on, when the person picked one over the agent's default.
+  model: text('model'),
+  llmProviderId: text('llm_provider_id'),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

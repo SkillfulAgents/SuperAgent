@@ -37,7 +37,7 @@ export function useTodoActionRunners(): TodoActionRunners {
 /**
  * The one action an item's card offers for where it is: start a draft,
  * finish work in flight, archive what is done, unarchive what is archived.
- * A draft with no agent yet opens instead, since starting needs one.
+ * A draft with no agent (or new agent) yet opens instead, since starting needs one.
  */
 export function cardActionFor(
   todo: TodoView | undefined,
@@ -46,16 +46,18 @@ export function cardActionFor(
 ): TodoCardAction | null {
   if (!todo) return null
   switch (todo.column) {
-    case 'drafts':
+    case 'drafts': {
+      const startable = !!todo.agentSlug || todo.newAgent
       return {
-        label: todo.agentSlug ? 'Start' : 'Pick an agent to start',
+        label: startable ? 'Start' : 'Pick an agent to start',
         Icon: Play,
         iconClass: '!h-3.5 !w-3.5 fill-current',
         kind: 'start',
         shortcut: 'S',
         testId: 'todo-action-start',
-        run: () => (todo.agentSlug ? runners.start(todo) : open(todo)),
+        run: () => (startable ? runners.start(todo) : open(todo)),
       }
+    }
     case 'working':
     case 'needs_input':
     case 'has_updates':

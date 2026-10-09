@@ -43,6 +43,9 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     title: `Task ${partial.id}`,
     description: '',
     agentSlug: 'analyst',
+    newAgent: false,
+    model: null,
+    llmProviderId: null,
     sessionId: status === 'draft' ? null : `session-${partial.id}`,
     status,
     position: 0,
@@ -52,6 +55,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     startedAt: null,
     completedAt: null,
     ask: null,
+    pendingWakeAt: null,
     ...partial,
   }
 }
@@ -92,6 +96,35 @@ describe('TodoBoard', () => {
     expect(needsYou.getAllByTestId('todo-card').map((card) => card.dataset.todoId)).toEqual(['q', 'u'])
     expect(needsYou.getByTestId('todo-card-ask')).toHaveTextContent('Needs answer')
     expect(needsYou.getByTestId('todo-card-updates')).toHaveTextContent('Has updates')
+  })
+
+  it('says how long work that is asleep until a scheduled wake will wait, in gray', () => {
+    state.todos = [
+      todo({ id: 'w', column: 'has_updates', pendingWakeAt: Date.now() + 3 * 60 * 60_000 + 60_000 }),
+      todo({ id: 'u', column: 'has_updates' }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    const waiting = within(screen.getByTestId('todo-card-waiting').closest('[data-testid="todo-card"]') as HTMLElement)
+    expect(waiting.getByTestId('todo-card-waiting')).toHaveTextContent('Waiting for 3 hours')
+    expect(waiting.getByTestId('todo-card-waiting')).toHaveClass('bg-muted')
+    expect(waiting.queryByTestId('todo-card-updates')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('todo-card-updates')).toHaveLength(1)
+  })
+
+  it('shows the working orb by the agent of work in flight only', () => {
+    state.todos = [todo({ id: 'b', column: 'working' }), todo({ id: 'd', column: 'has_updates' })]
+    renderWithProviders(<TodoBoard />)
+    expect(within(screen.getByTestId('todo-column-working')).getByTestId('todo-card-orb')).toBeInTheDocument()
+    expect(within(screen.getByTestId('todo-column-needs_you')).queryByTestId('todo-card-orb')).not.toBeInTheDocument()
+  })
+
+  it('starts a draft meant for a new agent from its card', () => {
+    const draft = todo({ id: 'n', column: 'drafts', agentSlug: null, newAgent: true })
+    state.todos = [draft]
+    renderWithProviders(<TodoBoard />)
+    expect(screen.getByTestId('todo-card')).toHaveTextContent('New Agent')
+    fireEvent.click(screen.getByTestId('todo-action-start'))
+    expect(state.start).toHaveBeenCalledWith(draft)
   })
 
   it('labels what a Needs input card is waiting for', () => {
@@ -294,6 +327,24 @@ describe('TodoBoard', () => {
     expect(screen.getByRole('option', { name: 'Analyst' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByRole('option', { name: 'Ops' }))
     expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('Ops')
+  })
+
+  it('gives a draft to a new agent, and offers a model only once it has an agent', async () => {
+    state.update.mockResolvedValue(undefined)
+    state.todos = [todo({ id: 'n', column: 'drafts', agentSlug: null })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task n' }))
+    expect(screen.queryByTestId('composer-options-trigger')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('todo-assign-agent'))
+    fireEvent.click(screen.getByRole('option', { name: 'New Agent' }))
+    expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('New Agent')
+    expect(screen.getByTestId('composer-options-trigger')).toBeInTheDocument()
+    await waitFor(() => expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'n', agentSlug: null, newAgent: true })))
+
+    fireEvent.click(screen.getByTestId('todo-assign-agent'))
+    fireEvent.click(screen.getByRole('option', { name: 'Ops' }))
+    await waitFor(() => expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'n', agentSlug: 'ops', newAgent: false })))
   })
 
   it('saves a draft and closes with Save draft', async () => {

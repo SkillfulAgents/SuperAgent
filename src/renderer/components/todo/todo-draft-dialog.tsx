@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { deriveTodoTitle, TODO_TITLE_MAX } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
@@ -7,6 +7,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer
 import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import {
   useCreateTodo,
   useDeleteTodo,
@@ -27,7 +29,15 @@ interface DraftFields {
   title: string
   description: string
   agentSlug: string | null
+  /** Give it to an agent created for it when it starts. */
+  newAgent: boolean
+  /** A model picked over the agent's default. */
+  model: string | null
+  llmProviderId: string | null
 }
+
+/** The model picker's agent identity while "New Agent" is chosen: no agent defaults apply. */
+const NEW_AGENT_KEY = '\u0000new-agent'
 
 const SAVE_DELAY_MS = 600
 
@@ -38,11 +48,22 @@ const SAVE_DELAY_MS = 600
 function failed() {}
 
 const sameFields = (a: DraftFields, b: DraftFields) =>
-  a.title === b.title && a.description === b.description && a.agentSlug === b.agentSlug
+  a.title === b.title && a.description === b.description && a.agentSlug === b.agentSlug &&
+  a.newAgent === b.newAgent && a.model === b.model && a.llmProviderId === b.llmProviderId
+
+/** What a save sends for the form. */
+const payload = (f: DraftFields) => ({
+  title: f.title.trim(),
+  description: f.description,
+  agentSlug: f.agentSlug,
+  newAgent: f.newAgent,
+  model: f.model,
+  llmProviderId: f.llmProviderId,
+})
 
 /**
- * The draft dialog: a title, a Markdown description and the agent to give it
- * to, with Start in the corner. Edits save shortly after typing stops and
+ * The draft dialog: a title, a Markdown description, the agent to give it
+ * to (or a new one) and the model to run it on, with Start in the corner. Edits save shortly after typing stops and
  * again on close, so closing always keeps the draft; a new draft is only
  * created once something has been written in it.
  */
@@ -105,6 +126,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     title: initial?.title ?? '',
     description: initial?.description ?? '',
     agentSlug: initial?.agentSlug ?? null,
+    newAgent: initial?.newAgent ?? false,
+    model: initial?.model ?? null,
+    llmProviderId: initial?.llmProviderId ?? null,
   }))
   const fieldsRef = useRef(fields)
   fieldsRef.current = fields
@@ -131,13 +155,13 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
       const id = idRef.current
       if (!id) {
         if (!current.title.trim() && !current.description.trim()) return null
-        const todo = await createTodo.mutateAsync({ title: current.title.trim(), description: current.description, agentSlug: current.agentSlug })
+        const todo = await createTodo.mutateAsync(payload(current))
         idRef.current = todo.id
         savedRef.current = current
         return todo.id
       }
       if (savedRef.current && sameFields(savedRef.current, current)) return id
-      await updateTodo.mutateAsync({ id, title: current.title.trim(), description: current.description, agentSlug: current.agentSlug })
+      await updateTodo.mutateAsync({ id, ...payload(current) })
       savedRef.current = current
       return id
     }
@@ -170,8 +194,31 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   })
 
   const agent = fields.agentSlug ? bySlug.get(fields.agentSlug) : undefined
+  const hasAgent = !!agent || fields.newAgent
   const written = !!(fields.title.trim() || fields.description.trim())
-  const canStart = !!agent && !alreadyStarting && written
+  const canStart = hasAgent && !alreadyStarting && written
+
+  // The model follows the chosen agent's default, as in the composer, until
+  // the person picks one; a pick is kept with the draft.
+  const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(fields.agentSlug ?? '')
+  const composerOptions = useComposerOptions({
+    initialModel: initial?.model ?? undefined,
+    initialLlmProviderId: initial?.model ? initial.llmProviderId ?? undefined : undefined,
+    agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
+    agentKey: fields.newAgent ? NEW_AGENT_KEY : fields.agentSlug ?? '',
+    agentDefaultsReady: !fields.agentSlug || agentPrefsFetched,
+  })
+  const picked = composerOptions.toRuntimeOptions()
+  const pickedModel = picked.model ?? null
+  const pickedLlmProviderId = picked.model ? picked.llmProviderId ?? null : null
+  useEffect(() => {
+    const current = fieldsRef.current
+    if (current.model === pickedModel && current.llmProviderId === pickedLlmProviderId) return
+    change({ model: pickedModel, llmProviderId: pickedLlmProviderId })
+  // `change` only touches refs and setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedModel, pickedLlmProviderId])
 
   /** Ends any dictation, so its tail lands in what is saved or started. */
   const finishDictation = async () => {
@@ -185,9 +232,15 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     if (!canStart) return
     await finishDictation()
     try {
+      // A new agent has no default of its own to fall back on: start it on
+      // the model the picker shows.
+      if (fieldsRef.current.newAgent && !fieldsRef.current.model) {
+        const model = composerOptions.model ?? composerOptions.defaultModel
+        if (model) change({ model, llmProviderId: composerOptions.llmProviderId ?? null })
+      }
       const id = await save()
       if (!id) return
-      startTodo.mutate({ id, agentSlug: fieldsRef.current.agentSlug })
+      startTodo.mutate({ id, ...fieldsRef.current })
       onClose()
     } catch {
       failed()
@@ -324,26 +377,37 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
         </div>
       </div>
 
-      {/* Footer: the agent on the left; dictate and start on the right. */}
+      {/* Footer: the agent and its model on the left; dictate and start on the right. */}
       <div className="flex items-center justify-between gap-2 px-4 py-3">
-        <AgentDropdown
-          value={fields.agentSlug}
-          onValueChange={(slug) => change({ agentSlug: slug })}
-          testId="todo-agent"
-          trigger={
-            agent ? (
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" data-testid="todo-assign-agent">
-                <span className="max-w-[12rem] truncate">{agent.name}</span>
-                <ChevronDown className="h-3 w-3 text-muted-foreground" />
-              </Button>
-            ) : (
-              <Button variant="outline" size="sm" className="h-8 text-muted-foreground" data-testid="todo-assign-agent">
-                <Plus className="h-3.5 w-3.5" />
-                Assign agent
-              </Button>
-            )
-          }
-        />
+        <div className="flex min-w-0 items-center gap-1.5">
+          <AgentDropdown
+            value={fields.agentSlug}
+            onValueChange={(slug) => change({ agentSlug: slug, newAgent: false })}
+            onSelectNew={() => change({ agentSlug: null, newAgent: true })}
+            newSelected={fields.newAgent}
+            testId="todo-agent"
+            trigger={
+              agent ? (
+                <Button variant="outline" size="sm" className="h-[34px] gap-1.5 text-xs" data-testid="todo-assign-agent">
+                  <span className="max-w-[12rem] truncate">{agent.name}</span>
+                  <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                </Button>
+              ) : fields.newAgent ? (
+                <Button variant="outline" size="sm" className="h-[34px] gap-1.5 text-xs" data-testid="todo-assign-agent">
+                  <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
+                  New Agent
+                  <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                </Button>
+              ) : (
+                <Button variant="outline" size="sm" className="h-[34px] text-muted-foreground" data-testid="todo-assign-agent">
+                  <Plus className="h-3.5 w-3.5" />
+                  Assign agent
+                </Button>
+              )
+            }
+          />
+          {hasAgent && <ComposerOptions state={composerOptions} includeEffort={false} />}
+        </div>
         <div className="flex items-center gap-1.5">
           <VoiceInputButton voiceInput={voiceInput} message={fields.description} />
           <Button
@@ -356,7 +420,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
           >
             Save draft
           </Button>
-          <ShortcutTooltip label={agent ? 'Start' : 'Pick an agent to start'} keys={agent ? [MOD, 'Enter'] : undefined}>
+          <ShortcutTooltip label={hasAgent ? 'Start' : 'Pick an agent to start'} keys={hasAgent ? [MOD, 'Enter'] : undefined}>
             {/* A span keeps the tooltip working while the button is disabled. */}
             <span>
               <Button

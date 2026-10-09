@@ -86,6 +86,25 @@ describe('AgentDropdown', () => {
     expect(screen.getByText('No agents found.')).toBeInTheDocument()
   })
 
+  it('offers New Agent after the agents when asked to, by click or keyboard', () => {
+    const onSelectNew = vi.fn()
+    open({ onSelectNew })
+    expect(optionNames()).toEqual(['Ops Agent', 'Research Agent', 'Marketing Agent', 'New Agent'])
+    const search = screen.getByTestId('agent-dropdown-search')
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(onSelectNew).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('agent-dropdown'))
+    fireEvent.click(screen.getByTestId('agent-dropdown-new'))
+    expect(onSelectNew).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows New Agent on its button when that is the choice', () => {
+    renderWithProviders(<AgentDropdown value={null} onValueChange={vi.fn()} onSelectNew={vi.fn()} newSelected />)
+    expect(screen.getByTestId('agent-dropdown')).toHaveTextContent('New Agent')
+  })
+
   it('picks with the keyboard', () => {
     const onValueChange = open()
     const search = screen.getByTestId('agent-dropdown-search')

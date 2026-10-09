@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   readable: new Map<string, Set<string>>(),
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
+  wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -33,6 +34,9 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: async (slug: string) => state.agents.has(slug),
+}))
+vi.mock('@shared/lib/services/scheduled-task-service', () => ({
+  listPendingWakesByAgent: async (slug: string) => state.wakes.filter((w) => w.agentSlug === slug),
 }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
@@ -83,6 +87,7 @@ beforeEach(async () => {
   state.readable = new Map([['alice', new Set(['agent-a', 'agent-b'])], ['bob', new Set(['agent-a'])]])
   state.sessions = new Map()
   state.requests = new Map()
+  state.wakes = []
 })
 
 afterEach(async () => {
@@ -135,6 +140,29 @@ describe('drafts', () => {
     expect((await (await call('', 'GET', undefined, 'bob')).json()).todos).toEqual([])
     expect((await call(`/${draft.id}`, 'PATCH', { title: 'mine now' }, 'bob')).status).toBe(404)
     expect((await call(`/${draft.id}`, 'DELETE', undefined, 'bob')).status).toBe(404)
+  })
+
+  it('gives a draft to a new agent or to an agent, never both', async () => {
+    const draft = await createDraft({ title: 'Write the report', newAgent: true })
+    expect(draft).toMatchObject({ agentSlug: null, newAgent: true })
+    expect((await call('', 'POST', { title: 'x', agentSlug: 'agent-a', newAgent: true })).status).toBe(400)
+
+    const assigned = await (await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-a' })).json()
+    expect(assigned).toMatchObject({ agentSlug: 'agent-a', newAgent: false })
+    const back = await (await call(`/${draft.id}`, 'PATCH', { newAgent: true })).json()
+    expect(back).toMatchObject({ agentSlug: null, newAgent: true })
+  })
+
+  it('keeps the model picked for a draft, and forgets it on null', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a', model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' })
+    expect(draft).toMatchObject({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' })
+    const cleared = await (await call(`/${draft.id}`, 'PATCH', { model: null, llmProviderId: null })).json()
+    expect(cleared).toMatchObject({ model: null, llmProviderId: null })
+  })
+
+  it('cannot start a draft for a new agent until the agent is made and assigned', async () => {
+    const draft = await createDraft({ title: 'Write the report', newAgent: true })
+    expect((await call(`/${draft.id}/claim`, 'POST', {})).status).toBe(409)
   })
 
   it('deletes a draft', async () => {
@@ -301,6 +329,20 @@ describe('board columns', () => {
 
     state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: true })
     expect(await listed()).toMatchObject({ column: 'needs_input', ask: 'permission' })
+  })
+
+  it('say when idle work is asleep until a scheduled wake', async () => {
+    const item = await startDraft()
+    const wakeAt = new Date(Date.now() + 3 * 60 * 60_000)
+    state.wakes = [{ agentSlug: 'agent-a', resumeSessionId: 'session-1', nextExecutionAt: wakeAt }]
+    // Still working: not asleep yet.
+    expect((await (await call('')).json()).todos[0]).toMatchObject({ id: item.id, column: 'working', pendingWakeAt: null })
+
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await (await call('')).json()).todos[0]).toMatchObject({ column: 'has_updates', pendingWakeAt: wakeAt.getTime() })
+
+    state.wakes = []
+    expect((await (await call('')).json()).todos[0]).toMatchObject({ column: 'has_updates', pendingWakeAt: null })
   })
 
   it('stop reading the session of an agent the person lost access to', async () => {

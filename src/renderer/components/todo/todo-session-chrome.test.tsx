@@ -32,6 +32,9 @@ function todo(id: string, column: TodoView['column']): TodoView {
     title: id,
     description: '',
     agentSlug: 'analyst',
+    newAgent: false,
+    model: null,
+    llmProviderId: null,
     sessionId: `session-${id}`,
     status: column === 'done' ? 'done' : 'active',
     column,
@@ -42,6 +45,7 @@ function todo(id: string, column: TodoView['column']): TodoView {
     startedAt: clock,
     completedAt: null,
     ask: null,
+    pendingWakeAt: null,
   }
 }
 

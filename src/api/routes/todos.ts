@@ -17,6 +17,7 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import {
   addSessionTodo,
   claimStart,
@@ -59,7 +60,20 @@ todosRouter.use('*', async (c, next) => {
   return next()
 })
 
-function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
+/** Scheduled resumes by `agentSlug/sessionId`, as epoch ms. */
+type PendingWakes = ReadonlyMap<string, number>
+
+const wakeKey = (agentSlug: string, sessionId: string) => `${agentSlug}/${sessionId}`
+
+/** The pending wakes of the started work among `rows` whose agent the person can read. */
+async function pendingWakesFor(rows: TodoRow[], readableAgents: ReadonlySet<string>): Promise<PendingWakes> {
+  const slugs = [...new Set(rows.flatMap((row) =>
+    row.status === 'active' && row.sessionId && row.agentSlug && readableAgents.has(row.agentSlug) ? [row.agentSlug] : []))]
+  const wakes = (await Promise.all(slugs.map(listPendingWakesByAgent))).flat()
+  return new Map(wakes.map((w) => [wakeKey(w.agentSlug, w.resumeSessionId!), w.nextExecutionAt.getTime()]))
+}
+
+function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: PendingWakes): TodoView {
   // Session state is live, not stored. An agent the person can no longer
   // read tells them nothing about its session.
   const actor = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
@@ -74,6 +88,9 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     title: row.title,
     description: row.description,
     agentSlug: row.agentSlug,
+    newAgent: row.newAgent,
+    model: row.model,
+    llmProviderId: row.llmProviderId,
     sessionId: row.sessionId,
     status: row.status,
     column,
@@ -82,6 +99,10 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
     ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
+    // Only work that is idle can be sleeping until its wake.
+    pendingWakeAt: column === 'has_updates' && row.agentSlug && row.sessionId
+      ? wakes.get(wakeKey(row.agentSlug, row.sessionId)) ?? null
+      : null,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     startedAt: row.startedAt?.getTime() ?? null,
@@ -90,7 +111,8 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
 }
 
 async function viewOf(c: Context, row: TodoRow): Promise<TodoView> {
-  return toView(row, await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : []))
+  const readable = await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : [])
+  return toView(row, readable, await pendingWakesFor([row], readable))
 }
 
 async function respond(c: Context, result: TodoWriteResult) {
@@ -116,7 +138,8 @@ todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
   const agentSlugs = [...new Set(rows.flatMap((row) => (row.agentSlug ? [row.agentSlug] : [])))]
   const readable = await getReadableAgentIds(c, agentSlugs)
-  return c.json({ todos: rows.map((row) => toView(row, readable)) })
+  const wakes = await pendingWakesFor(rows, readable)
+  return c.json({ todos: rows.map((row) => toView(row, readable, wakes)) })
 })
 
 // POST /api/todos — a new draft.
@@ -142,7 +165,7 @@ todosRouter.post('/sessions', async (c) => {
   }
   const result = await addSessionTodo(getCurrentUserId(c), input)
   if (!result) return c.json({ error: 'The todo has changed; reload and try again' }, 409)
-  return c.json(toView(result.todo, readable), result.created ? 201 : 200)
+  return c.json(toView(result.todo, readable, await pendingWakesFor([result.todo], readable)), result.created ? 201 : 200)
 })
 
 // PATCH /api/todos/:id — edit a draft.
