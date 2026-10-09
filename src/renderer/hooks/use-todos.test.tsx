@@ -56,7 +56,7 @@ vi.mock('@renderer/lib/api', () => ({
 import { TODOS_QUERY_KEY, useMoveTodo, useSetTodoStatus, useStartTodo, useStartingTodoIds, useTodos, type StartableTodo, type TodoView } from './use-todos'
 
 function draft(partial: Partial<StartableTodo> = {}): StartableTodo {
-  return { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst', newAgent: false, model: null, llmProviderId: null, ...partial }
+  return { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst', newAgent: false, model: null, llmProviderId: null, effort: null, speed: null, ...partial }
 }
 
 function wrapper(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
@@ -103,9 +103,9 @@ describe('useStartTodo', () => {
     expect(started).toMatchObject({ column: 'working', sessionId: 'session-9' })
   })
 
-  it('starts the session on the model picked for the draft', async () => {
+  it('starts the session on the model, effort and speed picked for the draft', async () => {
     state.createSession.mockResolvedValue({ id: 'session-9' })
-    state.claimedTodo = { model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' }
+    state.claimedTodo = { model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' }
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
     await result.current.mutateAsync(draft({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' }))
 
@@ -114,6 +114,8 @@ describe('useStartTodo', () => {
       message: 'Churn\n\nWhy did it spike?',
       model: 'claude-opus-5-5',
       llmProviderId: 'anthropic-main',
+      effort: 'high',
+      speed: 'fast',
     })
   })
 

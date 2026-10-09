@@ -185,7 +185,7 @@ export function useStartingTodoIds(): Set<string> {
 }
 
 /** What starting needs to know about a draft. */
-export type StartableTodo = Pick<TodoView, 'id' | 'title' | 'description' | 'agentSlug' | 'newAgent' | 'model' | 'llmProviderId'>
+export type StartableTodo = Pick<TodoView, 'id' | 'title' | 'description' | 'agentSlug' | 'newAgent' | 'model' | 'llmProviderId' | 'effort' | 'speed'>
 
 /**
  * Hands a draft to its agent: claims the draft on the server, creates a
@@ -198,7 +198,8 @@ export type StartableTodo = Pick<TodoView, 'id' | 'title' | 'description' | 'age
  * to it. Should the start then fail, the draft keeps that agent, so starting
  * again does not make another.
  *
- * The session runs on the draft's picked model, or the agent's default.
+ * The session runs on the draft's picked model, effort and speed, or the
+ * agent's defaults for what was not picked.
  *
  * The claim is what keeps a draft to one session: a second start, from this
  * tab or another, is refused before it creates anything. The brief sent is
@@ -233,6 +234,8 @@ export function useStartTodo() {
           agentSlug: claimed.agentSlug ?? agentSlug,
           message: todoPrompt(claimed),
           ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
+          ...(claimed.effort ? { effort: claimed.effort } : {}),
+          ...(claimed.speed ? { speed: claimed.speed } : {}),
         })).id
       } catch (error) {
         if (error instanceof Error) reportedBySessionCreation.add(error)

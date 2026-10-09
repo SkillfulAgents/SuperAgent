@@ -35,6 +35,8 @@ function todo(id: string, column: TodoView['column']): TodoView {
     newAgent: false,
     model: null,
     llmProviderId: null,
+    effort: null,
+    speed: null,
     sessionId: `session-${id}`,
     status: column === 'done' ? 'done' : 'active',
     column,

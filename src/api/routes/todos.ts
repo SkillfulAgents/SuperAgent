@@ -91,6 +91,8 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: Pendin
     newAgent: row.newAgent,
     model: row.model,
     llmProviderId: row.llmProviderId,
+    effort: row.effort,
+    speed: row.speed,
     sessionId: row.sessionId,
     status: row.status,
     column,

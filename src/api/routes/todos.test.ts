@@ -153,11 +153,12 @@ describe('drafts', () => {
     expect(back).toMatchObject({ agentSlug: null, newAgent: true })
   })
 
-  it('keeps the model picked for a draft, and forgets it on null', async () => {
-    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a', model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' })
-    expect(draft).toMatchObject({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' })
-    const cleared = await (await call(`/${draft.id}`, 'PATCH', { model: null, llmProviderId: null })).json()
-    expect(cleared).toMatchObject({ model: null, llmProviderId: null })
+  it('keeps the model, effort and speed picked for a draft, and forgets them on null', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a', model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
+    expect(draft).toMatchObject({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
+    const cleared = await (await call(`/${draft.id}`, 'PATCH', { model: null, llmProviderId: null, effort: null, speed: null })).json()
+    expect(cleared).toMatchObject({ model: null, llmProviderId: null, effort: null, speed: null })
+    expect((await call(`/${draft.id}`, 'PATCH', { effort: 'extreme' })).status).toBe(400)
   })
 
   it('cannot start a draft for a new agent until the agent is made and assigned', async () => {

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "cb4019e7-8ca7-4578-9f77-a09787c10618",
+  "id": "c0c2216d-4e73-472c-86d2-04da03d07c2c",
   "prevId": "3bb18c4b-cf84-41d3-b1d9-3c5c8394cea6",
   "tables": {
     "agent_acl": {
@@ -3105,6 +3105,20 @@
         },
         "llm_provider_id": {
           "name": "llm_provider_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "effort": {
+          "name": "effort",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "speed": {
+          "name": "speed",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

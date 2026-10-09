@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
+import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -32,6 +33,12 @@ const titleSchema = z.string().trim().max(TODO_TITLE_MAX)
 const descriptionSchema = z.string().max(TODO_DESCRIPTION_MAX)
 const agentSlugSchema = z.string().trim().min(1).max(200)
 const modelSchema = z.string().trim().min(1).max(200)
+const runtimeFields = {
+  model: modelSchema.nullable().optional(),
+  llmProviderId: modelSchema.nullable().optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+  speed: z.enum(SPEED_LEVELS).nullable().optional(),
+}
 
 export const createTodoSchema = z
   .object({
@@ -39,8 +46,7 @@ export const createTodoSchema = z
     description: descriptionSchema.default(''),
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
-    model: modelSchema.nullable().optional(),
-    llmProviderId: modelSchema.nullable().optional(),
+    ...runtimeFields,
   })
   .strict()
   .refine((todo) => !(todo.newAgent && todo.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
@@ -52,7 +58,7 @@ export type CreateTodoInput = z.infer<typeof createTodoSchema>
 /**
  * Edits a draft. `agentSlug: null` unassigns. Assigning an agent clears
  * `newAgent` and setting `newAgent` clears the agent, so it is one or the
- * other. `model: null` goes back to the agent's default.
+ * other. `model`, `effort` or `speed` null goes back to the agent's default.
  */
 export const updateTodoSchema = z
   .object({
@@ -60,8 +66,7 @@ export const updateTodoSchema = z
     description: descriptionSchema.optional(),
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
-    model: modelSchema.nullable().optional(),
-    llmProviderId: modelSchema.nullable().optional(),
+    ...runtimeFields,
   })
   .strict()
   .refine((patch) => !(patch.newAgent && patch.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
@@ -189,9 +194,11 @@ export interface TodoView {
   agentSlug: string | null
   /** A draft to be given to an agent created for it when it starts. */
   newAgent: boolean
-  /** The model picked for it; null starts it on the agent's default. */
+  /** What was picked to run it on; each null starts it on the agent's default. */
   model: string | null
   llmProviderId: string | null
+  effort: EffortLevel | null
+  speed: SpeedLevel | null
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn

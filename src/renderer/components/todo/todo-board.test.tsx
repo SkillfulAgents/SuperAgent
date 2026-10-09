@@ -46,6 +46,8 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     newAgent: false,
     model: null,
     llmProviderId: null,
+    effort: null,
+    speed: null,
     sessionId: status === 'draft' ? null : `session-${partial.id}`,
     status,
     position: 0,
@@ -339,7 +341,7 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-assign-agent'))
     fireEvent.click(screen.getByRole('option', { name: 'New Agent' }))
     expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('New Agent')
-    expect(screen.getByTestId('composer-options-trigger')).toBeInTheDocument()
+    expect(screen.getByTestId('composer-options-trigger')).toHaveAccessibleName(/^Model and effort/)
     await waitFor(() => expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'n', agentSlug: null, newAgent: true })))
 
     fireEvent.click(screen.getByTestId('todo-assign-agent'))

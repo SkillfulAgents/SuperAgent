@@ -58,6 +58,8 @@ export async function createTodo(userId: string, input: CreateTodoInput): Promis
     newAgent: input.newAgent ?? false,
     model: input.model ?? null,
     llmProviderId: input.llmProviderId ?? null,
+    effort: input.effort ?? null,
+    speed: input.speed ?? null,
     sessionId: null,
     status: 'draft',
     position: now.getTime(),
@@ -90,6 +92,8 @@ export async function addSessionTodo(userId: string, input: AddSessionTodoInput)
     newAgent: false,
     model: null,
     llmProviderId: null,
+    effort: null,
+    speed: null,
     sessionId: input.sessionId,
     status: 'active',
     position: now.getTime(),
@@ -135,6 +139,8 @@ export async function updateDraft(userId: string, id: string, patch: UpdateTodoI
       ...(patch.newAgent ? { agentSlug: null } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}),
       ...(patch.llmProviderId !== undefined ? { llmProviderId: patch.llmProviderId } : {}),
+      ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+      ...(patch.speed !== undefined ? { speed: patch.speed } : {}),
       updatedAt: now,
     })
     .where(and(eq(todos.id, id), eq(todos.userId, userId), eq(todos.status, 'draft'), unclaimed(now)))

@@ -9,6 +9,8 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import {
   useCreateTodo,
   useDeleteTodo,
@@ -31,9 +33,11 @@ interface DraftFields {
   agentSlug: string | null
   /** Give it to an agent created for it when it starts. */
   newAgent: boolean
-  /** A model picked over the agent's default. */
+  /** What was picked over the agent's defaults. */
   model: string | null
   llmProviderId: string | null
+  effort: EffortLevel | null
+  speed: SpeedLevel | null
 }
 
 /** The model picker's agent identity while "New Agent" is chosen: no agent defaults apply. */
@@ -49,7 +53,8 @@ function failed() {}
 
 const sameFields = (a: DraftFields, b: DraftFields) =>
   a.title === b.title && a.description === b.description && a.agentSlug === b.agentSlug &&
-  a.newAgent === b.newAgent && a.model === b.model && a.llmProviderId === b.llmProviderId
+  a.newAgent === b.newAgent && a.model === b.model && a.llmProviderId === b.llmProviderId &&
+  a.effort === b.effort && a.speed === b.speed
 
 /** What a save sends for the form. */
 const payload = (f: DraftFields) => ({
@@ -59,6 +64,8 @@ const payload = (f: DraftFields) => ({
   newAgent: f.newAgent,
   model: f.model,
   llmProviderId: f.llmProviderId,
+  effort: f.effort,
+  speed: f.speed,
 })
 
 /**
@@ -129,6 +136,8 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     newAgent: initial?.newAgent ?? false,
     model: initial?.model ?? null,
     llmProviderId: initial?.llmProviderId ?? null,
+    effort: initial?.effort ?? null,
+    speed: initial?.speed ?? null,
   }))
   const fieldsRef = useRef(fields)
   fieldsRef.current = fields
@@ -198,27 +207,34 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   const written = !!(fields.title.trim() || fields.description.trim())
   const canStart = hasAgent && !alreadyStarting && written
 
-  // The model follows the chosen agent's default, as in the composer, until
-  // the person picks one; a pick is kept with the draft.
+  // Model, effort and speed follow the chosen agent's defaults, as in the
+  // composer, until the person picks; a pick is kept with the draft.
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(fields.agentSlug ?? '')
   const composerOptions = useComposerOptions({
     initialModel: initial?.model ?? undefined,
     initialLlmProviderId: initial?.model ? initial.llmProviderId ?? undefined : undefined,
+    initialEffort: initial?.effort ?? undefined,
+    initialSpeed: initial?.speed ?? undefined,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
+    agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: fields.newAgent ? NEW_AGENT_KEY : fields.agentSlug ?? '',
     agentDefaultsReady: !fields.agentSlug || agentPrefsFetched,
   })
   const picked = composerOptions.toRuntimeOptions()
   const pickedModel = picked.model ?? null
   const pickedLlmProviderId = picked.model ? picked.llmProviderId ?? null : null
+  const pickedEffort = picked.effort ?? null
+  const pickedSpeed = picked.speed ?? null
   useEffect(() => {
     const current = fieldsRef.current
-    if (current.model === pickedModel && current.llmProviderId === pickedLlmProviderId) return
-    change({ model: pickedModel, llmProviderId: pickedLlmProviderId })
+    if (current.model === pickedModel && current.llmProviderId === pickedLlmProviderId &&
+      current.effort === pickedEffort && current.speed === pickedSpeed) return
+    change({ model: pickedModel, llmProviderId: pickedLlmProviderId, effort: pickedEffort, speed: pickedSpeed })
   // `change` only touches refs and setters.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickedModel, pickedLlmProviderId])
+  }, [pickedModel, pickedLlmProviderId, pickedEffort, pickedSpeed])
 
   /** Ends any dictation, so its tail lands in what is saved or started. */
   const finishDictation = async () => {
@@ -406,7 +422,13 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
               )
             }
           />
-          {hasAgent && <ComposerOptions state={composerOptions} includeEffort={false} />}
+          {hasAgent && (
+            <ComposerOptions
+              state={composerOptions}
+              // A new agent has no defaults yet to compare with or set.
+              footer={fields.agentSlug ? <AgentDefaultFooter agentSlug={fields.agentSlug} state={composerOptions} /> : undefined}
+            />
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <VoiceInputButton voiceInput={voiceInput} message={fields.description} />
