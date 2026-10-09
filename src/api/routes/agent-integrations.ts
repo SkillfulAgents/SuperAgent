@@ -1,5 +1,6 @@
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
-import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 /**
  * Shared Agent Integration CRUD Routes
  *
@@ -242,7 +243,8 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(toPublicAgentIntegration(integration), 201)
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to create agent integration:', error)
@@ -320,7 +322,8 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
     return c.json(toPublicAgentIntegration(updated))
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     if (error instanceof DuplicateIntegrationIdentityError) {
       captureException(error, {
         tags: { ...SENTRY_TAGS, operation: 'update-integration-duplicate' },
