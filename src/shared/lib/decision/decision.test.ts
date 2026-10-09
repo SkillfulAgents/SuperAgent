@@ -79,12 +79,12 @@ describe('Cloudflare', () => {
   it('calls the Workers AI model URL and unwraps the result envelope', async () => {
     respond(200, { result: { answers: systemOneAnswers }, success: true, errors: [], messages: [] })
 
-    const result = await getDecisionProvider('cloudflare').decide(request, 'clef-flash')
+    const result = await getDecisionProvider('cloudflare').decide(request)
 
     expect(calls).toEqual([{
-      url: 'https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/@cf/cloudflare/clef-flash',
+      url: 'https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/@cf/cloudflare/clef',
       auth: 'Bearer cf-token',
-      body: { model: 'clef-flash', state: request.state, questions: systemOneQuestions },
+      body: { model: 'clef', state: request.state, questions: systemOneQuestions },
     }])
     expect(result).toEqual(normalized)
   })
@@ -180,14 +180,14 @@ describe('Platform', () => {
 })
 
 describe('decide', () => {
-  it('uses the selected provider and model', async () => {
-    settings.current = { ...settings.current, decision: { provider: 'typesafe', model: 'jev-1.13.0' } }
+  it('uses the selected provider and its model', async () => {
+    settings.current = { ...settings.current, decision: { provider: 'typesafe' } }
     respond(200, { answers: systemOneAnswers })
 
     await decide(request)
 
     expect(calls.map(call => [call.url, (call.body as { model: string }).model])).toEqual([
-      ['https://api.typesafe.ai/v1/systemone', 'jev-1.13.0'],
+      ['https://api.typesafe.ai/v1/systemone', 'jev-latest'],
     ])
   })
 

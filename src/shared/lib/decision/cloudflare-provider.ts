@@ -10,6 +10,7 @@ const envelopeSchema = z.object({ result: z.unknown() })
 export class CloudflareDecisionProvider extends BaseDecisionProvider {
   readonly id = 'cloudflare' as const
   readonly name = 'Cloudflare'
+  readonly model = 'clef'
   protected readonly settingsKeyField = 'cloudflareApiToken' as const
   protected readonly envVarName = 'CLOUDFLARE_API_TOKEN'
 

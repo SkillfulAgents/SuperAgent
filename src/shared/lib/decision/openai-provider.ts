@@ -29,6 +29,7 @@ const responseSchema = z.object({ answers: z.array(answerSchema) })
 export class OpenaiDecisionProvider extends BaseDecisionProvider {
   readonly id: DecisionProviderId = 'openai'
   readonly name: string = 'OpenAI'
+  readonly model = 'gpt-6-luna'
   // Shared with OpenAI voice: one OpenAI key serves both.
   protected readonly settingsKeyField = 'openaiApiKey' as const
   protected readonly envVarName = 'OPENAI_API_KEY'
