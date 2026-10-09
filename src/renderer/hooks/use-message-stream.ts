@@ -8,6 +8,7 @@ import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
+import type { WorkspaceWrite } from '@shared/lib/tools/workspace-write'
 import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
@@ -200,6 +201,16 @@ export interface WorkflowRunLive {
 }
 const EMPTY_WORKFLOWS: WorkflowRunLive[] = []
 const sessionWorkflows = new Map<string, WorkflowRunLive[]>()
+
+// Called in stream order with what the agent may have just written: a file from
+// a finished tool call, or 'any' when the call ran code, the turn ended, or the
+// stream (re)connected and may have missed writes.
+type WorkspaceWriteListener = (write: WorkspaceWrite) => void
+const workspaceWriteListeners = new Map<string, Set<WorkspaceWriteListener>>()
+
+function emitWorkspaceWrite(sessionId: string, write: WorkspaceWrite): void {
+  workspaceWriteListeners.get(sessionId)?.forEach((listener) => listener(write))
+}
 
 // `done`/`failed` are terminal and sticky: a later `running`/`progress` snapshot must
 // never downgrade them (snapshots can momentarily lag or reorder).
@@ -454,6 +465,7 @@ function getOrCreateEventSource(
       // All other events preserve the current isActive value
 
       if (data.type === 'connected') {
+        emitWorkspaceWrite(sessionId, 'any')
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
@@ -660,6 +672,7 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'session_error') {
+        emitWorkspaceWrite(sessionId, 'any')
         // Session encountered an error
         // Keep streamingMessage so error text (streamed via stream_delta) stays visible
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
@@ -1022,8 +1035,12 @@ function getOrCreateEventSource(
         // session_idle handler's own reconcile coexists harmlessly.
         invalidateMessagesThrottled(queryClient, sessionId)
         void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
+        emitWorkspaceWrite(sessionId, 'any')
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
+        if (data.type === 'tool_result' && typeof data.workspaceWrite === 'string') {
+          emitWorkspaceWrite(sessionId, data.workspaceWrite)
+        }
         // Message has been persisted - keep streamingMessage visible until refetch completes
         if (current) {
           streamStates.set(sessionId, {
@@ -1459,6 +1476,20 @@ function releaseEventSource(sessionId: string): void {
       }
       messagesInvalidateThrottles.delete(key)
     }
+  }
+}
+
+/** Listen for files the session's agent may have written. Returns the unsubscribe. */
+export function subscribeWorkspaceWrites(sessionId: string, listener: WorkspaceWriteListener): () => void {
+  let listeners = workspaceWriteListeners.get(sessionId)
+  if (!listeners) {
+    listeners = new Set()
+    workspaceWriteListeners.set(sessionId, listeners)
+  }
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) workspaceWriteListeners.delete(sessionId)
   }
 }
 

@@ -82,6 +82,7 @@ import {
 } from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession, isAgentIntegrationSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
+import { workspaceWriteOf, type WorkspaceWrite } from '@shared/lib/tools/workspace-write'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
@@ -376,6 +377,7 @@ interface StreamingState {
   // this changes every id we hold is unretirable and must be dropped.
   processInstanceId: string | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
+  pendingWorkspaceWrites: Map<string, WorkspaceWrite> // what each in-flight tool call may write, keyed by tool_use ID; sent on its tool_result
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
   // messages or background work may keep the runtime non-idle, and it knows —
@@ -715,6 +717,7 @@ class MessagePersister {
       // decides whether both are still valid.
       processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
+      pendingWorkspaceWrites: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: prior?.lastResultSubtype ?? null,
       lastResultCleanSuccess: prior?.lastResultCleanSuccess ?? false,
@@ -1651,6 +1654,7 @@ class MessagePersister {
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
+      state.pendingWorkspaceWrites.clear()
       state.isRecovering = false
       state.coalescedUserMessages = undefined
       if (processKept) {
@@ -1813,6 +1817,7 @@ class MessagePersister {
         bgTasksSnapshot: null,
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
+        pendingWorkspaceWrites: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
       lastResultCleanSuccess: false,
@@ -3534,6 +3539,7 @@ class MessagePersister {
   // the outgoing process's identity.
   private handleProcessRestarted(sessionId: string, state: StreamingState, instance: unknown): void {
     this.dropProcessLocalBackgroundState(sessionId, state)
+    state.pendingWorkspaceWrites.clear()
     if (typeof instance === 'string' && instance !== '') state.processInstanceId = instance
   }
 
@@ -4199,6 +4205,9 @@ class MessagePersister {
               }
             } catch { /* partial or invalid JSON — nothing to deliver */ }
           }
+
+          const workspaceWrite = workspaceWriteOf(state.currentToolUse.name, state.currentToolInput)
+          if (workspaceWrite) state.pendingWorkspaceWrites.set(state.currentToolUse.id, workspaceWrite)
 
           // Track Task/Agent tool for subagent correlation
           if (state.currentToolUse.name === 'Task' || state.currentToolUse.name === 'Agent') {
@@ -6282,12 +6291,16 @@ ${continuation}`
             )
           }
 
-          // Broadcast update to SSE clients
+          // Broadcast update to SSE clients. workspaceWrite lets an open file
+          // preview reload what the call may have changed.
+          const workspaceWrite = state?.pendingWorkspaceWrites.get(block.tool_use_id)
+          state?.pendingWorkspaceWrites.delete(block.tool_use_id)
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'tool_result',
             toolUseId: block.tool_use_id,
             result: block.content,
             isError: block.is_error || false,
+            ...(workspaceWrite ? { workspaceWrite } : {}),
           })
 
           // If this is the result of a tracked deliver_file call, surface a

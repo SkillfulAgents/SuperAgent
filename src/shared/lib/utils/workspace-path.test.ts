@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getPathName, isFolderPath, toWorkspaceRelativePath } from './workspace-path'
+import { canonicalWorkspacePath, getPathName, isFolderPath, toWorkspaceRelativePath } from './workspace-path'
 
 describe('isFolderPath', () => {
   it.each([
@@ -37,4 +37,21 @@ describe('toWorkspaceRelativePath', () => {
   ])('%s → %s', (input, expected) => {
     expect(toWorkspaceRelativePath(input)).toBe(expected)
   })
+})
+
+describe('canonicalWorkspacePath', () => {
+  it.each([
+    ['/workspace/out/a.md', 'out/a.md'],
+    ['/workspace//out/./a.md', 'out/a.md'],
+    ['./out//a.md', 'out/a.md'],
+    ['out/b/../a.md', 'out/a.md'],
+    ['/workspace/out/a.md/', 'out/a.md'],
+  ])('%s → %s', (input, expected) => {
+    expect(canonicalWorkspacePath(input)).toBe(expected)
+  })
+
+  it.each(['/workspace', '/workspace/', '', '/etc/passwd', '/workspaceX/a.md', '/workspace/../etc', '../a.md'])(
+    '%j is not a file in the workspace', (input) => {
+      expect(canonicalWorkspacePath(input)).toBeNull()
+    })
 })

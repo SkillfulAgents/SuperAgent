@@ -131,6 +131,8 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
             <FolderBrowser folder={activeTab} />
           ) : activeFile && file?.inlineUrl ? (
             <FileRenderer
+              // Keyed by file, so a reload keeps the old text on screen but a different file never shows it.
+              key={`${file.agentSlug}:${file.path}`}
               filePath={file.path}
               fileUrl={file.inlineUrl}
               agentSlug={file.agentSlug}

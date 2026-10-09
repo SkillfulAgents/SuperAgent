@@ -783,7 +783,12 @@ export class ToolUseScenario implements MockScenario {
     private toolName: string,
     private toolInput: Record<string, unknown>,
     private toolResult: string,
-    private finalText: string
+    private finalText: string,
+    /**
+     * What the tool does in the workspace, run `delayMs` after its input streams and just before its
+     * result. `holdMs` keeps the reply open after the result, so a test can see the result's effect alone.
+     */
+    private toolEffect?: { delayMs: number; holdMs?: number; run: (client: MockContainerClient) => void },
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -845,6 +850,20 @@ export class ToolUseScenario implements MockScenario {
     }, delay)
     delay += 10
 
+    const effect = this.toolEffect
+    if (effect) {
+      delay += effect.delayMs
+      setTimeout(() => {
+        try {
+          effect.run(client)
+        } catch (error) {
+          console.error('[MockContainerClient] tool effect failed:', error)
+        }
+      }, delay)
+      delay += 10
+    }
+    const holdAfterResult = effect?.holdMs ?? 0
+
     // Tool result comes as a 'user' type message
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
@@ -861,7 +880,7 @@ export class ToolUseScenario implements MockScenario {
         },
       })
     }, delay)
-    delay += 20
+    delay += 20 + holdAfterResult
 
     // Final text response - new text block
     setTimeout(() => {
@@ -2381,6 +2400,23 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: remoteMcpRequestInput,
       },
     ])],
+    // An Edit that rewrites output/report.md mid-reply, for the preview's live reload. The delay
+    // and the hold keep the write apart from the reply's start and end, so a test sees the
+    // reload the tool result alone causes.
+    ['edit report', new ToolUseScenario(
+      'Edit',
+      { file_path: '/workspace/output/report.md', old_string: 'Old line.', new_string: 'New line.' },
+      'The file /workspace/output/report.md has been updated.',
+      'I updated the report.',
+      {
+        delayMs: 500,
+        holdMs: 8000,
+        run: (client) => {
+          const reportPath = path.join(getAgentWorkspaceDir(client.getAgentId()), 'output', 'report.md')
+          fs.writeFileSync(reportPath, fs.readFileSync(reportPath, 'utf8').replace('Old line.', 'New line.'))
+        },
+      },
+    )],
     // File delivery scenario for E2E tests
     ['deliver file', new ToolUseScenario(
       'mcp__user-input__deliver_file',

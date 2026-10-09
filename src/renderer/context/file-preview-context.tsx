@@ -1,6 +1,9 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
-import { getPathName } from '@shared/lib/utils/workspace-path'
+import { canonicalWorkspacePath, getPathName } from '@shared/lib/utils/workspace-path'
+import type { WorkspaceWrite } from '@shared/lib/tools/workspace-write'
 import { useRouteLocation } from '@renderer/router/use-route-location'
+import { subscribeWorkspaceWrites } from '@renderer/hooks/use-message-stream'
+import { refreshesOnWorkspaceWrite } from '@renderer/lib/file-types'
 
 export interface FileTab {
   kind: 'file'
@@ -151,6 +154,28 @@ function replacePathPrefix(candidatePath: string, oldPath: string, newPath: stri
     : candidatePath
 }
 
+/**
+ * New versions for the open file tabs an agent write may have changed, so their
+ * previews reload. Returns `tabs` itself when nothing matched.
+ */
+export function refreshWrittenTabs(
+  tabs: PreviewTab[],
+  agentSlug: string,
+  write: WorkspaceWrite,
+  version: number,
+): PreviewTab[] {
+  let changed = false
+  const next = tabs.map(tab => {
+    if (tab.kind !== 'file' || tab.agentSlug !== agentSlug) return tab
+    // A delivered file's tab keeps the path as the agent spelled it.
+    if (write !== 'any' && canonicalWorkspacePath(tab.filePath) !== canonicalWorkspacePath(write)) return tab
+    if (!refreshesOnWorkspaceWrite(tab.filePath)) return tab
+    changed = true
+    return { ...tab, version }
+  })
+  return changed ? next : tabs
+}
+
 let commentIdCounter = 0
 
 /** One shared empty array: a fresh [] per call would change every consumer's deps. */
@@ -159,10 +184,13 @@ const EMPTY_COMMENTS: FileComment[] = []
 export function FilePreviewProvider({
   children,
   sessionId: sessionIdProp,
+  agentSlug,
   commentsEnabled = true,
 }: {
   children: ReactNode
   sessionId?: string | null
+  /** The session's agent. When set, open files reload as that agent writes them. */
+  agentSlug?: string
   commentsEnabled?: boolean
 }) {
   const { view } = useRouteLocation()
@@ -183,6 +211,14 @@ export function FilePreviewProvider({
     setComments(new Map())
     setIsOpen(false)
   }, [sessionId])
+
+  useEffect(() => {
+    if (!sessionId || !agentSlug) return
+    return subscribeWorkspaceWrites(sessionId, (write) => {
+      const version = nextFileVersion()
+      setOpenTabs(prev => refreshWrittenTabs(prev, agentSlug, write, version))
+    })
+  }, [sessionId, agentSlug])
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
     // Minted outside the updater: React may invoke an updater more than once per
