@@ -274,6 +274,15 @@ interface MessageItemProps {
   voiceReading?: boolean
 }
 
+function isSubagentTool(name: string): boolean {
+  return name === 'Task' || name === 'Agent'
+}
+
+// The rows that read activeSubagents/completedSubagents: they draw a subagent or workflow card.
+export function readsSubagentState(message: ApiMessage): boolean {
+  return message.toolCalls?.some(tc => isSubagentTool(tc.name) || tc.name === 'Workflow') ?? false
+}
+
 function resolveSubagentRun(
   toolCall: ApiToolCall,
   activeSubagents: SubagentInfo[] | undefined,
@@ -630,7 +639,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                     }
                   >
                     <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                      {isSubagentTool(toolCall.name) && sessionId ? (
                         <SubAgentBlock
                           toolCall={toolCall}
                           sessionId={sessionId}
@@ -663,10 +672,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 // Memoized: on the 5s refetch React Query's structural sharing preserves the
 // object reference of any unchanged message, so the default shallow prop compare
 // skips re-rendering all but the items that actually changed. Handlers, agentSlug
-// and sessionId are referentially stable. Note: activeSubagents/completedSubagents
-// are passed to every item and change identity on each subagent SSE event, so the
-// memo gives no benefit while a subagent is actively streaming — it still pays off
-// for the common idle/refetch and plain-text-streaming cases.
+// and sessionId are referentially stable. activeSubagents/completedSubagents
+// change identity on each subagent SSE event, so MessageList passes them only to
+// rows with Task/Agent/Workflow calls; other rows skip re-rendering.
 export const MessageItem = memo(MessageItemComponent)
 
 if (__RENDER_TRACKING__) {
