@@ -6,6 +6,7 @@ import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { CodeCopyButton } from './code-copy-button'
+import { HtmlBlock } from './html-block'
 import { useBlockBreakout } from './use-block-breakout'
 
 // How agent-written text looks on every screen that shows it. Screens own only
@@ -109,39 +110,43 @@ function hastText(node: ElementContent): string {
   return ''
 }
 
-function fenceSource(pre: ElementContent | undefined, language: string): string | null {
+function fenceSource(pre: ElementContent | undefined, languages: string[]): string | null {
   const code = pre?.type === 'element' ? pre.children[0] : undefined
   if (code?.type !== 'element' || code.tagName !== 'code') return null
   const classes = code.properties.className
-  if (!Array.isArray(classes) || !classes.includes(`language-${language}`)) return null
+  if (!Array.isArray(classes) || !classes.some((name) => languages.includes(String(name).toLowerCase()))) return null
   return hastText(code)
 }
 
 const RENDERED_FENCES = [
-  { language: 'mermaid', Render: MermaidDiagram },
-  { language: 'math', Render: MathBlock },
+  { languages: ['language-mermaid'], Render: MermaidDiagram },
+  { languages: ['language-math'], Render: MathBlock },
 ]
 
-// Only settled blocks render diagrams and equations: a fence still streaming in the
+// Only settled blocks render diagrams, equations, or HTML: a fence still streaming in the
 // tail would re-render incomplete output on every delta, so it stays a code block.
-const SETTLED_COMPONENTS: Components = {
-  ...STREAMING_COMPONENTS,
-  pre: ({ children, node }) => {
-    const codeBlock = <CodeBlock>{children}</CodeBlock>
-    for (const { language, Render } of RENDERED_FENCES) {
-      const source = fenceSource(node, language)
-      if (source === null) continue
-      return (
-        <ErrorBoundary fallback={codeBlock}>
-          <Suspense fallback={codeBlock}>
-            <Render source={source} fallback={codeBlock} />
-          </Suspense>
-        </ErrorBoundary>
-      )
-    }
-    return codeBlock
-  },
+const settledPre = (htmlPreview: boolean): Components['pre'] =>
+  function SettledPre({ children, node }) {
+  const codeBlock = <CodeBlock>{children}</CodeBlock>
+  const html = htmlPreview ? fenceSource(node, ['language-html', 'language-htm']) : null
+  if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />
+  for (const { languages, Render } of RENDERED_FENCES) {
+    const source = fenceSource(node, languages)
+    if (source === null) continue
+    return (
+      <ErrorBoundary fallback={codeBlock}>
+        <Suspense fallback={codeBlock}>
+          <Render source={source} fallback={codeBlock} />
+        </Suspense>
+      </ErrorBoundary>
+    )
+  }
+  return codeBlock
 }
+
+const SETTLED_COMPONENTS: Components = { ...STREAMING_COMPONENTS, pre: settledPre(false) }
+// Only the agent's own replies run HTML: user, integration, and notification text can come from other people.
+const HTML_PREVIEW_COMPONENTS: Components = { ...STREAMING_COMPONENTS, pre: settledPre(true) }
 
 const MODE_COMPONENTS = { settled: SETTLED_COMPONENTS, streaming: STREAMING_COMPONENTS }
 
@@ -157,15 +162,21 @@ export type AgentMarkdownProps = {
 } & (
   // `streaming` keeps fences as code while text still arrives; `settled` draws them.
   // A `link` rebuilds the components on every render, so streaming text cannot take one.
-  | { mode: 'settled'; link?: (href: string | undefined, children: ReactNode) => ReactNode | null }
-  | { mode: 'streaming'; link?: never }
+  | {
+      mode: 'settled'
+      link?: (href: string | undefined, children: ReactNode) => ReactNode | null
+      /** Render ```html fences as live previews (the agent's own replies only). */
+      htmlPreview?: boolean
+    }
+  | { mode: 'streaming'; link?: never; htmlPreview?: never }
 )
 
 // Memoized so a settled block parses once while later text streams in.
-export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins }: AgentMarkdownProps) {
+export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins, htmlPreview }: AgentMarkdownProps) {
+  const base = htmlPreview ? HTML_PREVIEW_COMPONENTS : MODE_COMPONENTS[mode]
   const components = link
-    ? { ...MODE_COMPONENTS[mode], a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
-    : MODE_COMPONENTS[mode]
+    ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
+    : base
   return (
     <Markdown components={components} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug}>
       {text}

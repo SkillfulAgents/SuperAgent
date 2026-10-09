@@ -38,6 +38,7 @@ import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
+import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -1114,6 +1115,9 @@ ipcMain.handle('popup-app-menu', (_event, x: number, y: number) => {
   const menu = Menu.buildFromTemplate(items)
   menu.popup({ window: win, x, y })
 })
+
+// Every window that can render chat (main, popouts, dispatch) gets the guard, including future ones.
+app.on('web-contents-created', (_event, webContents) => blockSrcdocFrameNavigation(webContents))
 
 // Handle OAuth callback URLs (macOS)
 app.on('open-url', (event, url) => {

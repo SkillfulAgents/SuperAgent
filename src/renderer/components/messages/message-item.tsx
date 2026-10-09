@@ -47,18 +47,21 @@ interface MarkdownBlockProps {
   spoken?: boolean
   /** Index of this block's first spoken word within the whole message (a reply rendered block by block). */
   spokenOffset?: number
+  /** Render settled ```html fences as live previews (assistant replies only). */
+  htmlPreview?: boolean
 }
 
 function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): MarkdownProps['rehypePlugins'] {
   return spoken ? [[rehypeSpokenWords, { offset: offset ?? 0 }]] : undefined
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview }: MarkdownBlockProps) {
   const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
     <AgentMarkdown
       text={text}
       mode="settled"
+      htmlPreview={htmlPreview}
       rehypePlugins={rehypePlugins}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
@@ -135,6 +138,8 @@ interface MessageItemProps {
    * the list, so the store's flips re-render one row rather than every one.
    */
   voiceReading?: boolean
+  /** The temporary row of a reply still streaming. Its persisted message replaces it, so HTML previews wait for that row and run once. */
+  isStreamingRow?: boolean
 }
 
 function resolveSubagentRun(
@@ -159,7 +164,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -366,6 +371,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           agentSlug={agentSlug}
                           spoken={isBeingRead}
                           spokenOffset={spokenOffsets?.[i]}
+                          htmlPreview={isAssistant && !isStreamingRow}
                         />
                       ))}
                       {streamingSplit.tail && (
@@ -385,6 +391,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
                       spoken={isBeingRead}
+                      htmlPreview={isAssistant && !isStreamingRow}
                     />
                   )}
                   {isStreaming && (
