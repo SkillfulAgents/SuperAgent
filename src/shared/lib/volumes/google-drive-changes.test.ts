@@ -92,6 +92,26 @@ describe('Google Drive change feed', () => {
     expect(changeCalls()).toBe(3)
   })
 
+  it('makes a read of an expired listing it can vouch for wait for the poll in flight, where a plain cache drops it', async () => {
+    listings = new RemoteListingCache<DriveFile>(60_000)
+    feed = new GoogleDriveChangeFeed(listings, k => (JSON.parse(k) as string[])[1])
+    await started()
+    await tick(16_000)
+    let answer = (_page: unknown) => {}
+    request.mockImplementationOnce(async () => new Promise(resolve => { answer = page => resolve(Response.json(page)) }))
+    feed.keepFresh('a')
+    const waiting = feed.revalidate('a', key('f'))
+    answer({ changes: [], newStartPageToken: 't2' })
+    await waiting
+    await listings.list('a', key('f'), read)
+    expect(read).toHaveBeenCalledTimes(2)
+    const plain = new RemoteListingCache<DriveFile>()
+    await plain.list('a', key('f'), read)
+    await tick(16_000)
+    expect(plain.cached(key('f'))).toBeUndefined()
+    expect(plain.recent(key('f'), Infinity)).toBeUndefined()
+  })
+
   it('drops a listing a change touches, so the next read goes to Drive', async () => {
     await started()
     pages = [{ changes: [changed('n', 'new.txt', ['f'])], newStartPageToken: 't2' }]

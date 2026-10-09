@@ -36,6 +36,8 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   read again. Only listings read after the feed started are kept this way. A failed
   poll is tried again from the same place. A poll that would page past 3,000 changes
   drops the cached listings, and a minute without a successful poll restarts the feed.
+  Drive keeps an expired listing for a minute. A read that finds one the feed can still
+  vouch for waits for the poll in flight instead of reading the folder again.
 - A shortcut shows as its target under the shortcut's own name, like a subfolder or
   file of the folder it sits in, wherever the target lives. Reads and writes reach the
   target. Delete and move act on the shortcut, so the target is never trashed through

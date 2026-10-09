@@ -67,6 +67,15 @@ export class GoogleDriveChangeFeed {
     this.polls.set(accountId, poll)
   }
 
+  /** Wait for the poll in flight when the listing under `key` expired but the feed can still vouch for it, so
+   * a slow poll costs a wait instead of reading the folder again. */
+  async revalidate(accountId: string, key: string): Promise<void> {
+    const poll = this.polls.get(accountId)
+    const feed = this.feeds.get(accountId)
+    const listing = this.listings.recent(key, Infinity)
+    if (poll && feed && listing && listing.checkedAt >= feed.coveredFrom && this.listings.cached(key) === undefined) await poll
+  }
+
   private async start(accountId: string): Promise<void> {
     const polledAt = Date.now()
     const { startPageToken } = startSchema.parse(await (await driveRequest(accountId, { method: 'GET', path: 'drive/v3/changes/startPageToken' })).json())
