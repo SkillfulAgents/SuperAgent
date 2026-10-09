@@ -192,6 +192,19 @@ export function isPreviewableImage(filePath: string): boolean {
   return !filePath.endsWith('/') && previewKind(filePath) === 'image'
 }
 
+const LIVE_PREVIEWS: ReadonlySet<PreviewKind> = new Set(['markdown', 'text', 'csv', 'image'])
+
+/**
+ * Previews that reload in place when the agent writes the file. Video, audio,
+ * PDF and HTML previews remount on a new URL, which would restart playback or
+ * reset the page on every write, so they keep reloading only when the file is
+ * reopened.
+ */
+export function refreshesOnWorkspaceWrite(filePath: string): boolean {
+  const kind = previewKind(filePath)
+  return kind !== null && LIVE_PREVIEWS.has(kind)
+}
+
 const BINARY_EXTS = new Set([
   ...[...IMAGE_EXTS].filter(ext => ext !== 'svg'),
   ...extensionsFor('video'),

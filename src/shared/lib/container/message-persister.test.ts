@@ -1315,6 +1315,41 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // workspace writes on tool_result
+  // ============================================================================
+
+  describe('tool_result workspaceWrite', () => {
+    function streamToolUse(id: string, name: string, input: object) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id, name } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+    }
+
+    function resultFor(id: string) {
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+      })
+      return sseEvents.filter(e => e.type === 'tool_result')
+    }
+
+    it('names the file an Edit wrote, and nothing for a Read', () => {
+      streamToolUse('edit-1', 'Edit', { file_path: '/workspace/notes.md', old_string: 'a', new_string: 'b' })
+      streamToolUse('read-1', 'Read', { file_path: '/workspace/notes.md' })
+
+      expect(resultFor('edit-1')[0].workspaceWrite).toBe('/workspace/notes.md')
+      expect(resultFor('read-1')[0]).not.toHaveProperty('workspaceWrite')
+    })
+  })
+
+  // ============================================================================
   // deliver_file tool-result correlation (ELECTRON-39)
   // ============================================================================
 

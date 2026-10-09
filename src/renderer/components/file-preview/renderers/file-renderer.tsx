@@ -32,16 +32,16 @@ export function FileRenderer({
 
   switch (previewKind(filePath)) {
     case 'markdown':
-      return <MarkdownRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <MarkdownRenderer key={`${agentSlug}:${filePath}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'html':
       return <HtmlRenderer url={fileUrl} />
 
     case 'csv':
-      return <CsvRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <CsvRenderer key={`${agentSlug}:${filePath}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'text':
-      return <TextRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <TextRenderer key={`${agentSlug}:${filePath}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'image':
       return <ImageRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />

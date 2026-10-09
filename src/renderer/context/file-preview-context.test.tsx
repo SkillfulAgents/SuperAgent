@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
-import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
+import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, refreshWrittenTabs, useFilePreview, type FileTab, type PreviewTab } from './file-preview-context'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -483,5 +483,30 @@ describe('FilePreviewContext', () => {
 
   it('throws when used outside provider', () => {
     expect(() => renderHook(() => useFilePreview())).toThrow(/FilePreviewProvider/)
+  })
+})
+
+describe('refreshWrittenTabs', () => {
+  const tab = (filePath: string, agentSlug = 'agent-1'): FileTab => ({
+    kind: 'file', filePath, agentSlug, displayName: filePath, version: 1, pdfPage: 1,
+  })
+  const versions = (tabs: PreviewTab[]) => tabs.map(t => (t as FileTab).version)
+
+  it('reloads the open tab the agent wrote, in either path form', () => {
+    const tabs = [tab('/workspace/notes.md'), tab('out/plan.md'), tab('/workspace/other.md')]
+    expect(versions(refreshWrittenTabs(tabs, 'agent-1', '/workspace/notes.md', 2))).toEqual([2, 1, 1])
+    expect(versions(refreshWrittenTabs(tabs, 'agent-1', '/workspace/out/plan.md', 2))).toEqual([1, 2, 1])
+  })
+
+  it('reloads every live tab of that agent when the agent may have written anything', () => {
+    const tabs = [tab('/workspace/a.md'), tab('/workspace/b.csv'), tab('/workspace/e.png'), tab('/workspace/c.pdf'), tab('/workspace/d.mp4'), tab('/workspace/f.html'), tab('/workspace/a.md', 'agent-2')]
+    expect(versions(refreshWrittenTabs(tabs, 'agent-1', 'any', 2))).toEqual([2, 2, 2, 1, 1, 1, 1])
+  })
+
+  it('leaves the tabs untouched when nothing open was written', () => {
+    const tabs = [tab('/workspace/a.md'), tab('/workspace/c.pdf')]
+    expect(refreshWrittenTabs(tabs, 'agent-1', '/workspace/elsewhere.md', 2)).toBe(tabs)
+    expect(refreshWrittenTabs(tabs, 'agent-1', '/workspace/c.pdf', 2)).toBe(tabs)
+    expect(refreshWrittenTabs(tabs, 'agent-2', 'any', 2)).toBe(tabs)
   })
 })
