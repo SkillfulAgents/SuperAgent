@@ -375,7 +375,7 @@ describe('generateSystemPrompt rendering', () => {
   })
 
   // The catalog reads the env at import, so platform mode needs a fresh import.
-  it('lists X and Plaid in both the prompt and the catalog on Gamut\'s Composio', async () => {
+  it('lists X, Plaid, and Shopify in both the prompt and the catalog on Gamut\'s Composio', async () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     vi.resetModules()
     const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
@@ -385,6 +385,7 @@ describe('generateSystemPrompt rendering', () => {
     const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
     expect(promptSlugs).toContain('twitter')
     expect(promptSlugs).toContain('plaid')
+    expect(promptSlugs).toContain('shopify')
     expect(promptSlugs.sort()).toEqual(platformServices.map(service => service.slug).sort())
   })
 
