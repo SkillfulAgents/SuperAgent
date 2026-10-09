@@ -1,7 +1,7 @@
 import { modelSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
-import type { DecisionSettings } from '../decision/types'
+import { decisionSettingsSchema, type DecisionSettings } from '../decision/types'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -626,7 +626,8 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       ...loaded.auth,
     },
     voice: loaded.voice,
-    decision: loaded.decision,
+    // An unknown provider (hand-edited file, a newer version's provider) reads as unset.
+    decision: decisionSettingsSchema.safeParse(loaded.decision).data,
     computerUse: loaded.computerUse,
     shareAnalytics: loaded.shareAnalytics ?? true,
     analyticsTargets: loaded.analyticsTargets,

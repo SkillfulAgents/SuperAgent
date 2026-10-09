@@ -1,7 +1,7 @@
 import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
 import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
-import { DECISION_PROVIDERS } from '../decision/types'
+import { decisionSettingsSchema } from '../decision/types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -183,9 +183,7 @@ const voiceSettingsPatchSchema = z.object({
   ttsVoice: z.string().min(1),
 }).partial().strict()
 
-const decisionSettingsPatchSchema = z.object({
-  provider: z.enum(DECISION_PROVIDERS),
-}).partial().strict()
+const decisionSettingsPatchSchema = decisionSettingsSchema.strict()
 
 const computerUseGrantSchema = z.object({
   level: z.enum(['list_apps_windows', 'use_application', 'use_host_shell']),
