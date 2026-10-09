@@ -42,7 +42,6 @@ export const EXPORT_FORMATS: Record<string, ExportFormat> = {
   'application/vnd.google-apps.spreadsheet': { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', extension: '.xlsx', label: 'Google Sheet' },
   'application/vnd.google-apps.presentation': { mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', extension: '.pptx', label: 'Google Slides' },
 }
-export const driveFileSizeSchema = z.object({ size: z.coerce.number().int().nonnegative().optional() })
 export const driveFileListSchema = z.object({ files: z.array(driveFileSchema), nextPageToken: z.string().optional() })
 export const driveSchema = z.object({ id: driveIdSchema, name: z.string().min(1) })
 export const driveListSchema = z.object({

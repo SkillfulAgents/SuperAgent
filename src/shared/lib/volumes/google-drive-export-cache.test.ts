@@ -21,7 +21,7 @@ describe('Google Drive export cache', () => {
     expect(exporter).toHaveBeenCalledTimes(4)
   })
 
-  it('runs at most eight exports at a time and fails only after the rest settle, keeping what they learned', async () => {
+  it('runs at most sixteen exports at a time and fails only after the rest settle, keeping what they learned', async () => {
     const cache = new GoogleDriveExportCache()
     let running = 0
     let peak = 0
@@ -34,13 +34,13 @@ describe('Google Drive export cache', () => {
       if (file.id === 'd3' && failing) { failing = false; throw new Error('rate limited') }
       return new Uint8Array(7)
     })
-    const files = Array.from({ length: 20 }, (_, i) => item(`d${i}`))
+    const files = Array.from({ length: 40 }, (_, i) => item(`d${i}`))
     await expect(cache.learn('a', files, exporter)).rejects.toThrow('rate limited')
-    expect(peak).toBe(8)
-    expect(exporter).toHaveBeenCalledTimes(20)
-    expect(cache.size('a', doc('d19'))).toBe(7)
+    expect(peak).toBe(16)
+    expect(exporter).toHaveBeenCalledTimes(40)
+    expect(cache.size('a', doc('d39'))).toBe(7)
     expect(cache.size('a', doc('d3'))).toBeUndefined()
     await cache.learn('a', files, exporter)
-    expect(exporter).toHaveBeenCalledTimes(21)
+    expect(exporter).toHaveBeenCalledTimes(41)
   })
 })

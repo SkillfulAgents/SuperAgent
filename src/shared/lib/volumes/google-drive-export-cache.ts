@@ -5,7 +5,7 @@ import type { DriveFile } from './google-drive-schema'
 export type Export = Uint8Array<ArrayBuffer> | 'too-large'
 export type ExportSize = number | 'too-large'
 
-const PARALLEL_EXPORTS = 8
+const PARALLEL_EXPORTS = 16
 const MAX_EXPORTS = 8_000
 const MAX_BYTES = 100 * 1024 * 1024
 const keyOf = (accountId: string, file: DriveFile) => JSON.stringify([accountId, file.id, file.modifiedTime])
@@ -45,7 +45,7 @@ export class GoogleDriveExportCache {
     return exported
   }
 
-  /** Export what `items` lack, at most eight at a time. A failed export fails the call
+  /** Export what `items` lack, at most sixteen at a time. A failed export fails the call
    * once the rest have settled, keeping every export made. */
   async learn<T extends { file: DriveFile }>(accountId: string, items: T[], exporter: (item: T) => Promise<Export>): Promise<void> {
     const limit = pLimit(PARALLEL_EXPORTS)

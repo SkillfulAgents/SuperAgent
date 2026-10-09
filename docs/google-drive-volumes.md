@@ -80,9 +80,16 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
 - Name checks before a folder is made or a file moved, and the not-empty check
   before a delete, use the raw children, including entries the agent cannot see.
   Renaming an export strips the clash suffix and extension to get the Drive name,
-  which must keep the extension. Changes from this process run one at a time per
-  account. Each re-reads the folders it checks or acts in, and afterwards drops only
-  those folders from the cache, so other listings stay cached.
+  which must keep the extension. A change waits only for earlier changes to the
+  same folders, so changes in different folders run side by side. A file's bytes
+  upload outside that wait, and only the final step, which makes the change, waits
+  its turn after checking the target again. Writes and folder creates check names
+  against a listing read from Drive in the last 5 seconds. Deletes and moves re-read
+  the folder, so they never act on an entry renamed in Drive. After a change, the
+  cached listing is updated with what Drive returned instead of being read again.
+  A followed shortcut keeps its own name and ID in that update.
+- rclone asks to make a file's folder before every upload. A folder that already
+  exists answers from the cached listing, without a Drive call.
 - A regular file moved onto a visible file replaces that file's content, then the
   source is trashed. This is how many tools save (write a temp file, rename it over
   the original). The destination keeps its ID, sharing and history, and a converted
