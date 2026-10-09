@@ -7,7 +7,7 @@ import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
-import { type FolderGroup } from '@renderer/lib/file-utils'
+import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
@@ -163,7 +163,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
     onAttachmentsAdded: (added) => {
-      for (const a of added) if (a.type !== 'mount') queueRef.current?.enqueue(a)
+      for (const a of added) if (a.type === 'file' || a.type === 'folder') queueRef.current?.enqueue(a)
     },
   })
   attachmentsRef.current = attachments
@@ -188,7 +188,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     // Unmount aborts the queue generation, so StrictMode's second setup must
     // enqueue again. Skip done/error chips; later adds go through onAttachmentsAdded.
     for (const a of attachmentsRef.current) {
-      if (a.type === 'mount' || a.error || a.upload?.status === 'done') continue
+      if (a.type !== 'file' && a.type !== 'folder') continue
+      if (a.error || a.upload?.status === 'done') continue
       queue.enqueue(a)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
@@ -214,36 +215,14 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
     setShowMountDialog(false)
-    if (choice === 'upload') {
-      addFoldersDirectly(pendingFolders)
-    } else if (choice === 'mount') {
-      // A folder without a resolved absolute path can't be mounted — fall back
-      // to upload for it rather than POSTing a mount with no hostPath.
-      const mountable = pendingFolders.filter((f) => f.folderPath)
-      const pathless = pendingFolders.filter((f) => !f.folderPath)
-      addMounts(mountable.map((f) => ({
-        folderName: f.folderName,
-        hostPath: f.folderPath!,
-      })))
-      if (pathless.length > 0) {
-        addFoldersDirectly(pathless)
-      }
-    }
+    const split = folderChoice(choice, pendingFolders)
+    if (split.mount.length > 0) addMounts(split.mount)
+    if (split.upload.length > 0) addFoldersDirectly(split.upload)
     setPendingFolders([])
   }, [pendingFolders, addFoldersDirectly, addMounts])
 
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLElement>) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-
-    const pastedFiles: File[] = []
-    for (const item of items) {
-      if (item.kind === 'file') {
-        const file = item.getAsFile()
-        if (file) pastedFiles.push(file)
-      }
-    }
-
+    const pastedFiles = filesFromClipboard(e.clipboardData)
     if (pastedFiles.length > 0) {
       e.preventDefault()
       addFiles(pastedFiles.map((file) => ({ file })))
@@ -317,7 +296,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const paths = attachmentsRef.current.flatMap((a) => {
-      if (a.type === 'mount') return []
+      if (a.type !== 'file' && a.type !== 'folder') return []
       const done = a.upload?.path
         ? { path: a.upload.path, agentSlug: a.upload.agentSlug }
         : queue.pathFor(a.id)

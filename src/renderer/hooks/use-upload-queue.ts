@@ -20,7 +20,7 @@ export interface UploadQueueOptions {
 }
 
 function isUploadable(a: Attachment): a is Uploadable {
-  return a.type !== 'mount'
+  return a.type === 'file' || a.type === 'folder'
 }
 
 /**
@@ -113,19 +113,23 @@ export function useUploadQueue(options: UploadQueueOptions) {
     if (a && isUploadable(a)) enqueue(a)
   }, [enqueue])
 
+  const waitIdle = useCallback(async () => {
+    let tail: Promise<void>
+    do {
+      tail = chainRef.current
+      await tail
+    } while (tail !== chainRef.current)
+  }, [])
+
   // Waits until the chain is idle, re-uploading errored chips first. A chip
   // enqueued during the wait extends the chain and is included.
   const retryAndWait = useCallback(async (): Promise<{ ok: boolean }> => {
     for (const a of optionsRef.current.attachmentsRef.current) {
       if (isUploadable(a) && a.error) enqueue(a)
     }
-    let tail: Promise<void>
-    do {
-      tail = chainRef.current
-      await tail
-    } while (tail !== chainRef.current)
+    await waitIdle()
     return { ok: failedRef.current.size === 0 }
-  }, [enqueue])
+  }, [enqueue, waitIdle])
 
   const abortAll = useCallback(() => {
     generationRef.current += 1
@@ -163,5 +167,5 @@ export function useUploadQueue(options: UploadQueueOptions) {
 
   useEffect(() => abortAll, [abortAll])
 
-  return { enqueue, retry, retryAndWait, pathFor, remove, clear, requeueAll }
+  return { enqueue, retry, retryAndWait, waitIdle, pathFor, remove, clear, requeueAll }
 }

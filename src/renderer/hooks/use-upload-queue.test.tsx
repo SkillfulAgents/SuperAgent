@@ -28,7 +28,7 @@ function folderAttachment(id: string, extras: Partial<FolderAttachment> = {}): F
 
 // Mount chips have no `upload`; narrow before reading it so the assertions typecheck.
 function uploadOf(a: Attachment | undefined) {
-  return a && a.type !== 'mount' ? a.upload : undefined
+  return a && (a.type === 'file' || a.type === 'folder') ? a.upload : undefined
 }
 
 // Drives real attachment state so the queue's ref reads what the UI would.
@@ -94,6 +94,17 @@ describe('useUploadQueue', () => {
     const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
     await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
     await act(async () => { result.current.queue.remove('a') })
+    expect(result.current.attachments).toEqual([])
+  })
+
+  it('drops an upload that finishes after its chip was removed', async () => {
+    const d = deferred<{ path: string }>()
+    const uploadFile = vi.fn().mockReturnValueOnce(d.promise)
+    const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')]))
+    await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
+    await act(async () => { result.current.queue.remove('a') })
+    await act(async () => { d.resolve({ path: '/a' }) })
+    expect(result.current.queue.pathFor('a')).toBeUndefined()
     expect(result.current.attachments).toEqual([])
   })
 
