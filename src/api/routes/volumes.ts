@@ -8,6 +8,8 @@ import { depthOf, destinationOf, multistatus, statusOf, volumePathOf } from '@sh
 import type { HttpBindings } from '@hono/node-server'
 import { allowStreamingUpload } from '@shared/lib/streaming-upload-timeout'
 
+const RCLONE_FIRST_CHUNK_BYTES = 128 * 1024 * 1024
+
 type Env = { Variables: { agentSlug: string }; Bindings: HttpBindings }
 
 const volumes = new Hono<Env>()
@@ -41,6 +43,12 @@ async function serve(c: Context<Env>, volumeId: string): Promise<Response> {
       case 'HEAD': {
         const file = await ops.read(path)
         const served = servedRange(c.req.header('range'), file.size)
+        // rclone ends every range at the size it last listed (fs.FixRangeOption) and reads in 128 MiB pieces or more,
+        // so a range ending short of a smaller file's end means that size is stale: serving it would cut the file.
+        if (served.range && served.range.end < file.size - 1 && served.range.end + 1 < RCLONE_FIRST_CHUNK_BYTES) {
+          await file.close()
+          return c.body(null, 416, { 'Content-Range': `bytes */${file.size}` })
+        }
         // A whole-file answer stops at the size it advertised, so a file growing mid-read cannot overrun it.
         const range = served.range ?? (file.size > 0 ? { start: 0, end: file.size - 1 } : null)
         if (served.status === 416 || c.req.method === 'HEAD' || !range) {

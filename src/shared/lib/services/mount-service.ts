@@ -92,7 +92,8 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
       const driver = instantiateVolume(row)
       return [{ volumeId: row.id, name: row.name, cacheMode: driver?.cacheMode ?? 'local',
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
-        ...(driver?.ignoreSize ? { ignoreSize: true } : {}) }]
+        ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
+        ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}) }]
     }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }

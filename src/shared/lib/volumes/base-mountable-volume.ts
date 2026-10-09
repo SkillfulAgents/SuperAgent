@@ -41,6 +41,8 @@ export abstract class BaseMountableVolume<C> {
   readonly caseInsensitive: boolean = false
   /** Whether the source can store an upload at a size other than the bytes sent. */
   readonly ignoreSize: boolean = false
+  /** How long the mount trusts a folder listing, when the cache policy's default is wrong for the source. */
+  readonly dirCacheSeconds: number | null = null
 
   constructor(readonly id: string, readonly name: string, readonly config: C) {}
 

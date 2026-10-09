@@ -119,6 +119,10 @@ function updateSession(target: { id: string; convertFrom?: string }) {
   return { method: 'PATCH' as const, path: `upload/drive/v3/files/${target.id}`, json: {}, ...(target.convertFrom ? { contentType: target.convertFrom } : {}) }
 }
 
+/** When an overwrite of each volume path last failed, so rclone's cleanup delete after it can be told apart. */
+const failedWrites = new Map<string, number>()
+const FAILED_WRITE_CLEANUP_MS = 5_000
+
 /** A visible entry and the folder it was found in. */
 interface Located {
   parentId: string
@@ -130,6 +134,9 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   readonly cacheMode = 'remote'
   // A Google file saved as .md, .xlsx or .pptx is stored as the Google file, at its export size.
   readonly ignoreSize = true
+  // People edit Drive files in Google's editors while agents work. Until the mount re-lists a folder, a changed
+  // file's read is refused rather than cut short, so the window stays short.
+  readonly dirCacheSeconds = 30
 
   constructor(id: string, name: string, config: GoogleDriveVolumeConfig, private readonly agentSlug?: string) {
     super(id, name, config)
@@ -334,11 +341,13 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
+    let overwriting = false
     try {
       const name = this.writableName(relative)
       const parentId = await this.parentOf(relative)
       const planned = writeTarget(this.view(await this.children(parentId)).entries, name)
       if (planned.kind === 'refused') throw new WorkspaceFileError('not-a-file')
+      overwriting = planned.kind === 'update'
       // The bytes go up outside the folder's lock. Only the last piece, which makes the change,
       // waits for it, once the target is checked again.
       await driveUpload(this.config.accountId, planned.kind === 'update'
@@ -351,11 +360,19 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
             throw new Error('The file changed in Google Drive during the upload')
           }
           const stored = await send()
+          if (signal?.aborted && target.kind === 'create') {
+            // rclone cancelled this upload while Drive committed it (the file was renamed mid-upload) and sends it
+            // again under the new name. Its cleanup delete raced the commit, so the copy made here is a stray.
+            const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${stored.id}`, json: { trashed: true } })
+            await trashed.body?.cancel()
+            return stored
+          }
           settle(parentId, children => target.kind === 'update' ? children.map(child => settled(child, stored)) : [...children, stored])
           return stored
         }),
       })
     } catch (error) {
+      if (overwriting) failedWrites.set(`${this.id}:${relative}`, Date.now())
       await body.cancel().catch(() => {})
       throw error
     }
@@ -398,6 +415,11 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async delete(relative: string): Promise<void> {
+    // rclone deletes a file one second after its overwrite fails or is cancelled ("Remove failed upload", rclone's
+    // webdav.go). On Drive that would trash the file it meant to update, so the file keeps its old content instead.
+    const failedAt = failedWrites.get(`${this.id}:${relative}`)
+    failedWrites.delete(`${this.id}:${relative}`)
+    if (failedAt !== undefined && Date.now() - failedAt < FAILED_WRITE_CLEANUP_MS) return
     const planned = await this.planned(relative)
     // A folder is held too, so nothing is written into it while it is checked empty and trashed.
     await this.change([planned.parentId, ...(isFolder(planned.entry.file) ? [planned.entry.file.id] : [])], async (fresh, settle) => {

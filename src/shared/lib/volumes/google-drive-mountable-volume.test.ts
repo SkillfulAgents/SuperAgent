@@ -339,6 +339,25 @@ describe('Google Drive filesystem', () => {
     expect(names).not.toContain('local alias')
   })
 
+  it('trashes a new file whose upload was cancelled while Drive committed it, as rclone sends it again under its new name', async () => {
+    serve({ folders: { root1: [] } })
+    const cancelled = new AbortController()
+    upload.mockImplementationOnce(async (_account, session, _body, options) => options.publish(async () => { cancelled.abort(); return blob('made', session.json.name, 1) }))
+    await volume().write('replacement.svg', new Blob(['x']).stream(), cancelled.signal)
+    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/made', json: { trashed: true } }, expect.anything())
+    expect((await volume().list('')).map(entry => entry.name)).not.toContain('replacement.svg')
+  })
+
+  it('keeps a file when rclone deletes it right after its overwrite failed, and trashes it on a later delete', async () => {
+    serve({ folders: { root1: [blob('n', 'notes.txt')] } })
+    upload.mockRejectedValueOnce(new Error('rate limited'))
+    await expect(volume().write('notes.txt', new Blob(['x']).stream())).rejects.toThrow('rate limited')
+    await volume().delete('notes.txt')
+    expect(calls()).not.toContain('PATCH drive/v3/files/n')
+    await volume().delete('notes.txt')
+    expect(calls()).toContain('PATCH drive/v3/files/n')
+  })
+
   it('reports a trashed root as not found and checks revoked accounts even on cache hits', async () => {
     serve({ folders: { root1: [blob('n', 'notes.txt')] }, root: folder('root1', 'Team', { trashed: true }) })
     await expect(volume().stat('')).rejects.toMatchObject({ code: 'not-found' })

@@ -58,6 +58,9 @@ describe('remote mount cache policy', () => {
     const args = rcloneMountArgs('cloud', '/mounts/cloud', 'http://host/api', 'remote')
     const option = (name: string) => args[args.indexOf(name) + 1]
     expect(option('--dir-cache-time')).toBe('5m')
+    const drive = rcloneMountArgs('drive', '/mounts/drive', 'http://host/api', 'remote', false, false, 30)
+    expect(drive[drive.indexOf('--dir-cache-time') + 1]).toBe('30s')
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'd', name: 'drive', cacheMode: 'remote', dirCacheSeconds: 30 }]))[0]?.dirCacheSeconds).toBe(30)
     expect(option('--vfs-cache-mode')).toBe('full')
     expect(option('--vfs-cache-max-size')).toBe('512M')
     expect(option('--vfs-cache-max-age')).toBe('1h')
