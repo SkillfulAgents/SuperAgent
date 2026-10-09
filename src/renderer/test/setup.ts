@@ -76,10 +76,15 @@ vi.mock('@shared/lib/analytics/server-analytics', () => ({
 
 // Mock analytics context globally — components use useAnalyticsTracking
 // which requires an AnalyticsProvider that depends on settings/user context.
-vi.mock('@renderer/context/analytics-context', () => ({
-  useAnalyticsTracking: () => ({ track: vi.fn(), identify: vi.fn() }),
-  AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
-}))
+vi.mock('@renderer/context/analytics-context', async () => {
+  const { createContext } = await import('react')
+  return {
+    useAnalyticsTracking: () => ({ track: vi.fn(), identify: vi.fn() }),
+    AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
+    // No provider in unit tests: hooks reading the context get null and skip tracking.
+    AnalyticsContext: createContext(null),
+  }
+})
 
 // Many components call useNavigate() for router-driven navigation. Renderer
 // unit tests render leaf components WITHOUT a RouterProvider, so stub navigation
