@@ -75,6 +75,7 @@ export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): P
  */
 export class LocalMountableVolume extends BaseMountableVolume<LocalVolumeConfig> {
   readonly type = 'local'
+  readonly cacheMode = 'local'
   private readonly files: LocalFileOps
 
   constructor(id: string, name: string, config: LocalVolumeConfig) {

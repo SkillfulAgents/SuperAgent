@@ -1,11 +1,10 @@
 import { cn } from '@shared/lib/utils/cn'
 import { ListTree, ChevronDown, ChevronRight } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { Components } from 'react-markdown'
-import { Markdown } from '@renderer/components/ui/markdown'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { StatusIndicator } from './tool-call-item'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
+import { AgentMarkdown, COMPACT_AGENT_TEXT } from './agent-markdown'
 
 interface ThinkingBlockItemProps {
   text: string
@@ -21,27 +20,12 @@ interface ThinkingBlockItemProps {
   endedAt?: number | null
   /** Transcript-derived duration for persisted blocks (no live timing). */
   durationMs?: number
+  agentSlug?: string
 }
 
 // How close (px) to the bottom counts as "pinned" — tighter than the message
 // list's 80px tolerance since the card body is a small (max-h-64) scroller.
 const PIN_THRESHOLD_PX = 32
-
-// Compact by design: these blocks live in a narrow, capped card, where a wide
-// table should scroll instead of widening the whole transcript.
-const THINKING_MARKDOWN_COMPONENTS: Components = {
-  table: ({ children }) => (
-    <div className="code-scrollbar my-2 max-w-full overflow-x-auto">
-      <table className="my-0">{children}</table>
-    </div>
-  ),
-}
-
-const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({ text }: { text: string }) {
-  return (
-    <Markdown components={THINKING_MARKDOWN_COMPONENTS}>{text}</Markdown>
-  )
-})
 
 /**
  * A thinking episode rendered as a tool-call-style card.
@@ -51,7 +35,7 @@ const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({ text }: { te
  * "Thought for Ns" header (unless the user toggled it themselves, which wins).
  * Persisted transcript blocks render the same card, collapsed, headed "Thought".
  */
-export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs }: ThinkingBlockItemProps) {
+export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs, agentSlug }: ThinkingBlockItemProps) {
   // null = follow the default (expanded while active); a user click overrides it
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const expanded = userExpanded ?? active
@@ -150,9 +134,10 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
               'prose-p:my-2 prose-p:text-xs prose-p:leading-relaxed prose-li:my-0 prose-li:text-xs',
               'prose-ul:my-2 prose-ol:my-2 prose-strong:font-medium prose-strong:text-current',
               'prose-blockquote:my-2 prose-blockquote:text-current',
-              'prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:rounded-md prose-pre:border prose-pre:border-border/70 prose-pre:bg-background/60 prose-pre:p-2',
-              'prose-code:rounded prose-code:bg-black/[0.05] prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-code:font-normal prose-code:text-foreground prose-code:before:content-none prose-code:after:content-none dark:prose-code:bg-white/[0.08]',
-              '[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0'
+              'prose-pre:my-2 prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:p-2 prose-table:my-0',
+              '[&_code]:px-1 [&_code]:font-normal',
+              '[&_pre_code]:p-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
+              COMPACT_AGENT_TEXT
             )}
             data-testid="thinking-markdown"
           >
@@ -161,12 +146,12 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
             ) : streamingSplit ? (
               <>
                 {streamingSplit.settled.map((block, i) => (
-                  <ThinkingMarkdownBlock key={i} text={block} />
+                  <AgentMarkdown key={i} text={block} mode="settled" agentSlug={agentSlug} />
                 ))}
-                {streamingSplit.tail && <ThinkingMarkdownBlock text={streamingSplit.tail} />}
+                {streamingSplit.tail && <AgentMarkdown text={streamingSplit.tail} mode="streaming" agentSlug={agentSlug} />}
               </>
             ) : (
-              <ThinkingMarkdownBlock text={text} />
+              <AgentMarkdown text={text} mode="settled" agentSlug={agentSlug} />
             )}
             {active && <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-current align-text-bottom" />}
           </div>

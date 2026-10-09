@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
 import { createMarkdownUrlTransform, markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
@@ -6,14 +6,16 @@ import { createMarkdownUrlTransform, markdownUrlTransform } from '@renderer/lib/
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
 
 // target="_blank" is the only path that reaches the Electron shell opener.
+export function MarkdownLink({ children, href }: { children?: ReactNode; href?: string }) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+      {children}
+    </a>
+  )
+}
+
 const DEFAULT_COMPONENTS: Components = {
-  a: function MarkdownLink({ children, href }) {
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-        {children}
-      </a>
-    )
-  },
+  a: MarkdownLink,
 }
 
 export interface MarkdownProps {

@@ -35,10 +35,15 @@ export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
   volumeId: string
 }
 
+/** Source latency determines the container cache policy, independently of its provider. */
+export type VolumeCacheMode = 'local' | 'remote'
+
 /** A volume as the container receives it, in SUPERAGENT_VOLUMES. */
 export interface ContainerVolume {
   volumeId: string // attachment id; the agent token scopes its lookup
   name: string
+  /** Older hosts omit this; the image preserves local-folder behavior in that case. */
+  cacheMode?: VolumeCacheMode
 }
 
 /** Why a volume is not in the container. */

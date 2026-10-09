@@ -3,8 +3,8 @@
  * mounts SUPERAGENT_VOLUMES with FUSE from a WebDAV server inside the
  * container, and holds /health until the mounts settle.
  *
- * Opt-in: needs Docker with /dev/fuse (Docker Desktop works; a Linux host's
- * AppArmor profile may block the mount). Builds the image first.
+ * Opt-in: needs Docker with /dev/fuse. Uses the app's FUSE permissions,
+ * including its AppArmor override on Linux. Builds the image first.
  *   RUN_VOLUMES_E2E=1 npx vitest run src/volume-mounts.e2e.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -31,10 +31,10 @@ function sh(container: string, script: string): string {
 // Starts the agent through the image's start script after a 1s head start for
 // `server` (a shell command for the test's app on :8080). As root, /dev/fuse is
 // first made root-only, as on Apple Container, and the script opens it and drops to claude.
-function startAgent(server: string, volumes: { volumeId: string; name: string }[], user = 'claude', runArgs: string[] = []): string {
+function startAgent(server: string, volumes: { volumeId: string; name: string; cacheMode?: 'local' | 'remote' }[], user = 'claude', runArgs: string[] = []): string {
   const rootOnlyDevice = user === 'root' ? 'chmod 600 /dev/fuse; ' : '';
   const container = docker(
-    'run', '-d', '--user', user, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN', ...runArgs,
+    'run', '-d', '--user', user, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN', '--security-opt', 'apparmor=unconfined', ...runArgs,
     '-e', `SUPERAGENT_VOLUMES=${JSON.stringify(volumes)}`,
     '-e', 'SUPERAGENT_HOST_API_URL=http://127.0.0.1:8080/api',
     '-e', 'PROXY_TOKEN=test-token',
@@ -137,6 +137,52 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     await new Promise((resolve) => setTimeout(resolve, 2_000));
     expect(sh(container, `cat ${file}`)).toBe('CCCCCCCCCCCCCC');
   }, 60_000);
+
+  it('remote mounts reuse listings and reads, then see external edits after expiry or refresh', async () => {
+    const source = '/tmp/src/cloud';
+    const file = '/mounts/cloud/w.txt';
+    // Count WebDAV calls without changing rclone's real server/file behavior.
+    const proxy = `
+      const http = require('http');
+      const counts = { GET: 0, PROPFIND: 0 };
+      http.createServer((req, res) => {
+        if (req.url === '/counts') { res.end(JSON.stringify(counts)); return; }
+        if (req.method in counts) counts[req.method]++;
+        const upstream = http.request({ hostname: '127.0.0.1', port: 8081, path: req.url, method: req.method, headers: req.headers }, response => {
+          res.writeHead(response.statusCode, response.headers);
+          response.pipe(res);
+        });
+        upstream.on('error', () => { res.statusCode = 502; res.end(); });
+        req.pipe(upstream);
+      }).listen(8080, '127.0.0.1');
+    `;
+    const quotedProxy = "'" + proxy.replace(/'/g, "'\\''") + "'";
+    const container = startAgent(
+      `mkdir -p ${source} && echo AAAAAAAA > ${source}/w.txt && chmod -R a+rwX /tmp/src && (rclone serve webdav /tmp/src --addr 127.0.0.1:8081 --baseurl /api/volumes --dir-cache-time 0s & node -e ${quotedProxy})`,
+      [{ volumeId: 'cloud', name: 'cloud', cacheMode: 'remote' }],
+    );
+    await healthUntilOk(container);
+    expect(sh(container, `cat ${file}`)).toBe('AAAAAAAA');
+    const before = sh(container, 'curl -s 127.0.0.1:8080/counts');
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(sh(container, `ls /mounts/cloud && cat ${file}`)).toBe('w.txt\nAAAAAAAA');
+    expect(sh(container, 'curl -s 127.0.0.1:8080/counts')).toBe(before);
+
+    sh(container, `echo BBBBBBBB > ${source}/w.txt`);
+    expect(sh(container, `cat ${file}`)).toBe('AAAAAAAA');
+    const invalidate = 'curl -sf --unix-socket /tmp/rclone-cloud.sock -X POST -H "Content-Type: application/json" -d "{}" http://rc/vfs/refresh';
+    // Exercise the real five-minute policy, including the kernel and disk caches.
+    await waitFor(() => sh(container, `ls /mounts/cloud >/dev/null && cat ${file}`) === 'BBBBBBBB', 305_000);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    sh(container, `echo CCCCCCCCCCCCCC > ${source}/w.txt`);
+    sh(container, invalidate);
+    await waitFor(() => sh(container, `ls /mounts/cloud >/dev/null && cat ${file}`) === 'CCCCCCCCCCCCCC', 4_000);
+
+    sh(container, 'echo own-write > /mounts/cloud/new.txt');
+    expect(sh(container, 'cat /mounts/cloud/new.txt')).toBe('own-write');
+    await waitFor(() => sh(container, `cat ${source}/new.txt 2>/dev/null || true`) === 'own-write', 5_000);
+  }, 340_000);
 
   it('git sees no mode change in a mounted repo, and keeps the executable bit outside /mounts', async () => {
     // The repo is made on the source side, as on the host: a repo made through the mount would detect

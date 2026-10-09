@@ -1,12 +1,8 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useCallback, useRef, useMemo, memo, lazy, Suspense, type ReactNode } from 'react'
+import { useCallback, useRef, useMemo, memo } from 'react'
 import { Link2 } from 'lucide-react'
-import { CodeCopyButton } from './code-copy-button'
-import { HtmlBlock } from './html-block'
-import { useBlockBreakout } from './use-block-breakout'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
-import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -19,9 +15,8 @@ import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
 import { classifyUserMessage } from './user-message-kinds'
 import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import { Markdown, type MarkdownProps } from '@renderer/components/ui/markdown'
-import type { Components } from 'react-markdown'
-import type { ElementContent } from 'hast'
+import type { MarkdownProps } from '@renderer/components/ui/markdown'
+import { AgentMarkdown } from './agent-markdown'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -38,141 +33,6 @@ import { ReadAloudControls } from './read-aloud-controls'
 // Re-export for use by other components
 export type { ApiToolCall }
 
-function CodeBlock({ children }: { children: ReactNode }) {
-  const getText = useCallback(() => extractText(children), [children])
-  return (
-    <pre className={cn(
-      'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
-      'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
-    )}>
-      <CodeCopyButton getText={getText} />
-      {children}
-    </pre>
-  )
-}
-
-function extractText(node: ReactNode): string {
-  if (typeof node === 'string') return node
-  if (typeof node === 'number') return String(node)
-  if (!node) return ''
-  if (Array.isArray(node)) return node.map(extractText).join('')
-  if (typeof node === 'object' && 'props' in node) return extractText(node.props.children)
-  return ''
-}
-
-// Wide tables break out of the readable column; see useBlockBreakout.
-function ExpandingTable({ children }: { children: ReactNode }) {
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const scrollerRef = useRef<HTMLDivElement>(null)
-  useBlockBreakout(wrapperRef, scrollerRef, children)
-
-  return (
-    <div ref={wrapperRef} className="my-3" data-testid="markdown-table">
-      <div ref={scrollerRef} className="code-scrollbar overflow-x-auto">
-        <table className="w-max min-w-full border-collapse text-sm">
-          {children}
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// Hoisted to a stable module-level reference. The memoized <MarkdownBlock> below
-// must NOT be handed a fresh `components`/`remarkPlugins` object each render, or
-// its memo would never bail and every settled streaming block would re-parse.
-const MARKDOWN_COMPONENTS: Components = {
-  // Style code blocks
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  code: ({ children, className }) => {
-    const isInline = !className
-    return isInline ? (
-      <code className={cn(
-        'rounded px-1.5 py-0.5 text-sm font-medium',
-        'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
-      )}>
-        {children}
-      </code>
-    ) : (
-      <code className={cn(className, 'text-foreground')}>{children}</code>
-    )
-  },
-  // Wide tables expand beyond the readable column and scroll; see ExpandingTable.
-  table: ({ children }) => <ExpandingTable>{children}</ExpandingTable>,
-  // Cap individual cell width so prose-heavy cells wrap instead of stretching the
-  // table to one giant line, while many short columns still drive the breakout.
-  th: ({ children }) => (
-    <th className={cn(
-      'border-b-2 px-3 py-1.5 text-left font-medium align-top',
-      'border-border'
-    )}>
-      <div className="max-w-[32rem]">{children}</div>
-    </th>
-  ),
-  td: ({ children }) => (
-    <td className={cn(
-      'border-b px-3 py-1.5 align-top',
-      'border-border'
-    )}>
-      <div className="max-w-[32rem]">{children}</div>
-    </td>
-  ),
-  img: ({ alt, src }) => (
-    <img
-      src={src}
-      alt={alt ?? ''}
-      loading="lazy"
-      decoding="async"
-      className="h-auto max-w-full rounded-md"
-    />
-  ),
-}
-
-const MermaidDiagram = lazy(() => import('./mermaid-diagram').then(m => ({ default: m.MermaidDiagram })))
-const MathBlock = lazy(() => import('./math-block').then(m => ({ default: m.MathBlock })))
-
-function hastText(node: ElementContent): string {
-  if (node.type === 'text') return node.value
-  if (node.type === 'element') return node.children.map(hastText).join('')
-  return ''
-}
-
-function fenceSource(pre: ElementContent | undefined, languages: string[]): string | null {
-  const code = pre?.type === 'element' ? pre.children[0] : undefined
-  if (code?.type !== 'element' || code.tagName !== 'code') return null
-  const classes = code.properties.className
-  if (!Array.isArray(classes) || !classes.some((name) => languages.includes(String(name).toLowerCase()))) return null
-  return hastText(code)
-}
-
-const RENDERED_FENCES = [
-  { languages: ['language-mermaid'], Render: MermaidDiagram },
-  { languages: ['language-math'], Render: MathBlock },
-]
-
-// Only settled blocks render diagrams, equations, or HTML: a fence still streaming in the
-// tail would re-render incomplete output on every delta, so it stays a code block.
-const settledPre = (htmlPreview: boolean): Components['pre'] =>
-  function SettledPre({ children, node }) {
-  const codeBlock = <CodeBlock>{children}</CodeBlock>
-  const html = htmlPreview ? fenceSource(node, ['language-html', 'language-htm']) : null
-  if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />
-  for (const { languages, Render } of RENDERED_FENCES) {
-    const source = fenceSource(node, languages)
-    if (source === null) continue
-    return (
-      <ErrorBoundary fallback={codeBlock}>
-        <Suspense fallback={codeBlock}>
-          <Render source={source} fallback={codeBlock} />
-        </Suspense>
-      </ErrorBoundary>
-    )
-  }
-  return codeBlock
-}
-
-const SETTLED_MARKDOWN_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, pre: settledPre(false) }
-// Only the agent's own replies run HTML: user, integration, and notification text can come from other people.
-const ASSISTANT_MARKDOWN_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, pre: settledPre(true) }
 
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
@@ -198,14 +58,14 @@ function spokenPlugins(spoken: boolean | undefined, offset: number | undefined):
 export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview }: MarkdownBlockProps) {
   const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
-    <Markdown
+    <AgentMarkdown
+      text={text}
+      mode="settled"
+      htmlPreview={htmlPreview}
       rehypePlugins={rehypePlugins}
-      components={htmlPreview ? ASSISTANT_MARKDOWN_COMPONENTS : SETTLED_MARKDOWN_COMPONENTS}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
-    >
-      {text}
-    </Markdown>
+    />
   )
 })
 
@@ -235,14 +95,13 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
   ]
 
   return (
-    <Markdown
+    <AgentMarkdown
+      text={text}
+      mode="streaming"
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
-    >
-      {text}
-    </Markdown>
+    />
   )
 })
 
@@ -462,7 +321,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
-                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} agentSlug={agentSlug} />
               </MessageErrorBoundary>
             ))}
           </div>
@@ -621,7 +480,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {isAssistant && workflowResults.length > 0 && (
           <div className="w-full space-y-2">
             {workflowResults.map((wf, idx) => (
-              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} agentSlug={agentSlug} />
             ))}
           </div>
         )}
