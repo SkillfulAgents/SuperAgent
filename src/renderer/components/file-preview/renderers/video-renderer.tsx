@@ -1,102 +1,35 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Play, Pause, MessageSquarePlus } from 'lucide-react'
-import { useFilePreview } from '@renderer/context/file-preview-context'
-import { CommentPin } from '../comments/comment-pin'
-import { CommentOverlay } from '../comments/comment-overlay'
+import { useCommentBox } from '../comments/use-comment-box'
 import { frameSeconds, useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
 import { VolumeControl } from './volume-control'
-import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
+import { formatMediaTime } from '../comments/format-media-time'
 
 interface VideoRendererProps {
   url: string
   filePath: string
   agentSlug: string
-  commentsEnabled?: boolean
 }
 
-/** An in-progress comment: a locked frame time plus a draggable in-frame point. */
-interface PendingComment {
-  timestamp: number
-  /** Horizontal position as a 0–100 percentage of the frame width. */
-  x: number
-  /** Vertical position as a 0–100 percentage of the frame height. */
-  y: number
-  /** Where to anchor the comment editor, in frame-local pixels. */
-  rect: DOMRect
-  /** Opened with M: the editor starts the mic. */
-  listen: boolean
-}
-
-/** How close (in seconds) the playhead must be to a comment to show its pin. */
-const PIN_VISIBLE_WINDOW = 0.4
-
-function clampPct(value: number): number {
-  return Math.min(100, Math.max(0, value))
-}
-
-export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true }: VideoRendererProps) {
+export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
-  const draggingRef = useRef(false)
+  const trackRef = useRef<HTMLDivElement>(null)
 
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [pending, setPending] = useState<PendingComment | null>(null)
 
-  const { commentsFor } = useFilePreview()
-  const fileComments = commentsFor(filePath, agentSlug)
-  const videoComments = fileComments.flatMap(c => (c.anchor.kind === 'time'
-    ? [{ id: c.id, timestamp: c.anchor.seconds, point: c.anchor.point }]
-    : []))
+  const surface = useMemo(() => ({ time: { media: videoRef, track: trackRef, frame: frameRef } }), [])
+  const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   const seekTo = useCallback((time: number) => {
     const v = videoRef.current
     if (!v) return
     v.currentTime = time
     setCurrentTime(time)
-  }, [])
-
-  // Start a comment at the current frame: pause, lock the timestamp, drop the
-  // draggable point. `xy` is the click position (frame %), or null to centre it.
-  const beginComment = useCallback((xy: { x: number; y: number } | null, listen = false) => {
-    const v = videoRef.current
-    const frame = frameRef.current
-    if (!v || !frame) return
-    v.pause()
-    const frameRect = frame.getBoundingClientRect()
-    const x = xy ? clampPct(xy.x) : 50
-    const y = xy ? clampPct(xy.y) : 50
-    setPending({
-      timestamp: v.currentTime,
-      x,
-      y,
-      rect: new DOMRect((x / 100) * frameRect.width, (y / 100) * frameRect.height, 0, 0),
-      listen,
-    })
-  }, [])
-
-  const handleFrameClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement
-    // Clicks inside the editor or on the draggable point are handled there.
-    if (target.closest('[data-comment-overlay]') || target.closest('[data-comment-box]')) return
-    const frame = frameRef.current
-    if (!frame) return
-    const rect = frame.getBoundingClientRect()
-    const x = clampPct(((e.clientX - rect.left) / rect.width) * 100)
-    const y = clampPct(((e.clientY - rect.top) / rect.height) * 100)
-    // While a comment is being placed, a frame click just repositions the point;
-    // otherwise it opens a new comment at the click.
-    if (pending) setPending(p => (p ? { ...p, x, y } : p))
-    else beginComment({ x, y })
-  }, [pending, beginComment])
-
-  // The mouse's frame position, so C opens a comment where the mouse is.
-  const pointerRef = useRef<{ x: number; y: number } | null>(null)
-  const handleFramePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    pointerRef.current = { x: ((e.clientX - rect.left) / rect.width) * 100, y: ((e.clientY - rect.top) / rect.height) * 100 }
   }, [])
 
   // Browsers don't expose the frame rate: take the shortest frame length seen
@@ -126,43 +59,13 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
 
   const { rate, setRate, togglePlay } = useMediaKeys(videoRef, {
     frameStep: () => (Number.isFinite(frameDurationRef.current) ? frameDurationRef.current : 1 / 30),
-    onComment: commentsEnabled && !pending ? (listen) => beginComment(pointerRef.current, listen) : undefined,
   })
-
-  const handleBoxPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    draggingRef.current = true
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }, [])
-
-  const handleBoxPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
-    const frame = frameRef.current
-    if (!frame) return
-    const rect = frame.getBoundingClientRect()
-    const x = clampPct(((e.clientX - rect.left) / rect.width) * 100)
-    const y = clampPct(((e.clientY - rect.top) / rect.height) * 100)
-    setPending(p => (p ? { ...p, x, y } : p))
-  }, [])
-
-  const handleBoxPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    draggingRef.current = false
-    e.currentTarget.releasePointerCapture?.(e.pointerId)
-  }, [])
 
   const maxSeek = duration > 0 ? duration : 0
 
   return (
-    <div className="flex flex-col items-center gap-3 p-4" data-testid="video-renderer" data-media-player>
-      {/* Video frame — clicking anywhere starts a comment at that point. */}
-      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
-      <div
-        ref={frameRef}
-        className={`relative inline-block max-w-full ${commentsEnabled ? 'cursor-crosshair' : ''}`}
-        onClick={commentsEnabled ? handleFrameClick : undefined}
-        onPointerMove={handleFramePointerMove}
-        onPointerLeave={() => { pointerRef.current = null }}
-      >
+    <div ref={containerRef} className="relative flex flex-col items-center gap-3 p-4" data-testid="video-renderer" data-media-player>
+      <div ref={frameRef} className={`relative inline-block max-w-full ${enabled ? 'cursor-crosshair' : ''}`}>
         {/* Agent-delivered videos have no caption track to offer. */}
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video
@@ -178,65 +81,13 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
         />
-
-        {/* Pins for comments anchored near the current frame. */}
-        {commentsEnabled && videoComments.map((comment, i) =>
-          comment.point && Math.abs(comment.timestamp - currentTime) <= PIN_VISIBLE_WINDOW ? (
-            <CommentPin key={comment.id} x={comment.point.x} y={comment.point.y} number={i + 1} />
-          ) : null,
-        )}
-
-        {/* Draggable point for the comment being placed. */}
-        {commentsEnabled && pending && (
-          <div
-            data-comment-box
-            role="presentation"
-            onPointerDown={handleBoxPointerDown}
-            onPointerMove={handleBoxPointerMove}
-            onPointerUp={handleBoxPointerUp}
-            className="absolute w-9 h-9 -translate-x-1/2 -translate-y-1/2 rounded-md border-2 border-primary bg-primary/20 shadow-md cursor-move touch-none flex items-center justify-center"
-            style={{ left: `${pending.x}%`, top: `${pending.y}%` }}
-            title="Drag to position the comment"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-          </div>
-        )}
-
-        {commentsEnabled && pending && (
-          <CommentOverlay
-            selection={{
-              text: '',
-              rect: pending.rect,
-              x: pending.x,
-              y: pending.y,
-              timestamp: pending.timestamp,
-            }}
-            filePath={filePath}
-            agentSlug={agentSlug}
-            autoEdit
-            autoListen={pending.listen}
-            onClose={() => setPending(null)}
-          />
-        )}
       </div>
 
       {/* Controls */}
       <div className="w-full max-w-[640px] space-y-2">
-        {/* Scrubber with comment markers above the track. */}
-        <div className="space-y-1">
-          <div className="relative h-2">
-            {maxSeek > 0 &&
-              commentsEnabled && videoComments.map(comment => (
-                <button
-                  key={comment.id}
-                  type="button"
-                  onClick={() => seekTo(comment.timestamp)}
-                  style={{ left: `${(comment.timestamp / maxSeek) * 100}%` }}
-                  className="absolute top-0 h-2 w-1 -translate-x-1/2 rounded-sm bg-primary hover:scale-y-150 transition-transform"
-                  title={`Comment at ${formatCommentTime(comment.timestamp)}`}
-                />
-              ))}
-          </div>
+        {/* Scrubber, with comment ticks above the track. */}
+        <div ref={trackRef} className="relative space-y-1">
+          <div className="h-2" />
           <input
             type="range"
             min={0}
@@ -265,11 +116,11 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
           <VolumeControl mediaRef={videoRef} />
-          {commentsEnabled && (
+          {enabled && (
             <button
               type="button"
-              onClick={() => beginComment(null)}
-              disabled={pending != null}
+              onClick={() => open()}
+              disabled={isOpen}
               className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
               data-testid="video-add-comment"
             >
@@ -279,6 +130,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
           )}
         </div>
       </div>
+      {box}
     </div>
   )
 }

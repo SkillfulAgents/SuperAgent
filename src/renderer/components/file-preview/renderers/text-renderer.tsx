@@ -2,6 +2,7 @@ import { Loader2, AlertCircle } from 'lucide-react'
 import { useRef } from 'react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
+import { selectionToAnchor } from '../comments/anchor'
 import { useFileContent } from './use-file-content'
 
 interface TextRendererProps {
@@ -66,7 +67,8 @@ export function TextRenderer({ url, filePath, agentSlug, commentsEnabled = true 
       )}
       {selection && (
         <CommentOverlay
-          selection={selection}
+          anchor={selectionToAnchor(selection)}
+          rect={selection.rect}
           filePath={filePath}
           agentSlug={agentSlug}
           onClose={clearSelection}

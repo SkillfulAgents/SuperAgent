@@ -8,6 +8,7 @@ import { FileRenderer } from './file-renderer'
 
 const addComment = vi.fn()
 let comments = new Map<string, FileComment[]>()
+let commentsEnabled = true
 
 // The comment box's mic needs app providers; the player only decides whether it listens.
 const startRecording = vi.hoisted(() => vi.fn(async () => {}))
@@ -21,11 +22,13 @@ vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({
     commentsFor: (filePath: string, agentSlug: string) => comments.get(`${agentSlug}:${filePath}`) ?? [],
     addComment,
+    commentsEnabled,
   }),
 }))
 
 beforeEach(() => {
   comments = new Map()
+  commentsEnabled = true
   addComment.mockReset()
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Audio decoding unavailable in jsdom')))
   vi.spyOn(console, 'debug').mockImplementation(() => {})
@@ -39,16 +42,16 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+function loadDuration(seconds: number) {
+  const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+  Object.defineProperty(audio, 'duration', { configurable: true, value: seconds })
+  fireEvent.loadedMetadata(audio)
+}
+
 describe('AudioRenderer', () => {
   it('hides annotation controls in a read-only preview', () => {
-    render(
-      <AudioRenderer
-        url="/voice-note.mp3"
-        filePath="/workspace/voice-note.mp3"
-        agentSlug="test-agent"
-        commentsEnabled={false}
-      />,
-    )
+    commentsEnabled = false
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     expect(screen.queryByTestId('audio-add-comment')).not.toBeInTheDocument()
     expect(fireEvent.keyDown(window, { key: 'c' })).toBe(true)
@@ -105,18 +108,23 @@ describe('AudioRenderer', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('shows an add-comment affordance when the waveform is hovered', () => {
+  it('shows an add-comment affordance on hover once the length is known', () => {
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+    fireEvent.pointerMove(screen.getByTestId('audio-waveform'), { clientX: 40 })
+    expect(screen.queryByTestId('audio-hover-add-comment')).not.toBeInTheDocument()
 
+    loadDuration(120)
     fireEvent.pointerMove(screen.getByTestId('audio-waveform'), { clientX: 40 })
 
     expect(screen.getByTestId('audio-hover-add-comment')).toBeVisible()
-    expect(screen.getByText('0:00.00', { selector: 'div.text-center' })).toBeVisible()
+    expect(screen.getByTestId('audio-hover-time')).toBeVisible()
+    expect(screen.getByTestId('audio-hover-time')).toHaveTextContent('0:00.00')
   })
 
   it('keeps the hover affordance open while the pointer moves to it', () => {
     vi.useFakeTimers()
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+    loadDuration(120)
 
     const waveform = screen.getByTestId('audio-waveform')
     fireEvent.pointerMove(waveform, { clientX: 40 })
@@ -229,6 +237,9 @@ describe('AudioRenderer', () => {
     }])
 
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 120 })
+    fireEvent.loadedMetadata(audio)
 
     expect(screen.getByRole('button', { name: 'Seek to comment 1 at 0:12.00' })).toBeVisible()
   })

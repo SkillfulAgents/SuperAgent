@@ -1,93 +1,36 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
-import { useFilePreview } from '@renderer/context/file-preview-context'
-import { CommentPin } from '../comments/comment-pin'
-import { CommentOverlay } from '../comments/comment-overlay'
-import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-click'
+import { useCommentBox } from '../comments/use-comment-box'
 
 interface ImageRendererProps {
   url: string
   filePath: string
   agentSlug: string
-  commentsEnabled?: boolean
 }
 
-interface ClickPoint {
-  x: number
-  y: number
-  rect: DOMRect
-}
-
-const IMAGE_DISMISS_IGNORE = ['[data-comment-overlay]']
-
-export function ImageRenderer({ url, filePath, agentSlug, commentsEnabled = true }: ImageRendererProps) {
+export function ImageRenderer({ url, filePath, agentSlug }: ImageRendererProps) {
   const [loaded, setLoaded] = useState(false)
-  const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null)
-  const imgContainerRef = useRef<HTMLDivElement>(null)
-  const { commentsFor } = useFilePreview()
-  const fileComments = commentsFor(filePath, agentSlug)
-  const imageComments = fileComments.flatMap(c => (c.anchor.kind === 'point' ? [{ id: c.id, x: c.anchor.x, y: c.anchor.y }] : []))
-
-  useDismissOnOutsideClick(clickPoint != null, () => setClickPoint(null), IMAGE_DISMISS_IGNORE)
-
-  const handleImageClick = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
-    if (!commentsEnabled) return
-    const img = e.currentTarget
-    const rect = img.getBoundingClientRect()
-    const x = ((e.clientX - rect.left) / rect.width) * 100
-    const y = ((e.clientY - rect.top) / rect.height) * 100
-    const containerRect = imgContainerRef.current?.getBoundingClientRect()
-    if (!containerRect) return
-    setClickPoint({
-      x,
-      y,
-      rect: new DOMRect(
-        e.clientX - containerRect.left,
-        e.clientY - containerRect.top,
-        0,
-        0
-      ),
-    })
-  }, [commentsEnabled])
+  const containerRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLDivElement>(null)
+  const surface = useMemo(() => ({ point: imageRef }), [])
+  const { box, enabled } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   return (
-    <div ref={imgContainerRef} className="relative flex items-center justify-center p-4 min-h-[200px]">
+    <div ref={containerRef} className="relative flex items-center justify-center p-4 min-h-[200px]">
       {!loaded && (
         <div className="absolute inset-0 flex items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       )}
-      <div className="relative inline-block">
-        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events */}
+      <div ref={imageRef} className="relative inline-block">
         <img
           src={url}
           alt={filePath.split('/').pop() || 'Preview'}
-          className={`max-w-full max-h-[60vh] object-contain rounded ${commentsEnabled ? 'cursor-crosshair' : ''}`}
+          className={`max-w-full max-h-[60vh] object-contain rounded ${enabled ? 'cursor-crosshair' : ''}`}
           onLoad={() => setLoaded(true)}
-          onClick={handleImageClick}
         />
-        {imageComments.map((comment, i) => (
-          <CommentPin
-            key={comment.id}
-            x={comment.x}
-            y={comment.y}
-            number={i + 1}
-          />
-        ))}
       </div>
-      {clickPoint && (
-        <CommentOverlay
-          selection={{
-            text: '',
-            rect: clickPoint.rect,
-            x: clickPoint.x,
-            y: clickPoint.y,
-          }}
-          filePath={filePath}
-          agentSlug={agentSlug}
-          onClose={() => setClickPoint(null)}
-        />
-      )}
+      {box}
     </div>
   )
 }

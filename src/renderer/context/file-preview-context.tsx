@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
-import type { CommentAnchor } from '@renderer/components/file-preview/comments/anchor'
+import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
 
 export interface FileTab {
   kind: 'file'
