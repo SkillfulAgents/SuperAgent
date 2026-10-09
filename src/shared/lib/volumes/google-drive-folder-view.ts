@@ -17,6 +17,11 @@ export function isFolder(file: DriveFile): boolean {
   return file.mimeType === FOLDER_MIME_TYPE
 }
 
+/** The Drive item a delete or move acts on: a followed shortcut itself, not its target. */
+export function ownId(file: DriveFile): string {
+  return file.shortcutId ?? file.id
+}
+
 /** The entries a folder shows for its raw children. Every naming rule lives here, in
  * this order: hide what cannot be served, map `/`, add export extensions, suffix an
  * export that clashes with a real entry, and keep the newest of a name used twice. */
@@ -25,7 +30,8 @@ export function folderView(children: DriveFile[], tooLarge: (file: DriveFile) =>
   const named: VisibleEntry[] = []
   for (const file of children) {
     if (file.trashed) continue
-    if (file.mimeType === SHORTCUT_MIME_TYPE) { warnings.push(`hiding shortcut ${file.name} (${file.id})`); continue }
+    // Shortcuts arrive followed to their targets. One still here has a target that is gone or not accessible.
+    if (file.mimeType === SHORTCUT_MIME_TYPE) { warnings.push(`hiding shortcut ${file.name} (${file.id}): its target is gone or not accessible`); continue }
     if (!isFolder(file) && file.capabilities?.canDownload === false) { warnings.push(`hiding ${file.name} (${file.id}): downloads are blocked`); continue }
     const format = EXPORT_FORMATS[file.mimeType] ?? null
     if (!format && !isFolder(file) && file.mimeType.startsWith(GOOGLE_TYPE_PREFIX)) continue
@@ -69,8 +75,8 @@ export function writeTarget(entries: VisibleEntry[], name: string): WriteTarget 
 /** Whether an entry named `driveName` in Drive and shown as `shownName` would clash with
  * any raw child or shown entry, other than the entry `except` itself. */
 export function nameTaken(children: DriveFile[], entries: VisibleEntry[], driveName: string, shownName = driveName, except?: string): boolean {
-  return children.some(file => file.id !== except && file.name === driveName)
-    || entries.some(entry => entry.file.id !== except && entry.name === shownName)
+  return children.some(file => ownId(file) !== except && file.name === driveName)
+    || entries.some(entry => ownId(entry.file) !== except && entry.name === shownName)
 }
 
 /** The Drive name an entry gets when renamed to `name`: an export sheds its clash suffix
