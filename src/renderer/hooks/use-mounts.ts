@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { apiFetch } from '@renderer/lib/api'
+import { fetchWithVolumeStopConfirmation } from '@renderer/lib/volume-stop'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
 import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
@@ -62,11 +63,12 @@ export function useRemoveMount() {
   return useMutation({
     mutationFn: async (data: { agentSlug: string; mountId: string; restart?: boolean }) => {
       const url = `/api/agents/${data.agentSlug}/mounts/${data.mountId}${data.restart ? '?restart=true' : ''}`
-      const res = await apiFetch(url, { method: 'DELETE' })
+      const res = await fetchWithVolumeStopConfirmation(url, { method: 'DELETE' }, 'Remove volume')
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove mount'))
     },
     onSuccess: () => {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
     },
@@ -124,8 +126,8 @@ export function useVolumesManager(agentSlug: string) {
     if (!canModifyMounts) return
     try {
       setOperationError(null)
-      await removeMount.mutateAsync({ agentSlug, mountId })
-      if (isAgentRunning) setPendingRestart(true)
+      await removeMount.mutateAsync({ agentSlug, mountId, restart: isAgentRunning })
+      setPendingRestart(false)
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : 'Failed to remove mount')
     }
@@ -135,7 +137,7 @@ export function useVolumesManager(agentSlug: string) {
     setIsRestarting(true)
     setRestartError(null)
     try {
-      const stopRes = await apiFetch(`/api/agents/${agentSlug}/stop`, { method: 'POST' })
+      const stopRes = await fetchWithVolumeStopConfirmation(`/api/agents/${agentSlug}/stop`, { method: 'POST' }, 'Restart')
       if (!stopRes.ok) throw new Error(await parseErrorMessage(stopRes, 'Failed to stop agent'))
       const startRes = await apiFetch(`/api/agents/${agentSlug}/start`, { method: 'POST' })
       if (!startRes.ok) throw new Error(await parseErrorMessage(startRes, 'Failed to start agent'))

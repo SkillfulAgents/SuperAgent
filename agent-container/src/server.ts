@@ -123,9 +123,11 @@ app.get('/health', (c) => {
 // Session endpoints
 installVolumeStop(app, {
   hasVolumes: () => mountedVolumeIds().length > 0,
-  stopWriters: async () => {
+  stopWriters: async (signal) => {
+    signal.throwIfAborted();
     await dashboardManager.stopAll();
-    await sessionManager.stopAll(false);
+    signal.throwIfAborted();
+    await sessionManager.stopAll(false, signal);
   },
   drain: drainVolumeUploads,
 });

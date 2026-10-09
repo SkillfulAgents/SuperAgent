@@ -53,7 +53,7 @@ import {
 } from '@shared/lib/agent-actor'
 import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
-import { ContainerStopDeferredError } from '@shared/lib/container/volume-stop-schema'
+import { ContainerStopDeferredError, forceStopQuerySchema } from '@shared/lib/container/volume-stop-schema'
 import {
   sessionDashboardDispatchSchema,
   type SessionDashboardDispatch,
@@ -1452,30 +1452,23 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // The container is stopped, and its runtime forgotten, inside deleteAgent
-    // below: forgetting it here first would leave the stop to a fresh runtime
-    // while the old client's callbacks still pointed at the dropped one.
+    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
+    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
 
-    // Clean up proxy token (best-effort — a revoked token is harmless on its own).
-    try {
-      await revokeProxyToken(slug)
-    } catch (error) {
-      console.error('Failed to revoke proxy token:', error)
-    }
-
-    // Clean up x-agent invoke policies referencing this agent (caller or target).
-    await deletePoliciesForAgent(slug)
-
-    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
-    // This runs BEFORE the irreversible workspace removal: if any peripheral
-    // cleanup throws, the route returns 500 with the workspace still intact, so
-    // the delete is safely retryable instead of leaving orphaned rows pointing
-    // at a workspace that no longer exists (SUP-208).
-    await cleanupAgentData(slug)
-
-    // Irreversible: remove the agent workspace directory. Done LAST so it only
-    // happens once every peripheral cleanup above has succeeded.
-    const deleted = await deleteAgent(slug)
+    // Drain while the token and attachment grants still work. Cleanup must
+    // finish before the service removes the workspace (SUP-208).
+    const deleted = await deleteAgent(slug, {
+      discardPendingUploads: force.data === 'true',
+      cleanup: async () => {
+        try {
+          await revokeProxyToken(slug)
+        } catch (error) {
+          console.error('Failed to revoke proxy token:', error)
+        }
+        await deletePoliciesForAgent(slug)
+        await cleanupAgentData(slug)
+      },
+    })
     if (!deleted) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -1497,11 +1490,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     return c.body(null, 204)
   } catch (error) {
     if (error instanceof AgentContainerStopError) {
-      // SUP-209: the container couldn't be stopped, so deleteAgent aborted
-      // before removing the workspace. The agent is preserved and the delete is
-      // retryable — surface an actionable 409 instead of a generic 500. (The
-      // peripheral cleanup above has already run; a retry once the container
-      // un-wedges completes the deletion.)
+      if (error.cause instanceof ContainerStopDeferredError) return c.json(error.cause.toResponse(), 409)
       console.error('Agent deletion aborted — container stop failed:', error)
       return c.json(
         { error: "Couldn't stop the agent's container, so it wasn't deleted. It may be busy — please try again in a moment." },
@@ -1764,7 +1753,9 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
       })
     }
 
-    await agentRegistry.get(slug).container.stop()
+    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
+    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
+    await agentRegistry.get(slug).container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
 
     return c.json({
       slug: agent.slug,
@@ -1777,7 +1768,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     })
   } catch (error) {
     console.error('Failed to stop agent:', error)
-    if (error instanceof ContainerStopDeferredError) return c.json({ error: error.message }, 409)
+    if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
     return c.json({ error: 'Failed to stop agent' }, 500)
   }
 })
@@ -6344,18 +6335,20 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
+    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
+    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
+    const container = agentRegistry.get(agentSlug).container
+    const wasRunning = container.status().status === 'running'
+    // Stop before revoking the attachment grant, including when the caller
+    // elects to leave the agent stopped rather than restart immediately.
+    await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
     await removeMount(agentSlug, mountId)
-
-    if (restart) {
-      const cachedInfo = agentRegistry.get(agentSlug).container.status()
-      if (cachedInfo.status === 'running') {
-        await agentRegistry.get(agentSlug).container.restart()
-      }
-    }
+    if (restart && wasRunning) await container.start()
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'deleted' })
     return c.json({ success: true })
   } catch (error) {
+    if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
     console.error('Failed to remove mount:', error)
     return c.json({ error: 'Failed to remove mount' }, 500)
   }

@@ -1,4 +1,5 @@
 import { SessionInputNotAcceptedError } from './session-creation-error';
+import { withinStopDeadline } from './stop-deadline';
 import { connectionRuntimeSchema, rememberConnectionRuntime, cachedConnectionRuntime, runtimeFingerprint, resolvePrewarmRuntime, type ConnectionRuntime } from './connection-runtime';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
@@ -114,6 +115,9 @@ export function isSdkSessionNotFound(error: unknown): boolean {
 }
 
 export class SessionManager extends EventEmitter {
+  // A timed-out disposal still belongs to a later safe-stop attempt. Losing
+  // track of it would let a retry report readiness while an old writer lives.
+  private stoppingWriters = new Set<Promise<void>>();
   private sessions: Map<string, SessionData> = new Map();
   // In-flight resumes, keyed by session id — see resumeSession().
   private resuming: Map<string, Promise<SessionData | undefined>> = new Map();
@@ -1255,7 +1259,8 @@ export class SessionManager extends EventEmitter {
   /**
    * Stop all active sessions. Used for graceful shutdown.
    */
-  async stopAll(shutdown = true): Promise<void> {
+  async stopAll(shutdown = true, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (shutdown && this.evictionTimer) {
       clearInterval(this.evictionTimer);
       this.evictionTimer = null;
@@ -1263,30 +1268,50 @@ export class SessionManager extends EventEmitter {
     // Latches before the in-flight warm-up is awaited so a spawn that lands
     // mid-shutdown disposes itself instead of parking an orphan subprocess.
     this.shuttingDown = true;
-    await this.warming?.promise.catch(() => undefined);
-    await this.discardPrewarmed('container shutting down');
-    const sessionIds = Array.from(this.sessions.keys());
-    console.log(`Stopping ${sessionIds.length} active session(s)...`);
+    const sessions = Array.from(this.sessions.entries());
+    // Keep this generation visible while disposal flushes its final events.
+    // Cleanup below only detaches these entries, never a later generation.
+    console.log(`Stopping ${sessions.length} active session(s)...`);
 
-    await Promise.all(
-      sessionIds.map(async (sessionId) => {
+    const work = [
+      this.warming?.promise.catch(() => undefined),
+      this.discardPrewarmed('container shutting down'),
+      ...sessions.map(async ([sessionId, sessionData]) => {
         try {
-          const sessionData = this.sessions.get(sessionId);
-          if (sessionData) {
-            // Graceful shutdown: these sessions will be resumed after the
-            // container restarts, so their transcripts must be flushed.
-            await sessionData.process.dispose({ graceful: true });
-            sessionData.subscribers.clear();
-          }
+          // These sessions resume after restart; flush their transcripts.
+          await sessionData.process.dispose({ graceful: true });
         } catch (error) {
           console.error(`Error stopping session ${sessionId}:`, error);
+          if (!shutdown) throw error;
+        } finally {
+          sessionData.subscribers.clear();
         }
-      })
-    );
-
-    this.sessions.clear();
-    // A refused volume drain keeps this container usable until a later stop.
-    if (!shutdown) this.shuttingDown = false;
-    console.log('All sessions stopped.');
+      }),
+    ];
+    for (const task of work) {
+      if (!task) continue;
+      this.stoppingWriters.add(task);
+      // Keep a failed disposal in the set: its writer's termination is not
+      // proven. The explicit force-stop is the escape hatch in that case.
+      void task.then(() => this.stoppingWriters.delete(task), () => {});
+    }
+    const stopping = Promise.all(this.stoppingWriters);
+    try {
+      if (signal) await withinStopDeadline(stopping, signal);
+      else await stopping;
+      console.log('All sessions stopped.');
+    } finally {
+      for (const [sessionId, sessionData] of sessions) {
+        if (this.sessions.get(sessionId) === sessionData) this.sessions.delete(sessionId);
+        // After a timeout a resumed session can reuse its id. An old process's
+        // late events must not be routed into that new session's state.
+        sessionData.process.removeAllListeners();
+        sessionData.process.on('error', () => {});
+        clearTimeout(sessionData.undeliveredTurnTimer);
+        sessionData.subscribers.clear();
+      }
+      // Warm generation was invalidated above, even if its spawn is hung.
+      if (!shutdown) this.shuttingDown = false;
+    }
   }
 }

@@ -401,7 +401,7 @@ export class AgentContainerStopError extends Error {
   readonly slug: string
   constructor(slug: string, cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause)
-    super(`Failed to stop the container for agent "${slug}": ${detail}`)
+    super(`Failed to stop the container for agent "${slug}": ${detail}`, { cause })
     this.name = 'AgentContainerStopError'
     this.slug = slug
   }
@@ -410,7 +410,11 @@ export class AgentContainerStopError extends Error {
 /**
  * Delete an agent and all its data
  */
-export async function deleteAgent(slug: string): Promise<boolean> {
+export async function deleteAgent(slug: string, options?: {
+  discardPendingUploads?: boolean
+  /** Revoke credentials and remove peripheral rows after draining, before removing the workspace. */
+  cleanup?: () => Promise<void>
+}): Promise<boolean> {
   if (!(await agentCatalog.exists(slug))) {
     return false
   }
@@ -428,10 +432,14 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // removal below never runs, so the workspace is preserved and the delete is
   // retryable.
   try {
-    await agentRegistry.get(slug).container.stop()
+    const container = agentRegistry.get(slug).container
+    if (options?.discardPendingUploads) await container.stop({ discardPendingUploads: true })
+    else await container.stop()
   } catch (error) {
     throw new AgentContainerStopError(slug, error)
   }
+
+  await options?.cleanup?.()
 
   // Remove the agent only after the container has been confirmed stopped, then
   // forget the handle and runtime the stop above created for it.

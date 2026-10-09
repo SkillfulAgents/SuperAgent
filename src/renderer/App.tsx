@@ -11,6 +11,7 @@ import { SearchProvider } from './context/search-context'
 import { Toaster } from './components/ui/sonner'
 import { ErrorBoundary } from './components/ui/error-boundary'
 import { router } from './router'
+import { VolumeStopDialog } from './components/agents/volume-stop-dialog'
 
 /**
  * Mounts the router. Read inside the provider stack so the live `queryClient`
@@ -37,6 +38,7 @@ export default function App() {
                   <SearchProvider>
                     <ErrorBoundary>
                       <RouterMount />
+                      <VolumeStopDialog />
                       <Toaster />
                     </ErrorBoundary>
                   </SearchProvider>

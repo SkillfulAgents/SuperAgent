@@ -455,14 +455,24 @@ describe('ContainerRuntime — stopContainer during in-flight start', () => {
     mockStop.mockResolvedValue({ forceStopUsed: false })
   })
 
-  it('reports a deferred upload drain and keeps the running status', async () => {
+  it('preserves the running status and host browser when uploads block a stop', async () => {
     const runtime = containerHost.runtime('test-agent')
     runtime.updateCachedStatus('running', 4001)
-    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false, deferredReason: 'Uploads are pending' })
-    await expect(runtime.stopContainer()).rejects.toThrow('Uploads are pending')
-    expect(runtime.getCachedInfo().status).toBe('running')
-    await expect(runtime.ensureRunning()).resolves.toBeDefined()
-    expect(mockStart).not.toHaveBeenCalled()
+    const cleanup = vi.fn(async () => {})
+    containerHost.onBeforeContainerStop = cleanup
+    try {
+      mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false, deferredReason: 'Uploads are pending', workStopped: true })
+      await expect(runtime.stopContainer()).rejects.toMatchObject({ message: 'Uploads are pending', workStopped: true })
+      expect(cleanup).not.toHaveBeenCalled()
+      expect(runtime.getCachedInfo().status).toBe('running')
+      await expect(runtime.ensureRunning()).resolves.toBeDefined()
+      expect(mockStart).not.toHaveBeenCalled()
+      mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+      await runtime.stopContainer({ discardPendingUploads: true })
+      expect(mockStop).toHaveBeenLastCalledWith({ discardPendingUploads: true })
+      expect(cleanup).toHaveBeenCalledOnce()
+      expect(runtime.getCachedInfo().status).toBe('stopped')
+    } finally { containerHost.onBeforeContainerStop = null }
   })
 
   it('ensureRunning does not start while stopContainer is in flight', async () => {

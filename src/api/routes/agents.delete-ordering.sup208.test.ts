@@ -1,33 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
-// ---------------------------------------------------------------------------
-// SUP-208: agent delete must run peripheral cleanup BEFORE the irreversible
-// workspace removal.
-//
-// `DELETE /api/agents/:id` used to call `deleteAgent(slug)` (which removes the
-// agent workspace directory) first, then run `deletePoliciesForAgent` and
-// `cleanupAgentData`. If peripheral cleanup threw, the route returned 500 with
-// the workspace already gone, orphaning scheduled tasks / integrations / ACLs /
-// policies / messages / audit rows that point at a non-existent agent.
-//
-// These tests mount the REAL agents router (its db + peripheral services
-// mocked) and assert ordering:
-//   1. when `cleanupAgentData` rejects, `deleteAgent` (workspace removal) must
-//      NOT have been called — peripheral cleanup gates the irreversible step.
-//   2. in the happy path, `cleanupAgentData` + `deletePoliciesForAgent` run
-//      BEFORE `deleteAgent` (asserted via mock.invocationCallOrder).
-//
-// Recorded mock fns are prefixed `mock*` so they can be referenced from the
-// hoisted `vi.mock` factories; the router is imported at the bottom of the file
-// after every mock is registered.
-// ---------------------------------------------------------------------------
-
+// Agent deletion drains while credentials still work, cleans up peripheral
+// rows, then removes the workspace. Exercise the real router with an explicit
+// service boundary for the final irreversible removal.
 // --- agent-service ----------------------------------------------------------
 // `getAgent` provides the existence check + audit name; `deleteAgent` is the
 // irreversible workspace removal we are gating.
 const mockGetAgent = vi.fn()
 const mockDeleteAgent = vi.fn()
+const mockRemoveWorkspace = vi.fn()
+const mockStopContainer = vi.fn()
+const mockStartContainer = vi.fn()
+const mockRemoveMount = vi.fn()
 // SUP-209: a genuine container stop-failure surfaces from deleteAgent as this
 // typed error, which the route maps to 409. Hoisted so the mock factory and the
 // test share one class — the route's `instanceof` resolves to this same
@@ -36,7 +21,7 @@ const { AgentContainerStopError } = vi.hoisted(() => ({
   AgentContainerStopError: class AgentContainerStopError extends Error {
     readonly slug: string
     constructor(slug: string, cause: unknown) {
-      super(`Failed to stop the container for agent "${slug}": ${cause instanceof Error ? cause.message : String(cause)}`)
+      super(`Failed to stop the container for agent "${slug}": ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
       this.name = 'AgentContainerStopError'
       this.slug = slug
     }
@@ -79,7 +64,8 @@ vi.mock('@shared/lib/container/container-host', async () => {
   return {
     containerHost: hostFromManagerMock({
       getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
-      ensureRunning: vi.fn(),
+      ensureRunning: (...args: unknown[]) => mockStartContainer(...args),
+      stopContainer: (...args: unknown[]) => mockStopContainer(...args),
       getCachedInfo: () => ({ status: 'running', port: 8080 }),
       removeClient: (...args: unknown[]) => mockRemoveClient(...args),
       keepAlive: vi.fn(),
@@ -90,6 +76,11 @@ vi.mock('@shared/lib/container/container-host', async () => {
 const mockLogAuditEvent = vi.fn()
 vi.mock('@shared/lib/services/audit-log-service', () => ({
   logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
+}))
+
+vi.mock('@shared/lib/services/mount-service', () => ({
+  getMountsWithHealth: vi.fn(), addMount: vi.fn(), attachMount: vi.fn(),
+  removeMount: (...args: unknown[]) => mockRemoveMount(...args), volumeSummary: vi.fn(),
 }))
 
 // --- generic db / orm harness (unused by the DELETE path; satisfies imports) -
@@ -239,6 +230,7 @@ vi.mock('@shared/lib/utils/message-transform', () => ({
 }))
 
 vi.mock('@shared/lib/utils/file-storage', () => ({
+  displaySlug: (_name: string, slug: string) => slug,
   getSessionJsonlPath: vi.fn(), readFileOrNull: vi.fn(), writeFile: vi.fn(),
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'), readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: vi.fn((slug: string) => `/mock/workspace/${slug}`),
@@ -252,6 +244,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the router after all mocks are registered.
 import agents from './agents'
+import { ContainerStopDeferredError } from '@shared/lib/container/volume-stop-schema'
 
 function appWithAgents() {
   const app = new Hono()
@@ -268,7 +261,14 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     vi.clearAllMocks()
     // Default happy-path wiring: agent exists, all cleanup steps succeed.
     mockGetAgent.mockResolvedValue({ slug: 'test-agent', frontmatter: { name: 'Test Agent' } })
-    mockDeleteAgent.mockResolvedValue(true)
+    mockDeleteAgent.mockImplementation(async (_slug, options) => {
+      await options?.cleanup?.()
+      mockRemoveWorkspace()
+      return true
+    })
+    mockStopContainer.mockResolvedValue(undefined)
+    mockStartContainer.mockResolvedValue(undefined)
+    mockRemoveMount.mockResolvedValue(undefined)
     mockDeletePoliciesForAgent.mockResolvedValue(undefined)
     mockCleanupAgentData.mockResolvedValue(undefined)
     mockRevokeProxyToken.mockResolvedValue(undefined)
@@ -282,7 +282,7 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     const res = await deleteAgentReq()
 
     expect(res.status).toBe(500)
-    expect(mockDeleteAgent).not.toHaveBeenCalled()
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled()
   })
 
   it('does not remove the workspace if policy cleanup fails', async () => {
@@ -291,7 +291,7 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     const res = await deleteAgentReq()
 
     expect(res.status).toBe(500)
-    expect(mockDeleteAgent).not.toHaveBeenCalled()
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled()
   })
 
   it('runs peripheral cleanup BEFORE the irreversible workspace removal (happy path)', async () => {
@@ -302,7 +302,7 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     expect(mockCleanupAgentData).toHaveBeenCalledTimes(1)
     expect(mockDeletePoliciesForAgent).toHaveBeenCalledTimes(1)
 
-    const deleteOrder = mockDeleteAgent.mock.invocationCallOrder[0]
+    const deleteOrder = mockRemoveWorkspace.mock.invocationCallOrder[0]
     const cleanupOrder = mockCleanupAgentData.mock.invocationCallOrder[0]
     const policyOrder = mockDeletePoliciesForAgent.mock.invocationCallOrder[0]
 
@@ -316,14 +316,12 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     const res = await deleteAgentReq()
 
     expect(res.status).toBe(404)
-    expect(mockDeleteAgent).not.toHaveBeenCalled()
+    expect(mockRemoveWorkspace).not.toHaveBeenCalled()
     expect(mockCleanupAgentData).not.toHaveBeenCalled()
   })
 
   it('returns 409 (not 500) with an actionable message when the container cannot be stopped (SUP-209)', async () => {
-    // deleteAgent aborts with the typed stop-failure error AFTER peripheral
-    // cleanup has run but BEFORE the workspace is removed. The route must map it
-    // to an actionable 409 so the UI can tell the user to retry, not a generic 500.
+    // Stop is first; even upload credentials must survive a refused stop.
     mockDeleteAgent.mockRejectedValue(
       new AgentContainerStopError('test-agent', new Error('runtime wedged: cannot stop container'))
     )
@@ -333,7 +331,51 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     expect(res.status).toBe(409)
     const body = await res.json()
     expect(body.error).toMatch(/container/i)
-    // Peripheral cleanup still ran (it precedes the stop); only the workspace survived.
-    expect(mockCleanupAgentData).toHaveBeenCalledTimes(1)
+    expect(mockCleanupAgentData).not.toHaveBeenCalled()
+    expect(mockRevokeProxyToken).not.toHaveBeenCalled()
+  })
+  it('returns a structured upload warning and accepts the explicit delete override', async () => {
+    mockDeleteAgent.mockRejectedValueOnce(new AgentContainerStopError('test-agent', new ContainerStopDeferredError('Pending uploads', true)))
+    const response = await deleteAgentReq()
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ code: 'volume_stop_deferred', error: 'Pending uploads', workStopped: true })
+    expect(mockRevokeProxyToken).not.toHaveBeenCalled()
+    const forced = await appWithAgents().request('/api/agents/test-agent?force=true', { method: 'DELETE' })
+    expect(forced.status).toBe(204)
+    expect(mockDeleteAgent).toHaveBeenLastCalledWith('test-agent', expect.objectContaining({ discardPendingUploads: true }))
+  })
+
+  it('leaves the attachment grant in place when detaching cannot drain', async () => {
+    mockStopContainer.mockRejectedValueOnce(new ContainerStopDeferredError('Pending uploads'))
+    const response = await appWithAgents().request('/api/agents/test-agent/mounts/m1?restart=true', { method: 'DELETE' })
+    expect(response.status).toBe(409)
+    expect(mockRemoveMount).not.toHaveBeenCalled()
+    expect(mockStartContainer).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('stops before removing the attachment grant (restart=%s)', async restart => {
+    const response = await appWithAgents().request(`/api/agents/test-agent/mounts/m1?restart=${restart}&force=true`, { method: 'DELETE' })
+    expect(response.status).toBe(200)
+    expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { discardPendingUploads: true })
+    expect(mockStopContainer.mock.invocationCallOrder[0]).toBeLessThan(mockRemoveMount.mock.invocationCallOrder[0])
+    if (restart) {
+      expect(mockRemoveMount.mock.invocationCallOrder[0]).toBeLessThan(mockStartContainer.mock.invocationCallOrder[0])
+    } else expect(mockStartContainer).not.toHaveBeenCalled()
+  })
+
+  it('rejects invalid force options before deleting anything', async () => {
+    const response = await appWithAgents().request('/api/agents/test-agent?force=yes', { method: 'DELETE' })
+    expect(response.status).toBe(400)
+    expect(mockDeleteAgent).not.toHaveBeenCalled()
+    expect(mockRevokeProxyToken).not.toHaveBeenCalled()
+  })
+  it('offers an explicit override for a blocked manual stop', async () => {
+    mockStopContainer.mockRejectedValueOnce(new ContainerStopDeferredError('Uploads pending', false))
+    const response = await appWithAgents().request('/api/agents/test-agent/stop', { method: 'POST' })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ code: 'volume_stop_deferred', error: 'Uploads pending', workStopped: false })
+    const forced = await appWithAgents().request('/api/agents/test-agent/stop?force=true', { method: 'POST' })
+    expect(forced.status).toBe(200)
+    expect(mockStopContainer).toHaveBeenLastCalledWith('test-agent', { discardPendingUploads: true })
   })
 })

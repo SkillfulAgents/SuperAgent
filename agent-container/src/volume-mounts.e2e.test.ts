@@ -259,6 +259,7 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     const expected = sh(container, 'sha256sum /mounts/cloud/pending.bin').split(' ')[0];
     const prepare = 'curl -s -o /tmp/stop-reply -w "%{http_code}" -X POST localhost:3000/volumes/prepare-stop';
     expect(sh(container, prepare)).toBe('409');
+    expect(JSON.parse(sh(container, 'cat /tmp/stop-reply'))).toEqual({ ready: false, workStopped: false });
     expect(docker('inspect', '-f', '{{.State.Running}}', container)).toBe('true');
     expect(sh(container, prepare)).toBe('200');
     expect(sh(container, 'sha256sum /srv/v_cloud_stop/pending.bin').split(' ')[0]).toBe(expected);
@@ -268,6 +269,26 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(fs.statSync(path.join(source, 'pending.bin')).size).toBe(40_000_000);
     fs.rmSync(source, { recursive: true });
   }, 120_000);
+
+  it('a dead rclone refuses a safe stop within the deadline and still permits explicit container shutdown', async () => {
+    const container = startAgent(
+      'mkdir -p /tmp/src/v_dead && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes',
+      [{ volumeId: 'v_dead', name: 'dead' }],
+    );
+    await healthUntilOk(container);
+    expect(healthVolumes(container)).toEqual(['v_dead']);
+    sh(container, "pkill -KILL -f '^rclone mount(2)? '");
+    await waitFor(() => sh(container, "pgrep -f '^rclone mount(2)? ' || true") === '', 2_000);
+    const started = Date.now();
+    expect(sh(container, 'curl -s -o /tmp/stop-reply -w "%{http_code}" -X POST localhost:3000/volumes/prepare-stop')).toBe('409');
+    expect(Date.now() - started).toBeLessThan(28_000);
+    expect(JSON.parse(sh(container, 'cat /tmp/stop-reply'))).toEqual({ ready: false, workStopped: false });
+    expect(sh(container, 'curl -s -o /dev/null -w "%{http_code}" localhost:3000/sessions')).toBe('200');
+    // An explicit discard bypasses the handshake and takes this normal stop
+    // path. A dead rclone must not make the agent impossible to stop.
+    docker('stop', '-t', '5', container);
+    expect(docker('inspect', '-f', '{{.State.Running}}', container)).toBe('false');
+  }, 60_000);
 
   it('uploads a file still waiting in the queue when the host stops the container', async () => {
     const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));

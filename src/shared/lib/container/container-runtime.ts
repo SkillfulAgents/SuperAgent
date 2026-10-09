@@ -350,21 +350,18 @@ export class ContainerRuntime {
     let stopped = true
 
     try {
-      // Stop the host browser before the container so it closes gracefully
-      // instead of getting a "socket hang up" when the container dies
-      const beforeStop = this.host.onBeforeContainerStop
-      if (beforeStop) {
-        await beforeStop(slug).catch((err) => {
-          console.warn(`[ContainerRuntime] Pre-stop hook failed for ${slug}:`, err)
-        })
-      }
-
       const client = this.getClient()
       const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
       // A declined upload drain also keeps the container running.
       stopped = result.stopped ?? true
-      if (!stopped && result.deferredReason) throw new ContainerStopDeferredError(result.deferredReason)
+      if (!stopped && result.deferredReason) throw new ContainerStopDeferredError(result.deferredReason, result.workStopped)
+      // A declined stop must leave the host browser usable by the active turn.
+      if (stopped && this.host.onBeforeContainerStop) {
+        await this.host.onBeforeContainerStop(slug).catch((err) => {
+          console.warn(`[ContainerRuntime] Browser cleanup failed for ${slug}:`, err)
+        })
+      }
     } finally {
       this.stopping = false
 
@@ -409,8 +406,8 @@ export class ContainerRuntime {
    * Restart the container by stopping and re-starting it.
    * Volume attachments are re-loaded from SQLite on start.
    */
-  async restartContainer(): Promise<ContainerClient> {
-    await this.stopContainer()
+  async restartContainer(options?: StopOptions): Promise<ContainerClient> {
+    await this.stopContainer(options)
     return this.ensureRunning()
   }
 

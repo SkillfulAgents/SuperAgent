@@ -79,4 +79,9 @@ describe('waitForUploads', () => {
     await vi.advanceTimersByTimeAsync(151)
     await expect(done).resolves.toEqual(['big.bin'])
   })
+  it('does not report success without checking when the deadline has expired', async () => {
+    const uploads = vi.fn(async () => [])
+    expect(await waitForUploads(uploads, Date.now() - 1)).not.toEqual([])
+    expect(uploads).not.toHaveBeenCalled()
+  })
 })

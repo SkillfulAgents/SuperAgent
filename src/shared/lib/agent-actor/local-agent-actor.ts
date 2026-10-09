@@ -143,8 +143,8 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       await runtime().ensureRunning()
     },
     stop: (...args) => runtime().stopContainer(...args),
-    restart: async () => {
-      await runtime().restartContainer()
+    restart: async (options) => {
+      await runtime().restartContainer(options)
     },
     keepAlive: () => runtime().keepAlive(),
     status: () => runtime().getCachedInfo(),

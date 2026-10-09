@@ -151,18 +151,19 @@ async function startQueuedUploads(volumeId: string, requireAnswer = false): Prom
 
 // A closed file uploads in the background, and rclone drops that upload when stopped.
 // Returns what was still pending once the deadline passes.
-export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number): Promise<string[]> {
-  let pending: string[] = [];
-  while (Date.now() < deadline) {
+export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number, signal?: AbortSignal): Promise<string[]> {
+  let pending: string[] = ['upload status not checked'];
+  while (Date.now() < deadline && !signal?.aborted) {
     // FUSE queues a file after close() has returned, so an answer right away can miss it.
     await new Promise((resolve) => setTimeout(resolve, 250));
+    if (signal?.aborted || Date.now() >= deadline) break;
     pending = await uploads();
     if (pending.length === 0) return [];
   }
   return pending;
 }
 
-export async function drainVolumeUploads(deadline: number): Promise<boolean> {
+export async function drainVolumeUploads(deadline: number, signal?: AbortSignal): Promise<boolean> {
   const pending = await Promise.all(mounted.map(async ({ volumeId }) => {
     // Require two empty observations; close() can return before FUSE enqueues.
     let empty = 0;
@@ -172,7 +173,7 @@ export async function drainVolumeUploads(deadline: number): Promise<boolean> {
       return empty >= 2 ? [] : queue.length > 0 ? queue : ['checking uploads'];
     };
     if (Date.now() >= deadline) return ['upload drain deadline exceeded'];
-    return waitForUploads(read, deadline);
+    return waitForUploads(read, deadline, signal);
   }));
   return pending.every(queue => queue.length === 0);
 }

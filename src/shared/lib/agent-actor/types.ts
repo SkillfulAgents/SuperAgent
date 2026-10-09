@@ -179,7 +179,7 @@ export interface ContainerOps {
   /** `containerManager.stopContainer` */
   stop(options?: StopOptions): Promise<void>
   /** `containerManager.restartContainer` */
-  restart(): Promise<void>
+  restart(options?: StopOptions): Promise<void>
   /** `containerManager.keepAlive` */
   keepAlive(): void
   /** `containerManager.getCachedInfo` — synchronous snapshot of the cached status. */

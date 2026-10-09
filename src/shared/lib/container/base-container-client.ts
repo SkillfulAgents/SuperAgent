@@ -1,5 +1,5 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
-import { volumeStopResponseSchema } from './volume-stop-schema'
+import { runtimeHasVolumes, volumeStopResponseSchema } from './volume-stop-schema'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
 import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
@@ -293,6 +293,7 @@ const interruptResponseSchema = z.object({
 
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
+  protected runningHasVolumes: boolean | undefined
   private wsConnections: Map<string, WebSocket> = new Map()
   private wsReadyRejectors = new WeakMap<WebSocket, (error: Error) => void>()
 
@@ -587,10 +588,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} inspect ${containerName}`
+        `${runner} inspect ${containerName}`, { timeoutMs: 5_000 }
       )
       const inspectData = JSON.parse(stdout.trim())
       const container = Array.isArray(inspectData) ? inspectData[0] : inspectData
+      this.runningHasVolumes = runtimeHasVolumes(container)
       const running = container?.State?.Running === true
       const portKey = `${CONTAINER_INTERNAL_PORT}/tcp`
       const portBindings = container?.NetworkSettings?.Ports?.[portKey]
@@ -786,6 +788,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
           try {
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
+            this.runningHasVolumes = !!volumes?.length
           } catch (runError: any) {
             // 1. Host-port allocation race — re-pick a port (bounded).
             if (this.isPortConflictError(runError) && portRetries < MAX_PORT_RETRIES) {
@@ -965,8 +968,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async stop(options?: StopOptions): Promise<StopResult> {
-    const deferredReason = await this.prepareVolumeStop()
-    if (deferredReason) return { forceStopUsed: false, stopped: false, deferredReason }
+    const deferred = options?.discardPendingUploads ? undefined : await this.prepareVolumeStop()
+    if (deferred) return { forceStopUsed: false, stopped: false, ...deferred }
     this.rememberRunningPort(null)
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
@@ -1065,22 +1068,46 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       throw error
     }
 
+    this.runningHasVolumes = undefined
     return { forceStopUsed, stopped: true }
   }
 
-  protected async prepareVolumeStop(): Promise<string | undefined> {
-    try {
-      const response = await this.fetch('/volumes/prepare-stop', { method: 'POST', signal: AbortSignal.timeout(28_000) })
-      // Images released before the drain protocol retain their existing stop behavior.
-      if (response.status === 404) return
-      if (response.ok && volumeStopResponseSchema.parse(await response.json()).ready) return
-      return 'Volume uploads have not finished. The agent is still running; try stopping it again after they finish.'
-    } catch {
-      // Already-stopped containers can still be removed. A running container
-      // with an unresponsive drain endpoint must retain its cached uploads.
+  protected async prepareVolumeStop(): Promise<Pick<StopResult, 'deferredReason' | 'workStopped'> | undefined> {
+    if (this.runningHasVolumes === undefined) {
       const info = await this.getInfoFromRuntime()
       if (info.status !== 'running') return
-      return 'Could not confirm that volume uploads finished. The agent is still running; try stopping it again.'
+    }
+    if (this.runningHasVolumes === false) return
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      // Bound the entire call, including port discovery and reading the body.
+      const result = await Promise.race([
+        (async () => {
+          const response = await this.fetch('/volumes/prepare-stop', { method: 'POST', signal: controller.signal })
+          if (response.status === 404) return { ready: true, workStopped: false }
+          const body = volumeStopResponseSchema.parse(await response.json())
+          return { ...body, ready: response.ok && body.ready }
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => { controller.abort(); reject(new Error('Volume stop timed out')) }, 28_000)
+        }),
+      ])
+      // Images released before the drain protocol retain their existing stop behavior.
+      if (result.ready) return
+      return {
+        deferredReason: result.workStopped
+          ? 'Active work was interrupted, but volume uploads have not finished. The container was kept running to preserve unsynced files.'
+          : 'Volume uploads have not finished. This stop attempt did not interrupt active work.',
+        workStopped: result.workStopped,
+      }
+    } catch {
+      return {
+        deferredReason: 'Could not confirm that volume uploads finished. The container was kept running to preserve unsynced files; active work may have been interrupted.',
+        workStopped: true,
+      }
+    } finally {
+      clearTimeout(timer)
     }
   }
 

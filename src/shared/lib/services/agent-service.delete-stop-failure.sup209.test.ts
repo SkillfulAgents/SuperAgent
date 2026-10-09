@@ -15,10 +15,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import * as schema from '@shared/lib/db/schema'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import type { AppDatabase } from '@shared/lib/db/drivers/types'
+import { ContainerStopDeferredError } from '@shared/lib/container/volume-stop-schema'
 import { SAMPLE_INSTRUCTIONS } from './__fixtures__/test-data'
 
 // Mock the container host before importing the service.
@@ -56,8 +55,8 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
-let testDb: ReturnType<typeof drizzle>
-let sqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let database: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 // Import after mocking
@@ -72,9 +71,8 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-service-sup209-'))
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
-    sqlite = new Database(':memory:')
-    testDb = drizzle(sqlite, { schema })
-    migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
+    database = await createTestDatabase()
+    testDb = database.db
     vi.clearAllMocks()
   })
 
@@ -85,7 +83,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
       delete process.env.SUPERAGENT_DATA_DIR
     }
     await fs.promises.rm(testDir, { recursive: true, force: true })
-    sqlite.close()
+    await database.close()
     vi.resetModules()
   })
 
@@ -125,5 +123,31 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     expect(result).toBe(true)
     expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
     expect(await agentExists('test-agent')).toBe(false)
+  })
+  it('keeps upload credentials and peripheral data when drain is refused', async () => {
+    await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+    const cause = new ContainerStopDeferredError('Uploads are pending')
+    mockStopContainer.mockRejectedValueOnce(cause)
+    const cleanup = vi.fn()
+    await expect(deleteAgent('test-agent', { cleanup })).rejects.toMatchObject({ cause })
+    expect(cleanup).not.toHaveBeenCalled()
+    expect(await agentExists('test-agent')).toBe(true)
+  })
+
+  it('allows explicit discard, then cleans up before deleting the workspace', async () => {
+    await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+    const cleanup = vi.fn(async () => {
+      expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { discardPendingUploads: true })
+      expect(await agentExists('test-agent')).toBe(true)
+    })
+    await expect(deleteAgent('test-agent', { cleanup, discardPendingUploads: true })).resolves.toBe(true)
+    expect(cleanup).toHaveBeenCalledOnce()
+    expect(await agentExists('test-agent')).toBe(false)
+  })
+
+  it('preserves the workspace if cleanup fails after the safe stop', async () => {
+    await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+    await expect(deleteAgent('test-agent', { cleanup: async () => { throw new Error('cleanup failed') } })).rejects.toThrow('cleanup failed')
+    expect(await agentExists('test-agent')).toBe(true)
   })
 })

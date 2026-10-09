@@ -171,6 +171,8 @@ export interface HealthCheckResult {
 }
 
 export interface StopOptions {
+  /** Explicit user override: stopping may discard uploads cached only in this container. */
+  discardPendingUploads?: boolean
   stopTimeoutMs?: number
   killTimeoutMs?: number
   /**
@@ -199,6 +201,8 @@ export interface StopResult {
   stopped: boolean
   /** A safe stop was declined, preserving pending volume data in the container. */
   deferredReason?: string
+  /** Some work was already interrupted while attempting the final upload drain. */
+  workStopped?: boolean
 }
 
 // Verdict from probing a host-side TCP endpoint from the runner's network side.
