@@ -116,6 +116,18 @@ describe('buildSettingsAuditDetails', () => {
     expect(change.to.endsWith('…')).toBe(true)
   })
 
+  it('records a decision provider switch under Decision Model', () => {
+    const before = baseSettings()
+    before.decision = { provider: 'platform' }
+    const updated = baseSettings()
+    updated.decision = { provider: 'openai' }
+
+    const details = buildSettingsAuditDetails(before, updated)
+
+    expect(details?.sections).toEqual(['Decision Model'])
+    expect(details?.changes['decision.provider']).toEqual({ from: 'platform', to: 'openai' })
+  })
+
   it('ignores keys the PUT handler cannot change', () => {
     const current = baseSettings()
     const updated = baseSettings()

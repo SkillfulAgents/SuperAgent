@@ -25,6 +25,7 @@ const AUDITED_KEYS: (keyof AppSettings)[] = [
   'customEnvVars',
   'auth',
   'voice',
+  'decision',
   'computerUse',
   'shareAnalytics',
   'analyticsTargets',

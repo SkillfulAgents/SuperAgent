@@ -4,12 +4,13 @@
  * owns its own wire format.
  */
 
+import { z } from 'zod'
+
 export const DECISION_PROVIDERS = ['platform', 'openai', 'typesafe', 'cloudflare'] as const
 export type DecisionProviderId = (typeof DECISION_PROVIDERS)[number]
 
-export interface DecisionSettings {
-  provider?: DecisionProviderId
-}
+export const decisionSettingsSchema = z.object({ provider: z.enum(DECISION_PROVIDERS) }).partial()
+export type DecisionSettings = z.infer<typeof decisionSettingsSchema>
 
 export type DecisionQuestion =
   | { type: 'yesno'; instructions: string }
