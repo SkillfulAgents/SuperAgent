@@ -85,8 +85,9 @@ export const googleDriveRootChecks = new Map<string, { at: number; check: Promis
 /** Raw children by account and folder ID, so overlapping volumes share listings. */
 // Kept a minute past expiry, so the change feed can vouch for a listing again after a slow poll.
 export const googleDriveListingCache = new RemoteListingCache<DriveFile>(60_000)
-const keyOf = (accountId: string, folderId: string) => JSON.stringify([accountId, folderId])
-export const googleDriveChangeFeed = new GoogleDriveChangeFeed(googleDriveListingCache, key => (JSON.parse(key) as [string, string])[1])
+// Drive IDs never contain a colon, so the folder ID is everything before the first one.
+const keyOf = (accountId: string, folderId: string) => `${folderId}:${accountId}`
+export const googleDriveChangeFeed = new GoogleDriveChangeFeed(googleDriveListingCache, key => key.slice(0, key.indexOf(':')))
 
 /** Every page of a Drive listing. */
 export async function drivePages<T extends { nextPageToken?: string }>(
