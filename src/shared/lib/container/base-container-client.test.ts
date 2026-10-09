@@ -35,7 +35,39 @@ class TestContainerClient extends BaseContainerClient {
   public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
   }
+  public testPrepareVolumeStop(): Promise<string | undefined> {
+    return this.prepareVolumeStop()
+  }
 }
+
+describe('stop with pending volume uploads', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('preserves the container and websocket connections when draining is declined', async () => {
+    const client = new TestContainerClient({ agentId: 'test-volumes' })
+    const response = vi.spyOn(client, 'fetch').mockResolvedValue(Response.json({ ready: false }, { status: 409 }))
+    // Any CLI action, including rm/kill, would first need the runner.
+    const runner = vi.spyOn(client as any, 'getRunnerCommand')
+    const sockets = vi.spyOn(client as any, 'terminateWebSocketConnections')
+    await expect(client.stop()).resolves.toMatchObject({ stopped: false, forceStopUsed: false, deferredReason: expect.any(String) })
+    expect(response).toHaveBeenCalledWith('/volumes/prepare-stop', expect.objectContaining({ method: 'POST' }))
+    expect(runner).not.toHaveBeenCalled()
+    expect(sockets).not.toHaveBeenCalled()
+  })
+
+  it.each([200, 404])('permits a confirmed drain or a legacy image (%s)', async status => {
+    const client = new TestContainerClient({ agentId: 'test-volumes' })
+    vi.spyOn(client, 'fetch').mockResolvedValue(Response.json({ ready: true }, { status }))
+    await expect(client.testPrepareVolumeStop()).resolves.toBeUndefined()
+  })
+
+  it('keeps a running container when upload status cannot be verified', async () => {
+    const client = new TestContainerClient({ agentId: 'test-volumes' })
+    vi.spyOn(client, 'fetch').mockRejectedValue(new Error('timeout'))
+    vi.spyOn(client, 'getInfoFromRuntime').mockResolvedValue({ status: 'running', port: 4001 })
+    await expect(client.stop()).resolves.toMatchObject({ stopped: false, forceStopUsed: false })
+  })
+})
 
 describe('buildAgentEnv', () => {
   afterEach(() => {

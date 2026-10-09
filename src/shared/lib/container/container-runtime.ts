@@ -9,6 +9,7 @@
  * `RuntimeHost`.
  */
 import { z } from 'zod'
+import { ContainerStopDeferredError } from './volume-stop-schema'
 import { createContainerClient } from './client-factory'
 import { ActivityClock } from './activity-clock'
 import { IdleAlarm } from './idle-alarm'
@@ -345,7 +346,7 @@ export class ContainerRuntime {
 
     let forceStopUsed = false
     // Default true: if stop() throws, preserve prior behavior of marking the
-    // agent stopped. Only the explicit force-stop-disabled bail returns false.
+    // agent stopped. A declined upload drain or force-stop-disabled bail returns false.
     let stopped = true
 
     try {
@@ -361,15 +362,14 @@ export class ContainerRuntime {
       const client = this.getClient()
       const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
-      // Only an explicit `false` (stop+kill timed out with force-stop disabled)
-      // means the container is still running; anything else counts as stopped.
+      // A declined upload drain also keeps the container running.
       stopped = result.stopped ?? true
+      if (!stopped && result.deferredReason) throw new ContainerStopDeferredError(result.deferredReason)
     } finally {
       this.stopping = false
 
       if (!stopped) {
-        // stop+kill timed out and force-stop was disabled (auto-sleep): the
-        // container is still running. Leave cached status untouched so the UI
+        // The stop was deferred: leave cached status untouched so the UI
         // and the next auto-sleep sweep see reality, and skip the stopped-side
         // effects below.
         console.warn(

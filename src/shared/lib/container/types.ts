@@ -193,10 +193,12 @@ export interface StopResult {
   forceStopUsed: boolean
   /**
    * True if the container was actually stopped (gracefully, killed, or via
-   * force-stop). False only when stop+kill timed out and force-stop was
-   * disabled — the container is still running and should be retried.
+   * force-stop). False when an upload drain is incomplete, or stop+kill timed
+   * out with force-stop disabled. The container is still running.
    */
   stopped: boolean
+  /** A safe stop was declined, preserving pending volume data in the container. */
+  deferredReason?: string
 }
 
 // Verdict from probing a host-side TCP endpoint from the runner's network side.

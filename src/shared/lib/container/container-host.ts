@@ -324,7 +324,7 @@ export class ContainerHost {
     if (runningIds.length > 0) {
       // Timeout must accommodate the full escalation chain:
       // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
-      const STOP_TIMEOUT_MS = 30000
+      const STOP_TIMEOUT_MS = 60000 // includes the pre-stop volume drain
       const stopPromises = runningIds.map(async (slug) => {
         try {
           await Promise.race([

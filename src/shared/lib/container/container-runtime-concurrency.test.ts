@@ -455,6 +455,16 @@ describe('ContainerRuntime — stopContainer during in-flight start', () => {
     mockStop.mockResolvedValue({ forceStopUsed: false })
   })
 
+  it('reports a deferred upload drain and keeps the running status', async () => {
+    const runtime = containerHost.runtime('test-agent')
+    runtime.updateCachedStatus('running', 4001)
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false, deferredReason: 'Uploads are pending' })
+    await expect(runtime.stopContainer()).rejects.toThrow('Uploads are pending')
+    expect(runtime.getCachedInfo().status).toBe('running')
+    await expect(runtime.ensureRunning()).resolves.toBeDefined()
+    expect(mockStart).not.toHaveBeenCalled()
+  })
+
   it('ensureRunning does not start while stopContainer is in flight', async () => {
     let releaseStop: (value: { forceStopUsed: boolean }) => void = () => {}
     mockStop.mockImplementation(() => new Promise<{ forceStopUsed: boolean }>((resolve) => {

@@ -1,4 +1,5 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
+import { volumeStopResponseSchema } from './volume-stop-schema'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
 import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
@@ -964,6 +965,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async stop(options?: StopOptions): Promise<StopResult> {
+    const deferredReason = await this.prepareVolumeStop()
+    if (deferredReason) return { forceStopUsed: false, stopped: false, deferredReason }
     this.rememberRunningPort(null)
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
@@ -1063,6 +1066,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     return { forceStopUsed, stopped: true }
+  }
+
+  protected async prepareVolumeStop(): Promise<string | undefined> {
+    try {
+      const response = await this.fetch('/volumes/prepare-stop', { method: 'POST', signal: AbortSignal.timeout(28_000) })
+      // Images released before the drain protocol retain their existing stop behavior.
+      if (response.status === 404) return
+      if (response.ok && volumeStopResponseSchema.parse(await response.json()).ready) return
+      return 'Volume uploads have not finished. The agent is still running; try stopping it again after they finish.'
+    } catch {
+      // Already-stopped containers can still be removed. A running container
+      // with an unresponsive drain endpoint must retain its cached uploads.
+      const info = await this.getInfoFromRuntime()
+      if (info.status !== 'running') return
+      return 'Could not confirm that volume uploads finished. The agent is still running; try stopping it again.'
+    }
   }
 
   /**

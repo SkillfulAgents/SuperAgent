@@ -124,6 +124,7 @@ function rc(volumeId: string, command: string, params: object = {}): Promise<unk
     });
     // No answer means rclone is gone.
     req.on('error', () => resolve(undefined));
+    req.setTimeout(1_000, () => { req.destroy(); resolve(undefined); });
     req.end(JSON.stringify(params));
   });
 }
@@ -133,14 +134,14 @@ const uploadQueueSchema = z.object({
 });
 
 // Starts every waiting upload now rather than after the write-back delay, and returns all still queued or uploading.
-async function startQueuedUploads(volumeId: string): Promise<string[]> {
+async function startQueuedUploads(volumeId: string, requireAnswer = false): Promise<string[]> {
   const reply = await rc(volumeId, 'vfs/queue');
   // A gone rclone has nothing left to upload.
-  if (reply === undefined) return [];
+  if (reply === undefined) return requireAnswer ? ['upload status unavailable'] : [];
   const parsed = uploadQueueSchema.safeParse(reply);
   if (!parsed.success) {
     console.error('[volumes] Unexpected vfs/queue reply:', reply);
-    return [];
+    return requireAnswer ? ['upload status unavailable'] : [];
   }
   const { queue } = parsed.data;
   const waiting = queue.filter((u) => !u.uploading && u.expiry > 0);
@@ -159,6 +160,21 @@ export async function waitForUploads(uploads: () => Promise<string[]>, deadline:
     if (pending.length === 0) return [];
   }
   return pending;
+}
+
+export async function drainVolumeUploads(deadline: number): Promise<boolean> {
+  const pending = await Promise.all(mounted.map(async ({ volumeId }) => {
+    // Require two empty observations; close() can return before FUSE enqueues.
+    let empty = 0;
+    const read = async () => {
+      const queue = await startQueuedUploads(volumeId, true);
+      empty = queue.length === 0 ? empty + 1 : 0;
+      return empty >= 2 ? [] : queue.length > 0 ? queue : ['checking uploads'];
+    };
+    if (Date.now() >= deadline) return ['upload drain deadline exceeded'];
+    return waitForUploads(read, deadline);
+  }));
+  return pending.every(queue => queue.length === 0);
 }
 
 export async function unmountVolumes(deadline: number): Promise<void> {

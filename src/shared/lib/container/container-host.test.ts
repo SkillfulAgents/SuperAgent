@@ -1602,8 +1602,8 @@ describe('ContainerHost.stopAll', () => {
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
     const promise = containerHost.stopAll()
-    // Advance past the 30s timeout (full escalation chain)
-    await vi.advanceTimersByTimeAsync(31000)
+    // Allow the pre-stop upload drain plus the full stop escalation chain.
+    await vi.advanceTimersByTimeAsync(61000)
     await promise
 
     // Both were attempted

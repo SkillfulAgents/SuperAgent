@@ -1255,8 +1255,8 @@ export class SessionManager extends EventEmitter {
   /**
    * Stop all active sessions. Used for graceful shutdown.
    */
-  async stopAll(): Promise<void> {
-    if (this.evictionTimer) {
+  async stopAll(shutdown = true): Promise<void> {
+    if (shutdown && this.evictionTimer) {
       clearInterval(this.evictionTimer);
       this.evictionTimer = null;
     }
@@ -1285,6 +1285,8 @@ export class SessionManager extends EventEmitter {
     );
 
     this.sessions.clear();
+    // A refused volume drain keeps this container usable until a later stop.
+    if (!shutdown) this.shuttingDown = false;
     console.log('All sessions stopped.');
   }
 }

@@ -246,6 +246,29 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     fs.rmSync(source, { recursive: true });
   }, 60_000);
 
+  it.each(['local', 'remote'] as const)('%s mounts decline shutdown while uploads are pending, then safely stop after draining', async (cacheMode) => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
+    fs.chmodSync(source, 0o777);
+    const container = startAgent(
+      'rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes --bwlimit 1M',
+      [{ volumeId: 'v_cloud_stop', name: 'cloud', cacheMode }],
+      'claude', ['-v', `${source}:/srv/v_cloud_stop`],
+    );
+    await healthUntilOk(container);
+    sh(container, 'head -c 40000000 /dev/urandom > /mounts/cloud/pending.bin');
+    const expected = sh(container, 'sha256sum /mounts/cloud/pending.bin').split(' ')[0];
+    const prepare = 'curl -s -o /tmp/stop-reply -w "%{http_code}" -X POST localhost:3000/volumes/prepare-stop';
+    expect(sh(container, prepare)).toBe('409');
+    expect(docker('inspect', '-f', '{{.State.Running}}', container)).toBe('true');
+    expect(sh(container, prepare)).toBe('200');
+    expect(sh(container, 'sha256sum /srv/v_cloud_stop/pending.bin').split(' ')[0]).toBe(expected);
+    docker('stop', '-t', '5', container);
+    expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
+    docker('rm', container);
+    expect(fs.statSync(path.join(source, 'pending.bin')).size).toBe(40_000_000);
+    fs.rmSync(source, { recursive: true });
+  }, 120_000);
+
   it('uploads a file still waiting in the queue when the host stops the container', async () => {
     const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
     fs.chmodSync(source, 0o777);

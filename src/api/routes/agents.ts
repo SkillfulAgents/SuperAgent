@@ -53,6 +53,7 @@ import {
 } from '@shared/lib/agent-actor'
 import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
+import { ContainerStopDeferredError } from '@shared/lib/container/volume-stop-schema'
 import {
   sessionDashboardDispatchSchema,
   type SessionDashboardDispatch,
@@ -1776,6 +1777,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     })
   } catch (error) {
     console.error('Failed to stop agent:', error)
+    if (error instanceof ContainerStopDeferredError) return c.json({ error: error.message }, 409)
     return c.json({ error: 'Failed to stop agent' }, 500)
   }
 })

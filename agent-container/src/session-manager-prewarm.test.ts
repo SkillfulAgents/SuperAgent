@@ -453,6 +453,16 @@ describe('SessionManager pre-warm pool', () => {
     expect(warmed.disposeCalls).toBe(1)
   })
 
+  it('can warm another session after a volume drain leaves the container running', async () => {
+    await manager.prewarm(profileFor('claude-sonnet-5'))
+    const previous = MockClaudeProcess.spawned.at(-1)!
+    await manager.stopAll(false)
+    expect(previous.disposeCalls).toBe(1)
+    await manager.prewarm(profileFor('claude-sonnet-5'))
+    expect(MockClaudeProcess.spawned.at(-1)).not.toBe(previous)
+    expect(MockClaudeProcess.spawned.at(-1)!.disposeCalls).toBe(0)
+  })
+
   it('does not pre-warm when disabled', async () => {
     const off = new SessionManager(workDir, {
       idleEvictionMs: -1,
