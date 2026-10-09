@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { DECISION_MODELS, type DecisionProviderId } from '@shared/lib/decision/types'
+import type { DecisionProviderId } from '@shared/lib/decision/types'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { ProviderCard } from './web-tab'
 
@@ -20,24 +19,24 @@ const DECISION_PROVIDER_OPTIONS: {
   {
     value: 'platform',
     label: 'Gamut',
-    note: 'GPT-6 Luna, included with your Gamut plan. Nothing to set up.',
+    note: 'Included with your Gamut plan. Nothing to set up.',
   },
   {
     value: 'openai',
     label: 'OpenAI',
-    note: 'GPT-6 Luna. Long inputs. Can decline a question instead of guessing.',
+    note: 'Uses your OpenAI API key.',
     key: { settingsField: 'openaiApiKey', envVarName: 'OPENAI_API_KEY', label: 'OpenAI API Key' },
   },
   {
     value: 'typesafe',
     label: 'TypeSafe',
-    note: 'Jev. Lowest price per token.',
+    note: 'Uses your TypeSafe API key.',
     key: { settingsField: 'typesafeApiKey', envVarName: 'TYPESAFE_API_KEY', label: 'TypeSafe API Key' },
   },
   {
     value: 'cloudflare',
     label: 'Cloudflare',
-    note: 'Clef on Workers AI. Reads only about the first 2K tokens of text.',
+    note: 'Uses your Cloudflare API token. Reads only short text inputs.',
     key: { settingsField: 'cloudflareApiToken', envVarName: 'CLOUDFLARE_API_TOKEN', label: 'Cloudflare API Token' },
   },
 ]
@@ -85,11 +84,8 @@ export function DecisionTab() {
         </p>
         <div role="radiogroup" aria-label="Decision provider" className="space-y-3 pt-1">
           {DECISION_PROVIDER_OPTIONS.map((provider) => {
-            const models = DECISION_MODELS[provider.value]
-            const model = settings?.decision?.model ?? models[0]
             const gated = provider.value === 'platform' && !isPlatformConnected
             const key = provider.key
-            const settingsBody = models.length > 1 || key
             return (
               <ProviderCard
                 key={provider.value}
@@ -100,40 +96,20 @@ export function DecisionTab() {
                 selected={selected === provider.value}
                 disabled={gated || isLoading}
                 disabledReason={gated ? 'Requires Gamut account' : undefined}
-                onSelect={() => updateSettings.mutate({ decision: { provider: provider.value, model: models[0] } })}
+                onSelect={() => updateSettings.mutate({ decision: { provider: provider.value } })}
               >
-                {settingsBody && <div className="space-y-4">
-                  {models.length > 1 && (
-                    <div className="space-y-2">
-                      <Label htmlFor="decision-model">Model</Label>
-                      <Select
-                        value={model}
-                        onValueChange={(v) => updateSettings.mutate({ decision: { model: v } })}
-                      >
-                        <SelectTrigger id="decision-model">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {models.map((m) => (
-                            <SelectItem key={m} value={m}>{m}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
+                {key && <div className="space-y-4">
                   {provider.value === 'cloudflare' && <CloudflareAccountIdInput />}
-                  {key && (
-                    <ProviderApiKeyInput
-                      providerId={provider.value}
-                      label={key.label}
-                      apiKeySettingsField={key.settingsField}
-                      apiKeyStatusKey={provider.value}
-                      validationEndpoint="/api/settings/validate-decision-key"
-                      validationBody={(apiKey) => ({ provider: provider.value, apiKey })}
-                      envVarName={key.envVarName}
-                      helpText={provider.value === 'openai' ? 'Shared with OpenAI voice.' : undefined}
-                    />
-                  )}
+                  <ProviderApiKeyInput
+                    providerId={provider.value}
+                    label={key.label}
+                    apiKeySettingsField={key.settingsField}
+                    apiKeyStatusKey={provider.value}
+                    validationEndpoint="/api/settings/validate-decision-key"
+                    validationBody={(apiKey) => ({ provider: provider.value, apiKey })}
+                    envVarName={key.envVarName}
+                    helpText={provider.value === 'openai' ? 'Shared with OpenAI voice.' : undefined}
+                  />
                 </div>}
               </ProviderCard>
             )

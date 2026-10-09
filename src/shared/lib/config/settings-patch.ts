@@ -185,7 +185,6 @@ const voiceSettingsPatchSchema = z.object({
 
 const decisionSettingsPatchSchema = z.object({
   provider: z.enum(DECISION_PROVIDERS),
-  model: z.string().min(1),
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({

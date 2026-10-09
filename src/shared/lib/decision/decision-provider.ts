@@ -1,10 +1,12 @@
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import { NonRetryableError, withRetry } from '../utils/retry'
-import { DECISION_MODELS, type DecisionProviderId, type DecisionRequest, type DecisionResult } from './types'
+import type { DecisionProviderId, DecisionRequest, DecisionResult } from './types'
 
 export abstract class BaseDecisionProvider {
   abstract readonly id: DecisionProviderId
   abstract readonly name: string
+  /** The one model this provider uses: its best decision model. */
+  abstract readonly model: string
 
   /** Which field in ApiKeySettings stores this provider's key. */
   protected abstract readonly settingsKeyField: keyof ApiKeySettings
@@ -29,10 +31,6 @@ export abstract class BaseDecisionProvider {
     return getSettings().apiKeys?.[this.settingsKeyField] || process.env[this.envVarName]
   }
 
-  get defaultModel(): string {
-    return DECISION_MODELS[this.id][0]
-  }
-
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const res = await fetch(this.keyCheckUrl(), { headers: { Authorization: `Bearer ${apiKey}` } })
@@ -43,7 +41,8 @@ export abstract class BaseDecisionProvider {
   }
 
   /** Ask every question in one call. Throws if any question comes back unanswered. */
-  async decide(request: DecisionRequest, model = this.defaultModel): Promise<DecisionResult> {
+  async decide(request: DecisionRequest): Promise<DecisionResult> {
+    const model = this.model
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error(`No API key configured for ${this.name}.`)
     const url = this.endpointUrl(model)

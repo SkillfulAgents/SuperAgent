@@ -7,18 +7,8 @@
 export const DECISION_PROVIDERS = ['platform', 'openai', 'typesafe', 'cloudflare'] as const
 export type DecisionProviderId = (typeof DECISION_PROVIDERS)[number]
 
-/** Models each provider serves, default first. Shared with the settings UI. */
-export const DECISION_MODELS: Record<DecisionProviderId, readonly string[]> = {
-  platform: ['gpt-6-luna'],
-  openai: ['gpt-6-luna'],
-  typesafe: ['jev-latest', 'jev-1.13.0'],
-  cloudflare: ['clef', 'clef-flash'],
-}
-
 export interface DecisionSettings {
   provider?: DecisionProviderId
-  /** Provider model id; the provider's default when unset. */
-  model?: string
 }
 
 export type DecisionQuestion =

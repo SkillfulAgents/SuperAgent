@@ -5,6 +5,7 @@ import type { DecisionRequest, DecisionResult } from './types'
 export class TypesafeDecisionProvider extends BaseDecisionProvider {
   readonly id = 'typesafe' as const
   readonly name = 'TypeSafe'
+  readonly model = 'jev-latest'
   protected readonly settingsKeyField = 'typesafeApiKey' as const
   protected readonly envVarName = 'TYPESAFE_API_KEY'
 

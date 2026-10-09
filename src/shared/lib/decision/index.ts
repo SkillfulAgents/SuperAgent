@@ -6,7 +6,7 @@ import { PlatformDecisionProvider } from './platform-provider'
 import { TypesafeDecisionProvider } from './typesafe-provider'
 import type { DecisionProviderId, DecisionRequest, DecisionResult } from './types'
 
-export { DECISION_MODELS, DECISION_PROVIDERS } from './types'
+export { DECISION_PROVIDERS } from './types'
 export type { DecisionAnswer, DecisionProviderId, DecisionQuestion, DecisionRequest, DecisionResult, DecisionSettings } from './types'
 
 const providers = {
@@ -32,5 +32,5 @@ export function getConfiguredDecisionProvider(): BaseDecisionProvider | null {
 export async function decide(request: DecisionRequest): Promise<DecisionResult> {
   const provider = getConfiguredDecisionProvider()
   if (!provider) throw new Error('No decision model configured.')
-  return provider.decide(request, getSettings().decision?.model || provider.defaultModel)
+  return provider.decide(request)
 }
