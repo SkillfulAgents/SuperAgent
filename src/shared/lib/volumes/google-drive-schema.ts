@@ -12,7 +12,7 @@ export const googleDriveVolumeConfigSchema = z.object({
 }).strict()
 export type GoogleDriveVolumeConfig = z.infer<typeof googleDriveVolumeConfigSchema>
 
-export const DRIVE_FILE_FIELDS = 'id,name,mimeType,size,modifiedTime,trashed,capabilities(canDownload)'
+export const DRIVE_FILE_FIELDS = 'id,name,mimeType,size,modifiedTime,trashed,capabilities(canDownload),shortcutDetails(targetId)'
 export const driveFileSchema = z.object({
   id: driveIdSchema,
   name: z.string(),
@@ -21,6 +21,9 @@ export const driveFileSchema = z.object({
   modifiedTime: z.iso.datetime(),
   trashed: z.boolean().optional(),
   capabilities: z.object({ canDownload: z.boolean().optional() }).optional(),
+  shortcutDetails: z.object({ targetId: driveIdSchema }).optional(),
+  /** Set by the volume, not Drive: a shortcut followed to its target keeps its own ID here. */
+  shortcutId: driveIdSchema.optional(),
   driveId: driveIdSchema.optional(),
 })
 export type DriveFile = z.infer<typeof driveFileSchema>

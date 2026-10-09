@@ -3,9 +3,10 @@ import type { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { DriveExportTooLargeError, driveRequest, driveUpload, requireGoogleDriveAccount, type DriveRequest } from './google-drive-client'
-import { DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
+import pLimit from 'p-limit'
+import { DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
 import { googleDriveExportCache, type Export } from './google-drive-export-cache'
-import { driveNameOf, folderView, isExport, isFolder, nameTaken, writeTarget, type VisibleEntry } from './google-drive-folder-view'
+import { driveNameOf, folderView, isExport, isFolder, nameTaken, ownId, writeTarget, type VisibleEntry } from './google-drive-folder-view'
 import { RemoteListingCache, serialize } from './remote-listing-cache'
 import type { ByteRange } from '@shared/lib/agent-actor/types'
 
@@ -129,18 +130,40 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   private children(folderId: string): Promise<DriveFile[]> {
-    return googleDriveListingCache.list(this.config.accountId, keyOf(this.config.accountId, folderId), () =>
-      driveChildren(this.config.accountId, folderId, { agentSlug: this.agentSlug }))
+    return googleDriveListingCache.list(this.config.accountId, keyOf(this.config.accountId, folderId), async () =>
+      this.followShortcuts(await driveChildren(this.config.accountId, folderId, { agentSlug: this.agentSlug })))
+  }
+
+  /** A shortcut stands in for its target under its own name, like a subfolder or file of the folder it sits in:
+   * reads and writes reach the target, delete and move act on the shortcut. One whose target is gone or not
+   * accessible stays a shortcut, which the folder view hides. */
+  private async followShortcuts(files: DriveFile[]): Promise<DriveFile[]> {
+    const limit = pLimit(8)
+    return Promise.all(files.map(file => limit(async () => {
+      const targetId = file.mimeType === SHORTCUT_MIME_TYPE ? file.shortcutDetails?.targetId : undefined
+      if (!targetId) return file
+      try {
+        const target = driveFileSchema.parse(await (await this.request({ method: 'GET', path: `drive/v3/files/${targetId}`, query: { fields: DRIVE_FILE_FIELDS } })).json())
+        return { ...target, name: file.name, shortcutId: file.id }
+      } catch (error) {
+        if (error instanceof WorkspaceFileError) return file
+        throw error
+      }
+    })))
   }
 
   /** The entry a path names, walking raw listings from the root by shown name. Exports nothing. */
   private async resolve(relative: string): Promise<Located | null> {
     let parentId = this.config.folderId
     let located: Located | null = null
+    const path = new Set([parentId])
     for (const name of relative ? relative.split('/') : []) {
       if (located && !isFolder(located.entry.file)) throw new WorkspaceFileError('not-a-directory')
       const entry = this.view(await this.children(parentId)).entries.find(entry => entry.name === name)
       if (!entry) throw new WorkspaceFileError('not-found')
+      // A shortcut to a folder above it would make an endless tree: it is listed but cannot be entered.
+      if (isFolder(entry.file) && path.has(entry.file.id)) throw new WorkspaceFileError('not-found')
+      path.add(entry.file.id)
       located = { parentId, entry }
       parentId = entry.file.id
     }
@@ -313,7 +336,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       const { entry } = await this.freshEntry(relative, fresh)
       // Trashing a folder trashes its contents: any raw child, shown or hidden, keeps it.
       if (isFolder(entry.file) && (await fresh(entry.file.id)).length) throw new WorkspaceFileError('not-empty')
-      const response = await this.request({ method: 'PATCH', path: `drive/v3/files/${entry.file.id}`, json: { trashed: true } })
+      const response = await this.request({ method: 'PATCH', path: `drive/v3/files/${ownId(entry.file)}`, json: { trashed: true } })
       await response.body?.cancel()
     })
   }
@@ -333,20 +356,22 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       const shownName = source.entry.format ? driveName + source.entry.format.extension : name
       const children = await fresh(parentId)
       const entries = this.view(children).entries
-      if (nameTaken(children, entries, driveName, shownName, source.entry.file.id)) {
+      if (nameTaken(children, entries, driveName, shownName, ownId(source.entry.file))) {
         // A save by rename: a regular file moved onto a visible file replaces its content, so the destination keeps
         // its ID, sharing and history, and a converted copy saves into its Google file. The source is trashed only
         // after. Any other taken name keeps both entries.
         const target = writeTarget(entries, name)
         if (target.kind !== 'update' || isFolder(source.entry.file) || source.entry.format) throw new WorkspaceFileError('already-exists')
+        // Both names reach the same Drive file (one is a shortcut to it). As in POSIX, the rename does nothing.
+        if (target.id === source.entry.file.id) return
         const content = await this.request({ method: 'GET', path: `drive/v3/files/${source.entry.file.id}`, query: { alt: 'media' } })
         await this.update(target, content.body ?? new Blob([]).stream())
-        const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${source.entry.file.id}`, json: { trashed: true } })
+        const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${ownId(source.entry.file)}`, json: { trashed: true } })
         await trashed.body?.cancel()
         return
       }
       const response = await this.request({
-        method: 'PATCH', path: `drive/v3/files/${source.entry.file.id}`, json: { name: driveName },
+        method: 'PATCH', path: `drive/v3/files/${ownId(source.entry.file)}`, json: { name: driveName },
         query: parentId === source.parentId ? {} : { addParents: parentId, removeParents: source.parentId },
       })
       await response.body?.cancel()

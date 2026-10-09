@@ -22,7 +22,7 @@ const shortcut = (id: string, name: string) => ({ id, name, mimeType: 'applicati
 const volume = () => new GoogleDriveMountableVolume('attachment', 'Team', { accountId: 'account', folderId: 'root1', folderName: 'Team', driveName: 'My Drive' }, 'agent')
 
 /** Answer Drive calls from a tree of folder children, export bodies, file contents and the root's own metadata. */
-function serve(options: { folders?: Record<string, unknown[]>; exports?: Record<string, string | Error>; content?: Record<string, string>; root?: unknown } = {}) {
+function serve(options: { folders?: Record<string, unknown[]>; exports?: Record<string, string | Error>; content?: Record<string, string>; root?: unknown; targets?: Record<string, unknown> } = {}) {
   request.mockImplementation(async (_account, req) => {
     if (req.path.startsWith('drive/v3/drives/')) return Response.json({ id: 'shared1', name: 'Gamut' })
     const parent = /'([^']+)' in parents/.exec(req.query?.q ?? '')
@@ -35,7 +35,7 @@ function serve(options: { folders?: Record<string, unknown[]>; exports?: Record<
     }
     const one = /^drive\/v3\/files\/([^/]+)$/.exec(req.path)
     if (one && req.method === 'GET' && req.query?.alt === 'media') return new Response(options.content?.[one[1]] ?? 'hello world')
-    if (one && req.method === 'GET') return Response.json(options.root ?? folder('root1', 'Team'))
+    if (one && req.method === 'GET') return Response.json(options.targets?.[one[1]] ?? options.root ?? folder('root1', 'Team'))
     return Response.json(null)
   })
 }
@@ -184,6 +184,36 @@ describe('Google Drive filesystem', () => {
     await volume().move('Plan.md.tmp', 'Plan.md')
     expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/doc1', json: {}, contentType: 'text/markdown' }, expect.any(ReadableStream), { agentSlug: 'agent' })
     expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/t2', json: { trashed: true } }, expect.anything())
+  })
+
+  it('follows a shortcut like a subfolder or file: reads and writes reach the target, delete and rename act on the shortcut', async () => {
+    const pointer = (id: string, name: string, targetId: string) => ({ ...shortcut(id, name), shortcutDetails: { targetId } })
+    serve({
+      folders: {
+        root1: [pointer('s1', 'Team docs', 'tf'), pointer('s2', 'Plan link', 'doc9'), pointer('s3', 'Up', 'root1'), pointer('s4', 'Gone', 'missing'), blob('lf', 'local.txt'), pointer('s5', 'local alias', 'lf')],
+        tf: [blob('n', 'notes.txt')],
+      },
+      targets: { tf: folder('tf', 'Elsewhere'), doc9: doc('doc9', 'Plan'), root1: folder('root1', 'Team'), lf: blob('lf', 'local.txt') },
+    })
+    const original = request.getMockImplementation()!
+    request.mockImplementation(async (account, req) => req.path === 'drive/v3/files/missing' ? Promise.reject(new WorkspaceFileError('not-found')) : original(account, req))
+    expect((await volume().list('')).map(entry => entry.name)).toEqual(['Team docs', 'Plan link.md', 'Up', 'local.txt', 'local alias'])
+    expect((await volume().list('Team docs')).map(entry => entry.name)).toEqual(['notes.txt'])
+    await expect(volume().list('Up')).rejects.toMatchObject({ code: 'not-found' })
+    await volume().write('Team docs/new.txt', new Blob(['x']).stream())
+    expect(upload).toHaveBeenLastCalledWith('account', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'new.txt', parents: ['tf'] } }, expect.anything(), expect.anything())
+    await volume().write('Plan link.md', new Blob(['x']).stream())
+    expect(upload).toHaveBeenLastCalledWith('account', expect.objectContaining({ path: 'upload/drive/v3/files/doc9', contentType: 'text/markdown' }), expect.anything(), expect.anything())
+    await volume().move('Team docs', 'Renamed')
+    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/s1', json: { name: 'Renamed' }, query: {} }, expect.anything())
+    await volume().delete('Plan link.md')
+    expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/s2', json: { trashed: true } }, expect.anything())
+    // A file moved onto its own shortcut is the same file: nothing is copied or trashed.
+    const changes = () => calls().filter(call => call.startsWith('PATCH')).length + upload.mock.calls.length
+    const before = changes()
+    await volume().move('local.txt', 'local alias')
+    await volume().move('local alias', 'local.txt')
+    expect(changes()).toBe(before)
   })
 
   it('reports a trashed root as not found and checks revoked accounts even on cache hits', async () => {

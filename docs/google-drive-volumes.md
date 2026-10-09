@@ -29,8 +29,13 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   naming rules at each step. Resolving a path exports nothing. Raw listings are
   kept for 15 seconds in the shared remote listing cache, keyed by account and
   folder ID, so case never matters and overlapping volumes share listings.
+- A shortcut shows as its target under the shortcut's own name, like a subfolder or
+  file of the folder it sits in, wherever the target lives. Reads and writes reach the
+  target. Delete and move act on the shortcut, so the target is never trashed through
+  it. A shortcut to a folder above it is listed but cannot be entered, so the tree
+  never loops. Each shortcut costs one target lookup per listing.
 - The folder view decides every name, in this order: trashed entries, shortcuts
-  and Google types with no round-trip export (Forms, Drawings, Sites, Maps) are hidden,
+  whose target is gone or not accessible, and Google types with no round-trip export (Forms, Drawings, Sites, Maps) are hidden,
   as are files whose downloads are blocked for this account, shortcuts with
   a warning; Google files whose export is known to exceed 10 MB are hidden; entries
   named `.` or `..` are hidden; `/` in a name shows as `／` (fullwidth slash), for
@@ -82,7 +87,8 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   source is trashed. This is how many tools save (write a temp file, rename it over
   the original). The destination keeps its ID, sharing and history, and a converted
   copy saves into its Google file. A folder, or a converted copy as the source,
-  never replaces anything.
+  never replaces anything. A move between two names of the same file, such as a
+  file and a shortcut to it, does nothing.
 - Delete moves to trash. A folder is trashed only when empty, because trashing a
   folder trashes its contents. A move or rename is one update call that changes
   parent and name; a taken destination is a conflict that keeps both entries.
