@@ -8,6 +8,7 @@ import { DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListS
 import { googleDriveExportCache, type Export } from './google-drive-export-cache'
 import { driveNameOf, folderView, isExport, isFolder, nameTaken, ownId, writeTarget, type VisibleEntry } from './google-drive-folder-view'
 import { RemoteListingCache, serialize } from './remote-listing-cache'
+import { GoogleDriveChangeFeed } from './google-drive-changes'
 import type { ByteRange } from '@shared/lib/agent-actor/types'
 
 /** A file of a known size whose bytes come from `download`, a fetch of one byte range. The
@@ -75,6 +76,7 @@ export const googleDriveRootChecks = new Map<string, { at: number; check: Promis
 /** Raw children by account and folder ID, so overlapping volumes share listings. */
 export const googleDriveListingCache = new RemoteListingCache<DriveFile>()
 const keyOf = (accountId: string, folderId: string) => JSON.stringify([accountId, folderId])
+export const googleDriveChangeFeed = new GoogleDriveChangeFeed(googleDriveListingCache, key => (JSON.parse(key) as [string, string])[1])
 
 /** Every page of a Drive listing. */
 export async function drivePages<T extends { nextPageToken?: string }>(
@@ -155,7 +157,9 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   private children(folderId: string): Promise<DriveFile[]> {
-    return googleDriveListingCache.list(this.config.accountId, keyOf(this.config.accountId, folderId), async () =>
+    const key = keyOf(this.config.accountId, folderId)
+    googleDriveChangeFeed.keepFresh(this.config.accountId, key)
+    return googleDriveListingCache.list(this.config.accountId, key, async () =>
       this.followShortcuts(await driveChildren(this.config.accountId, folderId, { agentSlug: this.agentSlug })))
   }
 
@@ -225,29 +229,38 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     settle: (folderId: string, update: (children: DriveFile[]) => DriveFile[]) => void,
   ) => Promise<T>): Promise<T> {
     const { accountId } = this.config
-    const touched = new Map<string, { entries: DriveFile[]; readAt: number }>()
+    // `cached` is the listing a change started from, when it came from the cache rather than Drive.
+    const touched = new Map<string, { entries: DriveFile[]; readAt: number; checkedAt: number; cached?: { readAt: number; checkedAt: number } }>()
     const fresh = async (folderId: string, trustedMs?: number) => {
       if (!folderIds.includes(folderId)) throw new Error('A change reads only the folders it holds')
-      const known = touched.get(folderId) ?? (trustedMs ? googleDriveListingCache.recent(keyOf(accountId, folderId), trustedMs) : undefined)
-      if (known) {
-        touched.set(folderId, known)
-        return known.entries
+      const held = touched.get(folderId)
+      if (held) return held.entries
+      const cached = trustedMs ? googleDriveListingCache.recent(keyOf(accountId, folderId), trustedMs) : undefined
+      if (cached) {
+        touched.set(folderId, { entries: cached.entries, readAt: cached.readAt, checkedAt: cached.checkedAt, cached })
+        return cached.entries
       }
       googleDriveListingCache.forget(keyOf(accountId, folderId))
       const readAt = Date.now()
       const entries = await this.children(folderId)
-      touched.set(folderId, { entries, readAt })
+      touched.set(folderId, { entries, readAt, checkedAt: readAt })
       return entries
     }
     const settle = (folderId: string, update: (children: DriveFile[]) => DriveFile[]) => {
       const listing = touched.get(folderId)
       if (!listing) throw new Error('A change settles only folders it read')
-      touched.set(folderId, { entries: update(listing.entries), readAt: listing.readAt })
+      touched.set(folderId, { ...listing, entries: update(listing.entries) })
     }
     return serialize(folderIds.map(folderId => keyOf(accountId, folderId)), async () => {
       try {
         const result = await operation(fresh, settle)
-        for (const [folderId, { entries, readAt }] of touched) googleDriveListingCache.put(accountId, keyOf(accountId, folderId), entries, readAt)
+        for (const [folderId, { entries, readAt, checkedAt, cached }] of touched) {
+          const key = keyOf(accountId, folderId)
+          // The change feed dropped the listing this change started from, so Drive changed the folder meanwhile.
+          if (cached && googleDriveListingCache.recent(key, Infinity) !== cached) googleDriveListingCache.forget(key)
+          // A poll may have vouched for it since, so it keeps the cache's times.
+          else googleDriveListingCache.put(accountId, key, entries, cached?.readAt ?? readAt, cached?.checkedAt ?? checkedAt)
+        }
         return result
       } catch (error) {
         for (const folderId of touched.keys()) googleDriveListingCache.forget(keyOf(accountId, folderId))

@@ -6,6 +6,8 @@ interface Listing<T> {
   /** When the source was last read for these entries. Updates a change makes keep it, so a listing
    * changes hands as current only for as long as its read is. */
   readAt: number
+  /** When the source last confirmed that nothing changed these entries since `readAt`. */
+  checkedAt: number
   entries: T[]
 }
 const expired = (listing: Listing<unknown>) => listing.readAt + TTL_MS <= Date.now()
@@ -46,7 +48,7 @@ export class RemoteListingCache<T> {
   }
 
   /** The retained listing under `key` if the source was read for it within the last `ms`. */
-  recent(key: string, ms: number): { entries: T[]; readAt: number } | undefined {
+  recent(key: string, ms: number): { entries: T[]; readAt: number; checkedAt: number } | undefined {
     const listing = this.directories.get(key)
     return listing && listing.readAt >= Date.now() - ms ? listing : undefined
   }
@@ -58,17 +60,29 @@ export class RemoteListingCache<T> {
   }
 
   /** Retain a listing a change just updated, over any read in flight. `readAt` is when its entries were read. */
-  put(accountId: string, key: string, entries: T[], readAt: number): void {
+  put(accountId: string, key: string, entries: T[], readAt: number, checkedAt = readAt): void {
     this.pending.delete(key)
-    this.store(accountId, key, entries, readAt)
+    this.store(accountId, key, entries, readAt, checkedAt)
   }
 
-  private store(accountId: string, key: string, entries: T[], readAt: number): void {
+  /** Apply a source's report of what changed: drop each listing `stale` says no longer matches, and treat
+   * the rest last checked at or after `since` as read at `upTo` and checked at `checkedAt`. */
+  confirm(accountId: string, since: number, upTo: number, checkedAt: number, stale: (key: string, entries: T[]) => boolean): void {
+    for (const [key, listing] of this.directories) {
+      if (listing.accountId !== accountId) continue
+      if (stale(key, listing.entries)) { this.remove(key); continue }
+      if (listing.checkedAt < since) continue
+      listing.readAt = Math.max(listing.readAt, upTo)
+      listing.checkedAt = checkedAt
+    }
+  }
+
+  private store(accountId: string, key: string, entries: T[], readAt: number, checkedAt = readAt): void {
     // Oversized directories are not retained.
     if (entries.length > MAX_ENTRIES) { this.remove(key); return }
     for (const [key, listing] of this.directories) if (expired(listing)) this.remove(key)
     this.remove(key)
-    this.directories.set(key, { accountId, entries, readAt })
+    this.directories.set(key, { accountId, entries, readAt, checkedAt })
     this.entryCount += entries.length
     while (this.directories.size > MAX_DIRECTORIES || this.entryCount > MAX_ENTRIES) this.remove(this.directories.keys().next().value!)
   }
