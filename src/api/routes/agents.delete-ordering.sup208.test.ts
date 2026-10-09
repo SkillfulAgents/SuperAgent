@@ -28,6 +28,20 @@ import { Hono } from 'hono'
 // irreversible workspace removal we are gating.
 const mockGetAgent = vi.fn()
 const mockDeleteAgent = vi.fn()
+// SUP-209: a genuine container stop-failure surfaces from deleteAgent as this
+// typed error, which the route maps to 409. Hoisted so the mock factory and the
+// test share one class — the route's `instanceof` resolves to this same
+// stand-in via the mocked module.
+const { AgentContainerStopError } = vi.hoisted(() => ({
+  AgentContainerStopError: class AgentContainerStopError extends Error {
+    readonly slug: string
+    constructor(slug: string, cause: unknown) {
+      super(`Failed to stop the container for agent "${slug}": ${cause instanceof Error ? cause.message : String(cause)}`)
+      this.name = 'AgentContainerStopError'
+      this.slug = slug
+    }
+  },
+}))
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgentsWithStatus: vi.fn(),
   createAgent: vi.fn(),
@@ -36,6 +50,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   updateAgent: vi.fn(),
   deleteAgent: (...args: unknown[]) => mockDeleteAgent(...args),
   agentExists: vi.fn().mockResolvedValue(true),
+  AgentContainerStopError,
 }))
 
 // --- peripheral cleanup services --------------------------------------------
@@ -237,7 +252,6 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the router after all mocks are registered.
 import agents from './agents'
-import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-failed/agent-container-stop-error'
 
 function appWithAgents() {
   const app = new Hono()
@@ -319,7 +333,6 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     expect(res.status).toBe(409)
     const body = await res.json()
     expect(body.error).toMatch(/container/i)
-    expect(body.code).toBe('agent_container_stop_failed')
     // Peripheral cleanup still ran (it precedes the stop); only the workspace survived.
     expect(mockCleanupAgentData).toHaveBeenCalledTimes(1)
   })

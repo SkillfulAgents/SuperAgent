@@ -8,7 +8,7 @@ export const sessionForkFailedBodySchema = agentRuntimeErrorBodySchema.extend({
   code: z.literal(SESSION_FORK_FAILED),
 })
 
-export class ForkSessionError extends AgentRuntimeError {
+export class SessionForkFailedError extends AgentRuntimeError {
   readonly code = SESSION_FORK_FAILED
   protected readonly bodySchema = sessionForkFailedBodySchema
 
@@ -17,6 +17,6 @@ export class ForkSessionError extends AgentRuntimeError {
     message: string,
   ) {
     super(message)
-    this.name = 'ForkSessionError'
+    this.name = 'SessionForkFailedError'
   }
 }

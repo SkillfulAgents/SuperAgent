@@ -17,7 +17,7 @@ import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
-import { ForkSessionError } from '@shared/lib/agent-runtime-errors/session-fork-failed/fork-session-error'
+import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
 
 export type ForkSessionOpts = {
   createdByUserId?: string
@@ -53,7 +53,7 @@ export async function forkSession(
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
   if (actor.sessions.isActive(sourceId)) {
-    throw new ForkSessionError(409, 'Session is currently running')
+    throw new SessionForkFailedError(409, 'Session is currently running')
   }
 
   const [known, metadataMap] = await Promise.all([
@@ -62,7 +62,7 @@ export async function forkSession(
   ])
   const metadata = Object.hasOwn(metadataMap, sourceId) ? metadataMap[sourceId] : null
   if (!known) {
-    throw new ForkSessionError(404, 'Session not found')
+    throw new SessionForkFailedError(404, 'Session not found')
   }
 
   const [source] = await Promise.all([
@@ -70,7 +70,7 @@ export async function forkSession(
     actor.container.start(),
   ])
   if (!source) {
-    throw new ForkSessionError(404, 'Session not found')
+    throw new SessionForkFailedError(404, 'Session not found')
   }
 
   let forked: { id: string } | null
@@ -78,15 +78,15 @@ export async function forkSession(
     forked = await actor.sessions.fork(sourceId)
   } catch (error) {
     if (error instanceof ContainerConflictError) {
-      throw new ForkSessionError(409, error.message)
+      throw new SessionForkFailedError(409, error.message)
     }
     if (error instanceof ContainerNotFoundError) {
-      throw new ForkSessionError(404, error.message)
+      throw new SessionForkFailedError(404, error.message)
     }
     throw error
   }
   if (!forked) {
-    throw new ForkSessionError(
+    throw new SessionForkFailedError(
       500,
       'Container does not support fork; restart the agent to pull the latest image',
     )

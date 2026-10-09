@@ -9,13 +9,13 @@ export const llmProviderNotFoundBodySchema = agentRuntimeErrorBodySchema.extend(
 })
 
 /** The selected LLM provider is gone, or this user may not bind it. Both read as "not found". */
-export class LlmSelectionAccessError extends AgentRuntimeError {
+export class LlmProviderNotFoundError extends AgentRuntimeError {
   readonly code = LLM_PROVIDER_NOT_FOUND
   readonly status = 404
   protected readonly bodySchema = llmProviderNotFoundBodySchema
 
   constructor() {
     super('LLM provider not found')
-    this.name = 'LlmSelectionAccessError'
+    this.name = 'LlmProviderNotFoundError'
   }
 }

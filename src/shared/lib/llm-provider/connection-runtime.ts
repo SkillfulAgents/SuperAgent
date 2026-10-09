@@ -1,5 +1,5 @@
 import { getModelContextWindowMap } from './model-catalog'
-import { LlmSelectionAccessError } from '../agent-runtime-errors/llm-provider-not-found/llm-selection-access-error'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'
@@ -45,7 +45,7 @@ export async function assertConnectionSelectionAccess(
 ) {
   if (!llmProviderId) return
   const row = await getConnection(llmProviderId)
-  if (!row) throw new LlmSelectionAccessError()
+  if (!row) throw new LlmProviderNotFoundError()
   if (
     !canSelectConnection(
       row,
@@ -53,7 +53,7 @@ export async function assertConnectionSelectionAccess(
       currentId ?? undefined
     )
   ) {
-    throw new LlmSelectionAccessError()
+    throw new LlmProviderNotFoundError()
   }
 }
 

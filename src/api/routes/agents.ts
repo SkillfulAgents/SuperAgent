@@ -1,5 +1,6 @@
 import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -38,6 +39,7 @@ import {
   updateAgent,
   deleteAgent,
   agentExists,
+  AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
 import {
   agentRegistry,
@@ -1495,10 +1497,19 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
     return c.body(null, 204)
   } catch (error) {
+    if (error instanceof AgentContainerStopError) {
+      // SUP-209: the container couldn't be stopped, so deleteAgent aborted
+      // before removing the workspace. The agent is preserved and the delete is
+      // retryable — surface an actionable 409 instead of a generic 500. (The
+      // peripheral cleanup above has already run; a retry once the container
+      // un-wedges completes the deletion.)
+      console.error('Agent deletion aborted — container stop failed:', error)
+      return c.json(
+        { error: "Couldn't stop the agent's container, so it wasn't deleted. It may be busy — please try again in a moment." },
+        409
+      )
+    }
     console.error('Failed to delete agent:', error)
-    // e.g. AgentContainerStopError (SUP-209): a 409 the user can retry.
-    const runtimeError = findAgentRuntimeError(error)
-    if (runtimeError) return runtimeError.toHttpResponse()
     return c.json({ error: 'Failed to delete agent' }, 500)
   }
 })
@@ -1541,8 +1552,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
     const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
-    const runtimeError = findAgentRuntimeError(error)
-    if (runtimeError) return runtimeError.toHttpResponse()
+    if (error instanceof LlmProviderNotFoundError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
     return c.json({ error: 'Failed to update agent preferences' }, 500)
   }

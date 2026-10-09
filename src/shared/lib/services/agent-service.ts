@@ -22,7 +22,6 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { AgentContainerStopError } from '@shared/lib/agent-runtime-errors/agent-container-stop-failed/agent-container-stop-error'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -387,6 +386,25 @@ export async function adoptAgentIdentityFromWorkspace(
     }
     return commitIdentity(record, { name, description }, document, document.body)
   })
+}
+
+/**
+ * Thrown by {@link deleteAgent} when the agent's container cannot be stopped.
+ *
+ * stopContainer is idempotent for already-stopped/missing containers, so a
+ * rejection signals a GENUINE runtime failure (wedged VM, unexpected stop
+ * error). Deletion aborts before the irreversible workspace removal, so the
+ * agent is preserved and the operation is retryable. The DELETE route catches
+ * this to surface an actionable message instead of a generic 500.
+ */
+export class AgentContainerStopError extends Error {
+  readonly slug: string
+  constructor(slug: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    super(`Failed to stop the container for agent "${slug}": ${detail}`)
+    this.name = 'AgentContainerStopError'
+    this.slug = slug
+  }
 }
 
 /**

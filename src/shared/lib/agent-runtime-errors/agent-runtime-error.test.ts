@@ -2,13 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 
-import { agentRuntimeErrorBodySchema, findAgentRuntimeError } from './agent-runtime-error'
-import { AgentContainerStopError } from './agent-container-stop-failed/agent-container-stop-error'
-import { LlmSelectionAccessError } from './llm-provider-not-found/llm-selection-access-error'
+import { findAgentRuntimeError } from './agent-runtime-error'
+import { LlmProviderNotFoundError } from './llm-provider-not-found/llm-provider-not-found-error'
 
 describe('findAgentRuntimeError', () => {
   it('finds the error when a send wraps it as the cause', () => {
-    const runtimeError = new LlmSelectionAccessError()
+    const runtimeError = new LlmProviderNotFoundError()
     const wrapped = new MessageNotAcceptedError('rejected', 'Failed to send message', { cause: runtimeError })
 
     expect(findAgentRuntimeError(wrapped)).toBe(runtimeError)
@@ -27,19 +26,10 @@ describe('findAgentRuntimeError', () => {
 
 describe('toHttpResponse', () => {
   it('returns the status and a body with code and message', async () => {
-    const res = new LlmSelectionAccessError().toHttpResponse()
+    const res = new LlmProviderNotFoundError().toHttpResponse()
 
     expect(res.status).toBe(404)
     expect(res.headers.get('content-type')).toContain('application/json')
     expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
-  })
-
-  it('sends the user-facing message, not the internal one', async () => {
-    const error = new AgentContainerStopError('research-agent', new Error('runtime wedged'))
-    const body = agentRuntimeErrorBodySchema.parse(await error.toHttpResponse().json())
-
-    expect(error.message).toContain('runtime wedged')
-    expect(body.code).toBe('agent_container_stop_failed')
-    expect(body.error).not.toContain('runtime wedged')
   })
 })

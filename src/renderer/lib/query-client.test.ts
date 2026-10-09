@@ -10,7 +10,7 @@ vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
 import { AgentRuntimeRequestError, readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
-import { LlmSelectionAccessError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-selection-access-error'
+import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 
 beforeEach(() => {
   mockToastError.mockClear()
@@ -42,7 +42,7 @@ describe('handleMutationError', () => {
   })
 
   it('toasts the server message for an AgentRuntimeError whose code has no preview', async () => {
-    const error = await readAgentRuntimeError(new LlmSelectionAccessError().toHttpResponse(), 'Failed to send message')
+    const error = await readAgentRuntimeError(new LlmProviderNotFoundError().toHttpResponse(), 'Failed to send message')
     expect(error).toBeInstanceOf(AgentRuntimeRequestError)
     expect(error).toMatchObject({ status: 404, code: 'llm_provider_not_found' })
 
