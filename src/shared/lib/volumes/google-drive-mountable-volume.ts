@@ -74,7 +74,8 @@ const TRUSTED_LISTING_MS = 5_000
 export const googleDriveRootChecks = new Map<string, { at: number; check: Promise<unknown> }>()
 
 /** Raw children by account and folder ID, so overlapping volumes share listings. */
-export const googleDriveListingCache = new RemoteListingCache<DriveFile>()
+// Kept a minute past expiry, so the change feed can vouch for a listing again after a slow poll.
+export const googleDriveListingCache = new RemoteListingCache<DriveFile>(60_000)
 const keyOf = (accountId: string, folderId: string) => JSON.stringify([accountId, folderId])
 export const googleDriveChangeFeed = new GoogleDriveChangeFeed(googleDriveListingCache, key => (JSON.parse(key) as [string, string])[1])
 
@@ -156,9 +157,10 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     return folderView(children, file => googleDriveExportCache.tooLarge(this.config.accountId, file))
   }
 
-  private children(folderId: string): Promise<DriveFile[]> {
+  private async children(folderId: string): Promise<DriveFile[]> {
     const key = keyOf(this.config.accountId, folderId)
     googleDriveChangeFeed.keepFresh(this.config.accountId)
+    await googleDriveChangeFeed.revalidate(this.config.accountId, key)
     return googleDriveListingCache.list(this.config.accountId, key, async () =>
       this.followShortcuts(await driveChildren(this.config.accountId, folderId, { agentSlug: this.agentSlug })))
   }

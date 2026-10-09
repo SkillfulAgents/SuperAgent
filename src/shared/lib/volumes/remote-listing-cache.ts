@@ -17,9 +17,16 @@ const expired = (listing: Listing<unknown>) => listing.readAt + TTL_MS <= Date.n
  * cache. Callers check account access even on a cache hit. No bytes or credentials
  * are retained here. */
 export class RemoteListingCache<T> {
+  /** `retainMs` keeps an expired listing that long after its read, for a source that can vouch for it again. */
+  constructor(private readonly retainMs = TTL_MS) {}
+
   private readonly directories = new Map<string, Listing<T>>()
   private readonly pending = new Map<string, { accountId: string; token: symbol; promise: Promise<T[]> }>()
   private entryCount = 0
+
+  private gone(listing: Listing<T>): boolean {
+    return listing.readAt + this.retainMs <= Date.now()
+  }
 
   private remove(key: string): void {
     this.entryCount -= this.directories.get(key)?.entries.length ?? 0
@@ -41,7 +48,10 @@ export class RemoteListingCache<T> {
   cached(key: string): T[] | undefined {
     const listing = this.directories.get(key)
     if (!listing) return undefined
-    if (expired(listing)) { this.remove(key); return undefined }
+    if (expired(listing)) {
+      if (this.gone(listing)) this.remove(key)
+      return undefined
+    }
     this.directories.delete(key)
     this.directories.set(key, listing)
     return listing.entries
@@ -82,7 +92,7 @@ export class RemoteListingCache<T> {
   private store(accountId: string, key: string, entries: T[], readAt: number, checkedAt = readAt): void {
     // Oversized directories are not retained.
     if (entries.length > MAX_ENTRIES) { this.remove(key); return }
-    for (const [key, listing] of this.directories) if (expired(listing)) this.remove(key)
+    for (const [key, listing] of this.directories) if (this.gone(listing)) this.remove(key)
     this.remove(key)
     this.directories.set(key, { accountId, entries, readAt, checkedAt })
     this.entryCount += entries.length
