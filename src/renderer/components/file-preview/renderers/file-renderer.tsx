@@ -38,19 +38,19 @@ export function FileRenderer({
       return <HtmlRenderer url={fileUrl} />
 
     case 'csv':
-      return <CsvRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <CsvRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'text':
       return <TextRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'image':
-      return <ImageRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <ImageRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'video':
-      return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'audio':
-      return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'pdf':
       return (

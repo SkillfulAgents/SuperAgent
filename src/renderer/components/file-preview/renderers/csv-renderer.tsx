@@ -4,45 +4,29 @@ import { cn } from '@shared/lib/utils/cn'
 import { parseCsv } from './csv-parse'
 import { TextRenderer } from './text-renderer'
 import { useFileContent } from './use-file-content'
-import { CommentOverlay } from '../comments/comment-overlay'
-import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-click'
+import { useCommentBox } from '../comments/use-comment-box'
+import type { CellRef } from '../comments/kinds'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 
 interface CsvRendererProps {
   url: string
   filePath: string
   agentSlug: string
-  commentsEnabled?: boolean
 }
 
 const MAX_ROWS = 1000
-const CSV_DISMISS_IGNORE = ['[data-comment-overlay]', '[data-csv-cell]']
-
-interface CellTarget {
-  row: number // 1-based data row
-  col: number // 0-based column index
-  column: string // column label
-  value: string
-  rect: DOMRect // relative to the container
-}
-
-type CellClickHandler = (e: React.MouseEvent, row: number, col: number, column: string, value: string) => void
 
 interface CsvTableProps {
   rows: string[][]
   columnLabels: string[]
-  /** "row:col" -> 1-based comment numbers pinned to that cell. */
-  commentsByCell: Map<string, number[]>
-  onCellClick: CellClickHandler
   commentsEnabled: boolean
 }
 
 /**
- * The grid itself, memoized so opening/closing the comment overlay (parent
- * `cellTarget` state) doesn't re-render up to MAX_ROWS × columns of cells.
- * Only re-renders when the data or pinned comments actually change.
+ * The grid itself, memoized so opening and closing a comment doesn't re-render
+ * up to MAX_ROWS × columns of cells. Comment markers are drawn into the cells.
  */
-const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, onCellClick, commentsEnabled }: CsvTableProps) {
+const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsEnabled }: CsvTableProps) {
   return (
     <table className="border-collapse text-xs font-mono">
       <thead>
@@ -68,31 +52,18 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
               <td className="sticky left-0 z-10 bg-background px-2 py-1 text-right text-muted-foreground/50 select-none align-top tabular-nums border-b border-r border-border/30 w-[1%]">
                 {rowNum}
               </td>
-              {row.map((value, c) => {
-                const cellComments = commentsByCell.get(`${rowNum}:${c}`)
-                return (
-                  <td
-                    key={c}
-                    data-csv-cell
-                    onClick={commentsEnabled ? (e) => onCellClick(e, rowNum, c, columnLabels[c], value) : undefined}
-                    className={cn(
-                      'relative px-3 py-1 align-top whitespace-pre-wrap break-words max-w-[28rem] border-b border-r border-border/30',
-                      commentsEnabled && 'cursor-pointer hover:bg-primary/5',
-                      cellComments && 'bg-primary/10',
-                    )}
-                  >
-                    {value}
-                    {cellComments && (
-                      <span
-                        className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-medium leading-[0.875rem] text-center shadow-sm pointer-events-none"
-                        title={`${cellComments.length} comment${cellComments.length === 1 ? '' : 's'}`}
-                      >
-                        {cellComments.length}
-                      </span>
-                    )}
-                  </td>
-                )
-              })}
+              {row.map((value, c) => (
+                <td
+                  key={c}
+                  data-comment-cell={`${rowNum}:${c}`}
+                  className={cn(
+                    'relative px-3 py-1 align-top whitespace-pre-wrap break-words max-w-[28rem] border-b border-r border-border/30',
+                    commentsEnabled && 'cursor-pointer hover:bg-primary/5',
+                  )}
+                >
+                  {value}
+                </td>
+              ))}
             </tr>
           )
         })}
@@ -101,29 +72,11 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
   )
 })
 
-export function CsvRenderer({ url, filePath, agentSlug, commentsEnabled = true }: CsvRendererProps) {
+export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
   const [view, setView] = useState<'table' | 'raw'>('table')
-  const [cellTarget, setCellTarget] = useState<CellTarget | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  const { commentsFor } = useFilePreview()
-
-  // The context Map preserves untouched per-file arrays across unrelated
-  // mutations, so keying the memo on this file's array (not the whole Map)
-  // keeps the table from re-rendering when another file's comments change.
-  const fileComments = commentsFor(filePath, agentSlug)
-  const commentsByCell = useMemo(() => {
-    const map = new Map<string, number[]>()
-    fileComments?.forEach((c, i) => {
-      if (c.anchor.kind === 'cell') {
-        const key = `${c.anchor.cell.row}:${c.anchor.cell.col}`
-        const list = map.get(key)
-        if (list) list.push(i + 1)
-        else map.set(key, [i + 1])
-      }
-    })
-    return map
-  }, [fileComments])
+  const gridRef = useRef<HTMLDivElement>(null)
+  const { commentsEnabled } = useFilePreview()
 
   const { data, isLoading, error } = useFileContent(url)
   const sizeTruncated = data?.truncated ?? false
@@ -152,19 +105,13 @@ export function CsvRenderer({ url, filePath, agentSlug, commentsEnabled = true }
     [parsed, rowsTruncated],
   )
 
-  useDismissOnOutsideClick(cellTarget != null, () => setCellTarget(null), CSV_DISMISS_IGNORE)
-
-  const handleCellClick = useCallback<CellClickHandler>((e, row, col, column, value) => {
-    const containerRect = containerRef.current?.getBoundingClientRect()
-    if (!containerRect) return
-    setCellTarget({
-      row,
-      col,
-      column,
-      value,
-      rect: new DOMRect(e.clientX - containerRect.left, e.clientY - containerRect.top, 0, 0),
-    })
-  }, [])
+  const cellAt = useCallback((row: number, col: number): CellRef | undefined => {
+    const value = visibleRows[row - 1]?.[col]
+    return value === undefined ? undefined : { row, col, column: columnLabels[col], value }
+  }, [visibleRows, columnLabels])
+  // Raw view hands comments to the nested text viewer.
+  const surface = useMemo(() => (view === 'table' ? { cell: { grid: gridRef, cellAt } } : null), [view, cellAt])
+  const { box, enabled } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   if (isLoading) {
     return (
@@ -225,13 +172,9 @@ export function CsvRenderer({ url, filePath, agentSlug, commentsEnabled = true }
         <TextRenderer url={url} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
       ) : (
         <>
-          <CsvTable
-            rows={visibleRows}
-            columnLabels={columnLabels}
-            commentsByCell={commentsByCell}
-            onCellClick={handleCellClick}
-            commentsEnabled={commentsEnabled}
-          />
+          <div ref={gridRef}>
+            <CsvTable rows={visibleRows} columnLabels={columnLabels} commentsEnabled={enabled} />
+          </div>
           {sizeTruncated && (
             <div className="px-4 py-3 border-t text-xs text-muted-foreground text-center">
               File is larger than 5&nbsp;MB and was truncated before parsing &mdash; later rows are missing. Download the
@@ -247,23 +190,7 @@ export function CsvRenderer({ url, filePath, agentSlug, commentsEnabled = true }
         </>
       )}
 
-      {commentsEnabled && cellTarget && (
-        <CommentOverlay
-          selection={{
-            text: '',
-            rect: cellTarget.rect,
-            cell: {
-              row: cellTarget.row,
-              col: cellTarget.col,
-              column: cellTarget.column,
-              value: cellTarget.value,
-            },
-          }}
-          filePath={filePath}
-          agentSlug={agentSlug}
-          onClose={() => setCellTarget(null)}
-        />
-      )}
+      {box}
     </div>
   )
 }
