@@ -11,6 +11,7 @@ vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
 import { AgentRuntimeRequestError, readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
+import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 
 beforeEach(() => {
   mockToastError.mockClear()
@@ -48,6 +49,17 @@ describe('handleMutationError', () => {
 
     handleMutationError(error, { agentRuntimeErrorsShownInline: true })
     expect(mockToastError).toHaveBeenCalledWith('LLM provider not found')
+  })
+
+  it('skips the toast for an error with a preview only when the caller shows it inline', async () => {
+    const response = () => new ProviderReconnectRequiredError('Provider sign-in expired or was revoked.').toHttpResponse()
+
+    handleMutationError(await readAgentRuntimeError(response(), 'Failed to send message'), { agentRuntimeErrorsShownInline: true })
+    expect(mockToastError).not.toHaveBeenCalled()
+
+    handleMutationError(await readAgentRuntimeError(response(), 'Failed to send message'))
+    expect(mockToastError).toHaveBeenCalledWith('Provider sign-in expired or was revoked.')
+    expect(mockCapture).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the fallback message for an error body without a code', async () => {

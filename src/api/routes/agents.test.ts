@@ -267,6 +267,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     coalesceIfRecovering: vi.fn(() => false),
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
+    markSessionIdle: vi.fn(),
+    markSessionProvisionallyActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     getTurnGeneration: vi.fn(() => 0),
     isSessionWaitingBackground: vi.fn(() => false),
@@ -734,6 +736,10 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 // Import the agents router after all mocks are set up
 import agents from './agents'
 import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
+import { CredentialRefreshError } from '../../../agent-container/src/credential-refresh-error'
+import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
+import { ProviderRefreshUnavailableError } from '@shared/lib/agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
@@ -6142,6 +6148,57 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
 
     expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+  })
+})
+
+describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  const reconnectRequired = () =>
+    new MessageNotAcceptedError('unavailable', 'Provider unavailable', {
+      cause: new ProviderReconnectRequiredError(new CredentialRefreshError(401).message),
+    })
+
+  const undoFreshTurn = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(messagePersister.markSessionProvisionallyActive).mockReturnValue(undoFreshTurn)
+  })
+
+  it('undoes a fresh turn so the retry is not treated as queued', async () => {
+    mockSendMessage.mockRejectedValueOnce(reconnectRequired())
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(424)
+    expect(await res.json()).toMatchObject({ code: 'provider_reconnect_required' })
+    expect(messagePersister.markSessionProvisionallyActive).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells the client when to retry a temporary refresh outage', async () => {
+    mockSendMessage.mockRejectedValueOnce(
+      new MessageNotAcceptedError('unavailable', 'Provider unavailable', {
+        cause: new ProviderRefreshUnavailableError(new CredentialRefreshError(503).message),
+      }))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a running turn active when a queued follow-up is rejected', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container unavailable'))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(500)
+    expect(messagePersister.markSessionActive).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(messagePersister.markSessionProvisionallyActive).not.toHaveBeenCalled()
+    expect(undoFreshTurn).not.toHaveBeenCalled()
   })
 })
 
