@@ -146,7 +146,7 @@ describe('Google Drive filesystem', () => {
   })
 
   it('never seeds a made folder over a listing read, or a read begun, since it was made', async () => {
-    const key = JSON.stringify(['account', 'f'])
+    const key = 'f:account'
     googleDriveListingCache.put('account', key, [{ id: 'x', name: 'x.txt', mimeType: 'text/plain', modifiedTime: at }], Date.now())
     googleDriveListingCache.seed('account', key, [], Date.now())
     expect(googleDriveListingCache.cached(key)).toHaveLength(1)
