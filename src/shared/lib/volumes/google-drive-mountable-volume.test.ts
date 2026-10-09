@@ -81,7 +81,7 @@ describe('Google Drive filesystem', () => {
     const before = listings()
     upload.mockImplementationOnce(async (_account, _session, _body, options: { publish: (send: () => Promise<unknown>) => Promise<unknown> }) => options.publish(async () => {
       // A poll finds root1 changed in Drive while this write holds it.
-      googleDriveListingCache.confirm('account', 0, 0, 0, () => true)
+      googleDriveListingCache.confirm('account', 0, 0, () => 'stale')
       return blob('made_two', 'two.txt', 1)
     }))
     await volume().write('two.txt', new Blob(['x']).stream())

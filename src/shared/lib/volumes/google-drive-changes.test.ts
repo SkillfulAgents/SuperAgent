@@ -104,6 +104,38 @@ describe('Google Drive change feed', () => {
     expect(listings.recent(key('f'), Infinity)?.readAt).toBe(0)
   })
 
+  it('vouches for a listing whose read landed after a poll it overlapped, unless that poll reported a change to it', async () => {
+    await started()
+    /** Send a poll, start reading the folder, let the poll answer `page` first, then let the read land. */
+    async function overlap(page: unknown) {
+      let answerPoll = (_page: unknown) => {}
+      request.mockImplementationOnce(async () => new Promise(resolve => { answerPoll = body => resolve(Response.json(body)) }))
+      feed.keepFresh('a', key('f'))
+      await tick(200)
+      listings.forget(key('f'))
+      let answerRead = (_files: DriveFile[]) => {}
+      const reading = listings.list('a', key('f'), () => new Promise<DriveFile[]>(resolve => { answerRead = resolve }))
+      await tick(300)
+      answerPoll(page)
+      await settle()
+      answerRead([file('x', 'x.txt')])
+      await reading
+    }
+    await tick(12_000)
+    await overlap({ changes: [], newStartPageToken: 't2' })
+    await tick(12_000)
+    feed.keepFresh('a', key('f'))
+    await settle()
+    // Read at 16.2 s, after the poll that arrived at 16.5 s was sent. The poll at 28.5 s vouches for it as of 18.5 s.
+    expect(listings.recent(key('f'), Infinity)?.readAt).toBe(18_500)
+    await tick(4_000)
+    await overlap({ changes: [changed('n', 'new.txt', ['f'])], newStartPageToken: 't3' })
+    await tick(4_000)
+    feed.keepFresh('a', key('f'))
+    await settle()
+    expect(listings.recent(key('f'), Infinity)).toBeUndefined()
+  })
+
   it('starts again after a failed poll, and reads every folder again rather than page through a long backlog', async () => {
     await started()
     request.mockImplementationOnce(async () => { throw new Error('upstream') })
