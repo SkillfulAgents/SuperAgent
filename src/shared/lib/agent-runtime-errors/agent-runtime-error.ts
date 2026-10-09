@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { findErrorInCauseChain } from '../utils/error-cause'
+
 /** Every AgentRuntimeError response has this body; each error extends it in its own schema. */
 export const agentRuntimeErrorBodySchema = z.looseObject({
   code: z.string().min(1),
@@ -32,15 +34,6 @@ export abstract class AgentRuntimeError extends Error {
 }
 
 /** Callers often wrap the failure (e.g. in MessageNotAcceptedError), so walk `cause`. */
-export function findErrorInCauseChain<T extends Error>(error: unknown, type: abstract new (...args: never[]) => T): T | null {
-  const seen = new Set<unknown>()
-  for (let current = error; current instanceof Error && !seen.has(current); current = current.cause) {
-    if (current instanceof type) return current
-    seen.add(current)
-  }
-  return null
-}
-
 export function findAgentRuntimeError(error: unknown): AgentRuntimeError | null {
   return findErrorInCauseChain(error, AgentRuntimeError)
 }

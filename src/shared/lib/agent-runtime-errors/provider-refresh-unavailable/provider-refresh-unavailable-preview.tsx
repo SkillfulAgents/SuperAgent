@@ -8,6 +8,7 @@ export function ProviderRefreshUnavailablePreview({ error }: AgentRuntimeErrorPr
       message={error.message}
       presentation={{ severity: 'warning', icon: 'triangle-alert', message: error.message }}
       dismissible
+      showDefaultHint={false}
     />
   )
 }

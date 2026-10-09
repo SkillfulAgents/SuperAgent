@@ -2793,7 +2793,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // mid-turn is queued by the agent loop rather than starting a new turn.
       const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-      agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      // A rejected fresh turn is undone so the retry starts a new turn, unless a
+      // concurrent send, turn, or output has taken the session over meanwhile.
+      let undoFreshTurn: (() => void) | undefined
+      if (wasQueued) agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      else undoFreshTurn = agentRegistry.get(agentSlug).sessions.markProvisionalActive(sessionId)
 
       // A mid-turn send must not carry model/effort/speed: the container treats a
       // parameter change as interrupt/restart of the in-flight query. The
@@ -2818,8 +2822,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       try {
         await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
       } catch (error) {
-        // No turn started, so the retry must be a fresh turn, not a queued follow-up.
-        if (!wasQueued && error instanceof MessageNotAcceptedError) actor.sessions.markIdle(sessionId)
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
         throw error
       }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)

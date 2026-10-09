@@ -1,5 +1,5 @@
 import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
-import { findErrorInCauseChain } from '../agent-runtime-errors/agent-runtime-error'
+import { findErrorInCauseChain } from '../utils/error-cause'
 import { ProviderReconnectRequiredError } from '../agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 import { ProviderRefreshUnavailableError } from '../agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
 import { connectionRuntime, type ConnectionRuntime } from './connection-runtime'

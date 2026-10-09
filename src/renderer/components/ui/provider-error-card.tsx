@@ -50,10 +50,8 @@ function markdownComponents(openSettings: ((tab: string) => void) | undefined): 
   }
 }
 
-function defaultHint(raw: string): string | undefined {
+function defaultHint(raw: string): string {
   const lower = raw.toLowerCase()
-  // A transient outage: the message already says to retry, and settings are fine.
-  if (lower.includes('temporarily unavailable')) return undefined
   if (lower.includes('invalid or revoked') || lower.includes('authentication') || lower.includes('401')) {
     return 'Your access token may have expired or been revoked. Please reconnect your platform account in Settings.'
   }
@@ -67,10 +65,13 @@ function hasMarkdownLink(markdown: string): boolean {
 export function ProviderErrorView({
   presentation,
   rawMessage,
+  showDefaultHint = true,
   'data-testid': testId,
 }: {
   presentation: ProviderErrorPresentation
   rawMessage?: string
+  /** Off when the message already says what to do, e.g. retry a temporary outage. */
+  showDefaultHint?: boolean
   'data-testid'?: string
 }) {
   const Icon = ICONS[presentation.icon] ?? Info
@@ -84,7 +85,7 @@ export function ProviderErrorView({
       message={
         <Markdown components={components}>{presentation.message}</Markdown>
       }
-      hint={hasMarkdownLink(presentation.message) ? undefined : defaultHint(rawMessage ?? presentation.message)}
+      hint={!showDefaultHint || hasMarkdownLink(presentation.message) ? undefined : defaultHint(rawMessage ?? presentation.message)}
       severity={presentation.severity}
       icon={Icon}
       className={OPAQUE_DARK[presentation.severity]}
@@ -100,8 +101,9 @@ export function ProviderErrorCard({
   message,
   presentation,
   dismissible = false,
+  showDefaultHint,
   'data-testid': testId,
-}: ProviderErrorComponentProps & { 'data-testid'?: string }) {
+}: ProviderErrorComponentProps & { showDefaultHint?: boolean; 'data-testid'?: string }) {
   const [dismissed, setDismissed] = useState(false)
   const resolved = useMemo(
     () => presentation ?? defaultParseErrorResponse(undefined, message),
@@ -113,6 +115,7 @@ export function ProviderErrorCard({
       <ProviderErrorView
         presentation={resolved}
         rawMessage={message}
+        showDefaultHint={showDefaultHint}
         data-testid={testId}
       />
       {dismissible && (

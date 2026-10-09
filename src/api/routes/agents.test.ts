@@ -268,6 +268,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionIdle: vi.fn(),
+    markSessionProvisionallyActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     getTurnGeneration: vi.fn(() => 0),
     isSessionWaitingBackground: vi.fn(() => false),
@@ -6158,20 +6159,23 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
       cause: new ProviderReconnectRequiredError(new CredentialRefreshError(401).message),
     })
 
+  const undoFreshTurn = vi.fn()
+
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(messagePersister.markSessionProvisionallyActive).mockReturnValue(undoFreshTurn)
   })
 
-  it('marks a fresh turn idle again so the retry is not treated as queued', async () => {
+  it('undoes a fresh turn so the retry is not treated as queued', async () => {
     mockSendMessage.mockRejectedValueOnce(reconnectRequired())
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(424)
     expect(await res.json()).toMatchObject({ code: 'provider_reconnect_required' })
-    expect(messagePersister.markSessionActive).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(messagePersister.markSessionIdle).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(messagePersister.markSessionProvisionallyActive).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
   })
 
   it('tells the client when to retry a temporary refresh outage', async () => {
@@ -6183,7 +6187,7 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(503)
     expect(res.headers.get('Retry-After')).toBe('30')
-    expect(messagePersister.markSessionIdle).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
   })
 
   it('leaves a running turn active when a queued follow-up is rejected', async () => {
@@ -6192,7 +6196,9 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(500)
-    expect(messagePersister.markSessionIdle).not.toHaveBeenCalled()
+    expect(messagePersister.markSessionActive).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(messagePersister.markSessionProvisionallyActive).not.toHaveBeenCalled()
+    expect(undoFreshTurn).not.toHaveBeenCalled()
   })
 })
 
