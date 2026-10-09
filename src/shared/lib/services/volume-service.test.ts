@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, user } from '@shared/lib/db/schema'
-import { attachMount, removeMount } from './mount-service'
+import { attachMount, removeMount, completeMountRemovals } from './mount-service'
 import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
@@ -58,6 +58,9 @@ describe('volume ownership', () => {
     await expect(updateVolumeDefinition(id, { name: 'Notes', visibility: 'public' }, admin)).rejects.toMatchObject({ status: 409 })
     await updateVolumeDefinition(id, { name: 'Renamed', visibility: 'private' }, admin)
     await removeMount('agent', mount.id)
+    await expect(deleteVolumeDefinition(id, admin)).rejects.toMatchObject({ status: 409 })
+    await expect(updateVolumeDefinition(id, { name: 'Notes', visibility: 'public' }, admin)).rejects.toMatchObject({ status: 409 })
+    await completeMountRemovals('agent')
     await updateVolumeDefinition(id, { name: 'Renamed', visibility: 'public' }, admin)
     expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, userId: null, attachmentCount: 0 }])
     await deleteVolumeDefinition(id, admin)
