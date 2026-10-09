@@ -65,13 +65,15 @@ export class RemoteListingCache<T> {
     this.store(accountId, key, entries, readAt, checkedAt)
   }
 
-  /** Apply a source's report of what changed: drop each listing `stale` says no longer matches, and treat
-   * the rest last checked at or after `since` as read at `upTo` and checked at `checkedAt`. */
-  confirm(accountId: string, since: number, upTo: number, checkedAt: number, stale: (key: string, entries: T[]) => boolean): void {
+  /** Apply a source's report of what changed. `judge` says, from a listing's entries and when it was last
+   * checked, whether it no longer matches (dropped), is current (treated as read at `upTo` and checked at
+   * `checkedAt`), or cannot be vouched for (left to expire). */
+  confirm(accountId: string, upTo: number, checkedAt: number, judge: (key: string, entries: T[], checkedAt: number) => 'stale' | 'current' | 'unknown'): void {
     for (const [key, listing] of this.directories) {
       if (listing.accountId !== accountId) continue
-      if (stale(key, listing.entries)) { this.remove(key); continue }
-      if (listing.checkedAt < since) continue
+      const verdict = judge(key, listing.entries, listing.checkedAt)
+      if (verdict === 'stale') { this.remove(key); continue }
+      if (verdict === 'unknown') continue
       listing.readAt = Math.max(listing.readAt, upTo)
       listing.checkedAt = checkedAt
     }

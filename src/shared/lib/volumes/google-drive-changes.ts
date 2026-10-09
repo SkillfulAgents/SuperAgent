@@ -10,6 +10,8 @@ const POLL_EVERY_MS = 3_000
 const IDLE_MS = 60_000
 /** The feed covers the whole account. Past this many pages since the last poll, every listing is read again instead. */
 const MAX_PAGES = 3
+/** How long a poll's changes are kept to check listings read while it or a later poll was in flight. */
+const RETAIN_MS = 20_000
 
 const changeSchema = z.object({
   fileId: driveIdSchema.optional(),
@@ -33,7 +35,9 @@ export function staleAfter(folderId: string, entries: DriveFile[], change: Drive
     || listed.size !== file.size || listed.mimeType !== file.mimeType
 }
 
-interface Feed { token: string; coveredFrom: number; polledAt: number }
+interface Poll { arrivedAt: number; changes: DriveChange[] }
+/** `history` holds every change reported after `coveredFrom`. A listing last checked before then cannot be vouched for. */
+interface Feed { token: string; coveredFrom: number; polledAt: number; history: Poll[] }
 
 /** Drive's account-wide change feed, polled while the account's listings are read. A poll that finds nothing
  * touching a cached folder keeps its listing current, so a walk over many folders costs one call instead of a
@@ -65,7 +69,7 @@ export class GoogleDriveChangeFeed {
     const polledAt = Date.now()
     const { startPageToken } = startSchema.parse(await (await driveRequest(accountId, { method: 'GET', path: 'drive/v3/changes/startPageToken' })).json())
     // A listing read after this answer arrived sees every change the feed reports from this token on.
-    this.feeds.set(accountId, { token: startPageToken, coveredFrom: Date.now(), polledAt })
+    this.feeds.set(accountId, { token: startPageToken, coveredFrom: Date.now(), polledAt, history: [] })
   }
 
   private async poll(accountId: string, feed: Feed): Promise<void> {
@@ -84,9 +88,17 @@ export class GoogleDriveChangeFeed {
       if (!body.nextPageToken) throw new Error('A change page ended without a token')
       token = body.nextPageToken
     }
-    const checkedAt = Date.now()
-    this.listings.confirm(accountId, feed.coveredFrom, polledAt - FEED_LAG_MS, checkedAt,
-      (key, entries) => changes.some(change => staleAfter(this.folderOf(key), entries, change)))
-    this.feeds.set(accountId, { token, coveredFrom: checkedAt, polledAt })
+    const arrivedAt = Date.now()
+    const retained = (poll: Poll) => poll.arrivedAt >= arrivedAt - RETAIN_MS
+    const history = [...feed.history.filter(retained), { arrivedAt, changes }]
+    const coveredFrom = feed.history.filter(poll => !retained(poll)).at(-1)?.arrivedAt ?? feed.coveredFrom
+    // A listing reflects every change a poll that arrived before it was checked reported. Any poll that
+    // arrived after may hold a change it misses.
+    this.listings.confirm(accountId, polledAt - FEED_LAG_MS, arrivedAt, (key, entries, checkedAt) => {
+      const folderId = this.folderOf(key)
+      if (history.some(poll => poll.arrivedAt > checkedAt && poll.changes.some(change => staleAfter(folderId, entries, change)))) return 'stale'
+      return checkedAt < coveredFrom ? 'unknown' : 'current'
+    })
+    this.feeds.set(accountId, { token, coveredFrom, polledAt, history })
   }
 }
