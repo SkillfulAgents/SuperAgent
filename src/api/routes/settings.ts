@@ -49,6 +49,7 @@ import {
 } from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getVoiceProvider } from '@shared/lib/voice'
+import { DECISION_PROVIDERS, getDecisionProvider } from '@shared/lib/decision'
 import {
   findWebProvider,
   getWebProvider,
@@ -351,6 +352,8 @@ function buildSettingsResponse(
       deepgram: getVoiceProvider('deepgram').getApiKeyStatus(),
       openai: getVoiceProvider('openai').getApiKeyStatus(),
       exa: getWebProvider('exa').getApiKeyStatus(),
+      typesafe: getDecisionProvider('typesafe').getApiKeyStatus(),
+      cloudflare: getDecisionProvider('cloudflare').getApiKeyStatus(),
     },
     models: getEffectiveModels(),
     agentLimits: getEffectiveAgentLimits(),
@@ -363,6 +366,8 @@ function buildSettingsResponse(
     runtimeReadiness: containerHost.getReadiness(),
     auth: appSettings.auth,
     voice: getVoiceSettings(),
+    decision: appSettings.decision,
+    cloudflareAccountId: appSettings.apiKeys?.cloudflareAccountId,
     tenantId: getTenantId(),
     computerUse: appSettings.computerUse,
     shareAnalytics: appSettings.shareAnalytics !== false,
@@ -861,6 +866,13 @@ settings.post('/validate-web-key', async (c) => {
     const message = error instanceof Error ? error.message : 'Validation failed'
     return c.json({ valid: false, error: message })
   }
+})
+
+// POST /api/settings/validate-decision-key - Validate a decision provider key before saving it.
+settings.post('/validate-decision-key', async (c) => {
+  const body = z.object({ provider: z.enum(DECISION_PROVIDERS), apiKey: z.string().min(1) }).safeParse(await c.req.json())
+  if (!body.success) return c.json({ valid: false, error: 'A decision provider and API key are required' }, 400)
+  return c.json(await getDecisionProvider(body.data.provider).validateKey(body.data.apiKey))
 })
 
 // POST /api/settings/factory-reset - Reset all data
