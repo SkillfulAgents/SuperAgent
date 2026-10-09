@@ -1,6 +1,7 @@
 import { modelSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
+import type { DecisionSettings } from '../decision/types'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -68,6 +69,9 @@ export interface ApiKeySettings {
   nangoSecretKey?: string
   accountProviderUserId?: string
   exaApiKey?: string
+  typesafeApiKey?: string
+  cloudflareApiToken?: string
+  cloudflareAccountId?: string
 }
 
 export type { VoiceProvider } from '../voice/provider-types'
@@ -298,6 +302,7 @@ export interface AppSettings {
   skillsetCredentials?: Record<string, SkillsetCredential>
   auth?: AuthSettings
   voice?: VoiceSettings
+  decision?: DecisionSettings
   computerUse?: ComputerUseSettings
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
@@ -401,12 +406,17 @@ export interface GlobalSettingsResponse {
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
+    typesafe: ApiKeyStatus
+    cloudflare: ApiKeyStatus
   }
   composioUserId?: string
   /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
   genericBaseUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
+  decision?: DecisionSettings
+  /** Not a secret — echoed so the Settings UI can display/edit it. */
+  cloudflareAccountId?: string
   models: ModelSettings
   agentLimits: AgentLimitsSettings
   customEnvVars: Record<string, string>
@@ -616,6 +626,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       ...loaded.auth,
     },
     voice: loaded.voice,
+    decision: loaded.decision,
     computerUse: loaded.computerUse,
     shareAnalytics: loaded.shareAnalytics ?? true,
     analyticsTargets: loaded.analyticsTargets,
