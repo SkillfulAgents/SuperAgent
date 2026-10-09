@@ -70,6 +70,15 @@ function rangedVolumeFile(size: number, download: (range: ByteRange) => Promise<
  * by at most this long. Deletes and moves always re-read, so they never act on a renamed entry. */
 const TRUSTED_LISTING_MS = 5_000
 
+/** A tree walk such as find or grep -r lists a folder soon after its parent. When folders were last listed, by key. */
+export const googleDriveRecentListings = new Map<string, number>()
+const WALK_MS = 10_000
+/** Folders listed ahead of a walk: at most this many per listing, this many at a time per account. */
+const PREFETCH_MAX = 32
+const PREFETCH_PARALLEL = 4
+const prefetchLimits = new Map<string, ReturnType<typeof pLimit>>()
+const prefetching = new Set<string>()
+
 /** The latest check that each volume root is alive, by account and folder ID, shared while it runs. */
 export const googleDriveRootChecks = new Map<string, { at: number; check: Promise<unknown> }>()
 
@@ -324,13 +333,40 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   async list(relative: string): Promise<VolumeEntry[]> {
     // Cache hits must not outlive deletion/revocation of the connected account.
     await requireGoogleDriveAccount(this.config.accountId)
-    const folderId = await this.folderIdOf(relative)
+    const located = await this.resolve(relative)
+    if (located && !isFolder(located.entry.file)) throw new WorkspaceFileError('not-a-directory')
+    const folderId = located?.entry.file.id ?? this.config.folderId
     const children = await this.children(folderId)
+    this.prefetchWalk(located?.parentId, folderId, children)
     await this.learn(this.view(children).entries)
     // A second pass hides exports found too large just now.
     const { entries, warnings } = this.view(children)
     for (const warning of warnings) console.warn(`[volumes] Google Drive folder ${folderId}: ${warning}`)
     return entries.map(entry => this.entryOf(entry))
+  }
+
+  /** Once a folder is listed soon after its parent, list the parent's other subfolders and this folder's
+   * subfolders ahead of the walk, a few at a time. A single listing reads nothing extra. */
+  private prefetchWalk(parentId: string | undefined, folderId: string, children: DriveFile[]): void {
+    const { accountId } = this.config
+    const now = Date.now()
+    for (const [key, at] of googleDriveRecentListings) if (at < now - WALK_MS) googleDriveRecentListings.delete(key)
+    googleDriveRecentListings.set(keyOf(accountId, folderId), now)
+    if (!parentId || !googleDriveRecentListings.has(keyOf(accountId, parentId))) return
+    let limit = prefetchLimits.get(accountId)
+    if (!limit) {
+      limit = pLimit(PREFETCH_PARALLEL)
+      prefetchLimits.set(accountId, limit)
+    }
+    const siblings = googleDriveListingCache.recent(keyOf(accountId, parentId), Infinity)?.entries ?? []
+    const ahead = [...siblings, ...children].filter(file => isFolder(file) && !file.shortcutId && file.id !== folderId).slice(0, PREFETCH_MAX)
+    for (const file of ahead) {
+      const key = keyOf(accountId, file.id)
+      if (prefetching.has(key) || googleDriveListingCache.cached(key)) continue
+      prefetching.add(key)
+      // A failed listing ahead is read again when the walk reaches it.
+      void limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key))
+    }
   }
 
   async stat(relative: string): Promise<VolumeEntry> {

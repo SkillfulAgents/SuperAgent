@@ -10,7 +10,7 @@ const { request, upload, requireAccount, TooLarge } = vi.hoisted(() => ({
 vi.mock('./google-drive-client', () => ({ driveRequest: request, driveUpload: upload, requireGoogleDriveAccount: requireAccount, DriveExportTooLargeError: TooLarge }))
 let exportCache: GoogleDriveExportCache
 vi.mock('./google-drive-export-cache', async importOriginal => ({ ...await importOriginal<object>(), get googleDriveExportCache() { return exportCache } }))
-import { GoogleDriveMountableVolume, googleDriveListingCache, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
+import { GoogleDriveMountableVolume, googleDriveListingCache, googleDriveRecentListings, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { GoogleDriveExportCache } from './google-drive-export-cache'
 import { DRIVE_FILE_FIELDS } from './google-drive-schema'
 
@@ -51,6 +51,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   googleDriveListingCache.invalidate('account')
   googleDriveRootChecks.clear()
+  googleDriveRecentListings.clear()
   exportCache = new GoogleDriveExportCache()
   requireAccount.mockResolvedValue({})
   upload.mockImplementation(async (_account, session: { path: string; json: { name?: string } }, _body, options?: { publish?: (send: () => Promise<unknown>) => Promise<unknown> }) => {
@@ -72,6 +73,19 @@ describe('Google Drive filesystem', () => {
     serve({ folders: { root1: [blob('n', 'keep.txt')] } })
     await volume().delete('keep.txt')
     expect(calls()).toContain('PATCH drive/v3/files/n')
+  })
+
+  it('lists ahead of a tree walk, never for a single listing', async () => {
+    serve({ folders: { root1: [folder('a', 'a'), folder('b', 'b')], a: [folder('x', 'x')], b: [], x: [] } })
+    const listed = (id: string) => request.mock.calls.filter(([, req]) => req.path === 'drive/v3/files' && req.query?.q?.startsWith(`'${id}' in parents`)).length
+    await volume().list('')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(listed('b') + listed('a')).toBe(0)
+    await volume().list('a')
+    await vi.waitFor(() => { expect([listed('b'), listed('x')]).toEqual([1, 1]) })
+    await volume().list('b')
+    await volume().list('a/x')
+    expect([listed('b'), listed('x')]).toEqual([1, 1])
   })
 
   it('reads a folder again when the change feed dropped the listing a change started from', async () => {
