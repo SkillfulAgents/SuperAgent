@@ -20,6 +20,23 @@ export const volumeRuntimeStateSchema = z.object({
   Config: z.object({ Env: z.array(z.string()).nullish() }).optional(),
 })
 
+const appleVolumeRuntimeStateSchema = z.object({
+  status: z.union([z.string(), z.object({ state: z.string() })]),
+  configuration: z.object({
+    initProcess: z.object({ environment: z.array(z.string()) }).optional(),
+  }).optional(),
+})
+
+export function appleRuntimeHasVolumes(container: unknown): boolean | undefined {
+  const state = appleVolumeRuntimeStateSchema.safeParse(container)
+  if (!state.success) return undefined
+  const { status, configuration } = state.data
+  return runtimeHasVolumes({
+    State: { Running: (typeof status === 'string' ? status : status.state) === 'running' },
+    Config: configuration?.initProcess ? { Env: configuration.initProcess.environment } : undefined,
+  })
+}
+
 export function runtimeHasVolumes(container: unknown): boolean | undefined {
   const state = volumeRuntimeStateSchema.safeParse(container)
   if (!state.success) return undefined

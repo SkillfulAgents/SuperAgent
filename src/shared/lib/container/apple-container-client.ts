@@ -11,6 +11,7 @@ import type { ContainerConfig, ContainerInfo, ContainerStats, ImagePullProgress 
 import { isAdminPrivilegeCancelError, runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getAppPort } from '@shared/lib/proxy/host-url'
+import { appleRuntimeHasVolumes } from './volume-stop-schema'
 
 export type AppleContainerProvisionProgress = Pick<ImagePullProgress, 'status' | 'percent'>
 
@@ -240,11 +241,12 @@ export class AppleContainerClient extends BaseContainerClient {
     const containerName = this.getContainerName()
     const runner = this.getRunnerCommand()
     try {
-      const { stdout } = await execWithPath(`${runner} inspect ${containerName}`)
+      const { stdout } = await execWithPath(`${runner} inspect ${containerName}`, { timeoutMs: 5_000 })
       const data = JSON.parse(stdout)
 
       // Handle both possible formats: single object or array of objects
       const info = Array.isArray(data) ? data[0] : data
+      this.runningHasVolumes = appleRuntimeHasVolumes(info)
 
       // Apple Container 1.x: status is `{ state: 'running', ... }`.
       // Older shape used a string; accept both.

@@ -62,6 +62,22 @@ const CLI_VERSION_1_1 = 'container CLI version 1.1.0 (build: release, commit: 59
 const cliAbsentError = () => Object.assign(new Error('sh: container: command not found'), { code: 127 })
 
 describe('AppleContainerClient.getInfoFromRuntime', () => {
+  it.each([
+    { environment: [], expected: false },
+    { environment: ['SUPERAGENT_VOLUMES=[]'], expected: false },
+    { environment: ['SUPERAGENT_VOLUMES=[{"volumeId":"saved"}]'], expected: true },
+    { environment: ['SUPERAGENT_VOLUMES=invalid'], expected: undefined },
+  ])('remembers the inspected volume configuration: $environment', async ({ environment, expected }) => {
+    mockExecWithPath.mockResolvedValue({ stdout: JSON.stringify([{
+      status: { state: 'running' },
+      configuration: { initProcess: { environment } },
+    }]) })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await client.getInfoFromRuntime()
+    expect((client as any).runningHasVolumes).toBe(expected)
+    expect(mockExecWithPath).toHaveBeenLastCalledWith('container inspect superagent-abc123', { timeoutMs: 5_000 })
+  })
+
   it('treats status.state=running as running (Apple Container 1.x inspect shape)', async () => {
     mockExecWithPath.mockResolvedValue({
       stdout: JSON.stringify({
