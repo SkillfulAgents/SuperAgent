@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { notifyMessageSent } from '@renderer/context/file-preview-context'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -335,6 +336,8 @@ export function useSendMessage(options: {
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
     onSuccess: (result, variables) => {
+      // Accepted: anything the agent writes for it now counts as a new change.
+      if (variables.shouldQuery !== false) notifyMessageSent(variables.sessionId)
       if (variables.shouldQuery === false) {
         // No turn follows an append, so no stream frame triggers the refetch
         // that shows it. The CLI writes the entry within moments of the POST.

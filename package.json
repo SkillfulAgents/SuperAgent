@@ -164,6 +164,7 @@
     "cronstrue": "^3.14.0",
     "cross-env": "^7.0.3",
     "d3-force": "^3.0.0",
+    "diff": "^8.0.4",
     "drizzle-kit": "^0.31.9",
     "electron": "^41.1.0",
     "electron-builder": "^26.4.0",

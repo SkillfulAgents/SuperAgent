@@ -4,6 +4,7 @@ import type { WorkspaceWrite } from '@shared/lib/tools/workspace-write'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { subscribeWorkspaceWrites } from '@renderer/hooks/use-message-stream'
 import { refreshesOnWorkspaceWrite } from '@renderer/lib/file-types'
+import { reconcileEdits, type FileEdits } from '@renderer/components/file-preview/file-edits'
 
 export interface FileTab {
   kind: 'file'
@@ -20,6 +21,8 @@ export interface FileTab {
   version: number
   /** 1-based page currently shown when this tab contains a PDF. */
   pdfPage: number
+  /** The agent's latest edit, for markdown tabs in a session. */
+  edits?: FileEdits
 }
 
 export interface FolderTab {
@@ -116,6 +119,11 @@ interface FilePreviewContextType {
   closeTab: (tabKey: string) => void
   setActiveTab: (index: number) => void
   setPdfPage: (filePath: string, agentSlug: string, page: number) => void
+  setShowEdits: (filePath: string, agentSlug: string, show: boolean) => void
+  /** One file's edits; the one place the renderer looks them up. */
+  editsFor: (filePath: string, agentSlug: string) => FileEdits | undefined
+  /** The preview showed this text for the file: highlight what changed since it last showed it. */
+  recordShownText: (filePath: string, agentSlug: string, text: string) => void
   close: () => void
 
   /** Comments on one agent's copy of a path; the one place the key is composed. */
@@ -126,6 +134,23 @@ interface FilePreviewContextType {
 }
 
 const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
+
+// Messages you send, by session, so open previews start a new highlight at the next change.
+const messageSentListeners = new Map<string, Set<() => void>>()
+
+export function notifyMessageSent(sessionId: string): void {
+  messageSentListeners.get(sessionId)?.forEach(listener => listener())
+}
+
+function onMessageSent(sessionId: string, listener: () => void): () => void {
+  const listeners = messageSentListeners.get(sessionId) ?? new Set()
+  messageSentListeners.set(sessionId, listeners)
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) messageSentListeners.delete(sessionId)
+  }
+}
 
 let lastFileVersion = 0
 
@@ -219,6 +244,15 @@ export function FilePreviewProvider({
       setOpenTabs(prev => refreshWrittenTabs(prev, agentSlug, write, version))
     })
   }, [sessionId, agentSlug])
+
+  useEffect(() => {
+    if (!sessionId) return
+    return onMessageSent(sessionId, () => {
+      setOpenTabs(prev => prev.map(tab => (
+        tab.kind === 'file' && tab.edits ? { ...tab, edits: { ...tab.edits, fresh: true } } : tab
+      )))
+    })
+  }, [sessionId])
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
     // Minted outside the updater: React may invoke an updater more than once per
@@ -485,6 +519,33 @@ export function FilePreviewProvider({
     })
   }, [])
 
+  const editsFor = useCallback((filePath: string, agentSlug: string) => {
+    const tab = openTabs.find(t => isFileTabFor(t, agentSlug, filePath))
+    return tab?.kind === 'file' ? tab.edits : undefined
+  }, [openTabs])
+
+  const recordShownText = useCallback((filePath: string, agentSlug: string, text: string) => {
+    setOpenTabs(prev => {
+      let changed = false
+      const next = prev.map(tab => {
+        if (tab.kind !== 'file' || !isFileTabFor(tab, agentSlug, filePath)) return tab
+        const edits = reconcileEdits(tab.edits, text)
+        if (edits === tab.edits) return tab
+        changed = true
+        return { ...tab, edits }
+      })
+      return changed ? next : prev
+    })
+  }, [])
+
+  const setShowEdits = useCallback((filePath: string, agentSlug: string, show: boolean) => {
+    setOpenTabs(prev => prev.map(tab => (
+      tab.kind === 'file' && tab.edits && isFileTabFor(tab, agentSlug, filePath)
+        ? { ...tab, edits: { ...tab.edits, show } }
+        : tab
+    )))
+  }, [])
+
   const close = useCallback(() => {
     setIsOpen(false)
   }, [])
@@ -545,12 +606,15 @@ export function FilePreviewProvider({
     closeTab,
     setActiveTab,
     setPdfPage,
+    setShowEdits,
+    editsFor,
+    recordShownText,
     close,
     commentsFor,
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, commentsFor, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, setShowEdits, editsFor, recordShownText, close, commentsFor, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

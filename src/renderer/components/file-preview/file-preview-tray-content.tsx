@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
-import { ArrowDownToLine, PanelRight, X } from 'lucide-react'
+import { visibleBefore } from './file-edits'
+import { ArrowDownToLine, FileDiff, PanelRight, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
@@ -20,7 +21,7 @@ interface FilePreviewTrayContentProps {
 }
 
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
-  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, commentsFor } = useFilePreview()
+  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, setShowEdits, closeTab, commentsFor } = useFilePreview()
   // The body card squares off its top-left corner only while the active tab sits
   // directly above it; the strip is the only thing that knows when that is.
   const [leadingTabFlush, setLeadingTabFlush] = useState(false)
@@ -99,6 +100,26 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           <TooltipProvider delayDuration={300}>
           <div className="flex shrink-0 items-center gap-1 text-muted-foreground">
             {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
+            {file?.preview === 'markdown' && activeFile?.edits && visibleBefore(activeFile.edits) !== null && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setShowEdits(file.path, file.agentSlug, !activeFile.edits?.show)}
+                    className={cn(
+                      'p-0.5 rounded hover:bg-muted transition-colors',
+                      activeFile.edits.show && 'bg-muted text-foreground',
+                    )}
+                    aria-label="Show changes"
+                    aria-pressed={activeFile.edits.show}
+                    data-testid="file-preview-show-edits"
+                  >
+                    <FileDiff className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{activeFile.edits.show ? 'Hide changes' : 'Show changes'}</TooltipContent>
+              </Tooltip>
+            )}
             {file?.inlineUrl && isCopyableTextFile(file.path) && (
               <CopyFileButton fileUrl={file.inlineUrl} displayName={activeTab.displayName} />
             )}
