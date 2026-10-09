@@ -1259,8 +1259,14 @@ export class SessionManager extends EventEmitter {
   /**
    * Stop all active sessions. Used for graceful shutdown.
    */
+  async waitForStoppingWriters(signal: AbortSignal): Promise<void> {
+    await withinStopDeadline(Promise.all(this.stoppingWriters), signal);
+  }
+
   async stopAll(shutdown = true, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
+    // A known failed writer must not interrupt the next generation for nothing.
+    if (!shutdown) await this.waitForStoppingWriters(signal ?? AbortSignal.timeout(25_000));
     if (shutdown && this.evictionTimer) {
       clearInterval(this.evictionTimer);
       this.evictionTimer = null;

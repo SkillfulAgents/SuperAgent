@@ -10,6 +10,9 @@
  * `containerHost` from `@shared/lib/agent-actor` for the host-level calls.
  */
 import { ContainerRuntime, type RuntimeHost } from './container-runtime'
+import { ContainerShutdownError } from './volume-stop-schema'
+import { withinStopDeadline } from './stop-deadline'
+import type { StopOptions } from './types'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import {
   checkAllRunnersAvailability,
@@ -316,29 +319,23 @@ export class ContainerHost {
     }
   }
 
-  // Stop all containers (with per-container timeout to prevent blocking shutdown)
-  async stopAll(): Promise<void> {
-    // Only stop containers that are actually running (based on cached status)
-    // to avoid spawning unnecessary CLI processes during shutdown
-    const runningIds = this.getRunningAgentIds()
-    if (runningIds.length > 0) {
-      // Timeout must accommodate the full escalation chain:
-      // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
-      const STOP_TIMEOUT_MS = 60000 // includes the pre-stop volume drain
-      const stopPromises = runningIds.map(async (slug) => {
-        try {
-          await Promise.race([
-            this.runtime(slug).stopContainer(),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Container stop timed out')), STOP_TIMEOUT_MS)
-            ),
-          ])
-        } catch (error) {
-          console.error(`Failed to stop container for agent ${slug}:`, error)
-        }
-      })
-      await Promise.all(stopPromises)
-    }
+  // A declined stop must propagate to quit handling. In particular, the shared
+  // VM must not be torn down while one container is preserving queued uploads.
+  async stopAll(options?: Pick<StopOptions, 'discardPendingUploads'>): Promise<void> {
+    const failures: { slug: string; error: unknown }[] = []
+    const runtimes = [...this.runtimes.values()].filter(runtime => runtime.needsStop())
+    await Promise.all(runtimes.map(async runtime => {
+      try {
+        await withinStopDeadline(runtime.stopContainer({
+          ...options,
+          // A safe quit cannot sacrifice another agent's still-draining mount.
+          escalateToForceStop: options?.discardPendingUploads === true,
+        }), AbortSignal.timeout(100_000))
+      } catch (error) {
+        failures.push({ slug: runtime.slug, error })
+      }
+    }))
+    if (failures.length) throw new ContainerShutdownError(failures)
     this.clearRuntimes()
   }
 

@@ -560,5 +560,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791396692104,
     "hash": "da77e2d0b25863a67be69d795f493e621854e8803599b49766e79460819d9fe6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `agent_volumes` ADD `pending_removal` integer DEFAULT false NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791586823737,
+    "hash": "d614fdb5b403ae6c5ea8f9af31985157a2f569281a76e6f93d1b618410d287f5"
   }
 ]

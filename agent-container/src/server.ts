@@ -123,6 +123,7 @@ app.get('/health', (c) => {
 // Session endpoints
 installVolumeStop(app, {
   hasVolumes: () => mountedVolumeIds().length > 0,
+  checkWriters: signal => sessionManager.waitForStoppingWriters(signal),
   stopWriters: async (signal) => {
     signal.throwIfAborted();
     await dashboardManager.stopAll();

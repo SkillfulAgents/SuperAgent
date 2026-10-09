@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, volumeSummary } from './mount-service'
+import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, completeMountRemovals, resolveVolume, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
@@ -51,6 +51,7 @@ describe('SQLite mount attachments', () => {
     for (const prefix of ['a', 'b', 'c']) mounts.push(await add(folder(`${prefix}/project`)))
     expect(mounts.map(m => m.name)).toEqual(['project', 'project-2', 'project-3'])
     await removeMount('test-agent', mounts[1].id)
+    await completeMountRemovals('test-agent')
     expect((await add(folder('d/project'))).name).toBe('project-2')
   })
   it('shares one source across agents with separate grants and attachment IDs', async () => {
@@ -67,6 +68,7 @@ describe('SQLite mount attachments', () => {
     expect(await resolveVolume('test-agent', a.volumeId)).toBeNull()
     expect(await resolveVolume('test-agent', 'unknown')).toBeNull()
     await removeMount('test-agent', a.id)
+    await completeMountRemovals('test-agent')
     expect(await resolveVolume('test-agent', a.id)).toBeNull()
     expect(await resolveVolume('agent-b', b.id)).not.toBeNull()
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
@@ -88,6 +90,36 @@ describe('SQLite mount attachments', () => {
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(2)
     expect(fs.existsSync(path.join(tmpDir, 'detach'))).toBe(true)
   })
+  it('retains upload access while a removal is pending, then revokes it after a safe stop', async () => {
+    const mount = await add(folder('queued'))
+    await removeMount('test-agent', mount.id)
+    expect(await getMounts('test-agent')).toEqual([])
+    expect((await getMountsWithHealth('test-agent'))[0]).toMatchObject({ id: mount.id, pendingRemoval: true })
+    expect(await resolveVolume('test-agent', mount.id)).not.toBeNull()
+    expect(await listVolumes('test-agent')).toMatchObject({ volumes: [], pendingRemovalIds: [mount.id] })
+    await completeMountRemovals('test-agent')
+    expect(await resolveVolume('test-agent', mount.id)).toBeNull()
+  })
+
+  it('reattaching cancels a pending removal without changing the running grant', async () => {
+    const mount = await add(folder('cancel-removal'))
+    await removeMount('test-agent', mount.id)
+    expect(await attachMount('test-agent', mount.volumeId, viewer)).toEqual(mount)
+    await completeMountRemovals('test-agent', [mount.id])
+    expect(await resolveVolume('test-agent', mount.id)).not.toBeNull()
+  })
+
+  it('a fresh launch only finalizes removals captured in its configuration snapshot', async () => {
+    const a = await add(folder('already-detached'))
+    const b = await add(folder('detached-during-launch'))
+    await removeMount('test-agent', a.id)
+    const configuration = await listVolumes('test-agent')
+    await removeMount('test-agent', b.id)
+    await completeMountRemovals('test-agent', configuration.pendingRemovalIds)
+    expect(await resolveVolume('test-agent', a.id)).toBeNull()
+    expect(await resolveVolume('test-agent', b.id)).not.toBeNull()
+  })
+
   it('validates source type, configuration, folder and name before storing', async () => {
     const hostPath = folder('valid')
     for (const type of ['gdrive', 'toString']) await expect(addMount('test-agent', type, {}, viewer)).rejects.toThrow('Unknown volume type')

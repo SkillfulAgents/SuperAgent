@@ -171,6 +171,8 @@ export interface HealthCheckResult {
 }
 
 export interface StopOptions {
+  /** Host cleanup after a safe drain is accepted, before runtime teardown. */
+  beforeStop?: () => Promise<void>
   /** Explicit user override: stopping may discard uploads cached only in this container. */
   discardPendingUploads?: boolean
   stopTimeoutMs?: number

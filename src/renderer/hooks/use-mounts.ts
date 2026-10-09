@@ -37,13 +37,13 @@ export function useAddMount() {
       if (!data.volumeId && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
-      const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
+      const res = await fetchWithVolumeStopConfirmation(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
           ? { volumeId: data.volumeId, restart: data.restart }
           : { type: 'local', config: { path: data.hostPath }, name: data.name, visibility: data.visibility, restart: data.restart }),
-      })
+      }, 'Restart')
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<VolumeSummary>
     },
@@ -77,7 +77,8 @@ export function useRemoveMount() {
 
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
-  const mounts = Array.isArray(mountsData) ? mountsData : []
+  const attachments = Array.isArray(mountsData) ? mountsData : []
+  const mounts = attachments.filter(mount => !mount.pendingRemoval)
   const registry = useVolumeDefinitions()
   const definitions = registry.data ?? []
   const { canUseAgent } = useUser()
@@ -126,8 +127,8 @@ export function useVolumesManager(agentSlug: string) {
     if (!canModifyMounts) return
     try {
       setOperationError(null)
-      await removeMount.mutateAsync({ agentSlug, mountId, restart: isAgentRunning })
-      setPendingRestart(false)
+      await removeMount.mutateAsync({ agentSlug, mountId })
+      if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : 'Failed to remove mount')
     }
@@ -160,7 +161,7 @@ export function useVolumesManager(agentSlug: string) {
     operationError: operationError ?? (registry.error ? 'Could not load saved volumes' : null),
     canModifyMounts,
     canCreateMount,
-    pendingRestart,
+    pendingRestart: isAgentRunning && (pendingRestart || attachments.some(mount => mount.pendingRemoval)),
     isRestarting,
     restartError,
     isAddingMount: addMount.isPending,

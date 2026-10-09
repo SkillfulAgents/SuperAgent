@@ -222,6 +222,7 @@ vi.mock('@shared/lib/auth/ownership', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
+  completeMountRemovals: vi.fn(async () => {}),
   getMountsWithHealth: vi.fn(),
   addMount: vi.fn(),
   removeMount: vi.fn(),

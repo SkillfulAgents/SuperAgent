@@ -78,6 +78,16 @@ describe('AppleContainerClient.getInfoFromRuntime', () => {
     expect(mockExecWithPath).toHaveBeenLastCalledWith('container inspect superagent-abc123', { timeoutMs: 5_000 })
   })
 
+  it.each([new Error('inspect timed out'), cliAbsentError()])('does not report stopped when inspection fails: %s', async error => {
+    mockExecWithPath.mockRejectedValueOnce(error)
+    await expect(new AppleContainerClient({ agentId: 'abc123' }).getInfoFromRuntime()).rejects.toThrow('Could not determine')
+  })
+
+  it('reports a confirmed missing container as stopped', async () => {
+    mockExecWithPath.mockRejectedValueOnce(new Error('container superagent-abc123 not found'))
+    await expect(new AppleContainerClient({ agentId: 'abc123' }).getInfoFromRuntime()).resolves.toEqual({ status: 'stopped', port: null })
+  })
+
   it('treats status.state=running as running (Apple Container 1.x inspect shape)', async () => {
     mockExecWithPath.mockResolvedValue({
       stdout: JSON.stringify({

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const stopAll = vi.fn()
+const shutdownRunner = vi.fn()
+const stopBrowsers = vi.fn()
+const shutdownCredentials = vi.fn()
+const stopTasks = vi.fn()
 const reconcile = vi.fn()
 const validateAuth = vi.fn().mockResolvedValue(undefined)
 const listAgents = vi.fn().mockResolvedValue([])
@@ -54,7 +59,7 @@ vi.mock('./container/container-host', async () => {
       onBeforeContainerStop: null,
       stopStatusSync: vi.fn(),
       stopHealthMonitor: vi.fn(),
-      stopAll: () => Promise.resolve(),
+      stopAll: (...args: unknown[]) => stopAll(...args),
     }),
   }
 })
@@ -88,7 +93,7 @@ vi.mock('./boot-timing', () => ({
 }))
 vi.mock('../../main/host-browser', () => ({
   getActiveProvider: () => null,
-  stopAllProviders: () => Promise.resolve(),
+  stopAllProviders: () => stopBrowsers(),
 }))
 vi.mock('../../main/host-browser/profile-maintenance', () => ({
   startBrowserProfileCleanup: vi.fn(),
@@ -100,7 +105,7 @@ vi.mock('./proxy/review-manager', () => ({ reviewManager: { rejectAll: vi.fn() }
 vi.mock('./proxy/account-reauth-manager', () => ({ accountReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./proxy/mcp-reauth-manager', () => ({ mcpReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./scheduler/task-scheduler', () => ({
-  taskScheduler: { start: () => taskSchedulerStart(), stop: vi.fn() },
+  taskScheduler: { start: () => taskSchedulerStart(), stop: () => stopTasks() },
 }))
 vi.mock('./scheduler/trigger-manager', () => ({
   triggerManager: { start: () => triggerManagerStart(), stop: vi.fn() },
@@ -124,8 +129,10 @@ vi.mock('./services/platform-service', () => ({
   platformService: { start: vi.fn(), stop: vi.fn() },
 }))
 vi.mock('./container/client-factory', () => ({
-  shutdownActiveRunner: () => Promise.resolve(),
+  shutdownActiveRunner: () => shutdownRunner(),
 }))
+vi.mock('../../api/credentials/credential-broker', () => ({ credentialBroker: { shutdown: () => shutdownCredentials() } }))
+vi.mock('./webhook-relay', () => ({ getWebhookRelay: () => ({ start: vi.fn(), stop: vi.fn() }) }))
 vi.mock('./computer-use/executor', () => ({
   shutdownAC: () => Promise.resolve(),
 }))
@@ -285,5 +292,46 @@ describe('initializeServices post-bind critical path', () => {
     expect(getServicesInitError()).toBe('platform unreachable')
     expect(initializeAgents).not.toHaveBeenCalled()
     expect(logBootTiming).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+describe('shutdownServices preserves upload dependencies until stop succeeds', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    stopAll.mockReset().mockResolvedValue(undefined)
+    shutdownRunner.mockReset().mockResolvedValue(undefined)
+    stopBrowsers.mockReset().mockResolvedValue(undefined)
+    shutdownCredentials.mockReset().mockResolvedValue(undefined)
+    stopTasks.mockReset()
+  })
+
+  it('keeps the runtime, credentials and services alive after a declined quit and releases the start gate', async () => {
+    const { shutdownServices } = await import('./startup')
+    const { assertAgentCanStart } = await import('./container/lifecycle-gate')
+    stopAll.mockImplementationOnce(async () => {
+      expect(() => assertAgentCanStart('agent')).toThrow('shutting down')
+      throw new Error('pending uploads')
+    })
+    const afterStop = vi.fn()
+    await expect(shutdownServices({ onContainersStopped: afterStop })).rejects.toThrow('pending uploads')
+    expect(afterStop).not.toHaveBeenCalled()
+    expect(shutdownRunner).not.toHaveBeenCalled()
+    expect(stopBrowsers).not.toHaveBeenCalled()
+    expect(shutdownCredentials).not.toHaveBeenCalled()
+    expect(stopTasks).not.toHaveBeenCalled()
+    expect(() => assertAgentCanStart('agent')).not.toThrow()
+    await shutdownServices({ discardPendingUploads: true })
+    expect(stopAll).toHaveBeenLastCalledWith({ discardPendingUploads: true })
+    expect(shutdownRunner).toHaveBeenCalledOnce()
+  })
+
+  it('stops containers before revoking credentials or shutting down their runtime', async () => {
+    const { shutdownServices } = await import('./startup')
+    const afterStop = vi.fn()
+    await shutdownServices({ onContainersStopped: afterStop })
+    expect(afterStop.mock.invocationCallOrder[0]).toBeLessThan(shutdownCredentials.mock.invocationCallOrder[0])
+    expect(stopAll.mock.invocationCallOrder[0]).toBeLessThan(shutdownCredentials.mock.invocationCallOrder[0])
+    expect(stopAll.mock.invocationCallOrder[0]).toBeLessThan(shutdownRunner.mock.invocationCallOrder[0])
   })
 })

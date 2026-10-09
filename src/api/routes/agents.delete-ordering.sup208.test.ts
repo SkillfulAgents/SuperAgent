@@ -13,6 +13,8 @@ const mockRemoveWorkspace = vi.fn()
 const mockStopContainer = vi.fn()
 const mockStartContainer = vi.fn()
 const mockRemoveMount = vi.fn()
+const mockAddMount = vi.fn()
+const mockAttachMount = vi.fn()
 // SUP-209: a genuine container stop-failure surfaces from deleteAgent as this
 // typed error, which the route maps to 409. Hoisted so the mock factory and the
 // test share one class — the route's `instanceof` resolves to this same
@@ -79,8 +81,9 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
-  getMountsWithHealth: vi.fn(), addMount: vi.fn(), attachMount: vi.fn(),
-  removeMount: (...args: unknown[]) => mockRemoveMount(...args), volumeSummary: vi.fn(),
+  completeMountRemovals: vi.fn(async () => {}),
+  getMountsWithHealth: vi.fn(), addMount: (...args: unknown[]) => mockAddMount(...args), attachMount: (...args: unknown[]) => mockAttachMount(...args),
+  removeMount: (...args: unknown[]) => mockRemoveMount(...args), volumeSummary: (mount: unknown) => mount,
 }))
 
 // --- generic db / orm harness (unused by the DELETE path; satisfies imports) -
@@ -356,11 +359,30 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
   it.each([false, true])('stops before removing the attachment grant (restart=%s)', async restart => {
     const response = await appWithAgents().request(`/api/agents/test-agent/mounts/m1?restart=${restart}&force=true`, { method: 'DELETE' })
     expect(response.status).toBe(200)
-    expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { discardPendingUploads: true })
-    expect(mockStopContainer.mock.invocationCallOrder[0]).toBeLessThan(mockRemoveMount.mock.invocationCallOrder[0])
     if (restart) {
+      expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { discardPendingUploads: true })
+      expect(mockStopContainer.mock.invocationCallOrder[0]).toBeLessThan(mockRemoveMount.mock.invocationCallOrder[0])
       expect(mockRemoveMount.mock.invocationCallOrder[0]).toBeLessThan(mockStartContainer.mock.invocationCallOrder[0])
-    } else expect(mockStartContainer).not.toHaveBeenCalled()
+    } else {
+      expect(mockStopContainer).not.toHaveBeenCalled()
+      expect(mockStartContainer).not.toHaveBeenCalled()
+      expect(mockRemoveMount).toHaveBeenCalledWith('test-agent', 'm1')
+    }
+  })
+
+  it('declines adding a mount before saving it, then accepts a force-confirmed retry exactly once', async () => {
+    mockStopContainer.mockRejectedValueOnce(new ContainerStopDeferredError('Uploads pending'))
+    mockAddMount.mockResolvedValue({ id: 'm2', volumeId: 'source', name: 'notes', type: 'local', hostPath: '/test/notes' })
+    const request = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'local', config: { path: '/test/notes' }, restart: true }) }
+    const declined = await appWithAgents().request('/api/agents/test-agent/mounts', request)
+    expect(declined.status).toBe(409)
+    expect(await declined.json()).toMatchObject({ code: 'volume_stop_deferred' })
+    expect(mockAddMount).not.toHaveBeenCalled()
+    const forced = await appWithAgents().request('/api/agents/test-agent/mounts?force=true', request)
+    expect(forced.status).toBe(201)
+    expect(mockAddMount).toHaveBeenCalledOnce()
+    expect(mockStopContainer).toHaveBeenLastCalledWith('test-agent', { discardPendingUploads: true })
+    expect(mockStartContainer).toHaveBeenCalledOnce()
   })
 
   it('rejects invalid force options before deleting anything', async () => {

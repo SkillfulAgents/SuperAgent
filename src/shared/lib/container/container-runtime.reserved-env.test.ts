@@ -156,6 +156,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
+  completeMountRemovals: vi.fn(async () => {}),
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
 }))
 

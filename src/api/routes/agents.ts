@@ -82,7 +82,7 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, completeMountRemovals, volumeSummary } from '@shared/lib/services/mount-service'
 import { addMountSchema } from '@shared/lib/services/mount-schema'
 import { VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
@@ -6298,53 +6298,51 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    let mount
-    let restart: boolean | undefined
-    try {
-      const input = addMountSchema.parse(await c.req.json())
-      restart = input.restart
-      mount = 'volumeId' in input
-        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
-        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
-    } catch (err) {
-      if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
-      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
-      throw err
-    }
+    const input = addMountSchema.parse(await c.req.json())
+    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
+    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
+    const container = agentRegistry.get(agentSlug).container
+    const restart = input.restart && container.status().status === 'running'
+    // Decline before creating anything. A force-confirmed retry cannot create
+    // a second definition, and cancellation leaves the mount configuration intact.
+    if (restart) await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
+    const mount = 'volumeId' in input
+      ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
+      : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
     const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
-
-    if (restart) {
-      const cachedInfo = agentRegistry.get(agentSlug).container.status()
-      if (cachedInfo.status === 'running') {
-        await agentRegistry.get(agentSlug).container.restart()
-      }
-    }
-
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
+    if (restart) await container.start()
     return c.json(summary, 201)
   } catch (error) {
+    if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
+    if (error instanceof VolumeError) return c.json({ error: error.message }, error.status)
+    if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
     console.error('Failed to add mount:', error)
     return c.json({ error: 'Failed to add mount' }, 500)
   }
 })
 
-// DELETE /api/agents/:id/mounts/:mountId - Remove a mount
+// DELETE /api/agents/:id/mounts/:mountId - Stage removal, optionally applying it now.
 agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
-
     const force = forceStopQuerySchema.safeParse(c.req.query('force'))
     if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
     const container = agentRegistry.get(agentSlug).container
     const wasRunning = container.status().status === 'running'
-    // Stop before revoking the attachment grant, including when the caller
-    // elects to leave the agent stopped rather than restart immediately.
-    await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
+    if (restart) await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
     await removeMount(agentSlug, mountId)
-    if (restart && wasRunning) await container.start()
-
+    if (restart) {
+      await completeMountRemovals(agentSlug)
+      if (wasRunning) await container.start()
+    } else if (!wasRunning) {
+      // The cached default after an app restart is not proof of exit. Keep the
+      // grant if inspection is unavailable; otherwise detach immediately.
+      const info = await container.info().catch(() => null)
+      if (info?.status === 'stopped') await completeMountRemovals(agentSlug, [mountId])
+    }
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'deleted' })
     return c.json({ success: true })
   } catch (error) {

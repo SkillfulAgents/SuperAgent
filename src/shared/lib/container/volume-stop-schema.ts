@@ -20,7 +20,7 @@ export const volumeRuntimeStateSchema = z.object({
   Config: z.object({ Env: z.array(z.string()).nullish() }).optional(),
 })
 
-const appleVolumeRuntimeStateSchema = z.object({
+export const appleVolumeRuntimeStateSchema = z.object({
   status: z.union([z.string(), z.object({ state: z.string() })]),
   configuration: z.object({
     initProcess: z.object({ environment: z.array(z.string()) }).optional(),
@@ -56,5 +56,22 @@ export class ContainerStopDeferredError extends Error {
 
   toResponse(): z.infer<typeof volumeStopErrorSchema> {
     return { code: 'volume_stop_deferred', error: this.message, workStopped: this.workStopped }
+  }
+}
+
+/** A failed probe is not evidence that removing the container is safe. */
+export class RuntimeStatusUnavailableError extends Error {
+  constructor(cause: unknown) { super('Could not determine the container runtime status', { cause }) }
+}
+
+export function isMissingRuntimeContainer(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/command not found|executable file not found|ENOENT/.test(message)) return false
+  return /no such (?:container|object)\b|container\b[^\n]*\b(?:not found|does not exist)\b/i.test(message)
+}
+
+export class ContainerShutdownError extends Error {
+  constructor(readonly failures: { slug: string; error: unknown }[]) {
+    super(`Could not safely stop ${failures.length} agent(s). Some files may not have finished uploading.`)
   }
 }

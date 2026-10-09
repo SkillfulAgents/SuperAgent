@@ -120,6 +120,7 @@ import { serve } from '@hono/node-server'
 import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
+import { ContainerShutdownError } from '@shared/lib/container/volume-stop-schema'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1818,72 +1819,72 @@ if (!gotTheLock) {
 
 // Graceful shutdown handling
 let isShuttingDown = false
+let shutdownComplete = false
 
-async function gracefulShutdown() {
-  if (isShuttingDown) return
+async function gracefulShutdown(interactive = false): Promise<boolean> {
+  if (isShuttingDown) return false
   isShuttingDown = true
-
   console.log('Shutting down gracefully...')
+  let containersStopped = false
+  const onContainersStopped = () => {
+    containersStopped = true
+    // The drain has completed; bound the remaining service/UI cleanup too.
+    const forceExitTimer = setTimeout(() => process.exit(1), 30_000)
+    forceExitTimer.unref()
+  }
 
-  // Restore system sleep settings (best-effort, no sudo prompt)
+  try {
+    await shutdownServices({ onContainersStopped })
+  } catch (error) {
+    console.error('Safe shutdown declined:', error)
+    let discard = false
+    if (interactive && error instanceof ContainerShutdownError) {
+      const choice = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Some files may not be synced',
+        message: 'Gamut could not safely stop all agents.',
+        detail: 'Quitting now may permanently lose files that have not finished uploading. Cancel to restore the connection and try again, or quit anyway to stop the remaining agents.',
+        buttons: ['Cancel', 'Quit Anyway'], defaultId: 0, cancelId: 0, noLink: true,
+      })
+      discard = choice.response === 1
+    }
+    if (!containersStopped) {
+      if (!discard) { isShuttingDown = false; return false }
+      try {
+        await shutdownServices({ discardPendingUploads: true, onContainersStopped })
+      } catch (forceError) {
+        console.error('Shutdown failed:', forceError)
+        if (!containersStopped) {
+          dialog.showErrorBox('Could not quit Gamut', 'Some agents could not be stopped. The app remains open so you can retry.')
+          isShuttingDown = false
+          return false
+        }
+      }
+    }
+  }
+
+  // Only tear down the app UI after all containers have stopped. In particular,
+  // a cancelled quit keeps its API, credentials, tray and windows usable.
   cleanupKeepAwake()
-
-  // Give back a music player voice mode holds paused
   await releaseAllNowPlaying()
-
-  // Stop notification listener
   stopNotificationListener()
-
-  // Close all dashboard windows
   closeAllDashboardWindows()
-
-  // Tear down the quick-dispatch launcher and release its global shortcut.
   unregisterGlobalDispatchShortcut()
   closeQuickDispatchWindow()
-
-  // Destroy tray and app menu
   destroyTray()
   destroyAppMenu()
-
-  // Stop all background services and containers
-  try {
-    await shutdownServices()
-    console.log('All services stopped.')
-  } catch (error) {
-    console.error('Error stopping services:', error)
-  }
-
-  // Close the API server
-  if (apiServer) {
-    apiServer.close(() => {
-      console.log('API server closed.')
-    })
-  }
+  apiServer?.close(() => console.log('API server closed.'))
+  shutdownComplete = true
+  return true
 }
 
-// Handle app quit
 app.on('before-quit', async (event) => {
-  if (!isShuttingDown) {
-    event.preventDefault()
-
-    // Hard deadline: force-exit if graceful shutdown hangs (e.g., stuck Lima VM)
-    // Must exceed the full escalation chain: stop(10s) + kill(5s) + forceStop(10s) = 25s
-    const forceExitTimer = setTimeout(() => {
-      console.error('Graceful shutdown timed out after 35s — force exiting')
-      process.exit(1)
-    }, 35000)
-    forceExitTimer.unref() // Don't keep the event loop alive just for this timer
-
-    await gracefulShutdown()
-    clearTimeout(forceExitTimer)
-    // Defer app.quit() by one tick. When launched via `electron-vite dev`, calling
-    // app.quit() synchronously after a preventDefault'd before-quit fails to reach
-    // [NSApp terminate:] on macOS — the process hangs in AppKit's idle event loop.
-    // Does NOT reproduce when Electron is launched directly (without electron-vite),
-    // so the trigger is something electron-vite does to the Electron child process.
-    // See alex8088/electron-vite#899 for the upstream bug (repro + A/B control).
-    setImmediate(() => app.quit())
-  }
+  if (shutdownComplete) return
+  event.preventDefault()
+  // No process-exit deadline during the safe stop: that would undercut its
+  // drain budget and leave containers alive after the host API disappeared.
+  // electron-vite on macOS needs a tick between preventDefault and app.quit.
+  if (await gracefulShutdown(true)) setImmediate(() => app.quit())
 })
 
 // Handle uncaught exceptions
@@ -1895,9 +1896,7 @@ process.on('uncaughtException', async (error) => {
   recordFatalError('uncaughtException', error)
   captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
   await flushErrorReporting(3000)
-  await gracefulShutdown()
-  // See before-quit handler above for why this is deferred
-  setImmediate(() => app.quit())
+  if (await gracefulShutdown()) setImmediate(() => app.quit())
 })
 
 // Handle unhandled promise rejections
@@ -1906,7 +1905,5 @@ process.on('unhandledRejection', async (reason) => {
   recordFatalError('unhandledRejection', reason)
   captureException(toReportableError(reason), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
   await flushErrorReporting(3000)
-  await gracefulShutdown()
-  // See before-quit handler above for why this is deferred
-  setImmediate(() => app.quit())
+  if (await gracefulShutdown()) setImmediate(() => app.quit())
 })

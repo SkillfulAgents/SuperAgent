@@ -18,6 +18,7 @@ import * as os from 'os'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { ContainerStopDeferredError } from '@shared/lib/container/volume-stop-schema'
+import { assertAgentCanStart } from '@shared/lib/container/lifecycle-gate'
 import { SAMPLE_INSTRUCTIONS } from './__fixtures__/test-data'
 
 // Mock the container host before importing the service.
@@ -121,7 +122,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     const result = await deleteAgent('test-agent')
 
     expect(result).toBe(true)
-    expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+    expect(mockStopContainer).toHaveBeenCalledWith('test-agent', undefined)
     expect(await agentExists('test-agent')).toBe(false)
   })
   it('keeps upload credentials and peripheral data when drain is refused', async () => {
@@ -131,6 +132,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     const cleanup = vi.fn()
     await expect(deleteAgent('test-agent', { cleanup })).rejects.toMatchObject({ cause })
     expect(cleanup).not.toHaveBeenCalled()
+    expect(() => assertAgentCanStart('test-agent')).not.toThrow()
     expect(await agentExists('test-agent')).toBe(true)
   })
 
@@ -139,6 +141,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     const cleanup = vi.fn(async () => {
       expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { discardPendingUploads: true })
       expect(await agentExists('test-agent')).toBe(true)
+      expect(() => assertAgentCanStart('test-agent')).toThrow('being deleted')
     })
     await expect(deleteAgent('test-agent', { cleanup, discardPendingUploads: true })).resolves.toBe(true)
     expect(cleanup).toHaveBeenCalledOnce()

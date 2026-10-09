@@ -365,6 +365,13 @@
       "when": 1791396692104,
       "tag": "0051_foamy_morph",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1791586823737,
+      "tag": "0052_cold_sabretooth",
+      "breakpoints": true
     }
   ]
 }

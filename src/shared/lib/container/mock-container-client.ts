@@ -2780,7 +2780,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.getInfoFromRuntime()
   }
 
-  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {
+  async stop(options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {
+    await options?.beforeStop?.()
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
       this.setActiveBrowserSession(null)

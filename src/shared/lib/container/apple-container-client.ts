@@ -11,7 +11,7 @@ import type { ContainerConfig, ContainerInfo, ContainerStats, ImagePullProgress 
 import { isAdminPrivilegeCancelError, runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getAppPort } from '@shared/lib/proxy/host-url'
-import { appleRuntimeHasVolumes } from './volume-stop-schema'
+import { appleRuntimeHasVolumes, appleVolumeRuntimeStateSchema, RuntimeStatusUnavailableError, isMissingRuntimeContainer } from './volume-stop-schema'
 
 export type AppleContainerProvisionProgress = Pick<ImagePullProgress, 'status' | 'percent'>
 
@@ -246,12 +246,14 @@ export class AppleContainerClient extends BaseContainerClient {
 
       // Handle both possible formats: single object or array of objects
       const info = Array.isArray(data) ? data[0] : data
+      appleVolumeRuntimeStateSchema.parse(info)
       this.runningHasVolumes = appleRuntimeHasVolumes(info)
 
       // Apple Container 1.x: status is `{ state: 'running', ... }`.
       // Older shape used a string; accept both.
       const state =
         typeof info?.status === 'string' ? info.status : info?.status?.state
+      if (state !== 'running' && state !== 'stopped') throw new Error(`Unrecognized container state: ${state}`)
       const isRunning = state === 'running'
 
       // Extract port mappings (Apple uses configuration.publishedPorts)
@@ -270,8 +272,9 @@ export class AppleContainerClient extends BaseContainerClient {
         status: isRunning ? 'running' : 'stopped',
         port,
       }
-    } catch {
-      return { status: 'stopped', port: null }
+    } catch (error) {
+      if (isMissingRuntimeContainer(error)) return { status: 'stopped', port: null }
+      throw new RuntimeStatusUnavailableError(error)
     }
   }
 

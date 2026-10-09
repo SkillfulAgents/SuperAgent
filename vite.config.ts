@@ -105,8 +105,9 @@ export default defineConfig({
           const { shutdownServices } = await server.ssrLoadModule(
             path.resolve(__dirname, 'src/shared/lib/startup.ts'),
           )
-          await shutdownServices()
-          console.log('All services stopped.')
+          await shutdownServices().catch((error: unknown) => {
+            console.error('Development server closed with agents still running; restart it to resume volume uploads:', error)
+          })
         })
       },
     },

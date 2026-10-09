@@ -2,6 +2,8 @@ import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
 import { containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
+import { blockStartsForShutdown } from './container/lifecycle-gate'
+import type { StopOptions } from './container/types'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
 import { mcpReauthManager } from './proxy/mcp-reauth-manager'
@@ -281,7 +283,17 @@ export function setupServerHandlers(server: ServerType): void {
  * - web/server.ts: standalone web server shutdown
  * - vite.config.ts: Vite dev server close
  */
-export async function shutdownServices() {
+export async function shutdownServices(options?: Pick<StopOptions, 'discardPendingUploads'> & { onContainersStopped?: () => void }) {
+  const unblock = blockStartsForShutdown()
+  try {
+    // Keep the API, credentials, browser providers and background services
+    // available until every stop is accepted. A cancelled quit remains usable.
+    await containerHost.stopAll(options?.discardPendingUploads ? { discardPendingUploads: true } : undefined)
+  } catch (error) {
+    unblock()
+    throw error
+  }
+  options?.onContainersStopped?.()
   servicesShuttingDown = true
   reviewManager.rejectAll()
   accountReauthManager.rejectAll()
@@ -300,7 +312,6 @@ export async function shutdownServices() {
   platformService.stop()
   containerHost.stopStatusSync()
   containerHost.stopHealthMonitor()
-  await containerHost.stopAll()
   await shutdownActiveRunner()
   await shutdownAC()
 }

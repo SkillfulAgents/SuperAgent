@@ -9,6 +9,8 @@
  * rename, so the agent still sees who it is and exports still carry it.
  */
 
+import { withAgentDeletion } from '@shared/lib/container/lifecycle-gate'
+
 import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -415,38 +417,39 @@ export async function deleteAgent(slug: string, options?: {
   /** Revoke credentials and remove peripheral rows after draining, before removing the workspace. */
   cleanup?: () => Promise<void>
 }): Promise<boolean> {
-  if (!(await agentCatalog.exists(slug))) {
-    return false
-  }
+  return withAgentDeletion(slug, async () => {
+    if (!(await agentCatalog.exists(slug))) {
+      return false
+    }
 
-  // Stop the container before removing the workspace.
-  //
-  // stopContainer is idempotent for already-stopped/missing containers: the
-  // underlying client silently ignores benign "no such container" cases and
-  // resolves without throwing. Therefore any rejection here signals a GENUINE
-  // runtime failure (e.g. a wedged VM or an unexpected stop error), in which
-  // case the container may still be running or be in an unknown stop state.
-  //
-  // We must NOT delete the host workspace in that situation. Re-throw as a
-  // typed error so the API/UI can surface an actionable failure; the catalog
-  // removal below never runs, so the workspace is preserved and the delete is
-  // retryable.
-  try {
-    const container = agentRegistry.get(slug).container
-    if (options?.discardPendingUploads) await container.stop({ discardPendingUploads: true })
-    else await container.stop()
-  } catch (error) {
-    throw new AgentContainerStopError(slug, error)
-  }
+    // Stop the container before removing the workspace.
+    //
+    // stopContainer is idempotent for already-stopped/missing containers: the
+    // underlying client silently ignores benign "no such container" cases and
+    // resolves without throwing. Therefore any rejection here signals a GENUINE
+    // runtime failure (e.g. a wedged VM or an unexpected stop error), in which
+    // case the container may still be running or be in an unknown stop state.
+    //
+    // We must NOT delete the host workspace in that situation. Re-throw as a
+    // typed error so the API/UI can surface an actionable failure; the catalog
+    // removal below never runs, so the workspace is preserved and the delete is
+    // retryable.
+    try {
+      const container = agentRegistry.get(slug).container
+      await container.stop(options?.discardPendingUploads ? { discardPendingUploads: true } : undefined)
+    } catch (error) {
+      throw new AgentContainerStopError(slug, error)
+    }
 
-  await options?.cleanup?.()
+    await options?.cleanup?.()
 
-  // Remove the agent only after the container has been confirmed stopped, then
-  // forget the handle and runtime the stop above created for it.
-  await agentCatalog.remove(slug)
-  agentRegistry.evict(slug)
+    // Remove the agent only after the container has been confirmed stopped, then
+    // forget the handle and runtime the stop above created for it.
+    await agentCatalog.remove(slug)
+    agentRegistry.evict(slug)
 
-  return true
+    return true
+  })
 }
 
 // ============================================================================

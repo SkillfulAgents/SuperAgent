@@ -5,6 +5,7 @@ import { withinStopDeadline } from './stop-deadline';
  * A failed drain leaves the container (and its only copy of queued bytes) alive. */
 export function installVolumeStop(app: Hono, dependencies: {
   hasVolumes: () => boolean;
+  checkWriters?: (signal: AbortSignal) => Promise<void>;
   stopWriters: (signal: AbortSignal) => Promise<void>;
   drain: (deadline: number, signal: AbortSignal) => Promise<boolean>;
 }, timeoutMs = 25_000): void {
@@ -39,6 +40,10 @@ export function installVolumeStop(app: Hono, dependencies: {
         const { signal } = controller;
         let workStopped = false;
         try {
+          // Check a previous failed/unfinished cleanup before stopping any new
+          // sessions or dashboards. Rejected disposals remain unsafe to forget.
+          if (dependencies.checkWriters) await withinStopDeadline(dependencies.checkWriters(signal), signal);
+          signal.throwIfAborted();
           // A disconnected account or a dead rclone must not interrupt the
           // user's turn just because they attempted a safe stop.
           if (!await withinStopDeadline(dependencies.drain(deadline, signal), signal)) return { ready: false, workStopped };

@@ -1104,7 +1104,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
   }
 
-  async stop(_options?: StopOptions): Promise<StopResult> {
+  async stop(options?: StopOptions): Promise<StopResult> {
+    await options?.beforeStop?.()
     this.terminateWebSocketConnections()
     // Same as other runners: stop means gone. Auto-sleep and explicit stop both terminate.
     await this.teardown()

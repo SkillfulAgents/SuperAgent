@@ -12,6 +12,8 @@ import type { FileOps } from '@shared/lib/agent-actor/types'
  * that owns the actors rather than by an entry point that could forget.
  */
 export interface AgentWorkspaceAccess {
+  /** Recheck queued starts after deletion; omitted only by isolated host tests. */
+  exists?(slug: string): Promise<boolean>
   /** The agent's workspace file operations. */
   files(slug: string): FileOps
   /** The agent's instructions document (`AGENTS.md`), or null when it has none. */

@@ -1,3 +1,4 @@
+import { withAgentDeletion } from './lifecycle-gate'
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -131,6 +132,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
+  completeMountRemovals: vi.fn(async () => {}),
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
 }))
 
@@ -467,11 +469,41 @@ describe('ContainerRuntime — stopContainer during in-flight start', () => {
       expect(runtime.getCachedInfo().status).toBe('running')
       await expect(runtime.ensureRunning()).resolves.toBeDefined()
       expect(mockStart).not.toHaveBeenCalled()
-      mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+      mockStop.mockImplementationOnce(async options => {
+        await options.beforeStop?.()
+        return { forceStopUsed: false, stopped: true }
+      })
       await runtime.stopContainer({ discardPendingUploads: true })
-      expect(mockStop).toHaveBeenLastCalledWith({ discardPendingUploads: true })
+      expect(mockStop).toHaveBeenLastCalledWith(expect.objectContaining({ discardPendingUploads: true }))
       expect(cleanup).toHaveBeenCalledOnce()
       expect(runtime.getCachedInfo().status).toBe('stopped')
+    } finally { containerHost.onBeforeContainerStop = null }
+  })
+
+  it('blocks task and webhook starts throughout cleanup after deletion has stopped the container', async () => {
+    const runtime = containerHost.runtime('test-agent')
+    await withAgentDeletion('test-agent', async () => {
+      await runtime.stopContainer()
+      await expect(runtime.ensureRunning()).rejects.toThrow('being deleted')
+      await expect(runtime.restartContainer()).rejects.toThrow('being deleted')
+      expect(mockStart).not.toHaveBeenCalled()
+    })
+  })
+
+  it('closes the host browser before teardown, including when teardown subsequently throws', async () => {
+    const runtime = containerHost.runtime('test-agent')
+    runtime.updateCachedStatus('running', 4001)
+    const order: string[] = []
+    containerHost.onBeforeContainerStop = async () => { order.push('browser') }
+    mockStop.mockImplementationOnce(async options => {
+      await options.beforeStop()
+      order.push('teardown')
+      throw new Error('teardown failed')
+    })
+    try {
+      await expect(runtime.stopContainer()).rejects.toThrow('teardown failed')
+      expect(order).toEqual(['browser', 'teardown'])
+      expect(runtime.getCachedInfo().status).toBe('running')
     } finally { containerHost.onBeforeContainerStop = null }
   })
 
@@ -506,12 +538,12 @@ describe('ContainerRuntime — stopContainer during in-flight start', () => {
       releaseStop = resolve
     }))
     const stopPromise = containerHost.runtime('test-agent').stopContainer()
-    await vi.waitFor(() => expect(mockStop).toHaveBeenCalled())
-
+    expect(mockStop).not.toHaveBeenCalled()
     startResolvers[0]?.()
     await expect(startPromise).rejects.toThrow('Cannot start agent test-agent while it is stopping')
     expect(containerHost.runtime('test-agent').getCachedInfo().status).toBe('stopped')
 
+    await vi.waitFor(() => expect(mockStop).toHaveBeenCalled())
     releaseStop({ forceStopUsed: false })
     await stopPromise
   })
@@ -526,7 +558,10 @@ describe('ContainerRuntime — stopContainer during in-flight start', () => {
     await vi.waitFor(() => expect(mockStart).toHaveBeenCalledTimes(1))
 
     // Stop while start is in-flight
-    await containerHost.runtime('test-agent').stopContainer()
+    const stopping = containerHost.runtime('test-agent').stopContainer()
+    startResolvers[0]?.()
+    await startPromise.catch(() => {})
+    await stopping
 
     // A new ensureRunning should NOT join the old (now orphaned) promise
     // — it should attempt a fresh start

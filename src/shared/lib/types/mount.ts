@@ -29,10 +29,12 @@ export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
 /** An agent's attachment, whose id and name are independent of the definition. */
 export interface MountedVolume extends StoredVolume {
   volumeId: string
+  pendingRemoval?: boolean
 }
 
 export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
   volumeId: string
+  pendingRemoval?: boolean
 }
 
 /** Source latency determines the container cache policy, independently of its provider. */

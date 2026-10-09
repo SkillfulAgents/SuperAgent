@@ -1,0 +1,1 @@
+ALTER TABLE `agent_volumes` ADD `pending_removal` integer DEFAULT false NOT NULL;
