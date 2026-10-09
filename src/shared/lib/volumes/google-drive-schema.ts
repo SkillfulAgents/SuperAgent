@@ -12,12 +12,14 @@ export const googleDriveVolumeConfigSchema = z.object({
 }).strict()
 export type GoogleDriveVolumeConfig = z.infer<typeof googleDriveVolumeConfigSchema>
 
-export const DRIVE_FILE_FIELDS = 'id,name,mimeType,size,modifiedTime,trashed,capabilities(canDownload),shortcutDetails(targetId)'
+export const DRIVE_FILE_FIELDS = 'id,name,mimeType,size,md5Checksum,modifiedTime,trashed,capabilities(canDownload),shortcutDetails(targetId)'
 export const driveFileSchema = z.object({
   id: driveIdSchema,
   name: z.string(),
   mimeType: z.string(),
   size: z.coerce.number().int().nonnegative().optional(),
+  /** Drive's checksum of a regular file's bytes. Google files have none. */
+  md5Checksum: z.string().optional(),
   modifiedTime: z.iso.datetime(),
   trashed: z.boolean().optional(),
   capabilities: z.object({ canDownload: z.boolean().optional() }).optional(),

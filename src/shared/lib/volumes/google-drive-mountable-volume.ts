@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import type { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
@@ -10,6 +11,27 @@ import { driveNameOf, folderView, isExport, isFolder, nameTaken, ownId, writeTar
 import { RemoteListingCache, serialize } from './remote-listing-cache'
 import { GoogleDriveChangeFeed } from './google-drive-changes'
 import type { ByteRange } from '@shared/lib/agent-actor/types'
+
+/** Composio's proxy hands back a text or JSON body decoded, already whole in memory: JSON re-serialized (large
+ * numbers rounded), bytes that are not UTF-8 replaced, a byte-order mark dropped, sometimes at the same length. When
+ * Drive confirms the file is still the listed size, a body of another length, or a whole file whose checksum differs
+ * from Drive's, was changed on the way, not edited. It is refused at once, as a file the source will not serve,
+ * instead of failing mid-read for rclone to retry. A changed size keeps the retry, so the next listing corrects it. */
+async function exactDownload(response: Response, start: number, end: number, file: { size: number; md5Checksum?: string }): Promise<Response | 'changed'> {
+  const asListed = response.status === 206 && response.headers.get('content-range') === `bytes ${start}-${end}/${file.size}`
+  if (!asListed || !/^text\/|json/i.test(response.headers.get('content-type') ?? '')) return response
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (bytes.byteLength !== end - start + 1) return 'changed'
+  const whole = start === 0 && end === file.size - 1
+  if (whole && file.md5Checksum && createHash('md5').update(bytes).digest('hex') !== file.md5Checksum) return 'changed'
+  return new Response(bytes, { status: response.status, headers: response.headers })
+}
+
+/** File versions found changed on download, by account, ID and modification time. rclone's cache retries a failed
+ * download ten times whatever the status, so each retry is refused without another download. */
+export const googleDriveChangedDownloads = new Set<string>()
+const MAX_CHANGED_DOWNLOADS = 1_000
+const changedOnDownload = () => new WorkspaceFileError('not-accessible', 'The account connection changes this file on download (JSON, or text that is not UTF-8), so it cannot be read exactly')
 
 /** A file of a known size whose bytes come from `download`, a fetch of one byte range. The
  * download starts before WebDAV sends headers, so an upstream failure keeps its status. The
@@ -389,8 +411,18 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       if (exported === 'too-large') throw new WorkspaceFileError('not-found')
       return rangedVolumeFile(exported.length, async () => new Response(exported))
     }
-    return rangedVolumeFile(this.entryOf(entry).size, ({ start, end }) =>
-      this.request({ method: 'GET', path: `drive/v3/files/${entry.file.id}`, query: { alt: 'media' }, headers: { Range: `bytes=${start}-${end}` } }))
+    const { size } = this.entryOf(entry)
+    const version = JSON.stringify([this.config.accountId, entry.file.id, entry.file.modifiedTime])
+    if (googleDriveChangedDownloads.has(version)) throw changedOnDownload()
+    return rangedVolumeFile(size, async ({ start, end }) => {
+      const response = await this.request({ method: 'GET', path: `drive/v3/files/${entry.file.id}`, query: { alt: 'media' }, headers: { Range: `bytes=${start}-${end}` } })
+      const exact = await exactDownload(response, start, end, { size, md5Checksum: entry.file.md5Checksum })
+      if (exact !== 'changed') return exact
+      if (googleDriveChangedDownloads.size >= MAX_CHANGED_DOWNLOADS) googleDriveChangedDownloads.clear()
+      googleDriveChangedDownloads.add(version)
+      console.warn(`[volumes] Google Drive file ${entry.file.id}: the account connection changed it on download (${entry.file.mimeType}), so reads are refused`)
+      throw changedOnDownload()
+    })
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
