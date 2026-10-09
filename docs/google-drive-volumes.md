@@ -38,6 +38,9 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   drops the cached listings, and a minute without a successful poll restarts the feed.
   Drive keeps an expired listing for a minute. A read that finds one the feed can still
   vouch for waits for the poll in flight instead of reading the folder again.
+- A tree walk lists a folder soon after its parent. When one does, the parent's other
+  subfolders and this folder's subfolders are listed ahead of it, 4 at a time per
+  account and at most 32 per listing. A single listing reads nothing extra.
 - A shortcut shows as its target under the shortcut's own name, like a subfolder or
   file of the folder it sits in, wherever the target lives. Reads and writes reach the
   target. Delete and move act on the shortcut, so the target is never trashed through
