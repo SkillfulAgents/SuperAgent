@@ -371,6 +371,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
     expect(promptSlugs).not.toContain('twitter')
     expect(promptSlugs).not.toContain('plaid')
+    expect(promptSlugs).not.toContain('shopify')
     expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
   })
 
