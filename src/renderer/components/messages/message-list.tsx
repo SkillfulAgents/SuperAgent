@@ -12,7 +12,7 @@ import {
 } from '@renderer/hooks/use-message-stream'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
-import { MessageItem } from './message-item'
+import { MessageItem, readsSubagentState } from './message-item'
 import { currentRoutedProviderError } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -156,12 +156,6 @@ interface MessageListProps {
   suppressScrollToBottom?: boolean
   /** Height of an overlaid footer that the live edge must remain above. */
   bottomInset?: number
-}
-
-// Subagent state changes identity on every subagent event; only rows that draw a
-// subagent or workflow card read it, so other rows keep their memo.
-function rendersSubagentBlocks(message: ApiMessage): boolean {
-  return message.toolCalls?.some(tc => tc.name === 'Task' || tc.name === 'Agent' || tc.name === 'Workflow') ?? false
 }
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
@@ -1203,8 +1197,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       isLatestAssistant={item.id === latestAssistantId && !(streamingMessage && !isStreamingMessagePersisted)}
                       voiceReading={voiceReading && item.id === latestAssistantId}
                       isSessionActive={canHaveRunningToolCalls.has(item.id)}
-                      activeSubagents={rendersSubagentBlocks(displayedMessage) ? activeSubagents : undefined}
-                      completedSubagents={rendersSubagentBlocks(displayedMessage) ? completedSubagents : undefined}
+                      // Subagent state changes identity on every subagent event; passing it only
+                      // to rows that read it keeps the other rows' memo.
+                      activeSubagents={readsSubagentState(displayedMessage) ? activeSubagents : undefined}
+                      completedSubagents={readsSubagentState(displayedMessage) ? completedSubagents : undefined}
                       onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
                       onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
                       workDetailClassName={

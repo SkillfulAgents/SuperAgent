@@ -225,6 +225,7 @@ describe('MessageList', () => {
   })
 
   it('re-renders only rows with subagent calls when subagent state changes', () => {
+    mockToolRenders.length = 0
     mockStreamState.isActive = true
     mockMessagesData.data = [
       createUserMessage({ content: { text: 'Look around the repo' } }),

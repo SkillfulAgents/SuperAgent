@@ -265,6 +265,15 @@ interface MessageItemProps {
   voiceReading?: boolean
 }
 
+function isSubagentTool(name: string): boolean {
+  return name === 'Task' || name === 'Agent'
+}
+
+// The rows that read activeSubagents/completedSubagents: they draw a subagent or workflow card.
+export function readsSubagentState(message: ApiMessage): boolean {
+  return message.toolCalls?.some(tc => isSubagentTool(tc.name) || tc.name === 'Workflow') ?? false
+}
+
 function resolveSubagentRun(
   toolCall: ApiToolCall,
   activeSubagents: SubagentInfo[] | undefined,
@@ -621,7 +630,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                     }
                   >
                     <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                      {isSubagentTool(toolCall.name) && sessionId ? (
                         <SubAgentBlock
                           toolCall={toolCall}
                           sessionId={sessionId}
