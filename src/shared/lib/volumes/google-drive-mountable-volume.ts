@@ -158,7 +158,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
 
   private children(folderId: string): Promise<DriveFile[]> {
     const key = keyOf(this.config.accountId, folderId)
-    googleDriveChangeFeed.keepFresh(this.config.accountId, key)
+    googleDriveChangeFeed.keepFresh(this.config.accountId)
     return googleDriveListingCache.list(this.config.accountId, key, async () =>
       this.followShortcuts(await driveChildren(this.config.accountId, folderId, { agentSlug: this.agentSlug })))
   }
@@ -229,6 +229,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     settle: (folderId: string, update: (children: DriveFile[]) => DriveFile[]) => void,
   ) => Promise<T>): Promise<T> {
     const { accountId } = this.config
+    googleDriveChangeFeed.keepFresh(accountId)
     // `cached` is the listing a change started from, when it came from the cache rather than Drive.
     const touched = new Map<string, { entries: DriveFile[]; readAt: number; checkedAt: number; cached?: { readAt: number; checkedAt: number } }>()
     const fresh = async (folderId: string, trustedMs?: number) => {

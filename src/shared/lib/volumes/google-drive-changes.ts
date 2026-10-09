@@ -6,7 +6,7 @@ import type { RemoteListingCache } from './remote-listing-cache'
 /** Changes reached Drive's feed 2-5 s after Drive confirmed them, so a poll vouches for listings only as of this long before it. */
 const FEED_LAG_MS = 10_000
 const POLL_EVERY_MS = 3_000
-/** A feed unpolled this long starts again from now rather than paging through what it missed. */
+/** A feed without a successful poll this long starts again from now rather than paging through what it missed. */
 const IDLE_MS = 60_000
 /** The feed covers the whole account. Past this many pages since the last poll, every listing is read again instead. */
 const MAX_PAGES = 3
@@ -39,28 +39,30 @@ interface Poll { arrivedAt: number; changes: DriveChange[] }
 /** `history` holds every change reported after `coveredFrom`. A listing last checked before then cannot be vouched for. */
 interface Feed { token: string; coveredFrom: number; polledAt: number; history: Poll[] }
 
-/** Drive's account-wide change feed, polled while the account's listings are read. A poll that finds nothing
+/** Drive's account-wide change feed, polled while the account's volumes are in use. A poll that finds nothing
  * touching a cached folder keeps its listing current, so a walk over many folders costs one call instead of a
  * listing each. A listing a change touches is dropped and read again. Writes, deletes and moves keep their
  * own checks: a vouched listing is never young enough for them. */
 export class GoogleDriveChangeFeed {
   private readonly feeds = new Map<string, Feed>()
   private readonly polls = new Map<string, Promise<void>>()
+  private readonly firstSeen = new Map<string, number>()
+  private readonly triedAt = new Map<string, number>()
 
   constructor(private readonly listings: RemoteListingCache<DriveFile>, private readonly folderOf: (key: string) => string) {}
 
-  /** Poll in the background when the listing under `key` is older than a poll interval. Never waits. */
-  keepFresh(accountId: string, key: string): void {
-    const listing = this.listings.recent(key, Infinity)
-    if (!listing || listing.readAt > Date.now() - POLL_EVERY_MS || this.polls.has(accountId)) return
+  /** Poll in the background at most once per poll interval while the account's volumes are in use. A failed
+   * poll keeps its place in the feed and is tried again. Never waits. */
+  keepFresh(accountId: string): void {
+    const now = Date.now()
+    if (!this.firstSeen.has(accountId)) this.firstSeen.set(accountId, now)
+    // A short burst of work, such as one listing, never starts a feed.
+    if (now - (this.firstSeen.get(accountId) ?? now) < POLL_EVERY_MS) return
+    if (this.polls.has(accountId) || (this.triedAt.get(accountId) ?? 0) > now - POLL_EVERY_MS) return
+    this.triedAt.set(accountId, now)
     const feed = this.feeds.get(accountId)
-    if (feed && feed.polledAt > Date.now() - POLL_EVERY_MS) return
-    const poll = (feed && feed.polledAt > Date.now() - IDLE_MS ? this.poll(accountId, feed) : this.start(accountId))
-      .catch((error: unknown) => {
-        // Listings checked against the dropped feed are never vouched for again, so they expire as before.
-        this.feeds.delete(accountId)
-        console.warn(`[volumes] Google Drive change feed: ${error instanceof Error ? error.message : String(error)}`)
-      })
+    const poll = (feed && feed.polledAt > now - IDLE_MS ? this.poll(accountId, feed) : this.start(accountId))
+      .catch((error: unknown) => console.warn(`[volumes] Google Drive change feed: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => this.polls.delete(accountId))
     this.polls.set(accountId, poll)
   }
