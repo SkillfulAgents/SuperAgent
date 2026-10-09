@@ -572,5 +572,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791587287364,
     "hash": "ccb3ac557a4bd7f0eef3ed27cf5565d1aef1081f89551803b42299e6e31ee1a6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `attachments` text DEFAULT '[]' NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791590340375,
+    "hash": "9d13dd97eda5eafbcfce764cef25fd88b30999af8969a83b62999e392ce56f21"
   }
 ]

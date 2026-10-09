@@ -52,8 +52,8 @@ describe('titles', () => {
 })
 
 describe('createTodoSchema', () => {
-  it('needs a title or a description', () => {
-    expect(createTodoSchema.safeParse({ title: ' ', description: ' ' }).success).toBe(false)
+  it('allows an empty draft, so a file can be the only content', () => {
+    expect(createTodoSchema.safeParse({ title: ' ', description: ' ' }).success).toBe(true)
     expect(createTodoSchema.safeParse({ title: 'x' }).success).toBe(true)
     expect(createTodoSchema.safeParse({ title: '', description: 'x' }).success).toBe(true)
   })

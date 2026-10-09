@@ -15,8 +15,9 @@ export interface UploadQueueOptions {
   updateAttachment: (id: string, patch: UploadPatch) => void
   removeAttachment: (id: string) => void
   clearAttachments: () => void
-  uploadFile: (args: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => Promise<{ path: string }>
-  uploadFolder: (args: { sourcePath: string }) => Promise<{ path: string }>
+  // `attachmentId` is the chip being uploaded, so a caller that stores the upload can key it to that chip.
+  uploadFile: (args: { file: File; attachmentId: string; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => Promise<{ path: string }>
+  uploadFolder: (args: { sourcePath: string; attachmentId: string }) => Promise<{ path: string }>
 }
 
 function isUploadable(a: Attachment): a is Uploadable {
@@ -69,14 +70,14 @@ export function useUploadQueue(options: UploadQueueOptions) {
       let result: { path: string }
       if (attachment.type === 'folder' && attachment.folderPath) {
         // Electron: server-side copy, no byte progress and no cancel
-        result = await opts.uploadFolder({ sourcePath: attachment.folderPath })
+        result = await opts.uploadFolder({ sourcePath: attachment.folderPath, attachmentId: id })
       } else if (attachment.type === 'folder') {
         // Web fallback: zip in the browser, then upload the archive
         const zipBlob = await zipFolderFiles(attachment.files)
         const zipFile = new File([zipBlob], `${attachment.folderName}.zip`, { type: 'application/zip' })
-        result = await opts.uploadFile({ file: zipFile, onProgress, signal: controller.signal, stallMs: UPLOAD_STALL_MS })
+        result = await opts.uploadFile({ file: zipFile, attachmentId: id, onProgress, signal: controller.signal, stallMs: UPLOAD_STALL_MS })
       } else {
-        result = await opts.uploadFile({ file: attachment.file, onProgress, signal: controller.signal, stallMs: UPLOAD_STALL_MS })
+        result = await opts.uploadFile({ file: attachment.file, attachmentId: id, onProgress, signal: controller.signal, stallMs: UPLOAD_STALL_MS })
       }
       if (!live()) return
       pathsRef.current.set(id, { path: result.path, agentSlug })
@@ -113,19 +114,23 @@ export function useUploadQueue(options: UploadQueueOptions) {
     if (a && isUploadable(a)) enqueue(a)
   }, [enqueue])
 
+  const waitIdle = useCallback(async () => {
+    let tail: Promise<void>
+    do {
+      tail = chainRef.current
+      await tail
+    } while (tail !== chainRef.current)
+  }, [])
+
   // Waits until the chain is idle, re-uploading errored chips first. A chip
   // enqueued during the wait extends the chain and is included.
   const retryAndWait = useCallback(async (): Promise<{ ok: boolean }> => {
     for (const a of optionsRef.current.attachmentsRef.current) {
       if (isUploadable(a) && a.error) enqueue(a)
     }
-    let tail: Promise<void>
-    do {
-      tail = chainRef.current
-      await tail
-    } while (tail !== chainRef.current)
+    await waitIdle()
     return { ok: failedRef.current.size === 0 }
-  }, [enqueue])
+  }, [enqueue, waitIdle])
 
   const abortAll = useCallback(() => {
     generationRef.current += 1
@@ -163,5 +168,5 @@ export function useUploadQueue(options: UploadQueueOptions) {
 
   useEffect(() => abortAll, [abortAll])
 
-  return { enqueue, retry, retryAndWait, pathFor, remove, clear, requeueAll }
+  return { enqueue, retry, retryAndWait, waitIdle, pathFor, remove, clear, requeueAll }
 }

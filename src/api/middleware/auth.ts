@@ -144,14 +144,14 @@ function resolvedAgentSlug(c: Context): string {
 }
 
 /** AgentRead's policy for a collection of already-resolved IDs, in one ACL query. */
-export async function getReadableAgentIds(c: Context, agentIds: readonly string[]): Promise<Set<string>> {
+export async function getReadableAgentIds(c: Context, agentIds: readonly string[], minRole: AgentRole = 'viewer'): Promise<Set<string>> {
   if (!isAuthMode()) return new Set(agentIds)
   const user = getUser(c)
   if (isAdmin(user)) return new Set(agentIds)
   if (!agentIds.length) return new Set()
   const rows = await db.select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role }).from(agentAcl)
     .where(and(eq(agentAcl.userId, user.id), inArray(agentAcl.agentSlug, [...agentIds]))).all()
-  return new Set(rows.filter(row => hasMinRole(row.role, 'viewer')).map(row => row.agentSlug))
+  return new Set(rows.filter(row => hasMinRole(row.role, minRole)).map(row => row.agentSlug))
 }
 
 /**

@@ -8,10 +8,13 @@ import type {
   TodoView,
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
-import { todoPrompt } from '@shared/lib/todos/todo-schema'
+import { todoPrompt, type TodoAttachment } from '@shared/lib/todos/todo-schema'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
+import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { useExperiment } from './use-experiment'
+import { useAddMount, useRemoveMount } from './use-mounts'
 import { useCreateSession } from './use-sessions'
 
 export type { TodoView }
@@ -145,6 +148,28 @@ export function useMoveTodo() {
   })
 }
 
+export function useSaveTodoPointer() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, pointer }: {
+      id: string
+      pointer: { id: string; name: string; size?: number; mimeType?: string; path?: string; hostPath?: string; kind?: 'file' | 'folder' | 'mount' }
+    }) => send<TodoView>(`/api/todos/${id}/attachments`, 'POST', pointer, 'Could not save the attachment'),
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
+  })
+}
+
+export function useRemoveTodoAttachment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, attId }: { id: string; attId: string }) =>
+      send<TodoView>(`/api/todos/${id}/attachments/${attId}`, 'DELETE', {}, 'Failed to remove the file'),
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
+  })
+}
+
 export function useDeleteTodo() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -161,6 +186,15 @@ export function useDeleteTodo() {
 }
 
 const START_TODO_MUTATION_KEY = ['start-todo'] as const
+
+function pointersMatch(list: readonly TodoAttachment[], agentSlug: string): boolean {
+  return list.every((att) => att.kind === 'mount' || att.agentSlug === agentSlug)
+}
+
+function pointedPaths(list: readonly TodoAttachment[], agentSlug: string): string[] {
+  return list.flatMap((att) => (att.kind === 'mount' || att.agentSlug !== agentSlug ? [] : [att.path]))
+}
+
 
 /** Errors useCreateSession already toasted, so a failed start doesn't say it twice. */
 const reportedBySessionCreation = new WeakSet<Error>()
@@ -214,6 +248,8 @@ export function useStartTodo() {
   const createSession = useCreateSession()
   const createAgentForPrompt = useCreateAgentForPrompt()
   const { track } = useAnalyticsTracking()
+  const addMount = useAddMount()
+  const removeMount = useRemoveMount()
   return useMutation({
     mutationKey: START_TODO_MUTATION_KEY,
     mutationFn: async (todo: StartableTodo) => {
@@ -228,18 +264,31 @@ export function useStartTodo() {
       const { claim, todo: claimed } = await send<{ claim: string; todo: TodoView }>(
         `/api/todos/${todo.id}/claim`, 'POST', {}, 'Could not start the todo',
       )
+      const slug = claimed.agentSlug ?? agentSlug
+      const list = claimed.attachments ?? []
+      const bound: { mountId: string; containerPath: string; hostPath: string }[] = []
       let sessionId: string
       try {
-        sessionId = (await createSession.mutateAsync({
-          agentSlug: claimed.agentSlug ?? agentSlug,
-          message: todoPrompt(claimed),
-          ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
-          ...(claimed.effort ? { effort: claimed.effort } : {}),
-          ...(claimed.speed ? { speed: claimed.speed } : {}),
-        })).id
+        if (!pointersMatch(list, slug)) throw new Error('An attached file is not on this agent')
+        for (const att of list) {
+          if (att.kind !== 'mount') continue
+          const result = await addMount.mutateAsync({ agentSlug: slug, hostPath: att.hostPath, restart: true })
+          bound.push({ mountId: result.id, containerPath: mountPathOf(result.name), hostPath: att.hostPath })
+        }
+        try {
+          sessionId = (await createSession.mutateAsync({
+            agentSlug: slug,
+            message: appendAttachedFiles(appendMountedFolders(todoPrompt(claimed), bound), pointedPaths(list, slug)),
+            ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
+            ...(claimed.effort ? { effort: claimed.effort } : {}),
+            ...(claimed.speed ? { speed: claimed.speed } : {}),
+          })).id
+        } catch (error) {
+          if (error instanceof Error) reportedBySessionCreation.add(error)
+          throw error
+        }
       } catch (error) {
-        if (error instanceof Error) reportedBySessionCreation.add(error)
-        // Nothing started: let the draft be started again.
+        await Promise.all(bound.map((mount) => removeMount.mutateAsync({ agentSlug: slug, mountId: mount.mountId, restart: true }).catch(() => {})))
         void apiFetch(`/api/todos/${todo.id}/release`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

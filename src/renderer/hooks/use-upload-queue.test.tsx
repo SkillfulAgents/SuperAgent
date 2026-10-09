@@ -28,7 +28,7 @@ function folderAttachment(id: string, extras: Partial<FolderAttachment> = {}): F
 
 // Mount chips have no `upload`; narrow before reading it so the assertions typecheck.
 function uploadOf(a: Attachment | undefined) {
-  return a && a.type !== 'mount' ? a.upload : undefined
+  return a && (a.type === 'file' || a.type === 'folder') ? a.upload : undefined
 }
 
 // Drives real attachment state so the queue's ref reads what the UI would.
@@ -165,7 +165,7 @@ describe('useUploadQueue', () => {
     const folder = folderAttachment('docs', { folderPath: '/host/docs' })
     const { result } = renderHook(() => useHarness(uploadFile, [folder], uploadFolder))
     await act(async () => { result.current.queue.enqueue(folder) })
-    expect(uploadFolder).toHaveBeenCalledWith({ sourcePath: '/host/docs' })
+    expect(uploadFolder).toHaveBeenCalledWith({ sourcePath: '/host/docs', attachmentId: 'docs' })
     expect(uploadFile).not.toHaveBeenCalled()
     expect(uploadOf(result.current.attachments[0])).toMatchObject({ status: 'done', path: '/workspace/docs', agentSlug: 'agent-a' })
     expect(uploadOf(result.current.attachments[0])?.percent).toBeUndefined()
@@ -179,7 +179,9 @@ describe('useUploadQueue', () => {
     await act(async () => { result.current.queue.enqueue(folder) })
     expect(zipFolderFiles).toHaveBeenCalledWith(folder.files)
     expect(uploadFolder).not.toHaveBeenCalled()
+    // The zip is a new file; the chip id is what keeps it tied to the folder chip.
     expect(uploadFile).toHaveBeenCalledWith(expect.objectContaining({
+      attachmentId: 'docs',
       file: expect.objectContaining({ name: 'docs.zip', type: 'application/zip' }),
     }))
     expect(uploadOf(result.current.attachments[0])).toMatchObject({ status: 'done', path: '/workspace/docs.zip' })

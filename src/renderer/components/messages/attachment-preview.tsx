@@ -46,7 +46,18 @@ export interface MountAttachment {
   error?: string
 }
 
-export type Attachment = FileAttachment | FolderAttachment | MountAttachment
+/** A file already held with a draft. A reopened draft has no browser File. */
+export interface SavedAttachment {
+  type: 'saved'
+  id: string
+  name: string
+  size: number
+  mimeType: string
+  kind?: 'file' | 'folder'
+  error?: string
+}
+
+export type Attachment = FileAttachment | FolderAttachment | MountAttachment | SavedAttachment
 
 export type AttachmentStatus = 'queued' | 'uploading' | 'done' | 'error'
 
@@ -54,7 +65,7 @@ export type AttachmentStatus = 'queued' | 'uploading' | 'done' | 'error'
 // failed retry never shows a stale bar.
 export function attachmentStatus(a: Attachment): AttachmentStatus | undefined {
   if (a.error) return 'error'
-  if (a.type === 'mount') return undefined
+  if (a.type === 'mount' || a.type === 'saved') return undefined
   return a.upload?.status
 }
 
@@ -65,7 +76,9 @@ interface AttachmentPreviewProps {
 }
 
 function attachmentName(attachment: Attachment): string {
-  return attachment.type === 'file' ? attachment.file.name : attachment.folderName
+  if (attachment.type === 'file') return attachment.file.name
+  if (attachment.type === 'saved') return attachment.name
+  return attachment.folderName
 }
 
 function folderSizeText(attachment: FolderAttachment): string {
@@ -217,6 +230,16 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
                 ) : (
                   <span className="text-muted-foreground">mounted, read-write</span>
                 )}
+              </div>
+            </>
+          ) : attachment.type === 'saved' ? (
+            <>
+              <FileIconTile filename={attachment.name} folder={attachment.kind === 'folder'} />
+              <div className="flex flex-col min-w-0">
+                <span className="truncate max-w-[160px] font-medium" title={attachment.name}>
+                  {attachment.name}
+                </span>
+                <span className="text-muted-foreground">{attachment.kind === 'folder' ? 'Folder' : formatFileSize(attachment.size)}</span>
               </div>
             </>
           ) : attachment.type === 'folder' ? (

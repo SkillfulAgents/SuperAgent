@@ -878,6 +878,8 @@ export const todos = sqliteTable('todos', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   startedAt: integer('started_at', { mode: 'timestamp_ms' }),
   completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+  // Files held with the item. A JSON list, validated when read.
+  attachments: text('attachments').notNull().default('[]'),
 }, (table) => ({
   userIdx: index('todos_user_idx').on(table.userId),
   // Session and agent deletion find the rows that point at them.

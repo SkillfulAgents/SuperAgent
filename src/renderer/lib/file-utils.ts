@@ -25,6 +25,18 @@ export interface FolderGroup {
   files: { file: File; relativePath: string }[]
 }
 
+/** Splits dropped folders by the choice made. A folder with no path on disk cannot mount, so it is copied instead. */
+export function folderChoice(
+  choice: 'upload' | 'mount' | 'cancel',
+  folders: readonly FolderGroup[],
+): { upload: FolderGroup[]; mount: { folderName: string; hostPath: string }[] } {
+  if (choice !== 'mount') return { upload: choice === 'upload' ? [...folders] : [], mount: [] }
+  return {
+    upload: folders.filter((folder) => !folder.folderPath),
+    mount: folders.flatMap((folder) => (folder.folderPath ? [{ folderName: folder.folderName, hostPath: folder.folderPath }] : [])),
+  }
+}
+
 export interface DataTransferResult {
   files: FileWithPath[]
   folders: FolderGroup[]

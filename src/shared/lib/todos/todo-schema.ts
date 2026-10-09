@@ -40,6 +40,39 @@ const runtimeFields = {
   speed: z.enum(SPEED_LEVELS).nullable().optional(),
 }
 
+const attachmentBase = {
+  id: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  mimeType: z.string().max(200),
+  addedAt: z.number().int().nonnegative(),
+  agentSlug: z.string().trim().min(1).max(200),
+}
+
+/** A file or folder already in an agent's workspace, or a mount path bound at Start. */
+export const todoAttachmentSchema = z.discriminatedUnion('kind', [
+  z.object({ ...attachmentBase, kind: z.literal('file'), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ ...attachmentBase, kind: z.literal('folder'), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ ...attachmentBase, kind: z.literal('mount'), hostPath: z.string().min(1).max(4096) }).strict(),
+])
+export type TodoAttachment = z.infer<typeof todoAttachmentSchema>
+
+export const todoAttachmentsSchema = z.array(todoAttachmentSchema)
+
+/** The list on the row. A bad value reads as none, so one bad write cannot blank the board. */
+export function parseTodoAttachments(raw: string): TodoAttachment[] {
+  try {
+    const parsed = todoAttachmentsSchema.safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Held files that still need the agent's upload. `uploaded` is what this start
+ * already sent; `claimed` is the list the claim returned.
+ */
 export const createTodoSchema = z
   .object({
     title: titleSchema,
@@ -50,9 +83,6 @@ export const createTodoSchema = z
   })
   .strict()
   .refine((todo) => !(todo.newAgent && todo.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
-  .refine((todo) => todo.title.length > 0 || todo.description.trim().length > 0, {
-    message: 'A todo needs a title or a description',
-  })
 export type CreateTodoInput = z.infer<typeof createTodoSchema>
 
 /**
@@ -210,6 +240,8 @@ export interface TodoView {
   ask: TodoAsk | null
   /** When its session is scheduled to resume on its own, if it is. */
   pendingWakeAt: number | null
+  /** Files held with the item. The list freezes at Start, like the brief. */
+  attachments: TodoAttachment[]
   createdAt: number
   updatedAt: number
   startedAt: number | null

@@ -8,9 +8,11 @@ const state = vi.hoisted(() => ({
   agents: new Set<string>(),
   // user → agents they can read
   readable: new Map<string, Set<string>>(),
+  usable: new Map<string, Set<string>>(),
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
   wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
+  workspace: new Map<string, Map<string, { kind: 'file' | 'directory'; bytes?: Uint8Array }>>(),
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -24,8 +26,9 @@ vi.mock('../middleware/auth', () => ({
     c.set('user' as never, { id } as never)
     return next()
   },
-  getReadableAgentIds: async (c: Context, ids: readonly string[]) => {
-    const mine = state.readable.get((c.get('user' as never) as { id: string }).id) ?? new Set()
+  getReadableAgentIds: async (c: Context, ids: readonly string[], minRole = 'viewer') => {
+    const access = minRole === 'user' ? state.usable : state.readable
+    const mine = access.get((c.get('user' as never) as { id: string }).id) ?? new Set()
     return new Set(ids.filter((id) => mine.has(id)))
   },
 }))
@@ -38,6 +41,19 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingWakesByAgent: async (slug: string) => state.wakes.filter((w) => w.agentSlug === slug),
 }))
+function workspaceOf(slug: string) {
+  let bucket = state.workspace.get(slug)
+  if (!bucket) {
+    bucket = new Map()
+    state.workspace.set(slug, bucket)
+  }
+  return bucket
+}
+
+function workspacePath(raw: string) {
+  return raw.replace(/^\/workspace\//, '').replace(/^\/+/, '')
+}
+
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
     get: (slug: string) => ({
@@ -47,6 +63,55 @@ vi.mock('@shared/lib/agent-actor', () => ({
         isAwaitingInput: (id: string) => state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
       },
       inputs: { snapshot: (id: string) => state.requests.get(`${slug}/${id}`) ?? [] },
+      files: {
+        stat: async (p: string) => {
+          const item = workspaceOf(slug).get(workspacePath(p))
+          if (!item) return null
+          return { kind: item.kind, size: item.bytes?.length ?? 0, mtimeMs: 0 }
+        },
+        list: async (dir: string) => {
+          const prefix = workspacePath(dir).replace(/\/$/, '')
+          return [...workspaceOf(slug)].flatMap(([key, item]) => {
+            if (!key.startsWith(`${prefix}/`)) return []
+            const name = key.slice(prefix.length + 1)
+            if (name.includes('/')) return []
+            return [{ name, path: key, kind: item.kind }]
+          })
+        },
+        read: async (p: string) => {
+          const item = workspaceOf(slug).get(workspacePath(p))
+          if (!item || item.kind !== 'file' || !item.bytes) throw new Error('missing')
+          return new ReadableStream({ start(controller) { controller.enqueue(item.bytes); controller.close() } })
+        },
+        open: async (p: string) => {
+          const item = workspaceOf(slug).get(workspacePath(p))
+          if (!item || item.kind !== 'file') throw new Error('missing')
+          const bytes = item.bytes ?? new Uint8Array()
+          return {
+            size: async () => bytes.length,
+            stream: () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } }),
+            close: async () => {},
+            readAt: async () => bytes,
+          }
+        },
+        write: async (p: string, body: Uint8Array | ReadableStream, options?: { overwrite?: boolean }) => {
+          const key = workspacePath(p)
+          if (options?.overwrite === false && workspaceOf(slug).has(key)) throw new Error('exists')
+          const bytes = body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer())
+          workspaceOf(slug).set(key, { kind: 'file', bytes })
+          return { size: bytes.length }
+        },
+        mkdir: async (p: string, options?: { confined?: boolean }) => {
+          if (workspacePath(p).includes('/todo/') && options?.confined !== true) throw new Error('unconfined mkdir')
+          workspaceOf(slug).set(workspacePath(p), { kind: 'directory' })
+        },
+        delete: async (p: string, options?: { recursive?: boolean }) => {
+          const rel = workspacePath(p)
+          for (const key of [...workspaceOf(slug).keys()]) {
+            if (key === rel || (options?.recursive && key.startsWith(`${rel}/`))) workspaceOf(slug).delete(key)
+          }
+        },
+      },
     }),
   },
 }))
@@ -84,10 +149,12 @@ beforeEach(async () => {
   state.db = database.db
   state.experimentOn = new Set(['alice', 'bob'])
   state.agents = new Set(['agent-a', 'agent-b'])
+  state.usable = new Map([['alice', new Set(['agent-a'])]])
   state.readable = new Map([['alice', new Set(['agent-a', 'agent-b'])], ['bob', new Set(['agent-a'])]])
   state.sessions = new Map()
   state.requests = new Map()
   state.wakes = []
+  state.workspace = new Map()
 })
 
 afterEach(async () => {
@@ -119,8 +186,8 @@ describe('drafts', () => {
     expect(list.todos[0]).toMatchObject({ id: draft.id, description: 'Q3 and Q4 numbers' })
   })
 
-  it('refuses an empty draft and unknown fields', async () => {
-    expect((await call('', 'POST', { title: '  ', description: '' })).status).toBe(400)
+  it('allows an empty draft, and refuses unknown fields', async () => {
+    expect((await call('', 'POST', { title: '  ', description: '' })).status).toBe(201)
     expect((await call('', 'POST', { title: 'x', status: 'done' })).status).toBe(400)
   })
 
@@ -400,5 +467,129 @@ describe('ordering', () => {
     const draft = await createDraft()
     expect((await call(`/${draft.id}/position`, 'POST', { position: 'top' })).status).toBe(400)
     expect((await call(`/${draft.id}/position`, 'POST', { position: 1 }, 'bob')).status).toBe(404)
+  })
+})
+
+
+describe('attachment pointers', () => {
+  const attId = '11111111-1111-4111-8111-111111111111'
+  const rel = 'uploads/note.txt'
+  const ownedPath = `/workspace/${rel}`
+  function seed(slug = 'agent-a') {
+    workspaceOf(slug).set(rel, { kind: 'file', bytes: new Uint8Array([1, 2, 3]) })
+  }
+  function remember(id: string, user = 'alice') {
+    return call(`/${id}/attachments`, 'POST', { id: attId, name: 'note.txt', path: ownedPath }, user)
+  }
+
+  it('remembers a file that is already in the agent workspace', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    const res = await remember(draft.id)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.attachments[0]).toMatchObject({ id: attId, name: 'note.txt', agentSlug: 'agent-a', kind: 'file', path: ownedPath })
+    expect(workspaceOf('agent-a').has(rel)).toBe(true)
+  })
+
+  it('refuses a path outside the upload folder, and a file that is not there', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    expect((await call(`/${draft.id}/attachments`, 'POST', { id: attId, name: 'note.txt', path: '/workspace/secrets/note.txt' })).status).toBe(400)
+    expect((await call(`/${draft.id}/attachments`, 'POST', { id: attId, name: 'note.txt', path: ownedPath })).status).toBe(400)
+  })
+
+  it('does not remember a file for someone else', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id, 'bob')).status).toBe(404)
+  })
+
+  it('copies attached files to a new agent and leaves the old ones', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id)).status).toBe(200)
+    state.usable.set('alice', new Set(['agent-a', 'agent-b']))
+    const moved = await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })
+    expect(moved.status).toBe(200)
+    const body = await moved.json()
+    expect(body.agentSlug).toBe('agent-b')
+    expect(body.attachments[0]).toMatchObject({ id: attId, agentSlug: 'agent-b' })
+    const copied = workspacePath(body.attachments[0].path)
+    expect(copied).toMatch(/^uploads\/x-agent\/[^/]+\/0\/note\.txt$/)
+    expect(workspaceOf('agent-b').get(copied)?.bytes).toEqual(new Uint8Array([1, 2, 3]))
+    expect(workspaceOf('agent-a').has(rel)).toBe(true)
+  })
+
+  it('copies a folder with its files', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    workspaceOf('agent-a').set('uploads/notes', { kind: 'directory' })
+    workspaceOf('agent-a').set('uploads/notes/a.txt', { kind: 'file', bytes: new Uint8Array([4]) })
+    expect((await call(`/${draft.id}/attachments`, 'POST', { id: attId, name: 'notes', path: '/workspace/uploads/notes/', kind: 'folder' })).status).toBe(200)
+    state.usable.set('alice', new Set(['agent-a', 'agent-b']))
+    const moved = await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })
+    expect(moved.status).toBe(200)
+    const folder = workspacePath((await moved.json()).attachments[0].path)
+    expect(folder).toMatch(/\/notes\/?$/)
+    expect(workspaceOf('agent-b').get(`${folder.replace(/\/$/, '')}/a.txt`)?.bytes).toEqual(new Uint8Array([4]))
+  })
+
+  it('gives a mount the new agent without copying anything', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    expect((await call(`/${draft.id}/attachments`, 'POST', { id: attId, name: 'notes', hostPath: '/Users/me/notes', kind: 'mount' })).status).toBe(200)
+    const moved = await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })
+    expect(moved.status).toBe(200)
+    expect((await moved.json()).attachments[0]).toMatchObject({ kind: 'mount', hostPath: '/Users/me/notes', agentSlug: 'agent-b' })
+    expect([...workspaceOf('agent-b').keys()]).toEqual([])
+  })
+
+  it('keeps the agent when a file cannot be copied', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id)).status).toBe(200)
+    workspaceOf('agent-a').delete(rel)
+    state.usable.set('alice', new Set(['agent-a', 'agent-b']))
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })).status).toBe(409)
+    const listed = await (await call('')).json()
+    expect(listed.todos.find((item: { id: string }) => item.id === draft.id)?.agentSlug).toBe('agent-a')
+    expect([...workspaceOf('agent-b').keys()]).toEqual([])
+  })
+
+  it('removes the copies when a start holds the draft', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id)).status).toBe(200)
+    state.usable.set('alice', new Set(['agent-a', 'agent-b']))
+    expect((await call(`/${draft.id}/claim`, 'POST', {})).status).toBe(200)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })).status).toBe(409)
+    expect([...workspaceOf('agent-b').keys()].filter((key) => key.startsWith('uploads/x-agent/') && key.includes('.txt'))).toEqual([])
+    expect(workspaceOf('agent-a').has(rel)).toBe(true)
+  })
+
+  it('does not copy into an agent the person cannot use', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id)).status).toBe(200)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })).status).toBe(404)
+    expect([...workspaceOf('agent-b').keys()]).toEqual([])
+  })
+
+  it('drops the pointer and leaves the file in the workspace, as chat does', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id)).status).toBe(200)
+    const removed = await call(`/${draft.id}/attachments/${attId}`, 'DELETE')
+    expect(removed.status).toBe(200)
+    expect((await removed.json()).attachments).toEqual([])
+    expect(workspaceOf('agent-a').has(rel)).toBe(true)
+  })
+
+  it('refuses to drop a pointer from a started item', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await remember(draft.id)).status).toBe(200)
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: false })
+    const { claim } = await (await call(`/${draft.id}/claim`, 'POST', {})).json()
+    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1', claim })).status).toBe(200)
+    expect((await call(`/${draft.id}/attachments/${attId}`, 'DELETE')).status).toBe(409)
   })
 })

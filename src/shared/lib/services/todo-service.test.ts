@@ -8,6 +8,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import {
   START_CLAIM_TTL_MS,
+  appendTodoAttachment,
   claimStart,
   createTodo,
   deleteTodo,
@@ -15,6 +16,7 @@ import {
   listTodos,
   moveTodo,
   releaseStart,
+  removeTodoAttachment,
   setTodoStatus,
   startTodo,
   unlinkAgentStatements,
@@ -252,5 +254,45 @@ describe('deleting sessions and agents', () => {
     expect(await getTodo(ME, active.id)).toMatchObject({ status: 'draft', agentSlug: null, sessionId: null })
     expect(await getTodo(ME, done.id)).toMatchObject({ status: 'done', agentSlug: null, sessionId: null })
     expect(await getTodo(ME, elsewhere.id)).toMatchObject({ status: 'active', agentSlug: 'agent-b' })
+  })
+})
+
+
+const entry = {
+  id: '11111111-1111-4111-8111-111111111111',
+  name: 'note.txt',
+  size: 4,
+  mimeType: 'text/plain',
+  addedAt: 1,
+  kind: 'file' as const,
+  path: '/workspace/uploads/todo/11111111-1111-4111-8111-111111111111/note.txt',
+  agentSlug: 'agent-a',
+}
+
+describe('held files', () => {
+  it('refuses to add or remove a file once the draft is claimed or started', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    await claim(draft.id)
+    expect(await appendTodoAttachment(ME, draft.id, entry)).toEqual({ ok: false, reason: 'conflict' })
+    expect(await removeTodoAttachment(ME, draft.id, entry.id)).toEqual({ ok: false, reason: 'conflict' })
+
+    const started = await startedTodo()
+    expect(await appendTodoAttachment(ME, started.id, entry)).toEqual({ ok: false, reason: 'conflict' })
+    expect(await removeTodoAttachment(ME, started.id, entry.id)).toEqual({ ok: false, reason: 'conflict' })
+  })
+
+  it('appends a file on an unclaimed draft and removes it', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    const added = await appendTodoAttachment(ME, draft.id, entry)
+    expect(added.ok && added.todo.attachments).toContain(entry.id)
+    const removed = await removeTodoAttachment(ME, draft.id, entry.id)
+    expect(removed.ok && removed.todo.attachments).toBe('[]')
+  })
+
+  it('replaces a pointer with the same id instead of adding a second', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    expect((await appendTodoAttachment(ME, draft.id, entry)).ok).toBe(true)
+    const again = await appendTodoAttachment(ME, draft.id, { ...entry, name: 'other.txt' })
+    expect(again.ok && JSON.parse(again.todo.attachments)).toEqual([{ ...entry, name: 'other.txt' }])
   })
 })
