@@ -27,20 +27,25 @@ const MAX_PIXELS = 1_200_000
  * Enforces both max dimension (1568px) and max pixel count (1.15MP).
  * Returns the resized buffer and the output MIME type.
  * If the image is already within limits, returns it unchanged.
+ *
+ * `pixelRatio` first brings a high-DPI capture back to CSS pixels, so the
+ * model pays for, and clicks in, the same coordinates the page uses.
  */
 export async function resizeScreenshot(
   input: Buffer,
   mimeType: string,
+  { pixelRatio = 1 }: { pixelRatio?: number } = {},
 ): Promise<{ data: Buffer; mimeType: string; resized: boolean }> {
   try {
     const metadata = await sharp(input).metadata()
-    const width = metadata.width ?? 0
-    const height = metadata.height ?? 0
+    const ratio = Number.isFinite(pixelRatio) && pixelRatio > 1 ? pixelRatio : 1
+    const width = Math.round((metadata.width ?? 0) / ratio)
+    const height = Math.round((metadata.height ?? 0) / ratio)
 
     const withinDimensions = width <= MAX_DIMENSION && height <= MAX_DIMENSION
     const withinPixels = width * height <= MAX_PIXELS
 
-    if (withinDimensions && withinPixels) {
+    if (ratio === 1 && withinDimensions && withinPixels) {
       return { data: input, mimeType, resized: false }
     }
 

@@ -65,13 +65,16 @@ export function extractScreenshotPath(output: string): string {
   return match ? match[1] : clean
 }
 
-async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
+async function readScreenshotAsBase64(
+  filePath: string,
+  pixelRatio: unknown,
+): Promise<{ data: string; mimeType: string } | null> {
   try {
     const buffer = await readFile(filePath.trim())
     const mimeType = filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')
       ? 'image/jpeg'
       : 'image/png'
-    const resized = await resizeScreenshot(buffer, mimeType)
+    const resized = await resizeScreenshot(buffer, mimeType, { pixelRatio: Number(pixelRatio) || 1 })
     return { data: resized.data.toString('base64'), mimeType: resized.mimeType }
   } catch {
     return null
@@ -436,7 +439,7 @@ const browserScreenshotTool = tool(
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
 
     if (filePath) {
-      const image = await readScreenshotAsBase64(filePath)
+      const image = await readScreenshotAsBase64(filePath, data.devicePixelRatio)
       if (image) {
         content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
       }
@@ -750,7 +753,7 @@ const browserGetStateTool = tool(
       if (!filePath) {
         screenshotFailure = 'no screenshot path returned'
       } else {
-        const image = await readScreenshotAsBase64(filePath)
+        const image = await readScreenshotAsBase64(filePath, data.devicePixelRatio)
         if (image) {
           content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
           parts.push(`**Screenshot:** ${filePath}`)

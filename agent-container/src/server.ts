@@ -850,7 +850,7 @@ async function execBrowser(
       env: {
         ...process.env,
         AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
-        AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
+        AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled,--force-device-scale-factor=1.5',
       },
     });
     return { stdout: capBrowserOutput(stdout.trim(), outputCap), exitCode: 0 };
@@ -1792,7 +1792,9 @@ app.post('/browser/screenshot', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    return c.json({ success: true, output: result.stdout });
+    // The image is in device pixels; the tool scales it back to CSS pixels.
+    const devicePixelRatio = Number.parseFloat((await observePage('devicePixelRatio')) ?? '') || 1;
+    return c.json({ success: true, output: result.stdout, devicePixelRatio });
   } catch (error: any) {
     console.error('[Browser] Error taking screenshot:', error);
     return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
@@ -2430,6 +2432,9 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
 // which tab is active and switch the screencast if needed.
 // ============================================================
 
+// Room for the 1280×720 viewport at its 1.5x device scale (see AGENT_BROWSER_ARGS).
+const SCREENCAST_PARAMS = { format: 'jpeg', quality: 80, maxWidth: 1920, maxHeight: 1080, everyNthFrame: 1 };
+
 let cdpScreencast: {
   clientWs: WebSocket;
   cdpWs: WebSocket;
@@ -2819,9 +2824,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-        format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-      }));
+      cdpWs.send(cdpMsg(state, 'Page.startScreencast', SCREENCAST_PARAMS));
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
       // Discover the main frame ID so we only forward loading events for the
@@ -2840,9 +2843,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
         state.cdpSessionId = msg.result.sessionId;
-        cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-          format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-        }));
+        cdpWs.send(cdpMsg(state, 'Page.startScreencast', SCREENCAST_PARAMS));
         // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
         cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
