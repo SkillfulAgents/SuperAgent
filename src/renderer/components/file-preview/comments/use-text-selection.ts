@@ -1,15 +1,9 @@
 import { useState, useEffect, useCallback, type RefObject } from 'react'
-import type { CellRef } from '@renderer/context/file-preview-context'
+import type { PendingSelection } from './anchor'
 import { useDismissOnOutsideClick } from './use-dismiss-on-outside-click'
 
-export interface TextSelectionInfo {
-  text: string
+export interface TextSelectionInfo extends PendingSelection {
   rect: DOMRect
-  x?: number
-  y?: number
-  cell?: CellRef
-  /** Playback position in seconds, set for audio/video comments. */
-  timestamp?: number
 }
 
 export function useTextSelection(containerRef: RefObject<HTMLElement | null>, enabled = true) {

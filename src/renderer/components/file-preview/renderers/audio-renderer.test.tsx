@@ -177,7 +177,7 @@ describe('AudioRenderer', () => {
     expect(audio.currentTime).toBe(70)
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce()
     await user.click(screen.getByRole('button', { name: 'Add' }))
-    expect(addComment).toHaveBeenCalledWith(expect.objectContaining({ timestamp: 70 }))
+    expect(addComment).toHaveBeenCalledWith(expect.objectContaining({ anchor: { kind: 'time', seconds: 70 } }))
   })
 
   it('sets the speed from the picker, and keys inside the open picker stay there', async () => {
@@ -215,11 +215,7 @@ describe('AudioRenderer', () => {
       filePath: '/workspace/voice-note.mp3',
       agentSlug: 'test-agent',
       text: 'Reduce the background noise',
-      selectedText: undefined,
-      x: undefined,
-      y: undefined,
-      cell: undefined,
-      timestamp: 0,
+      anchor: { kind: 'time', seconds: 0 },
     })
   })
 
@@ -229,7 +225,7 @@ describe('AudioRenderer', () => {
       filePath: '/workspace/voice-note.mp3',
       agentSlug: 'test-agent',
       text: 'Cut this section',
-      timestamp: 12,
+      anchor: { kind: 'time', seconds: 12 },
     }])
 
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)

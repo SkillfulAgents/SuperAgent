@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Play, Pause, MessageSquarePlus } from 'lucide-react'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
 import { frameSeconds, useMediaKeys } from './use-media-keys'
@@ -28,9 +28,6 @@ interface PendingComment {
   listen: boolean
 }
 
-/** A video comment always carries a timestamp; x/y are present when placed in-frame. */
-type VideoComment = FileComment & { timestamp: number }
-
 /** How close (in seconds) the playhead must be to a comment to show its pin. */
 const PIN_VISIBLE_WINDOW = 0.4
 
@@ -50,7 +47,9 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
 
   const { commentsFor } = useFilePreview()
   const fileComments = commentsFor(filePath, agentSlug)
-  const videoComments = fileComments.filter((c): c is VideoComment => c.timestamp != null)
+  const videoComments = fileComments.flatMap(c => (c.anchor.kind === 'time'
+    ? [{ id: c.id, timestamp: c.anchor.seconds, point: c.anchor.point }]
+    : []))
 
   const seekTo = useCallback((time: number) => {
     const v = videoRef.current
@@ -182,8 +181,8 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
 
         {/* Pins for comments anchored near the current frame. */}
         {commentsEnabled && videoComments.map((comment, i) =>
-          comment.x != null && comment.y != null && Math.abs(comment.timestamp - currentTime) <= PIN_VISIBLE_WINDOW ? (
-            <CommentPin key={comment.id} x={comment.x} y={comment.y} number={i + 1} />
+          comment.point && Math.abs(comment.timestamp - currentTime) <= PIN_VISIBLE_WINDOW ? (
+            <CommentPin key={comment.id} x={comment.point.x} y={comment.point.y} number={i + 1} />
           ) : null,
         )}
 

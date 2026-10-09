@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { Loader2 } from 'lucide-react'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
 import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-click'
@@ -26,7 +26,7 @@ export function ImageRenderer({ url, filePath, agentSlug, commentsEnabled = true
   const imgContainerRef = useRef<HTMLDivElement>(null)
   const { commentsFor } = useFilePreview()
   const fileComments = commentsFor(filePath, agentSlug)
-  const imageComments = fileComments.filter((c): c is FileComment & { x: number; y: number } => c.x != null && c.y != null)
+  const imageComments = fileComments.flatMap(c => (c.anchor.kind === 'point' ? [{ id: c.id, x: c.anchor.x, y: c.anchor.y }] : []))
 
   useDismissOnOutsideClick(clickPoint != null, () => setClickPoint(null), IMAGE_DISMISS_IGNORE)
 

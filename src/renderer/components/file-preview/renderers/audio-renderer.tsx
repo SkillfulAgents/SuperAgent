@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AudioLines, MessageSquarePlus, Pause, Play } from 'lucide-react'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CommentOverlay } from '../comments/comment-overlay'
 import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
@@ -22,8 +22,6 @@ interface PendingComment {
   /** Opened with M: the editor starts the mic. */
   listen: boolean
 }
-
-type AudioComment = FileComment & { timestamp: number }
 
 const WAVEFORM_BAR_COUNT = 112
 const MAX_WAVEFORM_ENCODED_BYTES = 15 * 1024 * 1024
@@ -187,11 +185,9 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
   const commentMarkers = useMemo(() => {
     const fileComments = commentsFor(filePath, agentSlug)
     return fileComments
-      .filter((comment): comment is AudioComment => comment.timestamp != null)
-      .map(comment => ({
-        ...comment,
-        ratio: maxSeek > 0 ? clamp(comment.timestamp / maxSeek, 0, 1) : 0,
-      }))
+      .flatMap(comment => (comment.anchor.kind === 'time'
+        ? [{ id: comment.id, timestamp: comment.anchor.seconds, ratio: maxSeek > 0 ? clamp(comment.anchor.seconds / maxSeek, 0, 1) : 0 }]
+        : []))
   }, [commentsFor, filePath, agentSlug, maxSeek])
 
   return (

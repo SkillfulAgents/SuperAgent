@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
+import type { CommentAnchor } from '@renderer/components/file-preview/comments/anchor'
 
 export interface FileTab {
   kind: 'file'
@@ -68,30 +69,13 @@ function isFolderTabFor(tab: PreviewTab, agentSlug: string, rootPath: string): t
   return tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.rootPath === rootPath
 }
 
-export interface CellRef {
-  /** 1-based data row index (header row excluded). */
-  row: number
-  /** 0-based column index, used to place the comment pin in the grid. */
-  col: number
-  /** Column header name (or "Column N" when the header is blank). */
-  column: string
-  /** Current cell value, included as context for the agent. */
-  value?: string
-}
-
-// TODO should create specific types for CSV / Image (x,y) and text, and FileComment can be a union of those with a `type` field. Deeper validation - if we have x we need y etc...
 export interface FileComment {
   id: string
   filePath: string
   /** Which agent's copy of `filePath` this is feedback on. */
   agentSlug: string
   text: string
-  selectedText?: string
-  x?: number
-  y?: number
-  cell?: CellRef
-  /** Playback position in seconds for audio/video comments (optionally paired with x/y in-frame). */
-  timestamp?: number
+  anchor: CommentAnchor
 }
 
 interface FilePreviewContextType {
