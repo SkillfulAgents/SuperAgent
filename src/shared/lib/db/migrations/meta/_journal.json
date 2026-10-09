@@ -369,8 +369,15 @@
     {
       "idx": 52,
       "version": "6",
-      "when": 1791586823737,
-      "tag": "0052_cold_sabretooth",
+      "when": 1791587287364,
+      "tag": "0052_friendly_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1791588474166,
+      "tag": "0053_striped_starbolt",
       "breakpoints": true
     }
   ]

@@ -20,6 +20,7 @@ const GAMUT_PLATFORM_ACCOUNTS: ServiceInfo[] = [
   { slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' },
   { slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' },
   { slug: 'highlevel', displayName: 'HighLevel', category: 'CRM & Sales', description: 'CRM: contacts, conversations, calendars' },
+  { slug: 'shopify', displayName: 'Shopify', category: 'E-commerce', description: 'Online store: products, orders, customers' },
 ]
 
 export const SERVICES: ServiceInfo[] = [
@@ -80,12 +81,8 @@ export const SERVICES: ServiceInfo[] = [
 ]
 if (process.env.COMPOSIO_PLATFORM_MODE === 'true') SERVICES.push(...GAMUT_PLATFORM_ACCOUNTS)
 
-// Unlisted on the host: never offered in search, but an account the user already has can still be assigned.
-const UNLISTED_PLATFORM_SLUGS = ['shopify']
-
 export function isRequestableToolkit(slug: string): boolean {
-  if (SERVICES.some((s) => s.slug === slug)) return true
-  return process.env.COMPOSIO_PLATFORM_MODE === 'true' && UNLISTED_PLATFORM_SLUGS.includes(slug)
+  return SERVICES.some((s) => s.slug === slug)
 }
 
 export const searchConnectedAccountServicesTool = tool(

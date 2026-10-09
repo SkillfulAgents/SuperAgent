@@ -19,6 +19,7 @@ vi.mock('./provider-error-registry', async (importOriginal) => {
 
 const mockStreamState = {
   isActive: false,
+  activeStartTime: null as number | null,
   error: null as string | null,
   apiErrorCode: null as string | null,
   errorPresentation: null as ProviderErrorPresentation | null,
@@ -156,7 +157,7 @@ describe('currentRoutedProviderError', () => {
 
 describe('ProviderErrorPlacement', () => {
   beforeEach(async () => {
-    Object.assign(mockStreamState, idle)
+    Object.assign(mockStreamState, idle, { activeStartTime: null })
     mockMessages.length = 0
     const actual = await vi.importActual<typeof import('./provider-error-registry')>('./provider-error-registry')
     mockedRegistry.mockReset().mockImplementation(actual.resolveProviderError)
@@ -226,6 +227,29 @@ describe('ProviderErrorPlacement', () => {
     view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a"><Composer /></ProviderErrorPlacement>)
     expect(screen.getByTestId('provider-error-card')).toBeInTheDocument()
     expect(mounts).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a persisted error hidden once a turn started on top of it, even before the refetch', () => {
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    const view = mount()
+    expect(screen.getByTestId('provider-error-card')).toBeInTheDocument()
+
+    Object.assign(mockStreamState, { isActive: true, activeStartTime: 1_000 })
+    view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a">{composer}</ProviderErrorPlacement>)
+    Object.assign(mockStreamState, { isActive: false, activeStartTime: null })
+    view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a">{composer}</ProviderErrorPlacement>)
+    expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+  })
+
+  it('shows the error the new turn ended with', () => {
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    const view = mount()
+    Object.assign(mockStreamState, { isActive: true, activeStartTime: 1_000 })
+    view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a">{composer}</ProviderErrorPlacement>)
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    Object.assign(mockStreamState, { isActive: false, activeStartTime: null })
+    view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a">{composer}</ProviderErrorPlacement>)
+    expect(screen.getByTestId('provider-error-card')).toBeInTheDocument()
   })
 
   it('hides the children slot while the component reports them displaced', () => {

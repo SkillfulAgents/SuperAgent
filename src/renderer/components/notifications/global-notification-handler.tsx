@@ -618,6 +618,8 @@ export function GlobalNotificationHandler() {
             if (sessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
             }
+            // Todo cards show a pending wake as waiting.
+            queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })

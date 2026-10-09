@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Check, ChevronDown, Search } from 'lucide-react'
+import { Check, ChevronDown, Plus, Search } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { Button } from '@renderer/components/ui/button'
@@ -60,8 +60,12 @@ export interface AgentDropdownProps {
   align?: 'start' | 'center' | 'end'
   /** Classes for the default trigger. */
   className?: string
-  /** Test id prefix: `${testId}-search`, `${testId}-option-${slug}`. */
+  /** Test id prefix: `${testId}-search`, `${testId}-option-${slug}`, `${testId}-new`. */
   testId?: string
+  /** Offers a "New Agent" row after the agents; picking it calls this. */
+  onSelectNew?: () => void
+  /** "New Agent" is the current choice. */
+  newSelected?: boolean
 }
 
 /**
@@ -79,6 +83,8 @@ export function AgentDropdown({
   align = 'start',
   className,
   testId = 'agent-dropdown',
+  onSelectNew,
+  newSelected = false,
 }: AgentDropdownProps) {
   const { data: allAgents } = useAgents()
   const { data: settings } = useUserSettings()
@@ -94,6 +100,9 @@ export function AgentDropdown({
   const sectioned = useMemo(() => agentDropdownSections(agents, settings).length > 1, [agents, settings])
   const sections = useMemo(() => agentDropdownSections(agents, settings, query), [agents, settings, query])
   const options = useMemo(() => sections.flatMap((s) => s.agents), [sections])
+  // "New Agent", when offered, is the last stop for the arrow keys.
+  const newIndex = onSelectNew ? options.length : -1
+  const stops = options.length + (onSelectNew ? 1 : 0)
 
   // A new search starts at the first match.
   useEffect(() => setActive(0), [query])
@@ -109,15 +118,20 @@ export function AgentDropdown({
     onValueChange(agent.slug, agent)
     close()
   }
+  const pickNew = () => {
+    onSelectNew?.()
+    close()
+  }
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
-      if (options.length === 0) return
+      if (stops === 0) return
       const step = e.key === 'ArrowDown' ? 1 : -1
-      setActive((i) => (i + step + options.length) % options.length)
+      setActive((i) => (i + step + stops) % stops)
     } else if (e.key === 'Enter') {
       e.preventDefault()
+      if (active === newIndex) return pickNew()
       const agent = options[active]
       if (agent) pick(agent)
     }
@@ -132,10 +146,10 @@ export function AgentDropdown({
             variant="outline"
             size="sm"
             aria-expanded={open}
-            className={cn('h-8 justify-between gap-1.5 font-normal', !selected && 'text-muted-foreground', className)}
+            className={cn('h-8 justify-between gap-1.5 font-normal', !selected && !newSelected && 'text-muted-foreground', className)}
             data-testid={testId}
           >
-            <span className="truncate">{selected ? selected.name : placeholder}</span>
+            <span className="truncate">{selected ? selected.name : newSelected ? 'New Agent' : placeholder}</span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
           </Button>
         )}
@@ -147,7 +161,7 @@ export function AgentDropdown({
             role="combobox"
             aria-expanded
             aria-controls={listId}
-            aria-activedescendant={options[active] ? `${listId}-${options[active].slug}` : undefined}
+            aria-activedescendant={active === newIndex ? `${listId}-new` : options[active] ? `${listId}-${options[active].slug}` : undefined}
             aria-label="Search agents"
             placeholder="Search agents..."
             value={query}
@@ -159,7 +173,7 @@ export function AgentDropdown({
           />
         </div>
         <div ref={listRef} id={listId} role="listbox" aria-label="Agents" className="max-h-72 overflow-y-auto overscroll-contain p-1">
-          {options.length === 0 && (
+          {options.length === 0 && !onSelectNew && (
             <div className="px-3 py-6 text-center text-sm text-muted-foreground">
               {agents.length === 0 ? 'No agents yet.' : 'No agents found.'}
             </div>
@@ -203,6 +217,27 @@ export function AgentDropdown({
               })}
             </div>
           ))}
+          {onSelectNew && options.length > 0 && <div className="-mx-1 my-1 h-px bg-border" aria-hidden="true" />}
+          {onSelectNew && (
+            <div
+              id={`${listId}-new`}
+              role="option"
+              aria-selected={newSelected}
+              data-active={active === newIndex}
+              tabIndex={-1}
+              onMouseMove={() => setActive(newIndex)}
+              onClick={pickNew}
+              onKeyDown={(e) => { if (e.key === 'Enter') pickNew() }}
+              className={cn(
+                'flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm',
+                active === newIndex && 'bg-accent text-accent-foreground',
+              )}
+              data-testid={`${testId}-new`}
+            >
+              {newSelected ? <Check className="h-4 w-4 shrink-0" /> : <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />}
+              <span className="truncate">New Agent</span>
+            </div>
+          )}
         </div>
       </PopoverContent>
     </Popover>

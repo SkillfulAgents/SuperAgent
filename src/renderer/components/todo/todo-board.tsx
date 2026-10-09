@@ -407,7 +407,7 @@ export function TodoBoard() {
       const list = lanes[at.lane]
       const next = list[at.row + 1] ?? list[at.row - 1]
       action.run()
-      if (action.kind !== 'start' || todo.agentSlug) setSelectedId(next?.id ?? null)
+      if (action.kind !== 'start' || todo.agentSlug || todo.newAgent) setSelectedId(next?.id ?? null)
       return true
     }
     return false

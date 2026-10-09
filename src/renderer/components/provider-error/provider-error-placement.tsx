@@ -97,13 +97,23 @@ export interface ProviderErrorSlot {
 // showing: the composer hosts voice mode, and a remount would drop it (SUP-890). A card
 // that must withhold children (paywall while blocked) hides the slot instead.
 export function ProviderErrorPlacement({ placement, sessionId, agentSlug, children }: ProviderErrorPlacementProps) {
-  const { isActive, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
+  const { isActive, activeStartTime, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
   const [displaced, setDisplaced] = useState(false)
-  const current = useMemo(
-    () => currentProviderError({ isActive, error, apiErrorCode, errorPresentation }, messages),
-    [isActive, error, apiErrorCode, errorPresentation, messages],
-  )
+  // A turn that starts on top of a persisted error answers it. A short turn can go idle
+  // before the refetch with its rows lands, so without this the answered row would
+  // briefly become current again and remount the card.
+  const [turn, setTurn] = useState<{ startedAt: number | null; answeredErrorId: string | null }>({ startedAt: null, answeredErrorId: null })
+  if (activeStartTime !== turn.startedAt) {
+    setTurn({
+      startedAt: activeStartTime,
+      answeredErrorId: activeStartTime === null ? turn.answeredErrorId : lastAssistantProviderError(messages)?.id ?? null,
+    })
+  }
+  const current = useMemo(() => {
+    const found = currentProviderError({ isActive, error, apiErrorCode, errorPresentation }, messages)
+    return found && !found.live && found.messageId === turn.answeredErrorId ? null : found
+  }, [isActive, error, apiErrorCode, errorPresentation, messages, turn.answeredErrorId])
   const resolved = current ? resolveProviderError(current.presentation) : null
   const showing = current !== null && resolved !== null && resolved.placement === placement
   const slot: ProviderErrorSlot = { displaced: showing && displaced }

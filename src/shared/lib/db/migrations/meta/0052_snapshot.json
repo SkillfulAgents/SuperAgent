@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bac1ebff-b0ed-4288-bdf0-663be45befad",
+  "id": "c0c2216d-4e73-472c-86d2-04da03d07c2c",
   "prevId": "3bb18c4b-cf84-41d3-b1d9-3c5c8394cea6",
   "tables": {
     "agent_acl": {
@@ -231,14 +231,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "pending_removal": {
-          "name": "pending_removal",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -3091,6 +3083,42 @@
         },
         "agent_slug": {
           "name": "agent_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "new_agent": {
+          "name": "new_agent",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "llm_provider_id": {
+          "name": "llm_provider_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "effort": {
+          "name": "effort",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "speed": {
+          "name": "speed",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

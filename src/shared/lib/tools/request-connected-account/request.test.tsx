@@ -383,9 +383,8 @@ describe('ConnectedAccountRequestItem', () => {
     expect(screen.getByText('Add New Account')).toBeInTheDocument()
   })
 
-  // Shopify is unlisted until its App Store listing is live: an agent that names it
-  // anyway gets a card with nothing to click, not a link to a page that 404s.
-  it('offers no Connect for an unlisted provider', () => {
+  // Shopify only allows installing Gamut from its App Store listing (rule 2.3.1).
+  it('sends Connect for Shopify to the App Store listing', async () => {
     vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
       data: { accounts: [] },
       isLoading: false,
@@ -393,36 +392,10 @@ describe('ConnectedAccountRequestItem', () => {
     } as any)
 
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} toolkit="shopify" />)
+    await userEvent.click(screen.getByRole('button', { name: /Connect/ }))
 
-    expect(screen.getByText('Shopify')).toBeInTheDocument()
-    expect(screen.getByText('New Shopify connections are not available yet.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
-    expect(mockOpenExternal).not.toHaveBeenCalled()
-  })
-
-  it('still lets an existing account of an unlisted provider be allowed, without Add New Account', async () => {
-    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
-      data: {
-        accounts: [{
-          id: 'shop-acc',
-          toolkitSlug: 'shopify',
-          displayName: 'gamut-dev.myshopify.com',
-          status: 'active',
-          providerConnectionId: 'ca_1',
-          providerName: 'composio',
-          createdAt: '2026-09-16T00:00:00.000Z',
-          updatedAt: '2026-09-16T00:00:00.000Z',
-        }],
-      },
-      isLoading: false,
-      refetch: vi.fn(),
-    } as any)
-
-    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} toolkit="shopify" />)
-
-    expect(screen.queryByRole('button', { name: /Add New Account/ })).not.toBeInTheDocument()
-    const allowButton = await screen.findByRole('button', { name: /Allow Access/ })
-    expect(allowButton).toBeEnabled()
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://apps.shopify.com/gamut')
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/connected-accounts/initiate', expect.anything())
   })
 
   it('does not auto-select expired accounts and shows reconnect button', () => {

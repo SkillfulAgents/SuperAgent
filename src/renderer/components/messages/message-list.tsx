@@ -1312,6 +1312,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 startedAt={block.startedAt}
                 endedAt={block.endedAt}
                 active={isActive && block.endedAt === null}
+                agentSlug={agentSlug}
               />
             </div>
           </MessageErrorBoundary>
@@ -1331,6 +1332,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              isStreamingRow
               suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}

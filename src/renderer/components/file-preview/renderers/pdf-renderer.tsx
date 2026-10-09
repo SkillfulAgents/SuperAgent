@@ -3,6 +3,7 @@ import { Document, Page, pdfjs } from 'react-pdf'
 import { ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
+import { selectionToAnchor } from '../comments/anchor'
 
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -122,7 +123,8 @@ export function PdfRenderer({
 
       {selection && (
         <CommentOverlay
-          selection={selection}
+          anchor={selectionToAnchor(selection)}
+          rect={selection.rect}
           filePath={filePath}
           agentSlug={agentSlug}
           onClose={clearSelection}
