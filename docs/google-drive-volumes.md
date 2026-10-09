@@ -69,6 +69,16 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
 - Regular files are read as current content with byte ranges. Any read whose bytes
   are fewer or more than the listed size fails rather than serve a cut or mixed
   file; rclone retries, and the next listing corrects the size.
+- On a Composio-managed connection, Composio's proxy returns a text or JSON download
+  decoded: JSON re-serialized (large numbers rounded), bytes that are not UTF-8
+  replaced, a byte-order mark dropped, sometimes at the same length. Such a file
+  cannot be read exactly once rclone has not cached it. When Drive confirms the file
+  is the listed size, a body of another length, or a whole file whose MD5 differs
+  from Drive's `md5Checksum`, is refused before any header goes out. That version is
+  remembered, so rclone's retries fail without another download. The agent sees an
+  I/O error within about a second, and the app log says why. Valid UTF-8 text,
+  binary files and Google file exports read exactly. A connection through our own
+  Google OAuth app would fetch from Google directly and avoid this.
 - A write resolves its target through the folder view. A visible regular file is
   updated as a new revision, a visible folder is refused, and any other name creates
   a new real file in the parent. A visible export updates the Google file itself:

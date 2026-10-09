@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 
@@ -10,7 +11,7 @@ const { request, upload, requireAccount, TooLarge } = vi.hoisted(() => ({
 vi.mock('./google-drive-client', () => ({ driveRequest: request, driveUpload: upload, requireGoogleDriveAccount: requireAccount, DriveExportTooLargeError: TooLarge }))
 let exportCache: GoogleDriveExportCache
 vi.mock('./google-drive-export-cache', async importOriginal => ({ ...await importOriginal<object>(), get googleDriveExportCache() { return exportCache } }))
-import { GoogleDriveMountableVolume, googleDriveListingCache, googleDriveRecentListings, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
+import { GoogleDriveMountableVolume, googleDriveChangedDownloads, googleDriveListingCache, googleDriveRecentListings, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { GoogleDriveExportCache } from './google-drive-export-cache'
 import { DRIVE_FILE_FIELDS } from './google-drive-schema'
 
@@ -52,6 +53,7 @@ beforeEach(() => {
   googleDriveListingCache.invalidate('account')
   googleDriveRootChecks.clear()
   googleDriveRecentListings.clear()
+  googleDriveChangedDownloads.clear()
   exportCache = new GoogleDriveExportCache()
   requireAccount.mockResolvedValue({})
   upload.mockImplementation(async (_account, session: { path: string; json: { name?: string } }, _body, options?: { publish?: (send: () => Promise<unknown>) => Promise<unknown> }) => {
@@ -73,6 +75,37 @@ describe('Google Drive filesystem', () => {
     serve({ folders: { root1: [blob('n', 'keep.txt')] } })
     await volume().delete('keep.txt')
     expect(calls()).toContain('PATCH drive/v3/files/n')
+  })
+
+  it('refuses at once a file the account proxy changed on download, at any length, and leaves a size changed in Drive to the retry', async () => {
+    const md5 = (text: string) => createHash('md5').update(text).digest('hex')
+    serve({ folders: { root1: [
+      blob('j', 'package.json', 28, { mimeType: 'application/json' }),
+      blob('b', 'ids.json', 27, { mimeType: 'application/json', md5Checksum: md5('{"id":12345678901234567891}') }),
+      blob('t', 'notes.txt', 11, { md5Checksum: md5('hello world') }),
+    ] } })
+    const served = request.getMockImplementation()
+    if (!served) throw new Error('serve() sets the Drive stand-in')
+    let total = 28
+    const bodies: Record<string, string> = { j: '{"a":1}', b: '{"id":12345678901234567000}', t: 'hello world' }
+    request.mockImplementation(async (account, req, options) => {
+      const id = /^drive\/v3\/files\/([^/]+)$/.exec(req.path)?.[1]
+      if (req.query?.alt !== 'media' || !id) return served(account, req, options)
+      const body = bodies[id] ?? ''
+      const size = id === 'j' ? total : body.length
+      return new Response(body, { status: 206, headers: { 'content-type': id === 't' ? 'text/plain' : 'application/json', 'content-range': `bytes 0-${(id === 'j' ? 28 : size) - 1}/${size}` } })
+    })
+    await expect((await volume().read('package.json')).stream({ start: 0, end: 27 })).rejects.toMatchObject({ code: 'not-accessible' })
+    // Rounding a large number keeps the length. Drive's checksum still tells the bytes apart.
+    await expect((await volume().read('ids.json')).stream({ start: 0, end: 26 })).rejects.toMatchObject({ code: 'not-accessible' })
+    expect(await new Response(await (await volume().read('notes.txt')).stream({ start: 0, end: 10 })).text()).toBe('hello world')
+    // rclone retries the read. The same version is refused without another download.
+    const downloads = () => request.mock.calls.filter(([, req]) => req.query?.alt === 'media').length
+    await expect(volume().read('package.json')).rejects.toMatchObject({ code: 'not-accessible' })
+    expect(downloads()).toBe(3)
+    googleDriveChangedDownloads.clear()
+    total = 7
+    await expect((await volume().read('package.json')).stream({ start: 0, end: 27 })).rejects.toThrow('unexpected byte range')
   })
 
   it('lists ahead of a tree walk, never for a single listing', async () => {
