@@ -1,7 +1,10 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+
+// An Escape sent the instant the link card opens was sometimes missed (seen in the Todo dialog); waiting for its open animation keeps these steps stable.
+const cardSettled = (card: Locator) => card.evaluate((el) => Promise.all(el.closest('[role=dialog]')?.getAnimations().map((animation) => animation.finished) ?? []))
 
 test.describe('composer Markdown blocks', () => {
   let agentName: string
@@ -54,6 +57,57 @@ test.describe('composer Markdown blocks', () => {
     await expect(input.locator('h2')).toHaveText('Pasted heading')
     await expect(input.locator('ul li')).toHaveCount(2)
     await expect(input.locator('ol li')).toHaveCount(2)
+  })
+
+  test('links pasted URLs over a selection and shows the URL on click', async ({ page }) => {
+    const input = page.locator('[data-testid="home-message-input"]')
+
+    // Typed, not fill(): fill can return before the editor has read the text, so the selection below would miss it.
+    await input.click()
+    await input.pressSequentially('see docs')
+    for (let i = 0; i < 'docs'.length; i++) await input.press('Shift+ArrowLeft')
+    await input.evaluate((element) => {
+      const clipboardData = new DataTransfer()
+      clipboardData.setData('text/plain', 'https://example.com/docs')
+      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
+    })
+    await expect(input.locator('a[href="https://example.com/docs"]')).toHaveText('docs')
+    await input.locator('a[href="https://example.com/docs"]').click()
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeVisible()
+    await input.click({ position: { x: 4, y: 8 } })
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
+
+    await input.locator('a[href="https://example.com/docs"]').click()
+    await cardSettled(page.getByRole('button', { name: 'https://example.com/docs' }))
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
+
+    await input.locator('a[href="https://example.com/docs"]').click()
+    await page.keyboard.type('s')
+    await expect(page.getByRole('button', { name: 'https://example.com/docs' })).toBeHidden()
+  })
+
+  test('closes only the link card on Escape inside the Todo draft', async ({ page, request }) => {
+    const before = (await (await request.get('/api/user-settings')).json()).experiments?.['todo-board'] === true
+    await request.put('/api/user-settings', { data: { experiments: { 'todo-board': true } } })
+    try {
+      await page.goto('/todo')
+      await page.locator('[data-testid="todo-new-draft"]').click()
+      const dialog = page.locator('[data-testid="todo-draft-dialog"]')
+      const editor = page.locator('[data-testid="todo-draft-editor"]')
+      await editor.click()
+      await editor.pressSequentially('Read the [docs](https://example.com/docs) first')
+      await editor.locator('a[href="https://example.com/docs"]').click()
+      const card = page.getByRole('button', { name: 'https://example.com/docs' })
+      await expect(card).toBeVisible()
+
+      await cardSettled(card)
+      await page.keyboard.press('Escape')
+      await expect(card).toBeHidden()
+      await expect(dialog).toBeVisible()
+    } finally {
+      await request.put('/api/user-settings', { data: { experiments: { 'todo-board': before } } })
+    }
   })
 
   test('keeps the caret visible after a long Markdown paste', async ({ page }) => {
