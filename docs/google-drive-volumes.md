@@ -29,6 +29,12 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   naming rules at each step. Resolving a path exports nothing. Raw listings are
   kept for 15 seconds in the shared remote listing cache, keyed by account and
   folder ID, so case never matters and overlapping volumes share listings.
+- While listings are read, the app polls Drive's account-wide change feed at most
+  every 3 seconds. A poll that finds nothing touching a cached folder keeps its
+  listing current as of 10 seconds before the poll, since changes reached the feed
+  2-5 seconds after Drive confirmed them. A listing a change touches is dropped and
+  read again. Only listings read after the feed started are kept this way. A poll
+  that would page past 3,000 changes, or fails, drops the cached listings or the feed.
 - A shortcut shows as its target under the shortcut's own name, like a subfolder or
   file of the folder it sits in, wherever the target lives. Reads and writes reach the
   target. Delete and move act on the shortcut, so the target is never trashed through
@@ -46,7 +52,7 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   and the rest are hidden with a warning. Names are case-sensitive, as Drive is.
 - Google Docs read as `.md`, Sheets as `.xlsx`, and Slides as `.pptx`, with correct
   sizes. A Google file is exported only when its folder is
-  listed or the file itself is opened, at most eight exports at a time per listing.
+  listed or the file itself is opened, at most 16 exports at a time per listing.
   The export's bytes are kept, keyed by account, file ID and `modifiedTime`, oldest
   dropped first past 100 MB, and a read serves those bytes. Drive's `.xlsx` and
   `.pptx` exports differ from one export to the next, sometimes in size, so a

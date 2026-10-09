@@ -74,6 +74,21 @@ describe('Google Drive filesystem', () => {
     expect(calls()).toContain('PATCH drive/v3/files/n')
   })
 
+  it('reads a folder again when the change feed dropped the listing a change started from', async () => {
+    serve({ folders: { root1: [] } })
+    const listings = () => calls().filter(call => call === 'GET drive/v3/files').length
+    await volume().write('one.txt', new Blob(['x']).stream())
+    const before = listings()
+    upload.mockImplementationOnce(async (_account, _session, _body, options: { publish: (send: () => Promise<unknown>) => Promise<unknown> }) => options.publish(async () => {
+      // A poll finds root1 changed in Drive while this write holds it.
+      googleDriveListingCache.confirm('account', 0, 0, 0, () => true)
+      return blob('made_two', 'two.txt', 1)
+    }))
+    await volume().write('two.txt', new Blob(['x']).stream())
+    await volume().list('')
+    expect(listings()).toBe(before + 1)
+  })
+
   it('re-reads only the folders a change touches, and caches what the change made instead of re-listing', async () => {
     serve({ folders: { root1: [folder('a', 'a')], a: [folder('b', 'b')], b: [] } })
     const listings = () => calls().filter(call => call === 'GET drive/v3/files').length
