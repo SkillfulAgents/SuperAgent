@@ -21,6 +21,8 @@ import {
   type WarmProfile,
 } from './warm-profile';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { restoreSourceTimestamps } from './fork-timestamps';
+import { writeFileAtomic } from './atomic-file';
 
 interface SessionData {
   session: Session;
@@ -892,6 +894,9 @@ export class SessionManager extends EventEmitter {
       if (isSdkSessionNotFound(error)) return null;
       throw error;
     }
+    await this.restoreForkTimestamps(source.workingDirectory, source.claudeSessionId, newId).catch((error) =>
+      console.error(`forkSession: timestamp restore for ${newId} failed (non-fatal)`, error),
+    );
 
     const now = new Date().toISOString();
     try {
@@ -930,9 +935,25 @@ export class SessionManager extends EventEmitter {
    * (tests never plant one; a first-run workspace has no projects dir yet).
    */
   private sourceTranscriptReaped(cwd: string, claudeSessionId: string): boolean {
-    const projectDir = `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+    const projectDir = this.projectDir(cwd);
     if (!fs.existsSync(projectDir)) return false;
     return !fs.existsSync(`${projectDir}/${claudeSessionId}.jsonl`);
+  }
+
+  private projectDir(cwd: string): string {
+    return `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+  }
+
+  /** The SDK writes the fork beside its source; see restoreSourceTimestamps. */
+  private async restoreForkTimestamps(cwd: string, sourceId: string, forkId: string): Promise<void> {
+    const dir = this.projectDir(cwd);
+    const forkPath = `${dir}/${forkId}.jsonl`;
+    const [source, original] = await Promise.all([
+      fs.promises.readFile(`${dir}/${sourceId}.jsonl`, 'utf-8'),
+      fs.promises.readFile(forkPath, 'utf-8'),
+    ]);
+    const updated = restoreSourceTimestamps(source, original);
+    if (updated !== original) await writeFileAtomic(forkPath, updated);
   }
 
   async sendMessage(
