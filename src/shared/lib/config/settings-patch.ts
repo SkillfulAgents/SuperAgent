@@ -1,6 +1,7 @@
 import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
 import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
+import { decisionSettingsSchema } from '../decision/types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -124,6 +125,9 @@ export const apiKeySettingsPatchSchema = z.object({
   nangoSecretKey: z.string(),
   accountProviderUserId: z.string(),
   exaApiKey: z.string(),
+  typesafeApiKey: z.string(),
+  cloudflareApiToken: z.string(),
+  cloudflareAccountId: z.string(),
 }).partial().strict()
 
 const modelSettingsPatchSchema = z.object({
@@ -179,6 +183,8 @@ const voiceSettingsPatchSchema = z.object({
   ttsVoice: z.string().min(1),
 }).partial().strict()
 
+const decisionSettingsPatchSchema = decisionSettingsSchema.strict()
+
 const computerUseGrantSchema = z.object({
   level: z.enum(['list_apps_windows', 'use_application', 'use_host_shell']),
   appName: z.string().optional(),
@@ -203,6 +209,7 @@ export const generalSettingsPatchSchema = z.object({
   customEnvVars: customEnvVarsSchema,
   auth: authSettingsPatchSchema,
   voice: voiceSettingsPatchSchema,
+  decision: decisionSettingsPatchSchema,
   computerUse: computerUseSettingsPatchSchema,
   shareAnalytics: z.boolean(),
   analyticsTargets: z.array(analyticsTargetSchema),
@@ -463,6 +470,7 @@ export const generalSettingsComponent = {
         patch.customEnvVars !== undefined ? patch.customEnvVars : before.customEnvVars,
       auth: patch.auth !== undefined ? { ...before.auth, ...patch.auth } : before.auth,
       voice: patch.voice !== undefined ? { ...before.voice, ...patch.voice } : before.voice,
+      decision: patch.decision !== undefined ? { ...before.decision, ...patch.decision } : before.decision,
       computerUse:
         patch.computerUse !== undefined
           ? { ...before.computerUse, ...patch.computerUse }
@@ -517,6 +525,7 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     customEnvVars: patch.customEnvVars,
     auth: patch.auth,
     voice: patch.voice,
+    decision: patch.decision,
     computerUse: patch.computerUse,
     shareAnalytics: patch.shareAnalytics,
     analyticsTargets: patch.analyticsTargets,

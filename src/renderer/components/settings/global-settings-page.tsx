@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen } from 'lucide-react'
+import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen, Scale } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -29,6 +29,7 @@ const AuthTab = lazyRouteComponent(() => import('./auth-tab'), 'AuthTab')
 const AdminTab = lazyRouteComponent(() => import('./admin-tab'), 'AdminTab')
 const VoiceTab = lazyRouteComponent(() => import('./voice-tab'), 'VoiceTab')
 const WebTab = lazyRouteComponent(() => import('./web-tab'), 'WebTab')
+const DecisionTab = lazyRouteComponent(() => import('./decision-tab'), 'DecisionTab')
 const AnalyticsTab = lazyRouteComponent(() => import('./analytics-tab'), 'AnalyticsTab')
 const PlatformTab = lazyRouteComponent(() => import('./platform-tab'), 'PlatformTab')
 const ComputerUseTab = lazyRouteComponent(() => import('./computer-use-tab'), 'ComputerUseTab')
@@ -136,6 +137,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       ? [
           { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },
           { id: 'web', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => deferredTab(<WebTab />) },
+          { id: 'decision', label: 'Decision Model', icon: <Scale className="h-4 w-4" />, render: () => deferredTab(<DecisionTab />) },
           { id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => deferredTab(<BrowserTab />) },
           // Computer Use drives the machine the agent runs on, and its whole
           // UI — permission grants, the recovery link into System Settings — is

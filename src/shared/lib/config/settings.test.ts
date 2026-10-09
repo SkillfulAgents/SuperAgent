@@ -1677,6 +1677,18 @@ describe('agentCapabilities', () => {
   })
 })
 
+describe('decision', () => {
+  it('loads a known provider', () => {
+    mockSettingsFile(JSON.stringify({ decision: { provider: 'typesafe' } }))
+    expect(loadSettings().decision).toEqual({ provider: 'typesafe' })
+  })
+
+  it('reads an unknown provider from a newer version as unset', () => {
+    mockSettingsFile(JSON.stringify({ decision: { provider: 'some-future-provider' } }))
+    expect(loadSettings().decision).toBeUndefined()
+  })
+})
+
 describe('globalInstructions', () => {
   it('is absent when never set', () => {
     mockNoSettingsFile()

@@ -35,6 +35,7 @@ const WEB_PROVIDERS: {
 
 interface ProviderCardProps {
   id: string
+  testIdPrefix?: string
   name: string
   /** Rendered next to the name, e.g. the "(default)" marker. */
   nameSuffix?: ReactNode
@@ -48,8 +49,9 @@ interface ProviderCardProps {
 
 /** Radio card that expands its provider-specific settings when selected —
     mirrors ProviderCard from the LLM provider tab. */
-function ProviderCard({
+export function ProviderCard({
   id,
+  testIdPrefix = 'web-provider-card',
   name,
   nameSuffix,
   description,
@@ -64,7 +66,7 @@ function ProviderCard({
       className={`rounded-xl border bg-background transition-colors ${
         selected ? 'border-primary' : disabled ? 'opacity-60' : 'hover:border-muted-foreground/40'
       }`}
-      data-testid={`web-provider-card-${id}`}
+      data-testid={`${testIdPrefix}-${id}`}
     >
       {/* A div rather than a <button>: descriptions may carry a real link, and
           interactive content inside a button is invalid HTML. */}
