@@ -533,6 +533,32 @@ export const agents = sqliteTable('agents', {
   workspaceHandle: text('workspace_handle'),
 })
 
+// Reusable sources. A NULL owner makes a volume available to every user.
+export const volumeDefinitions = sqliteTable('volume_definitions', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  config: text('config').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+
+// An attachment owns its mount name and WebDAV identity; renaming a definition
+// never changes a running agent's /mounts/<name> path.
+export const agentVolumes = sqliteTable('agent_volumes', {
+  id: text('id').notNull(),
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.id] }),
+  agentVolumeUnique: uniqueIndex('agent_volumes_source_unique').on(table.agentSlug, table.volumeId),
+  agentNameUnique: uniqueIndex('agent_volumes_name_unique').on(table.agentSlug, table.name),
+  volumeIdx: index('agent_volumes_volume_idx').on(table.volumeId),
+}))
+
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
   id: text('id').primaryKey(),
@@ -828,6 +854,14 @@ export const todos = sqliteTable('todos', {
   title: text('title').notNull(),
   description: text('description').notNull().default(''),
   agentSlug: text('agent_slug'),
+  // A draft to be given to an agent created for it on start, named from its
+  // brief. Never set together with agentSlug: the start assigns the new agent.
+  newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
+  // What to start it on, where the person picked over the agent's defaults.
+  model: text('model'),
+  llmProviderId: text('llm_provider_id'),
+  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

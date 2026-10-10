@@ -26,7 +26,7 @@ import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
-import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
+import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tools/deliver-file/definition'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -44,7 +44,7 @@ import {
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
 import {
@@ -1312,6 +1312,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 startedAt={block.startedAt}
                 endedAt={block.endedAt}
                 active={isActive && block.endedAt === null}
+                agentSlug={agentSlug}
               />
             </div>
           </MessageErrorBoundary>
@@ -1331,6 +1332,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              isStreamingRow
               suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}

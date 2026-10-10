@@ -39,12 +39,12 @@ export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps): FileOp
 
 type ErrnoLike = { code?: string }
 
-function errnoCode(error: unknown): string | undefined {
+export function errnoCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null ? (error as ErrnoLike).code : undefined
 }
 
 /** Translate a filesystem error into the contract's error, or rethrow it. */
-function fromFsError(error: unknown): never {
+export function fromFsError(error: unknown): never {
   switch (errnoCode(error)) {
     // A link that loops (ELOOP) resolves to nothing trustworthy: the same as nothing there.
     case 'ENOENT':
@@ -53,6 +53,8 @@ function fromFsError(error: unknown): never {
       throw new WorkspaceFileError('not-found')
     case 'EEXIST':
       throw new WorkspaceFileError('already-exists')
+    case 'ENOTEMPTY':
+      throw new WorkspaceFileError('not-empty')
     case 'EISDIR':
       throw new WorkspaceFileError('not-a-file')
     case 'ENAMETOOLONG':
@@ -235,15 +237,16 @@ export class LocalFileOps implements FileOps {
   }
 
   /** Canonical destination parents are checked before creating each child. */
-  private async confinedDestination(workspacePath: string): Promise<{ rel: string; abs: string; root: string }> {
+  private async confinedDestination(workspacePath: string, existingParent = false, exactRoot = false): Promise<{ rel: string; abs: string; root: string }> {
     const { rel, root } = this.absolute(workspacePath)
     if (!rel) throw new WorkspaceFileError('invalid-path')
     const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+    if (exactRoot && canonicalRoot !== root) throw new WorkspaceFileError('not-found')
     let parent = canonicalRoot
     for (const segment of path.posix.dirname(rel).split('/').filter((part) => part !== '.')) {
       const candidate = path.join(parent, segment)
-      await fs.promises.mkdir(candidate).catch((error) => { if (errnoCode(error) !== 'EEXIST') throw error })
-      parent = await fs.promises.realpath(candidate)
+      if (!existingParent) await fs.promises.mkdir(candidate).catch((error) => { if (errnoCode(error) !== 'EEXIST') throw error })
+      parent = await fs.promises.realpath(candidate).catch(fromFsError)
       if (!isPathWithinDir(canonicalRoot, parent)) throw new WorkspaceFileError('outside-workspace')
     }
     return { rel, abs: path.join(parent, path.posix.basename(rel)), root: canonicalRoot }
@@ -444,7 +447,7 @@ export class LocalFileOps implements FileOps {
   ): Promise<{ size: number }> {
     let target: { rel: string; abs: string; root?: string }
     try {
-      target = options?.confined ? await this.confinedDestination(workspacePath) : this.forWrite(workspacePath)
+      target = options?.confined ? await this.confinedDestination(workspacePath, options.existingParent, options.exactRoot) : this.forWrite(workspacePath)
     } catch (error) {
       // The caller may already hold the source open; a refused destination
       // must not leave it dangling.
@@ -467,6 +470,8 @@ export class LocalFileOps implements FileOps {
         ...atomicWriteOptions(options),
         fsync: options?.flush === true,
         overwrite: options?.overwrite,
+        lock: options?.lock,
+        beforePublish: options?.beforePublish,
         validate: async (handle, temporaryPath) => {
           options?.signal?.throwIfAborted()
           if (target.root) {

@@ -298,13 +298,6 @@ html[data-keyboard-open] [data-composer-footer] {
 .markdown-composer-editor li > p { min-height: auto; }
 .markdown-composer-editor li::marker { color: hsl(var(--muted-foreground)); }
 
-.markdown-composer-editor a {
-  color: hsl(var(--foreground));
-  text-decoration: underline;
-  text-decoration-color: hsl(var(--muted-foreground) / .6);
-  text-underline-offset: 2px;
-}
-
 .markdown-composer-editor hr {
   margin: .45rem 0;
   border: 0;

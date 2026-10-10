@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
 const useUserMock = vi.fn()
@@ -14,8 +14,9 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   useSavePlatformAccessKey: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
+const billingInfoMock = vi.fn(() => ({ data: undefined as unknown, isLoading: false, isFetching: false, error: null, refetch: vi.fn() }))
 vi.mock('@renderer/hooks/use-billing-info', () => ({
-  useBillingInfo: () => ({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() }),
+  useBillingInfo: () => billingInfoMock(),
 }))
 
 vi.mock('@renderer/hooks/use-cloud-workspace', () => ({
@@ -91,6 +92,66 @@ describe('PlatformTab profile section', () => {
     render(<PlatformTab readOnly />)
     expect(screen.getByTestId('profile-section')).toBeInTheDocument()
     expect(screen.getByText('Loading platform status…')).toBeInTheDocument()
+  })
+})
+
+describe('PlatformTab billing card', () => {
+  const connected = () => ({
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', platformBaseUrl: 'https://platform.example.com' },
+  })
+  const snapshot = (creditScope?: 'seat' | 'org') => ({
+    connected: true,
+    billing: {
+      configured: true,
+      subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: '2026-10-27T16:00:00Z', creditScope: creditScope ?? 'seat' },
+      seat: { balanceCents: 15000, startingBalanceCents: 40000 },
+      orgPool: { poolBalanceCents: 500 },
+    },
+  })
+
+  beforeEach(() => {
+    useUserMock.mockReturnValue(localUser)
+    platformConnectMock.mockReturnValue(connected())
+  })
+
+  afterEach(() => {
+    billingInfoMock.mockReset()
+    billingInfoMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  })
+
+  it('shows a per-seat org exactly as before', () => {
+    billingInfoMock.mockReturnValue({ data: snapshot('seat'), isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+    render(<PlatformTab />)
+    const row = screen.getByTestId('subscription-credits-row')
+    expect(row).toHaveAttribute('data-scope', 'seat')
+    expect(row).toHaveTextContent('Seat credits')
+    expect(row).toHaveTextContent('38% remaining')
+    expect(row).toHaveTextContent('$150.00 of $400.00')
+    expect(row).not.toHaveTextContent(/shared|resets/)
+    expect(screen.getByText('Shared pool used after your seat quota')).toBeInTheDocument()
+    expect(screen.queryByText(/Team plan/)).not.toBeInTheDocument()
+  })
+
+  it('calls a pooled org\'s bar the shared team plan credit and says when it resets', () => {
+    billingInfoMock.mockReturnValue({ data: snapshot('org'), isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+    render(<PlatformTab />)
+    const row = screen.getByTestId('subscription-credits-row')
+    expect(row).toHaveAttribute('data-scope', 'org')
+    expect(row).toHaveTextContent('Team plan credits')
+    expect(row).toHaveTextContent('38% remaining')
+    expect(row).toHaveTextContent(/\$150\.00 of \$400\.00 · shared by your whole organization, resets Oct 2[78]/)
+    expect(row).not.toHaveTextContent('Seat credits')
+    expect(screen.getByText('Shared pool used after your team plan credits')).toBeInTheDocument()
+  })
+
+  it('names the unsubscribed row by scope too', () => {
+    const data = snapshot('org')
+    billingInfoMock.mockReturnValue({ data: { ...data, billing: { ...data.billing, seat: null } }, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+    render(<PlatformTab />)
+    expect(screen.getByText('Team plan credits')).toBeInTheDocument()
+    expect(screen.getByText('Not subscribed')).toBeInTheDocument()
   })
 })
 

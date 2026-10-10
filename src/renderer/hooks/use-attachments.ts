@@ -71,10 +71,9 @@ export function useAttachments(options?: UseAttachmentsOptions) {
   }, [])
 
   const addMounts = useCallback((mounts: { folderName: string; hostPath: string }[]) => {
-    // Attach mounts as-is. Whether a folder is actually readable by the agent
-    // sandbox (e.g. an inaccessible cloud-synced path) can't be reliably told
-    // from the path here — the container start drops an inaccessible mount and
-    // surfaces a mount-health warning, which is the authoritative guard.
+    // Attach mounts as-is. Whether a folder actually mounts can't be told from
+    // the path here — the container start leaves out a folder it can't mount
+    // and surfaces a mount-health warning, which is the authoritative guard.
     if (mounts.length === 0) return
     const newAttachments: Attachment[] = mounts.map((m) => ({
       type: 'mount' as const,

@@ -37,7 +37,8 @@ import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
-import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
+import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -58,6 +59,7 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
 import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
@@ -124,6 +126,8 @@ import { configureDownloadNonceRecovery } from '@shared/lib/services/download-no
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
+import { resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
@@ -475,9 +479,14 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
+/** The cloud workspace this app can drive, or null when there is none. */
+function cloudProxyTarget() {
+  return isCloudProxyEnabled() ? resolveCloudProxyTarget() : null
+}
+
 /** The cloud proxy's base URL and the deployment behind it, or null when there is no workspace to drive. */
 function cloudEndpoint(): CloudEndpoint | null {
-  const target = isCloudProxyEnabled() ? resolveCloudProxyTarget() : null
+  const target = cloudProxyTarget()
   if (!target) return null
   return {
     baseUrl: `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`,
@@ -488,6 +497,12 @@ function cloudEndpoint(): CloudEndpoint | null {
 /** Which Superagent this app is driving, and the base URL that reaches it. */
 function activeApiTarget() {
   return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudEndpoint())
+}
+
+/** Open a popout where the dashboard lives: the cloud workspace's own address, or the local API. */
+function openDashboard(agentSlug: string, dashboardSlug: string) {
+  const { baseUrl, deploymentUrl } = activeApiTarget()
+  openDashboardWindow(agentSlug, dashboardSlug, deploymentUrl ?? baseUrl, deploymentUrl !== null)
 }
 
 // Which Superagent this renderer drives, settled in main rather than in the
@@ -597,6 +612,18 @@ ipcMain.handle('set-keep-awake', async (_event, enabled: boolean) => {
     await disableKeepAwake()
   }
 })
+
+// Voice mode and the person's own music player (Spotify, Music, a browser):
+// what is playing, pause it while someone speaks, play it while the agent
+// works. The renderer owns the session; main asks and tells the OS, and
+// remembers what each window holds so a closed or reloaded one gives it back.
+const NowPlayingPlayerId = z.string().min(1).max(512)
+ipcMain.handle('music:probe', () => probeNowPlaying())
+ipcMain.handle('music:pause', (event) => {
+  watchNowPlayingHolder(event.sender)
+  return pauseNowPlaying(event.sender.id)
+})
+ipcMain.handle('music:resume', (event, playerId: unknown) => resumeNowPlaying(event.sender.id, NowPlayingPlayerId.parse(playerId)))
 
 // IPC handler for showing OS notifications.
 // `actions` and `context` are optional — when present, action buttons are
@@ -933,7 +960,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
+  openDashboard(agentSlug, dashboardSlug)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1089,6 +1116,9 @@ ipcMain.handle('popup-app-menu', (_event, x: number, y: number) => {
   menu.popup({ window: win, x, y })
 })
 
+// Every window that can render chat (main, popouts, dispatch) gets the guard, including future ones.
+app.on('web-contents-created', (_event, webContents) => blockSrcdocFrameNavigation(webContents))
+
 // Handle OAuth callback URLs (macOS)
 app.on('open-url', (event, url) => {
   event.preventDefault()
@@ -1155,7 +1185,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
+        openDashboard(agentSlug, dashboardSlug)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1527,7 +1557,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
+    openDashboard(link.agentSlug, link.dashboardSlug)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()
@@ -1625,6 +1655,27 @@ function focusMainWindowOnSession(agentSlug: string, sessionId: string): void {
 }
 
 app.whenReady().then(() => {
+  // Installed here, not with the main window: a dashboard link queued at cold
+  // start opens its popout before the main window exists.
+  // Read per request, so re-derived only when settings change: every settings
+  // write replaces the cached object.
+  let signing: { settings: ReturnType<typeof getSettings>; workspace: { token: string; deploymentUrl: string } | null } | null = null
+  installCloudDashboardAuth(
+    session.defaultSession,
+    () => mainWindow?.webContents.id ?? null,
+    () => {
+      const settings = getSettings()
+      if (signing?.settings !== settings) {
+        const target = cloudProxyTarget()
+        const workspace = resolveApiTarget(readPreferredApiTarget(), target?.deploymentUrl ?? null).target === 'cloud' ? target : null
+        // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
+        // by origin, the form Chromium reports frames in.
+        // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
+        signing = { settings, workspace: workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin } }
+      }
+      return signing.workspace
+    },
+  )
 
   app.on('activate', () => {
     // On macOS, re-create window when dock icon is clicked
@@ -1780,6 +1831,9 @@ async function gracefulShutdown() {
 
   // Restore system sleep settings (best-effort, no sudo prompt)
   cleanupKeepAwake()
+
+  // Give back a music player voice mode holds paused
+  await releaseAllNowPlaying()
 
   // Stop notification listener
   stopNotificationListener()

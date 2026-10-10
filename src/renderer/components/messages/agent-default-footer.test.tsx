@@ -149,6 +149,47 @@ describe('AgentDefaultFooter', () => {
     expect(screen.queryByTestId('composer-agent-default-change')).not.toBeInTheDocument()
   })
 
+  it('promotes the account alongside the model when only the account differs', async () => {
+    const user = userEvent.setup()
+    useAgentPreferencesMock.mockReturnValue({
+      data: { defaultModel: 'opus', defaultLlmProviderId: 'platform', defaultEffort: 'medium' },
+      isFetched: true,
+    })
+    render(
+      <AgentDefaultFooter agentSlug="my-agent" state={stateWith({ llmProviderId: 'subscription' })} />,
+    )
+    expect(screen.queryByTestId('composer-agent-default-current')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('composer-agent-default'))
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultModel: 'opus', defaultLlmProviderId: 'subscription' }),
+      expect.anything(),
+    )
+  })
+
+  it('compares the account against the app default when the agent has no pin', () => {
+    useSettingsMock.mockReturnValue({
+      data: {
+        models: { agentModel: 'opus', agentEffort: 'medium' },
+        defaultSelection: { llmProviderId: 'platform', model: 'opus' },
+      },
+    })
+    render(
+      <AgentDefaultFooter agentSlug="my-agent" state={stateWith({ llmProviderId: 'subscription' })} />,
+    )
+    expect(screen.getByTestId('composer-agent-default')).toBeEnabled()
+  })
+
+  it('keeps the status label while the composer has no connection yet', () => {
+    // An unknown side must not offer a promote that writes the connection
+    // already in force.
+    useAgentPreferencesMock.mockReturnValue({
+      data: { defaultModel: 'opus', defaultLlmProviderId: 'platform', defaultEffort: 'medium' },
+      isFetched: true,
+    })
+    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ llmProviderId: undefined })} />)
+    expect(screen.getByTestId('composer-agent-default-current')).toBeInTheDocument()
+  })
+
   it('swaps the status label for the promote action when the pick diverges', () => {
     const { rerender } = render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
     expect(screen.getByTestId('composer-agent-default-current')).toBeInTheDocument()

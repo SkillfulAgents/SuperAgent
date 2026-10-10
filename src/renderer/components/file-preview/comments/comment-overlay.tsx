@@ -4,12 +4,14 @@ import { Button } from '@renderer/components/ui/button'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { isComposing, isSubmitEnter } from '@renderer/lib/enter-key'
-import type { TextSelectionInfo } from './use-text-selection'
 import { useCommentMic } from './use-comment-mic'
-import { formatCommentTime } from './format-media-time'
+import { describeAnchor } from './anchor'
+import type { CommentAnchor } from './kinds'
 
 interface CommentOverlayProps {
-  selection: TextSelectionInfo
+  anchor: CommentAnchor
+  /** Where the box opens, in its positioned parent's coordinates. */
+  rect: DOMRect
   filePath: string
   agentSlug: string
   onClose: () => void
@@ -19,7 +21,7 @@ interface CommentOverlayProps {
   autoListen?: boolean
 }
 
-export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEdit = false, autoListen = false }: CommentOverlayProps) {
+export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, autoEdit = false, autoListen = false }: CommentOverlayProps) {
   const [isEditing, setIsEditing] = useState(autoEdit)
   const [commentText, setCommentText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -44,7 +46,7 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
     overlay.style.marginLeft = ''
     const right = pane.getBoundingClientRect().left + pane.clientWidth - 8
     overlay.style.marginLeft = `${Math.min(0, right - overlay.getBoundingClientRect().right)}px`
-  }, [isEditing, selection.rect.x])
+  }, [isEditing, rect.x])
 
   const handleAdd = async () => {
     if (!canAdd) return
@@ -54,11 +56,7 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
       filePath,
       agentSlug,
       text: text.trim(),
-      selectedText: selection.text || undefined,
-      x: selection.x,
-      y: selection.y,
-      cell: selection.cell,
-      timestamp: selection.timestamp,
+      anchor,
     })
     setCommentText('')
     setIsEditing(false)
@@ -83,7 +81,7 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
         ref={overlayRef}
         data-comment-overlay
         className="absolute z-30"
-        style={{ left: selection.rect.x, top: selection.rect.y + 4 }}
+        style={{ left: rect.x, top: rect.y + 4 }}
       >
         <button
           onClick={() => setIsEditing(true)}
@@ -101,35 +99,12 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
       ref={overlayRef}
       data-comment-overlay
       className="absolute z-30 w-64"
-      style={{ left: selection.rect.x, top: selection.rect.y + 4 }}
+      style={{ left: rect.x, top: rect.y + 4 }}
     >
       <div className="rounded-lg border border-border bg-popover p-2 shadow-lg space-y-2">
-        {selection.text && (
-          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5 line-clamp-2 italic">
-            &ldquo;{selection.text}&rdquo;
-          </div>
-        )}
-        {selection.timestamp != null && (
-          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
-            At {formatCommentTime(selection.timestamp)}
-            {selection.x != null && selection.y != null && (
-              <span> &middot; ({Math.round(selection.x)}%, {Math.round(selection.y)}%)</span>
-            )}
-          </div>
-        )}
-        {selection.timestamp == null && selection.x != null && selection.y != null && (
-          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
-            Point at ({Math.round(selection.x)}%, {Math.round(selection.y)}%)
-          </div>
-        )}
-        {selection.cell && (
-          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
-            <span className="font-medium">Cell {selection.cell.row}:{selection.cell.column}</span>
-            {selection.cell.value
-              ? <span className="italic"> &mdash; &ldquo;{selection.cell.value}&rdquo;</span>
-              : selection.cell.value === '' ? <span className="italic"> &mdash; empty cell</span> : null}
-          </div>
-        )}
+        <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5 line-clamp-2">
+          {describeAnchor(anchor)}
+        </div>
         <textarea
           ref={textareaRef}
           value={commentText}

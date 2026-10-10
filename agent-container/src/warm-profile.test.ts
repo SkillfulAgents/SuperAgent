@@ -26,6 +26,15 @@ describe('warmProfileKey', () => {
     expect(allow).not.toBe(block)
   })
 
+  // The guidance is baked into the warm process's prompt, so a process warmed
+  // before an admin edit must not serve a session started after it.
+  it('separates profiles that differ only in global instructions', () => {
+    const before = warmProfileKey(warmProfileSchema.parse({ ...base, globalInstructions: 'old' }))
+    const after = warmProfileKey(warmProfileSchema.parse({ ...base, globalInstructions: 'new' }))
+
+    expect(before).not.toBe(after)
+  })
+
   it('separates profiles that differ only in a nested custom env var', () => {
     const one = warmProfileKey(warmProfileSchema.parse({ ...base, customEnvVars: { API_BASE: 'one' } }))
     const two = warmProfileKey(warmProfileSchema.parse({ ...base, customEnvVars: { API_BASE: 'two' } }))

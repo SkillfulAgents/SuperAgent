@@ -1640,6 +1640,8 @@ describe('useMessageStream', () => {
     })
     expect(result.current.activeSubagents).toHaveLength(1)
     spy.mockClear()
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-1'], [])
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-2'], [])
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-1' })
@@ -1650,8 +1652,9 @@ describe('useMessageStream', () => {
     const sub = result.current.activeSubagents[0]
     expect(sub?.streamingMessage).toBe('summary text')
     expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
-    // subagent-messages is not throttled; the messages refetch is.
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
+    // subagent-messages is not throttled; the messages refetch is. Only the completed subagent refetches.
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-1'])?.isInvalidated).toBe(true)
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-2'])?.isInvalidated).toBe(false)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
     })
@@ -1689,6 +1692,8 @@ describe('useMessageStream', () => {
       })
     })
     spy.mockClear()
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-1'], [])
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-2'], [])
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({
@@ -1703,7 +1708,27 @@ describe('useMessageStream', () => {
     expect(sub?.streamingMessage).toBe('working...')
     expect(sub?.streamingToolUse).toBeNull()
     expect(sub?.parentToolId).toBe('pt-1')
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-1'])?.isInvalidated).toBe(true)
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-2'])?.isInvalidated).toBe(false)
+  })
+
+  it('subagent_updated without a known agentId refetches every subagent in the session', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-1'], [])
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-2'], [])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-9' })
+    })
+
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-1'])?.isInvalidated).toBe(true)
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-2'])?.isInvalidated).toBe(true)
   })
 
   it('handles subagent_tool_use_start and subagent_tool_use_streaming', async () => {

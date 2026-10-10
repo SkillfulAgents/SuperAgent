@@ -7,9 +7,9 @@ import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import {
   providerErrorPresentationSchema,
@@ -323,6 +323,14 @@ function invalidateMessagesNow(
   const refetch = queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
   if (pending) refetch.then(pending.settle, pending.settle)
   return refetch
+}
+
+// Only the subagent that changed: a session-wide refresh re-downloads every subagent transcript on each event.
+function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  queryClient.invalidateQueries({
+    queryKey: ['subagent-messages', sessionId],
+    predicate: agentId ? (query) => query.queryKey[3] === agentId : undefined,
+  })
 }
 
 // Does the last persisted assistant message in the messages cache match the
@@ -1248,7 +1256,7 @@ function getOrCreateEventSource(
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          invalidateSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
@@ -1280,7 +1288,7 @@ function getOrCreateEventSource(
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          invalidateSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
           invalidateMessagesThrottled(queryClient, sessionId)
         }
       }

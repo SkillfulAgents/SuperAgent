@@ -1,101 +1,58 @@
-/**
- * mounts.json must fail closed (stop swallowing parse/IO into `[]`)
- * and write atomically, so a transiently-unreadable file can't make the next
- * addMount persist only the new mount and drop every prior one.
- */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as os from 'os'
-import { CorruptFileError } from '@shared/lib/utils/file-storage'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import { addMount, attachMount, getMounts } from './mount-service'
+import { createVolumeDefinition, deleteVolumeDefinition, updateVolumeDefinition } from './volume-service'
 
-let tmpDir: string
-
-function mountsPath(slug: string): string {
-  return path.join(tmpDir, 'agents', slug, 'mounts.json')
-}
-function makeAgentDir(slug: string): void {
-  fs.mkdirSync(path.join(tmpDir, 'agents', slug), { recursive: true })
-}
-function makeHostDir(name: string): string {
-  const dir = path.join(tmpDir, 'host', name)
-  fs.mkdirSync(dir, { recursive: true })
-  return fs.realpathSync(dir)
-}
-
-beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-')))
-  process.env.SUPERAGENT_DATA_DIR = tmpDir
+let handle: TestDatabase
+let folder: string
+const viewer = { userId: null, admin: true }
+vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
+beforeEach(async () => {
+  folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-atomic-')))
+  handle = await createTestDatabase()
+  await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
+})
+afterEach(async () => {
+  await handle.close()
+  fs.rmSync(folder, { recursive: true, force: true })
 })
 
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true })
-  delete process.env.SUPERAGENT_DATA_DIR
-})
-
-async function importService() {
-  return import('./mount-service')
-}
-
-describe('mounts.json reads — tolerant display, fail-closed writes', () => {
-  it('absent file → [] (legitimate "no mounts yet")', async () => {
-    const { getMounts } = await importService()
-    makeAgentDir('agent')
-    expect(await getMounts('agent')).toEqual([])
+describe('atomic volume writes', () => {
+  it('rolls back the definition when creating its attachment fails', async () => {
+    await expect(addMount('missing-agent', 'local', { path: folder }, viewer)).rejects.toThrow()
+    expect(await handle.db.select().from(volumeDefinitions).all()).toEqual([])
+    expect(await handle.db.select().from(agentVolumes).all()).toEqual([])
   })
-
-  it('corrupt file → getMounts degrades to [] (tolerant) and does NOT overwrite', async () => {
-    // getMounts feeds read-only display + getMountsWithHealth (container start);
-    // a corrupt file must NOT throw (which used to brick the whole agent) — it
-    // degrades to [] while leaving the bytes intact for recovery.
-    const { getMounts } = await importService()
-    makeAgentDir('agent')
-    const corrupt = '[ { "id": "a", '
-    fs.writeFileSync(mountsPath('agent'), corrupt)
-    expect(await getMounts('agent')).toEqual([])
-    expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(corrupt) // not clobbered
+  it('keeps concurrent additions and allocates distinct mount names', async () => {
+    await Promise.all(Array.from({ length: 5 }, () => addMount('agent', 'local', { path: folder }, viewer, { name: 'notes' })))
+    expect((await getMounts('agent')).map(m => m.name).sort()).toEqual(['notes', 'notes-2', 'notes-3', 'notes-4', 'notes-5'])
+    expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(5)
   })
-
-  it('getMountsWithHealth on a corrupt file → [] (does NOT throw → container start survives)', async () => {
-    const { getMountsWithHealth } = await importService()
-    makeAgentDir('agent')
-    fs.writeFileSync(mountsPath('agent'), '[ { "id": "a", ')
-    await expect(getMountsWithHealth('agent')).resolves.toEqual([])
+  it('makes concurrent attachment of one saved source idempotent', async () => {
+    const id = await createVolumeDefinition({ type: 'local', config: { path: folder } }, viewer)
+    const mounts = await Promise.all(Array.from({ length: 5 }, () => attachMount('agent', id, viewer)))
+    expect(new Set(mounts.map(m => m.id)).size).toBe(1)
+    expect(await getMounts('agent')).toHaveLength(1)
   })
-
-  it('addMount on a corrupt file THROWS and does NOT overwrite (prior mounts preserved)', async () => {
-    const { addMount } = await importService()
-    makeAgentDir('agent')
-    const corrupt = '[ { "id": "old-mount", "hostPath": "/x"'
-    fs.writeFileSync(mountsPath('agent'), corrupt)
-
-    await expect(addMount('agent', makeHostDir('newfolder'))).rejects.toThrow(CorruptFileError)
-    // The unreadable file is left intact — NOT clobbered with just the new mount.
-    expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(corrupt)
+  it('never deletes a source that won a race to attach', async () => {
+    const id = await createVolumeDefinition({ type: 'local', config: { path: folder } }, viewer)
+    const [attachment, deletion] = await Promise.allSettled([attachMount('agent', id, viewer), deleteVolumeDefinition(id, viewer)])
+    if (attachment.status === 'fulfilled') {
+      expect(deletion.status).toBe('rejected')
+      expect(await getMounts('agent')).toHaveLength(1)
+    } else {
+      expect(deletion.status).toBe('fulfilled')
+      expect(await getMounts('agent')).toEqual([])
+      expect(await handle.db.select().from(volumeDefinitions).all()).toEqual([])
+    }
   })
-})
-
-describe('atomic mounts.json writes', () => {
-  it('addMount writes atomically (no temp file left behind) and round-trips', async () => {
-    const { addMount, getMounts } = await importService()
-    makeAgentDir('agent')
-    await addMount('agent', makeHostDir('a'))
-    await addMount('agent', makeHostDir('b'))
-
-    const dir = path.dirname(mountsPath('agent'))
-    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([])
-    expect(await getMounts('agent')).toHaveLength(2)
-    // File is valid JSON.
-    expect(() => JSON.parse(fs.readFileSync(mountsPath('agent'), 'utf-8'))).not.toThrow()
-  })
-
-  it('CONCURRENT addMount calls all survive (withFileLock prevents lost updates)', async () => {
-    // The old sync implementation couldn't interleave by construction; the async
-    // version relies on withFileLock to serialize the read-modify-write.
-    const { addMount, getMounts } = await importService()
-    makeAgentDir('agent')
-    const names = ['m0', 'm1', 'm2', 'm3', 'm4']
-    await Promise.all(names.map((n) => addMount('agent', makeHostDir(n))))
-    expect((await getMounts('agent')).map((m) => m.folderName).sort()).toEqual([...names].sort())
+  it('allows renaming an attached public source', async () => {
+    const mount = await addMount('agent', 'local', { path: folder }, viewer)
+    await updateVolumeDefinition(mount.volumeId, { name: 'new-name', visibility: 'public' }, viewer)
+    expect(await getMounts('agent')).toEqual([mount])
   })
 })

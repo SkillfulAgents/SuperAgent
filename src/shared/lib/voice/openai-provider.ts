@@ -125,7 +125,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   async closeLiveSession(id: string, apiKey = this.getEffectiveApiKey()): Promise<void> {
     if (!apiKey) throw new Error(`Could not close ${this.name} Live session.`)
     const response = await fetch(`${this.apiBaseUrl()}/live/sessions/${encodeURIComponent(id)}/hangup`, {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000),
+      // OpenAI answers a hangup for an already-ended session with a 404 after ~6 s.
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15_000),
     })
     if (!response.ok && response.status !== 404) throw new Error(`Could not close ${this.name} Live session.`)
   }

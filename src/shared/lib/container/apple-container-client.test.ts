@@ -261,11 +261,11 @@ describe('AppleContainerClient.handleRunError', () => {
     expect(mockExecWithPath.mock.calls.some(([cmd]) => String(cmd).includes('system start'))).toBe(false)
   })
 
-  it('maps a killed run exec on a healthy runtime to a clear timeout error (dataless-mount hang guard)', async () => {
+  it('maps a killed run exec on a healthy runtime to a clear timeout error (run hang guard)', async () => {
     mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
     const runError = Object.assign(new Error('Command failed: container run -d ...'), { killed: true, signal: 'SIGKILL' })
     const client = new AppleContainerClient({ agentId: 'abc123' })
-    await expect((client as any).handleRunError(runError)).rejects.toThrow(/timed out.*iCloud/s)
+    await expect((client as any).handleRunError(runError)).rejects.toThrow('Container start timed out after 2 minutes')
     // killed is set only by the exec API's own timeout; an external SIGKILL
     // (killed: false) must NOT be diagnosed as the hang guard.
     const externalKill = Object.assign(new Error('Command failed: container run -d ...'), { killed: false, signal: 'SIGKILL' })

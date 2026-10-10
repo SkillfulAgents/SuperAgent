@@ -29,7 +29,7 @@ describe('useMountWarnings', () => {
     // The SSE handler writes under the canonical id (data.agentSlug).
     setMountWarning(client, {
       agentSlug: 'abc1234567',
-      missingMounts: [{ folderName: 'data', hostPath: '/host/data' }],
+      notMounted: [{ name: 'data', reason: 'not found' }],
     })
 
     // The banner subscribes with the route DISPLAY slug — it must still see it.
@@ -37,14 +37,14 @@ describe('useMountWarnings', () => {
       wrapper: makeWrapper(client),
     })
 
-    expect(result.current.warning?.missingMounts[0]?.folderName).toBe('data')
+    expect(result.current.warning?.notMounted[0]?.name).toBe('data')
   })
 
   it('dismiss clears the canonical-id entry', () => {
     const client = new QueryClient()
     setMountWarning(client, {
       agentSlug: 'abc1234567',
-      missingMounts: [{ folderName: 'data', hostPath: '/host/data' }],
+      notMounted: [{ name: 'data', reason: 'not found' }],
     })
 
     const { result } = renderHook(() => useMountWarnings('my-agent-abc1234567'), {

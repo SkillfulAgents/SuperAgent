@@ -1,6 +1,6 @@
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { AgentReviews, ReviewDecision, ReviewRequest, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
 import type { ScopeLabel } from './scope-metadata'

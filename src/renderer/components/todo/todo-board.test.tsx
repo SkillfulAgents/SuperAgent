@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   move: vi.fn(),
   update: vi.fn(),
   start: vi.fn(),
+  rename: vi.fn(),
   starting: new Set<string>(),
 }))
 
@@ -31,6 +32,7 @@ vi.mock('@renderer/hooks/use-todos', () => ({
   useCreateTodo: () => ({ mutateAsync: vi.fn() }),
   useUpdateTodo: () => ({ mutateAsync: state.update }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
+  useRenameTodo: () => ({ mutateAsync: state.rename, isPending: false }),
 }))
 
 import { TodoBoard } from './todo-board'
@@ -41,6 +43,11 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     title: `Task ${partial.id}`,
     description: '',
     agentSlug: 'analyst',
+    newAgent: false,
+    model: null,
+    llmProviderId: null,
+    effort: null,
+    speed: null,
     sessionId: status === 'draft' ? null : `session-${partial.id}`,
     status,
     position: 0,
@@ -50,6 +57,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     startedAt: null,
     completedAt: null,
     ask: null,
+    pendingWakeAt: null,
     ...partial,
   }
 }
@@ -61,6 +69,7 @@ beforeEach(() => {
   state.move.mockReset()
   state.update.mockReset()
   state.start.mockReset()
+  state.rename.mockReset().mockResolvedValue(undefined)
   state.starting = new Set()
 })
 
@@ -91,6 +100,35 @@ describe('TodoBoard', () => {
     expect(needsYou.getByTestId('todo-card-updates')).toHaveTextContent('Has updates')
   })
 
+  it('says how long work that is asleep until a scheduled wake will wait, in gray', () => {
+    state.todos = [
+      todo({ id: 'w', column: 'has_updates', pendingWakeAt: Date.now() + 3 * 60 * 60_000 + 60_000 }),
+      todo({ id: 'u', column: 'has_updates' }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    const waiting = within(screen.getByTestId('todo-card-waiting').closest('[data-testid="todo-card"]') as HTMLElement)
+    expect(waiting.getByTestId('todo-card-waiting')).toHaveTextContent('Waiting for 3 hours')
+    expect(waiting.getByTestId('todo-card-waiting')).toHaveClass('bg-muted')
+    expect(waiting.queryByTestId('todo-card-updates')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('todo-card-updates')).toHaveLength(1)
+  })
+
+  it('shows the working orb by the agent of work in flight only', () => {
+    state.todos = [todo({ id: 'b', column: 'working' }), todo({ id: 'd', column: 'has_updates' })]
+    renderWithProviders(<TodoBoard />)
+    expect(within(screen.getByTestId('todo-column-working')).getByTestId('todo-card-orb')).toBeInTheDocument()
+    expect(within(screen.getByTestId('todo-column-needs_you')).queryByTestId('todo-card-orb')).not.toBeInTheDocument()
+  })
+
+  it('starts a draft meant for a new agent from its card', () => {
+    const draft = todo({ id: 'n', column: 'drafts', agentSlug: null, newAgent: true })
+    state.todos = [draft]
+    renderWithProviders(<TodoBoard />)
+    expect(screen.getByTestId('todo-card')).toHaveTextContent('New Agent')
+    fireEvent.click(screen.getByTestId('todo-action-start'))
+    expect(state.start).toHaveBeenCalledWith(draft)
+  })
+
   it('labels what a Needs input card is waiting for', () => {
     state.todos = [
       todo({ id: 'q', column: 'needs_input', ask: 'answer' }),
@@ -117,6 +155,39 @@ describe('TodoBoard', () => {
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'analyst', sessionId: 'session-b' },
     })
+  })
+
+  it('renames started work from its right-click menu; drafts have no such menu', async () => {
+    state.todos = [todo({ id: 'a', column: 'drafts' }), todo({ id: 'b', column: 'has_updates', title: 'Summarize the weekly sales numbers' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Task a'))
+    expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
+
+    fireEvent.contextMenu(screen.getByText('Summarize the weekly sales numbers'))
+    fireEvent.click(await screen.findByTestId('todo-rename-item'))
+    const input = await screen.findByTestId('todo-rename-input')
+    expect(input).toHaveValue('Summarize the weekly sales numbers')
+    fireEvent.change(input, { target: { value: 'Weekly sales summary' } })
+    fireEvent.click(screen.getByTestId('todo-rename-submit'))
+    await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
+    expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it.each(['has_updates', 'needs_input'] as const)('keeps an unsaved rename when working moves to %s', async (column) => {
+    state.todos = [todo({ id: 'b', column: 'working', title: 'Quarterly report' })]
+    const { rerender } = renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Quarterly report'))
+    fireEvent.click(await screen.findByTestId('todo-rename-item'))
+    fireEvent.change(await screen.findByTestId('todo-rename-input'), { target: { value: 'Weekly sales summary' } })
+
+    state.todos = state.todos.map((item) => ({ ...item, column }))
+    rerender(<TodoBoard />)
+    expect(screen.getByTestId('todo-card')).toHaveAttribute('data-column', column)
+    expect(screen.getByTestId('todo-rename-input')).toHaveValue('Weekly sales summary')
+    fireEvent.click(screen.getByTestId('todo-rename-submit'))
+    await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
+    await waitFor(() => expect(screen.queryByTestId('todo-rename-input')).not.toBeInTheDocument())
+    expect(state.navigate).not.toHaveBeenCalled()
   })
 
   it('opens a draft in the draft dialog', () => {
@@ -258,6 +329,24 @@ describe('TodoBoard', () => {
     expect(screen.getByRole('option', { name: 'Analyst' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByRole('option', { name: 'Ops' }))
     expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('Ops')
+  })
+
+  it('gives a draft to a new agent, and offers a model only once it has an agent', async () => {
+    state.update.mockResolvedValue(undefined)
+    state.todos = [todo({ id: 'n', column: 'drafts', agentSlug: null })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task n' }))
+    expect(screen.queryByTestId('composer-options-trigger')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('todo-assign-agent'))
+    fireEvent.click(screen.getByRole('option', { name: 'New Agent' }))
+    expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('New Agent')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveAccessibleName(/^Model and effort/)
+    await waitFor(() => expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'n', agentSlug: null, newAgent: true })))
+
+    fireEvent.click(screen.getByTestId('todo-assign-agent'))
+    fireEvent.click(screen.getByRole('option', { name: 'Ops' }))
+    await waitFor(() => expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'n', agentSlug: 'ops', newAgent: false })))
   })
 
   it('saves a draft and closes with Save draft', async () => {

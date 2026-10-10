@@ -48,4 +48,13 @@ describe('ThinkingBlockItem Markdown', () => {
     expect(screen.getByText('Bad').closest('a')).toHaveAttribute('href', '')
     expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('target', '_blank')
   })
+
+  it('draws a settled mermaid fence and keeps the one still streaming as code', async () => {
+    const text = '```mermaid\ngraph LR\n  Request --> Response\n```' + '\n\n```mermaid\ngraph LR\n  Draft --> Final'
+    const { container } = render(<ThinkingBlockItem active text={text} />)
+
+    await screen.findByTestId('mermaid-diagram')
+    expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+    expect(container.querySelector('pre')).toHaveTextContent('Draft --> Final')
+  })
 })

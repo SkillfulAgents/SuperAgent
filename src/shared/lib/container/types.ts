@@ -1,4 +1,5 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { ContainerVolume } from '@shared/lib/types/mount'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 /** The container refused an operation because the session is mid-turn (HTTP 409). */
@@ -145,14 +146,12 @@ export interface StartOptions {
    * runtime has no view of the workspace and must not read it by host path.
    */
   agentName?: string
-  additionalVolumes?: string[] // Extra -v flag values for bind mounts
-  /**
-   * Called when a bind mount is dropped at run time because the container
-   * runtime can't access it (e.g. a cloud-synced folder the Lima VM helper is
-   * denied). Receives the host path so the caller can warn the user. The
-   * container is still started without that one mount.
-   */
-  onMountDropped?: (hostPath: string) => void
+  /** Sent as SUPERAGENT_VOLUMES with `volumeRunFlags()`, and dropped with them when the runtime refuses the flags. */
+  volumes?: ContainerVolume[]
+  /** The runtime refused the volume flags, so the container started without its volumes. */
+  onVolumesDropped?: () => void
+  /** The container was already running, so this start sent it nothing. */
+  onAlreadyRunning?: () => void
 }
 
 // Container resource usage stats
@@ -214,8 +213,8 @@ export interface ContainerClient {
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 
-  // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
-  buildVolumeFlag(hostPath: string, containerPath: string): string
+  // Run flags that let the container mount its volumes with FUSE, or null when this runtime can't.
+  volumeRunFlags(): string | null
 
   // Host-internal bridge IP that a host-side service must bind to so THIS runner's
   // containers can reach it via host.docker.internal, or null when containers reach
@@ -253,6 +252,8 @@ export interface ContainerClient {
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
   isHealthy(knownPort?: number): Promise<boolean>
+  /** The container's /health body, or null when it does not answer ok within the probe's bound. */
+  health(knownPort?: number): Promise<unknown>
 
   // Resource stats (memory, CPU usage)
   getStats(): Promise<ContainerStats | null>

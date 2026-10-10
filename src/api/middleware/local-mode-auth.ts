@@ -27,6 +27,7 @@ const CONTAINER_FACING_PREFIXES = [
   '/api/web-fetch/',
   '/api/browser/',
   '/api/llm-runtime/',
+  '/api/volumes/',
 ]
 
 /**

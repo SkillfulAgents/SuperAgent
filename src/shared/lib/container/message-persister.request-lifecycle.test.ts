@@ -174,7 +174,7 @@ import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-mem
 // the persister routes to through the singletons.
 attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 function createMockClient(): ContainerClient & {
   _messageCallback: ((message: StreamMessage) => void) | null
@@ -408,7 +408,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
           expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledTimes(1)
         })
         const call = vi.mocked(notificationManager.triggerSessionWaitingInput).mock.calls[0]
-        expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, waitingFor])
+        expect(call.slice(0, 3)).toEqual([
+          SESSION_ID, AGENT_SLUG, { kind: waitingFor, payload: cards[0].request.payload },
+        ])
       })
 
       it('resolves: the tool_result drops the replay entry and clears awaiting', () => {
@@ -502,7 +504,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledTimes(1)
       })
       const call = vi.mocked(notificationManager.triggerSessionWaitingInput).mock.calls[0]
-      expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, 'computer_use'])
+      expect(call.slice(0, 3)).toEqual([
+        SESSION_ID, AGENT_SLUG, expect.objectContaining({ kind: 'computer_use' }),
+      ])
     })
 
     it('a tool_result alone does NOT drop the parked entry — and awaiting stays on with it', () => {
@@ -595,7 +599,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledTimes(1)
       })
       const call = vi.mocked(notificationManager.triggerSessionWaitingInput).mock.calls[0]
-      expect(call.slice(0, 3)).toEqual([SESSION_ID, AGENT_SLUG, 'capability_review_workflows'])
+      expect(call.slice(0, 3)).toEqual([
+        SESSION_ID, AGENT_SLUG, expect.objectContaining({
+          kind: 'capability_review',
+          payload: expect.objectContaining({ capability: 'workflows' }),
+        }),
+      ])
     })
 
     it('completeCapabilityReview settles the entry, announces it, and clears awaiting', async () => {
@@ -1777,10 +1786,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
       const forThisRequest = triggerSpy.mock.calls.filter(
-        ([, , waitingFor]) => waitingFor === 'script_run',
+        ([, , request]) => request.kind === 'script_run',
       )
       expect(forThisRequest).toHaveLength(1)
-      expect(forThisRequest[0]).toEqual([SESSION_ID, AGENT_SLUG, 'script_run'])
+      expect(forThisRequest[0]).toEqual([
+        SESSION_ID, AGENT_SLUG, expect.objectContaining({ kind: 'script_run' }),
+      ])
     })
 
     it('a review registered directly with the registry notifies like any other review', () => {
@@ -1823,7 +1834,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Recovered then streamed',
       })
-      expect(triggerSpy.mock.calls.filter(([, , w]) => w === 'secret')).toHaveLength(1)
+      expect(triggerSpy.mock.calls.filter(([, , request]) => request.kind === 'secret')).toHaveLength(1)
     })
   })
 })

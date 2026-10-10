@@ -8,6 +8,7 @@
  * and health loops, force-stop fallout) is the host's, reached through
  * `RuntimeHost`.
  */
+import { z } from 'zod'
 import { createContainerClient } from './client-factory'
 import { ActivityClock } from './activity-clock'
 import { IdleAlarm } from './idle-alarm'
@@ -31,9 +32,10 @@ import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { captureException } from '@shared/lib/error-reporting'
+import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { getMountsWithHealth } from '@shared/lib/services/mount-service'
+import { listVolumes } from '@shared/lib/services/mount-service'
+import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -77,6 +79,27 @@ export interface RuntimeHost {
   afterForceStop(slug: string): void
 }
 
+const healthVolumesSchema = z.object({ status: z.literal('ok'), volumes: z.array(z.string()) })
+
+function notMountedAll(volumes: ContainerVolume[], reason: NotMountedReason): NotMountedVolume[] {
+  return volumes.map(({ name }) => ({ name, reason }))
+}
+
+// An empty list clears the banner.
+function showNotMounted(slug: string, notMounted: NotMountedVolume[]): void {
+  if (notMounted.length > 0) {
+    console.warn(`[ContainerRuntime] ${notMounted.length} volume(s) not mounted for ${slug}:`, notMounted.map((v) => `${v.name} (${v.reason})`))
+  }
+  messagePersister.broadcastGlobal({ type: 'mount_health_warning', agentSlug: slug, notMounted })
+}
+
+async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[], port: number | null): Promise<NotMountedVolume[]> {
+  const health = healthVolumesSchema.safeParse(await client.health(port ?? undefined).catch(() => null))
+  // Without a report, nothing says the volumes mounted.
+  if (!health.success) return notMountedAll(volumes, 'not confirmed')
+  return notMountedAll(volumes.filter((v) => !health.data.volumes.includes(v.volumeId)), 'failed in the agent')
+}
+
 export class ContainerRuntime {
   private client: ContainerClient | null = null
   /** Cached container status - avoids repeated docker inspect calls */
@@ -104,6 +127,8 @@ export class ContainerRuntime {
   private stopping = false
   /** In-flight ensureRunning promise — deduplicates concurrent start requests */
   private starting: Promise<ContainerClient> | null = null
+  /** Counts starts, stops and disposal: a start whose number moved on was overtaken and no longer owns the banner. */
+  private lifecycle = 0
   /**
    * Dropped by the host. The client this runtime handed out may still be held
    * elsewhere (the persister's stream subscriptions, a stop in flight) and its
@@ -220,6 +245,13 @@ export class ContainerRuntime {
     }
   }
 
+  // A stop, a later start, or a runner change since this start began owns the agent now.
+  private assertCurrent(lifecycle: number): void {
+    if (lifecycle !== this.lifecycle) {
+      throw new Error(`Cannot finish starting agent ${this.slug}: a stop or a later start overtook it`)
+    }
+  }
+
   // Single-flight restart used by runtime clients that tear down a dead generation.
   private async restartAgent(): Promise<void> {
     this.assertNotStopping('restart')
@@ -252,8 +284,9 @@ export class ContainerRuntime {
     try {
       await startPromise
     } finally {
-      this.starting = null
-      this.idleAlarm.schedule()
+      // A later start that replaced this one clears and arms for itself when it settles.
+      if (this.starting === startPromise) this.starting = null
+      if (this.starting === null) this.idleAlarm.schedule()
     }
   }
 
@@ -307,6 +340,7 @@ export class ContainerRuntime {
     // Mark as stopping immediately to prevent health checks / sync from spawning
     // more CLI processes into an overloaded VM
     this.stopping = true
+    this.lifecycle++
     this.starting = null
 
     let forceStopUsed = false
@@ -373,7 +407,7 @@ export class ContainerRuntime {
 
   /**
    * Restart the container by stopping and re-starting it.
-   * Mounts are re-loaded from mounts.json on start.
+   * Volume attachments are re-loaded from SQLite on start.
    */
   async restartContainer(): Promise<ContainerClient> {
     await this.stopContainer()
@@ -515,6 +549,7 @@ export class ContainerRuntime {
 
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
     const slug = this.slug
+    const lifecycle = ++this.lifecycle
     // Pass proxy config and account metadata (no raw tokens)
     const envVars: Record<string, string> = {}
 
@@ -610,53 +645,20 @@ export class ContainerRuntime {
 
     envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-    // Load mounts and build volume flags for healthy ones
-    const mountsWithHealth = await getMountsWithHealth(slug)
-    const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
-    const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
-
-    if (missingMounts.length > 0) {
-      console.warn(`[ContainerRuntime] Skipping ${missingMounts.length} missing mount(s) for ${slug}:`, missingMounts.map((m) => m.hostPath))
-      messagePersister.broadcastGlobal({
-        type: 'mount_health_warning',
-        agentSlug: slug,
-        missingMounts: missingMounts.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
-      })
-    }
-
-    const additionalVolumes = healthyMounts.map((m) =>
-      client.buildVolumeFlag(m.hostPath, m.containerPath)
-    )
-
-    // The prompt lists the mounted folders. A mount the runtime drops at run
-    // time (below) is still listed; the warning banner covers that case.
-    if (healthyMounts.length > 0) {
-      envVars['SUPERAGENT_MOUNTS'] = JSON.stringify(healthyMounts.map((m) => m.containerPath))
-    }
+    const listed = await listVolumes(slug)
+    const canMount = listed.volumes.length > 0 && client.volumeRunFlags() !== null
+    const notMounted = [...listed.notMounted, ...(canMount ? [] : notMountedAll(listed.volumes, 'not supported here'))]
+    const volumes = canMount ? listed.volumes : []
 
     // Start container (user secrets are in .env file in workspace).
-    // If a mount turns out to be inaccessible to the container runtime at run
-    // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
-    // the host health check but fails EPERM-on-stat inside the VM), start()
-    // drops that one mount and the container still comes up. Surface the same
-    // mount-health warning banner with a macOS-specific hint instead of
-    // failing the whole agent.
+    let volumesDropped = false
+    let alreadyRunning = false
     const startedInfo = await client.start({
       envVars,
       agentName,
-      additionalVolumes,
-      onMountDropped: (hostPath) => {
-        const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
-        console.warn(`[ContainerRuntime] Mount inaccessible to runtime, dropped for ${slug}: ${hostPath}`)
-        messagePersister.broadcastGlobal({
-          type: 'mount_health_warning',
-          agentSlug: slug,
-          missingMounts: [{ folderName: dropped?.folderName ?? hostPath, hostPath }],
-          hint: process.platform === 'darwin'
-            ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
-            : undefined,
-        })
-      },
+      volumes,
+      onVolumesDropped: () => { volumesDropped = true },
+      onAlreadyRunning: () => { alreadyRunning = true },
     })
 
     // Stop won the race: do not cache/broadcast running for a port about to die.
@@ -668,6 +670,7 @@ export class ContainerRuntime {
     // return, which the ContainerClient contract still allows. (Can't use
     // syncAgentStatus here — it is guarded against updates during startup.)
     const info = startedInfo ?? await client.getInfoFromRuntime()
+    this.assertCurrent(lifecycle)
     this.updateCachedStatus(info.status, info.port)
 
     // The start is the first mark on the idle clock: it floors stale session
@@ -681,6 +684,25 @@ export class ContainerRuntime {
       agentSlug: slug,
       status: info.status,
     })
+
+    // A container already running got its volumes, and its banner, from an earlier start.
+    // A runtime replaced meanwhile (a runner change) no longer owns the banner.
+    if (alreadyRunning || this.disposed) return client
+    let failed: NotMountedVolume[] = []
+    if (volumesDropped) {
+      failed = notMountedAll(volumes, 'start failed with folders')
+    } else if (volumes.length > 0) {
+      failed = await readUnmounted(client, volumes, info.port)
+    }
+    this.assertCurrent(lifecycle)
+    if (!volumesDropped && failed.length > 0) {
+      captureMessage('Agent container could not mount folders', {
+        level: 'warning',
+        tags: { component: 'volumes', operation: 'mount' },
+        extra: { agentId: slug, count: failed.length },
+      })
+    }
+    showNotMounted(slug, [...notMounted, ...failed])
 
     return client
   }
@@ -760,6 +782,7 @@ export class ContainerRuntime {
    */
   dispose(): void {
     this.disposed = true
+    this.lifecycle++
     this.client = null
     this.cached = null
     this.activity.reset()

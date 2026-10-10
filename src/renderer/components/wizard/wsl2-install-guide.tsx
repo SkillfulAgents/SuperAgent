@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { RefreshCw, MoveRight } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 

@@ -61,6 +61,21 @@
     "cacheCreation": 1.25,
     "cacheRead": 0.1
   },
+  "claude-haiku-5-5": {
+    "input": 0.1,
+    "output": 0.5,
+    "cacheCreation": 0.125,
+    "cacheCreation1h": 0.2,
+    "cacheRead": 0.01,
+    "longContext": {
+      "thresholdTokens": 100000,
+      "input": 0.5,
+      "output": 2.5,
+      "cacheCreation": 0.625,
+      "cacheCreation1h": 1,
+      "cacheRead": 0.05
+    }
+  },
   "claude-opus-4-1": {
     "input": 15,
     "output": 75,
@@ -197,7 +212,17 @@
     "output": 10,
     "cacheCreation": 2.5,
     "cacheCreation1h": 4,
-    "cacheRead": 0.2
+    "cacheRead": 0.1,
+    "historicalRates": [
+      {
+        "before": "2026-10-07T00:00:00Z",
+        "input": 2,
+        "output": 10,
+        "cacheCreation": 2.5,
+        "cacheCreation1h": 4,
+        "cacheRead": 0.2
+      }
+    ]
   },
   "gpt-5.4": {
     "input": 2.5,

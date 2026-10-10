@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
-import { SecretRequestItem } from './secret-request-item'
+import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -80,7 +80,20 @@ const mockUseHoldSound = vi.fn()
 vi.mock('@renderer/hooks/use-hold-sound', () => ({
   useHoldSound: (args: unknown) => mockUseHoldSound(args),
 }))
-const mockUserVoiceSettings: { ttsSpeed?: number; holdSound?: boolean } = {}
+const mockUserMusic = vi.hoisted(() => ({
+  supported: true,
+  state: { active: false, playerName: null as string | null },
+  session: vi.fn((enabled: boolean) => enabled),
+}))
+vi.mock('@renderer/hooks/use-user-music', () => ({
+  userMusicSupported: () => mockUserMusic.supported,
+  useUserMusicPreference: () => mockUserVoiceSettings.userMusic ?? true,
+  useUserMusicState: () => mockUserMusic.state,
+  useUserMusicSession: (enabled: boolean) => { mockUserMusic.session(enabled); return mockUserMusic.state },
+}))
+vi.mock('@renderer/lib/voice/shared/speech/hold-sound', () => ({ holdSound: { kind: 'loop' } }))
+vi.mock('@renderer/lib/voice/shared/speech/user-music', () => ({ userMusic: { kind: 'music' } }))
+const mockUserVoiceSettings: { ttsSpeed?: number; holdSound?: boolean; userMusic?: boolean } = {}
 const mockUpdateUserSettings = vi.fn()
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: { voice: mockUserVoiceSettings } }),
@@ -137,9 +150,17 @@ const mockSettings = {
     ],
   },
 }
+let mockWarmStartEnabled = false
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => mockSettings,
   useModelSettings: () => mockSettings,
+  useWarmStartOnTypeEnabled: () => mockWarmStartEnabled,
+}))
+
+const mockStartAgent = vi.fn()
+vi.mock('@renderer/hooks/use-agents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-agents')>()),
+  useStartAgent: () => ({ mutate: mockStartAgent }),
 }))
 
 describe('MessageInput', () => {
@@ -152,6 +173,7 @@ describe('MessageInput', () => {
     mockMessages.length = 0
     mockSendMessage.isPending = false
     mockIsOnline = true
+    mockWarmStartEnabled = false
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     mockRuntimeStatus.isPending = false
     mockCreateSecret.isPending = false
@@ -253,8 +275,9 @@ describe('MessageInput', () => {
       expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
 
       // The agent asks for something: the column hides the composer behind the card.
-      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended />)
-      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))
+      const inputRequests = [{ id: 'question:1', message: 'Choose a database in the question card.' }]
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended inputRequests={inputRequests} />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true, inputRequests }))
       expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       // No "exited" notice: the person did not leave.
@@ -374,16 +397,51 @@ describe('MessageInput', () => {
       mockVoice.phase = 'thinking'
       mockVoice.working = true
       const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false, source: { kind: 'loop' } })
       await userEvent.click(screen.getByTestId('voice-mode-button'))
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: false })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: false, source: { kind: 'loop' } })
       unmount()
 
       mockUserVoiceSettings.holdSound = false
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       await userEvent.click(screen.getByTestId('voice-mode-button'))
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false, source: { kind: 'loop' } })
       expect(screen.getByTestId('voice-mode-hold-sound')).toHaveAttribute('aria-pressed', 'false')
+      mockVoice.phase = 'listening'
+      mockVoice.working = false
+    })
+
+    it('hands the hold to the person\'s own music when voice mode took one over', async () => {
+      mockCanUseVoiceMode = true
+      delete mockUserVoiceSettings.holdSound
+      delete mockUserVoiceSettings.userMusic
+      mockVoice.phase = 'thinking'
+      mockVoice.working = true
+      mockUserMusic.state = { active: true, playerName: 'Spotify' }
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUserMusic.session).toHaveBeenLastCalledWith(false)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUserMusic.session).toHaveBeenLastCalledWith(true)
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, source: { kind: 'music' } }))
+      expect(screen.getByTestId('voice-mode-hold-sound')).toHaveAttribute('aria-label', 'Keep Spotify paused')
+      unmount()
+
+      // A muted hold sound keeps the takeover (the music stays paused for the conversation).
+      mockUserVoiceSettings.holdSound = false
+      const muted = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUserMusic.session).toHaveBeenLastCalledWith(true)
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, source: { kind: 'music' } }))
+      muted.unmount()
+      delete mockUserVoiceSettings.holdSound
+
+      // Turned off in settings, or unsupported here: no takeover, the loop plays.
+      mockUserVoiceSettings.userMusic = false
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUserMusic.session).toHaveBeenLastCalledWith(false)
+      mockUserMusic.state = { active: false, playerName: null }
+      delete mockUserVoiceSettings.userMusic
       mockVoice.phase = 'listening'
       mockVoice.working = false
     })
@@ -401,10 +459,10 @@ describe('MessageInput', () => {
       await userEvent.click(screen.getByTestId('voice-mode-button'))
       expect(screen.queryByTestId('voice-mode-speed')).not.toBeInTheDocument()
       expect(screen.getByTestId('voice-mode-hold-sound')).toBeInTheDocument()
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: true })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: true, source: { kind: 'loop' } })
       mockUseVoiceMode.mockReturnValue({ ...live, working: false, hold: { allowed: false, delayMs: 700 } })
       rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: false, working: false, delayMs: 700, speaking: true })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: false, working: false, delayMs: 700, speaking: true, source: { kind: 'loop' } })
       mockUseVoiceMode.mockReset()
     })
 
@@ -416,6 +474,25 @@ describe('MessageInput', () => {
       await waitFor(() =>
         expect(mockSendMessage.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
       )
+    })
+  })
+
+  describe('warm start on type', () => {
+    it('starts the agent container once on the first typed edit', async () => {
+      mockWarmStartEnabled = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockStartAgent).not.toHaveBeenCalled()
+
+      await userEvent.type(screen.getByTestId('message-input'), 'Hi')
+
+      await waitFor(() => expect(mockStartAgent).toHaveBeenCalledTimes(1))
+      expect(mockStartAgent).toHaveBeenCalledWith({ slug: 'agent-1', source: 'warm-start' }, expect.anything())
+    })
+
+    it('does not start the container when the setting is off', async () => {
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.type(screen.getByTestId('message-input'), 'Hi')
+      expect(mockStartAgent).not.toHaveBeenCalled()
     })
   })
 

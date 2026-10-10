@@ -20,6 +20,7 @@ const GAMUT_PLATFORM_ACCOUNTS: ServiceInfo[] = [
   { slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' },
   { slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' },
   { slug: 'highlevel', displayName: 'HighLevel', category: 'CRM & Sales', description: 'CRM: contacts, conversations, calendars' },
+  { slug: 'shopify', displayName: 'Shopify', category: 'E-commerce', description: 'Online store: products, orders, customers' },
 ]
 
 export const SERVICES: ServiceInfo[] = [
@@ -79,6 +80,10 @@ export const SERVICES: ServiceInfo[] = [
   { slug: 'typeform', displayName: 'Typeform', category: 'Scheduling & Forms', description: 'Forms and surveys' },
 ]
 if (process.env.COMPOSIO_PLATFORM_MODE === 'true') SERVICES.push(...GAMUT_PLATFORM_ACCOUNTS)
+
+export function isRequestableToolkit(slug: string): boolean {
+  return SERVICES.some((s) => s.slug === slug)
+}
 
 export const searchConnectedAccountServicesTool = tool(
   'search_connected_account_services',

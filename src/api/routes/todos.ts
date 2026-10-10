@@ -6,7 +6,8 @@
  * Starting is two calls from the client: it creates the session through
  * POST /api/agents/:id/sessions (which checks it may use the agent, and
  * takes the same path as the composer), then links it here with
- * POST /api/todos/:id/start.
+ * POST /api/todos/:id/start. A session started some other way joins the
+ * board through POST /api/todos/sessions.
  *
  * Everything 404s for someone who has not turned the experiment on.
  */
@@ -16,7 +17,9 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import {
+  addSessionTodo,
   claimStart,
   createTodo,
   deleteTodo,
@@ -24,6 +27,7 @@ import {
   listTodos,
   moveTodo,
   releaseStart,
+  renameTodo,
   setTodoStatus,
   startClaimHeld,
   startTodo,
@@ -32,9 +36,11 @@ import {
 } from '@shared/lib/services/todo-service'
 import { isExperimentEnabled } from '@shared/lib/services/user-settings-service'
 import {
+  addSessionTodoSchema,
   createTodoSchema,
   moveTodoSchema,
   releaseStartSchema,
+  renameTodoSchema,
   startTodoSchema,
   todoAskFor,
   todoColumn,
@@ -54,7 +60,20 @@ todosRouter.use('*', async (c, next) => {
   return next()
 })
 
-function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
+/** Scheduled resumes by `agentSlug/sessionId`, as epoch ms. */
+type PendingWakes = ReadonlyMap<string, number>
+
+const wakeKey = (agentSlug: string, sessionId: string) => `${agentSlug}/${sessionId}`
+
+/** The pending wakes of the started work among `rows` whose agent the person can read. */
+async function pendingWakesFor(rows: TodoRow[], readableAgents: ReadonlySet<string>): Promise<PendingWakes> {
+  const slugs = [...new Set(rows.flatMap((row) =>
+    row.status === 'active' && row.sessionId && row.agentSlug && readableAgents.has(row.agentSlug) ? [row.agentSlug] : []))]
+  const wakes = (await Promise.all(slugs.map(listPendingWakesByAgent))).flat()
+  return new Map(wakes.map((w) => [wakeKey(w.agentSlug, w.resumeSessionId!), w.nextExecutionAt.getTime()]))
+}
+
+function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: PendingWakes): TodoView {
   // Session state is live, not stored. An agent the person can no longer
   // read tells them nothing about its session.
   const actor = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
@@ -69,6 +88,11 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     title: row.title,
     description: row.description,
     agentSlug: row.agentSlug,
+    newAgent: row.newAgent,
+    model: row.model,
+    llmProviderId: row.llmProviderId,
+    effort: row.effort,
+    speed: row.speed,
     sessionId: row.sessionId,
     status: row.status,
     column,
@@ -77,6 +101,10 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
     ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
+    // Only work that is idle can be sleeping until its wake.
+    pendingWakeAt: column === 'has_updates' && row.agentSlug && row.sessionId
+      ? wakes.get(wakeKey(row.agentSlug, row.sessionId)) ?? null
+      : null,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     startedAt: row.startedAt?.getTime() ?? null,
@@ -85,7 +113,8 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
 }
 
 async function viewOf(c: Context, row: TodoRow): Promise<TodoView> {
-  return toView(row, await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : []))
+  const readable = await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : [])
+  return toView(row, readable, await pendingWakesFor([row], readable))
 }
 
 async function respond(c: Context, result: TodoWriteResult) {
@@ -111,7 +140,8 @@ todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
   const agentSlugs = [...new Set(rows.flatMap((row) => (row.agentSlug ? [row.agentSlug] : [])))]
   const readable = await getReadableAgentIds(c, agentSlugs)
-  return c.json({ todos: rows.map((row) => toView(row, readable)) })
+  const wakes = await pendingWakesFor(rows, readable)
+  return c.json({ todos: rows.map((row) => toView(row, readable, wakes)) })
 })
 
 // POST /api/todos — a new draft.
@@ -123,6 +153,21 @@ todosRouter.post('/', async (c) => {
   }
   const row = await createTodo(getCurrentUserId(c), input)
   return c.json(await viewOf(c, row), 201)
+})
+
+// POST /api/todos/sessions — put a session that already exists on the board,
+// whether it is working right now or not. 200 with the existing item if the
+// session is already on it.
+todosRouter.post('/sessions', async (c) => {
+  const input = await parseBody(c, addSessionTodoSchema)
+  if (!input) return c.json({ error: 'Invalid todo' }, 400)
+  const readable = await getReadableAgentIds(c, [input.agentSlug])
+  if (!readable.has(input.agentSlug) || !(await agentRegistry.get(input.agentSlug).sessions.isKnown(input.sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+  const result = await addSessionTodo(getCurrentUserId(c), input)
+  if (!result) return c.json({ error: 'The todo has changed; reload and try again' }, 409)
+  return c.json(toView(result.todo, readable, await pendingWakesFor([result.todo], readable)), result.created ? 201 : 200)
 })
 
 // PATCH /api/todos/:id — edit a draft.
@@ -187,6 +232,13 @@ todosRouter.post('/:id/status', async (c) => {
   const input = await parseBody(c, todoStatusChangeSchema)
   if (!input) return c.json({ error: 'Invalid status' }, 400)
   return respond(c, await setTodoStatus(getCurrentUserId(c), c.req.param('id'), input.status))
+})
+
+// POST /api/todos/:id/title — rename started work. Drafts are edited with PATCH.
+todosRouter.post('/:id/title', async (c) => {
+  const input = await parseBody(c, renameTodoSchema)
+  if (!input) return c.json({ error: 'Invalid title' }, 400)
+  return respond(c, await renameTodo(getCurrentUserId(c), c.req.param('id'), input.title))
 })
 
 // POST /api/todos/:id/position — reorder within its column.

@@ -8,7 +8,7 @@
  */
 
 import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
   ChatAgentIntegration,

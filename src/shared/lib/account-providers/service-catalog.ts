@@ -336,7 +336,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Online store: products, orders, customers',
     composioSlug: 'shopify',
     platformOnly: true,
-    unlisted: true,
     // Shopify only allows installing Gamut's app from its App Store listing (rule 2.3.1).
     installUrl: 'https://apps.shopify.com/gamut',
     fixedName: true,

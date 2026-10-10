@@ -618,6 +618,8 @@ export function GlobalNotificationHandler() {
             if (sessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
             }
+            // Todo cards show a pending wake as waiting.
+            queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })
@@ -637,11 +639,10 @@ export function GlobalNotificationHandler() {
           }
 
           case 'mount_health_warning': {
-            // Some mounted folders are missing or inaccessible — show banner in agent view
+            // An empty list clears the banner.
             setMountWarning(queryClient, {
               agentSlug: data.agentSlug,
-              missingMounts: data.missingMounts,
-              hint: data.hint,
+              notMounted: data.notMounted,
             })
             break
           }

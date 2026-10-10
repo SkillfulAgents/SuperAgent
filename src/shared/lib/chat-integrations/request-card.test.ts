@@ -4,7 +4,7 @@ import {
   pendingUserInputRequestSchema,
   USER_INPUT_REQUEST_KINDS,
   type PendingUserInputRequest,
-} from '@shared/lib/user-input/request-schema'
+} from '@shared/lib/tools/requests/request-schema'
 import { isUnsupportedInChat, describeUnsupportedRequest } from './utils'
 
 /** A real registry envelope — parsed, so a card can only come from a valid one. */

@@ -64,6 +64,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
+  getGlobalInstructions: () => mockGetSettings().globalInstructions ?? '',
   getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
   getBrowserbaseApiKeyStatus: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
   getNangoApiKeyStatus: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
@@ -1888,6 +1889,39 @@ describe('settings route', () => {
   // =========================================================================
   // Settings merge — shareAnalytics
   // =========================================================================
+  describe('global instructions', () => {
+    it('lets any signed-in user read them, without the admin gate', async () => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), globalInstructions: 'Be kind' })
+
+      const res = await app.request('http://localhost/api/settings/global-instructions')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ globalInstructions: 'Be kind' })
+      expect(mockAuthenticatedMiddleware).toHaveBeenCalled()
+      expect(mockIsAdminMiddleware).not.toHaveBeenCalled()
+    })
+
+    it('reads as empty when none are set', async () => {
+      const res = await app.request('http://localhost/api/settings/global-instructions')
+      expect(await res.json()).toEqual({ globalInstructions: '' })
+    })
+
+    it('stores them through the admin-gated PUT', async () => {
+      const res = await putSettings({ globalInstructions: 'Cite sources' })
+
+      expect(res.status).toBe(200)
+      expect(mockIsAdminMiddleware).toHaveBeenCalled()
+      expect(mockUpdateSettings.mock.calls[0][0].globalInstructions).toBe('Cite sources')
+    })
+
+    it('rejects guidance past the length bound without writing', async () => {
+      const res = await putSettings({ globalInstructions: 'x'.repeat(20_001) })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+  })
+
   describe('shareAnalytics handling', () => {
     it('updates shareAnalytics when provided', async () => {
       const res = await putSettings({ shareAnalytics: true })

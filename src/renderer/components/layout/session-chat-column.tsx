@@ -1,10 +1,12 @@
+import { useMemo } from 'react'
 import { MessageInput } from '@renderer/components/messages/message-input'
+import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { SessionThread } from '@renderer/components/messages/session-thread'
-import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
-import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
-import { PendingRequestErrorBoundary } from '@renderer/components/messages/pending-request-error-boundary'
-import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
+import { PendingRequestStack } from '@shared/lib/tools/requests/pending-request-stack'
+import { renderPendingRequest, type RenderContext } from '@shared/lib/tools/requests/pending-request-renderer'
+import { PendingRequestErrorBoundary } from '@shared/lib/tools/requests/pending-request-error-boundary'
+import { usePendingRequests } from '@shared/lib/tools/requests/use-pending-requests'
 import { StaleSessionNotice } from '@renderer/components/messages/stale-session-notice'
 import { PendingWakeBanner } from '@renderer/components/messages/pending-wake-banner'
 import { ProviderErrorPlacement } from '@renderer/components/provider-error/provider-error-placement'
@@ -72,6 +74,7 @@ export function SessionChatColumn({
     agentSlug,
     pendingUserMessages,
   })
+  const voiceInputRequests = useMemo(() => pendingRequestItems.map(describeVoiceInputRequest), [pendingRequestItems])
 
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
 
@@ -156,6 +159,7 @@ export function SessionChatColumn({
                     initialModel={model} initialLlmProviderId={llmProviderId}
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
+                    inputRequests={voiceInputRequests}
                   />
                   <div className="relative isolate flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 overflow-hidden px-6 py-3">
                     <div

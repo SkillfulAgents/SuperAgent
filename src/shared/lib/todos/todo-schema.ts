@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import type { UserInputRequestKind } from '@shared/lib/user-input/request-schema'
+import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
+import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -31,28 +32,58 @@ export const TODO_DESCRIPTION_MAX = 20_000
 const titleSchema = z.string().trim().max(TODO_TITLE_MAX)
 const descriptionSchema = z.string().max(TODO_DESCRIPTION_MAX)
 const agentSlugSchema = z.string().trim().min(1).max(200)
+const modelSchema = z.string().trim().min(1).max(200)
+const runtimeFields = {
+  model: modelSchema.nullable().optional(),
+  llmProviderId: modelSchema.nullable().optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
+  speed: z.enum(SPEED_LEVELS).nullable().optional(),
+}
 
 export const createTodoSchema = z
   .object({
     title: titleSchema,
     description: descriptionSchema.default(''),
     agentSlug: agentSlugSchema.nullable().optional(),
+    newAgent: z.boolean().optional(),
+    ...runtimeFields,
   })
   .strict()
+  .refine((todo) => !(todo.newAgent && todo.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
   .refine((todo) => todo.title.length > 0 || todo.description.trim().length > 0, {
     message: 'A todo needs a title or a description',
   })
 export type CreateTodoInput = z.infer<typeof createTodoSchema>
 
-/** Edits a draft. `agentSlug: null` unassigns. */
+/**
+ * Edits a draft. `agentSlug: null` unassigns. Assigning an agent clears
+ * `newAgent` and setting `newAgent` clears the agent, so it is one or the
+ * other. `model`, `effort` or `speed` null goes back to the agent's default.
+ */
 export const updateTodoSchema = z
   .object({
     title: titleSchema.optional(),
     description: descriptionSchema.optional(),
     agentSlug: agentSlugSchema.nullable().optional(),
+    newAgent: z.boolean().optional(),
+    ...runtimeFields,
   })
   .strict()
+  .refine((patch) => !(patch.newAgent && patch.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>
+
+/** Puts a session that already exists on the board, titled by the person (the session's name by default). */
+export const addSessionTodoSchema = z
+  .object({
+    title: titleSchema.pipe(z.string().min(1)),
+    agentSlug: agentSlugSchema,
+    sessionId: z.string().trim().min(1).max(200),
+  })
+  .strict()
+export type AddSessionTodoInput = z.infer<typeof addSessionTodoSchema>
+
+/** Renames started work. Its brief stays what the agent was sent; only the card's title changes. */
+export const renameTodoSchema = z.object({ title: titleSchema.pipe(z.string().min(1)) }).strict()
 
 const claimSchema = z.string().min(1).max(100)
 
@@ -161,6 +192,13 @@ export interface TodoView {
   title: string
   description: string
   agentSlug: string | null
+  /** A draft to be given to an agent created for it when it starts. */
+  newAgent: boolean
+  /** What was picked to run it on; each null starts it on the agent's default. */
+  model: string | null
+  llmProviderId: string | null
+  effort: EffortLevel | null
+  speed: SpeedLevel | null
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn
@@ -170,6 +208,8 @@ export interface TodoView {
   starting: boolean
   /** For an item in Needs input: what it is waiting for, when known. */
   ask: TodoAsk | null
+  /** When its session is scheduled to resume on its own, if it is. */
+  pendingWakeAt: number | null
   createdAt: number
   updatedAt: number
   startedAt: number | null

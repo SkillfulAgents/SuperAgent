@@ -5,6 +5,7 @@ import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
@@ -273,6 +274,7 @@ export class SessionManager extends EventEmitter {
     // never silently degrade a block to allow. Speed likewise — it ends up
     // interpolated into the ANTHROPIC_CUSTOM_HEADERS string.
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
+    const globalInstructions = globalInstructionsSchema.parse(request.globalInstructions);
     const speed = speedLevelSchema.parse(request.speed);
     const subagentModels = subagentModelCatalogSchema.parse(request.subagentModels);
     const modelContextWindows = modelContextWindowsSchema.parse(request.modelContextWindows);
@@ -299,6 +301,7 @@ export class SessionManager extends EventEmitter {
       ...request,
       speed,
       capabilityPolicies,
+      globalInstructions,
       subagentModels,
       modelContextWindows,
       workingDirectory,
@@ -329,6 +332,7 @@ export class SessionManager extends EventEmitter {
         effort: request.effort,
         speed,
         capabilityPolicies,
+        globalInstructions,
       });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
@@ -481,6 +485,7 @@ export class SessionManager extends EventEmitter {
       effort: request.effort,
       speed,
       capabilityPolicies,
+      globalInstructions,
       metadata: request.metadata,
     });
 
@@ -580,6 +585,7 @@ export class SessionManager extends EventEmitter {
         effort: profile.effort,
         speed: profile.speed,
         capabilityPolicies: profile.capabilityPolicies,
+        globalInstructions: profile.globalInstructions,
       });
       try {
         await process.prewarm();
@@ -715,6 +721,7 @@ export class SessionManager extends EventEmitter {
         speed: persisted.speed,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
+        globalInstructions: persisted.globalInstructions,
       });
 
       const session: Session = {
@@ -932,7 +939,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -984,6 +991,9 @@ export class SessionManager extends EventEmitter {
     }
     if (options?.capabilityPolicies !== undefined) {
       this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
+    }
+    if (options?.globalInstructions !== undefined) {
+      this.persistence.updateGlobalInstructions(sessionId, options.globalInstructions);
     }
 
     // Send to Claude Code process (messages are stored via handleMessage)

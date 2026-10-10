@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   readable: new Map<string, Set<string>>(),
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
+  wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -33,6 +34,9 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: async (slug: string) => state.agents.has(slug),
+}))
+vi.mock('@shared/lib/services/scheduled-task-service', () => ({
+  listPendingWakesByAgent: async (slug: string) => state.wakes.filter((w) => w.agentSlug === slug),
 }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
@@ -83,6 +87,7 @@ beforeEach(async () => {
   state.readable = new Map([['alice', new Set(['agent-a', 'agent-b'])], ['bob', new Set(['agent-a'])]])
   state.sessions = new Map()
   state.requests = new Map()
+  state.wakes = []
 })
 
 afterEach(async () => {
@@ -94,6 +99,9 @@ describe('the experiment gate', () => {
     state.experimentOn.delete('alice')
     expect((await call('')).status).toBe(404)
     expect((await call('', 'POST', { title: 'x' })).status).toBe(404)
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await call('/sessions', 'POST', { title: 'x', agentSlug: 'agent-a', sessionId: 'session-1' })).status).toBe(404)
+    expect((await call('/some-id/title', 'POST', { title: 'x' })).status).toBe(404)
   })
 })
 
@@ -132,6 +140,30 @@ describe('drafts', () => {
     expect((await (await call('', 'GET', undefined, 'bob')).json()).todos).toEqual([])
     expect((await call(`/${draft.id}`, 'PATCH', { title: 'mine now' }, 'bob')).status).toBe(404)
     expect((await call(`/${draft.id}`, 'DELETE', undefined, 'bob')).status).toBe(404)
+  })
+
+  it('gives a draft to a new agent or to an agent, never both', async () => {
+    const draft = await createDraft({ title: 'Write the report', newAgent: true })
+    expect(draft).toMatchObject({ agentSlug: null, newAgent: true })
+    expect((await call('', 'POST', { title: 'x', agentSlug: 'agent-a', newAgent: true })).status).toBe(400)
+
+    const assigned = await (await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-a' })).json()
+    expect(assigned).toMatchObject({ agentSlug: 'agent-a', newAgent: false })
+    const back = await (await call(`/${draft.id}`, 'PATCH', { newAgent: true })).json()
+    expect(back).toMatchObject({ agentSlug: null, newAgent: true })
+  })
+
+  it('keeps the model, effort and speed picked for a draft, and forgets them on null', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a', model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
+    expect(draft).toMatchObject({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
+    const cleared = await (await call(`/${draft.id}`, 'PATCH', { model: null, llmProviderId: null, effort: null, speed: null })).json()
+    expect(cleared).toMatchObject({ model: null, llmProviderId: null, effort: null, speed: null })
+    expect((await call(`/${draft.id}`, 'PATCH', { effort: 'extreme' })).status).toBe(400)
+  })
+
+  it('cannot start a draft for a new agent until the agent is made and assigned', async () => {
+    const draft = await createDraft({ title: 'Write the report', newAgent: true })
+    expect((await call(`/${draft.id}/claim`, 'POST', {})).status).toBe(409)
   })
 
   it('deletes a draft', async () => {
@@ -200,6 +232,80 @@ describe('starting', () => {
   })
 })
 
+describe('renaming started work', () => {
+  it('renames an item in any column after it started, and nothing else changes', async () => {
+    const todo = await startDraft()
+    const res = await call(`/${todo.id}/title`, 'POST', { title: 'Weekly sales summary' })
+    expect(res.status).toBe(200)
+    const renamed = await res.json()
+    expect(renamed).toMatchObject({ title: 'Weekly sales summary', description: todo.description, status: 'active', position: todo.position })
+    await call(`/${todo.id}/status`, 'POST', { status: 'done' })
+    expect((await call(`/${todo.id}/title`, 'POST', { title: 'Sales summary, done' })).status).toBe(200)
+  })
+
+  it('leaves drafts to their dialog', async () => {
+    const draft = await createDraft()
+    expect((await call(`/${draft.id}/title`, 'POST', { title: 'Renamed' })).status).toBe(409)
+  })
+
+  it('refuses an empty title and someone else\'s item', async () => {
+    const todo = await startDraft()
+    expect((await call(`/${todo.id}/title`, 'POST', { title: '  ' })).status).toBe(400)
+    expect((await call(`/${todo.id}/title`, 'POST', { title: 'Mine now' }, 'bob')).status).toBe(404)
+  })
+})
+
+describe('adding a session that already exists', () => {
+  it('puts an idle session on the board as an item with updates', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const res = await call('/sessions', 'POST', { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' })
+    expect(res.status).toBe(201)
+    expect(await res.json()).toMatchObject({ title: 'Quarterly report', status: 'active', column: 'has_updates', sessionId: 'session-1' })
+  })
+
+  it('puts a working session in Working', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: false })
+    const res = await call('/sessions', 'POST', { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' })
+    expect(res.status).toBe(201)
+    expect((await res.json()).column).toBe('working')
+  })
+
+  it('adds a session once: adding it again returns the item already on the board', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const body = { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' }
+    const [first, second] = await Promise.all([call('/sessions', 'POST', body), call('/sessions', 'POST', body)])
+    expect([first.status, second.status].sort()).toEqual([200, 201])
+    expect((await first.json()).id).toBe((await second.json()).id)
+    expect((await (await call('')).json()).todos).toHaveLength(1)
+  })
+
+  it('returns a started item already on the board, in whatever column it is', async () => {
+    const started = await startDraft()
+    await call(`/${started.id}/status`, 'POST', { status: 'done' })
+    const res = await call('/sessions', 'POST', { title: 'Another title', agentSlug: 'agent-a', sessionId: 'session-1' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ id: started.id, title: 'Write the report', status: 'done' })
+  })
+
+  it('lets two people each put the same session on their own board', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const body = { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' }
+    expect((await call('/sessions', 'POST', body, 'alice')).status).toBe(201)
+    expect((await call('/sessions', 'POST', body, 'bob')).status).toBe(201)
+  })
+
+  it('refuses a session the agent does not have, or of an agent the person cannot see', async () => {
+    expect((await call('/sessions', 'POST', { title: 'Report', agentSlug: 'agent-a', sessionId: 'missing' })).status).toBe(404)
+    state.sessions.set('agent-b/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await call('/sessions', 'POST', { title: 'Report', agentSlug: 'agent-b', sessionId: 'session-1' }, 'bob')).status).toBe(404)
+  })
+
+  it('needs a title', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await call('/sessions', 'POST', { title: '  ', agentSlug: 'agent-a', sessionId: 'session-1' })).status).toBe(400)
+  })
+})
+
 describe('board columns', () => {
   it('follow the session live', async () => {
     const todo = await startDraft()
@@ -224,6 +330,20 @@ describe('board columns', () => {
 
     state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: true })
     expect(await listed()).toMatchObject({ column: 'needs_input', ask: 'permission' })
+  })
+
+  it('say when idle work is asleep until a scheduled wake', async () => {
+    const item = await startDraft()
+    const wakeAt = new Date(Date.now() + 3 * 60 * 60_000)
+    state.wakes = [{ agentSlug: 'agent-a', resumeSessionId: 'session-1', nextExecutionAt: wakeAt }]
+    // Still working: not asleep yet.
+    expect((await (await call('')).json()).todos[0]).toMatchObject({ id: item.id, column: 'working', pendingWakeAt: null })
+
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await (await call('')).json()).todos[0]).toMatchObject({ column: 'has_updates', pendingWakeAt: wakeAt.getTime() })
+
+    state.wakes = []
+    expect((await (await call('')).json()).todos[0]).toMatchObject({ column: 'has_updates', pendingWakeAt: null })
   })
 
   it('stop reading the session of an agent the person lost access to', async () => {

@@ -124,7 +124,7 @@ import { createAgentIntegration, getAgentIntegration } from '@shared/lib/service
 import { listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { MockContainerClient, UserInputRequestScenario } from '@shared/lib/container/mock-container-client'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

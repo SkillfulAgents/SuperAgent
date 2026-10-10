@@ -16,6 +16,9 @@ import { useAgent } from '@renderer/hooks/use-agents'
 import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
 import { useHoldSound } from '@renderer/hooks/use-hold-sound'
+import { useUserMusicPreference, useUserMusicSession, userMusicSupported } from '@renderer/hooks/use-user-music'
+import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
+import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
@@ -32,9 +35,12 @@ import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
+import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 interface MessageInputProps {
   sessionId: string
@@ -61,6 +67,7 @@ interface MessageInputProps {
    * person left.
    */
   suspended?: boolean
+  inputRequests?: readonly VoiceInputRequest[]
 }
 
 /**
@@ -77,7 +84,7 @@ function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): 
   return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -180,6 +187,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
+  })
+
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  useWarmStartOnType({
+    agentSlug,
+    message: composer.message,
+    enabled: warmStartEnabled && !isViewOnly,
   })
 
   const snapshotRef = useRef<ComposerSnapshot>({
@@ -384,6 +398,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentSlug,
     active: voiceModeOn && !isViewOnly,
     paused: suspended,
+    inputRequests,
     send: (text) => {
       voiceSendRef.current = true
       return submitMessage(text).finally(() => { voiceSendRef.current = false })
@@ -418,14 +433,20 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [voiceModeOn, isViewOnly])
-  // Something to hear while the agent works, unless the person muted it.
+  // Something to hear while the agent works, unless the person muted it:
+  // their own music if it was playing when voice mode came on, else the loop.
+  // The takeover lasts the whole voice session: a muted hold sound or a
+  // request card keeps the music paused, and leaving voice mode gives it back.
   const holdSoundWanted = useHoldSoundPreference()
+  const userMusicWanted = useUserMusicPreference()
+  const music = useUserMusicSession(voiceModeOn && !isViewOnly && userMusicWanted && userMusicSupported())
   useHoldSound({
     enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
     agentTurn: voice.hold.allowed,
     delayMs: voice.hold.delayMs,
     speaking: voice.speechActive ?? voice.phase === 'speaking',
     working: voice.working,
+    source: music.active ? userMusic : holdSound,
   })
 
 

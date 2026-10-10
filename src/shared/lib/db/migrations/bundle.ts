@@ -547,5 +547,30 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790976371108,
     "hash": "774e659ffccb8ffb46e8353cda10d8671b515628c81918b66109e70915bcf607"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_volumes` (\n\t`id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`volume_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `id`),\n\tFOREIGN KEY (`agent_slug`) REFERENCES `agents`(`slug`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`volume_id`) REFERENCES `volume_definitions`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `agent_volumes_source_unique` ON `agent_volumes` (`agent_slug`,`volume_id`);",
+      "\nCREATE UNIQUE INDEX `agent_volumes_name_unique` ON `agent_volumes` (`agent_slug`,`name`);",
+      "\nCREATE INDEX `agent_volumes_volume_idx` ON `agent_volumes` (`volume_id`);",
+      "\nCREATE TABLE `volume_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`name` text NOT NULL,\n\t`type` text NOT NULL,\n\t`config` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `volume_definitions_owner_idx` ON `volume_definitions` (`user_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1791396692104,
+    "hash": "da77e2d0b25863a67be69d795f493e621854e8803599b49766e79460819d9fe6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `new_agent` integer DEFAULT false NOT NULL;",
+      "\nALTER TABLE `todos` ADD `model` text;",
+      "\nALTER TABLE `todos` ADD `llm_provider_id` text;",
+      "\nALTER TABLE `todos` ADD `effort` text;",
+      "\nALTER TABLE `todos` ADD `speed` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1791587287364,
+    "hash": "ccb3ac557a4bd7f0eef3ed27cf5565d1aef1081f89551803b42299e6e31ee1a6"
   }
 ]

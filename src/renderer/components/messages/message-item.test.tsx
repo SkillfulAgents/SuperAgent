@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
@@ -857,6 +857,183 @@ describe('MessageItem', () => {
       await screen.findByTestId('mermaid-diagram')
       expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
       expect(container.querySelector('pre')).toHaveTextContent('Draft --> Final')
+    })
+  })
+
+  describe('html code fences', () => {
+    const CHART = '```html\n<svg width="120" height="120"><circle cx="60" cy="60" r="50"/></svg>\n<script>document.title = "Spend"</script>\n```'
+
+    it('renders a settled html fence in a script-only sandbox with the policy first', () => {
+      const msg = createAssistantMessage({ content: { text: `Here is your spend:\n\n${CHART}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const frame = screen.getByTitle('HTML preview')
+      expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+      const doc = frame.getAttribute('srcdoc')!
+      expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<svg'))
+      expect(doc).toContain("default-src 'none'")
+      expect(doc).not.toContain('https:')
+      expect(container.querySelector('pre')).toBeNull()
+    })
+
+    it('previews fences tagged HTML or htm', () => {
+      const msg = createAssistantMessage({ content: { text: '```HTML\n<p>Upper</p>\n```\n\n```htm\n<p>Short</p>\n```' } })
+      render(<MessageItem message={msg} />)
+
+      expect(screen.getAllByTitle('HTML preview')).toHaveLength(2)
+    })
+
+    it('sizes html and body to their content, not the frame', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<style>body{min-height:100vh;padding:24px}</style><p>Total</p>\n```' } })
+      render(<MessageItem message={msg} />)
+
+      const doc = screen.getByTitle('HTML preview').getAttribute('srcdoc')!
+      const reset = doc.indexOf('html,body{height:auto!important;min-height:0!important}')
+      expect(reset).toBeGreaterThan(-1)
+      expect(reset).toBeLessThan(doc.indexOf('min-height:100vh'))
+    })
+
+    it('keeps html as code in the streaming row, which its persisted message replaces', () => {
+      const msg = createAssistantMessage({ content: { text: `${CHART}\n\nStill writing` } })
+      const { container, rerender } = render(<MessageItem message={msg} isStreaming isStreamingRow />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      rerender(<MessageItem message={msg} isStreaming={false} isStreamingRow />)
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('keeps the fence still streaming in as a code block', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<div>Draft' } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<div>Draft')
+    })
+
+    it('leaves other fences as code', () => {
+      const msg = createAssistantMessage({ content: { text: '```text\n<div>Source only</div>\n```' } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<div>Source only</div>')
+    })
+
+    it('keeps html fences from users and integrations as code', () => {
+      const msg = createUserMessage({ content: { text: CHART } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('shows the source once the frame loads a page other than its own', () => {
+      const msg = createAssistantMessage({ content: { text: CHART } })
+      const { container } = render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview')
+
+      fireEvent.load(frame)
+      expect(screen.getByTitle('HTML preview')).toBe(frame)
+      fireEvent.load(frame)
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('sizes the frame from its own height reports only', () => {
+      const msg = createAssistantMessage({ content: { text: CHART } })
+      render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const report = (source: MessageEventSource | null, height: number) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source, data: { type: 'superagent:html-block-height', height } }))
+        })
+
+      report(window, 900)
+      expect(frame.style.height).toBe('160px')
+      report(frame.contentWindow, 240)
+      expect(frame.style.height).toBe('240px')
+      report(frame.contentWindow, 50_000)
+      expect(frame.style.height).toBe('1200px')
+    })
+
+    it('does not grow for content that follows the frame height, but still shrinks', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<h3>Spend</h3><div style="height:100vh"></div>\n```' } })
+      render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const report = (height: number, followsFrame: boolean) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'superagent:html-block-height', height, followsFrame } }))
+        })
+
+      report(218, false)
+      expect(frame.style.height).toBe('218px')
+      report(276, true)
+      expect(frame.style.height).toBe('218px')
+      report(120, true)
+      expect(frame.style.height).toBe('120px')
+    })
+
+    it('forwards wheel input the frame reports to the chat only while the pointer is on it', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<p>Weekly spend</p>\n```' } })
+      const { container } = render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const wheels: number[] = []
+      container.addEventListener('wheel', (event) => wheels.push((event as WheelEvent).deltaY))
+      const report = (source: MessageEventSource | null, deltaY: number) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source, data: { type: 'superagent:html-block-wheel', deltaY } }))
+        })
+
+      report(window, 40)
+      report(frame.contentWindow, 60)
+      vi.spyOn(frame, 'matches').mockImplementation((selector) => selector === ':hover')
+      report(frame.contentWindow, -120)
+      expect(wheels).toEqual([-120])
+    })
+  })
+
+  describe('math code fences', () => {
+    const fence = (source: string) => '```math\n' + source + '\n```'
+    const EULER = fence('e^{i\\pi} + 1 = 0')
+
+    it('renders a settled math fence as a display equation', async () => {
+      const msg = createAssistantMessage({ content: { text: `Euler's identity:\n\n${EULER}` } })
+      render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('.katex-display')).not.toBeNull()
+      expect(block.querySelector('annotation')).toHaveTextContent('e^{i\\pi} + 1 = 0')
+      expect(block.closest('pre')).toBeNull()
+      expect(screen.getByText("Euler's identity:")).toBeInTheDocument()
+    })
+
+    it('keeps invalid LaTeX as a code block', async () => {
+      const broken = fence('\\frac{1}{')
+      const msg = createAssistantMessage({ content: { text: `${EULER}\n\n${broken}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      await screen.findByTestId('math-block')
+      expect(screen.getAllByTestId('math-block')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('\\frac{1}{')
+    })
+
+    it('does not turn links into anchors', async () => {
+      const msg = createAssistantMessage({ content: { text: fence('\\href{https://example.com}{x}') } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('a')).toBeNull()
+      expect(container.querySelector('a[href="https://example.com"]')).toBeNull()
+    })
+
+    it('keeps the fence still streaming in as a code block', async () => {
+      const text = EULER + '\n\n```math\na^2 + b^2'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      await screen.findByTestId('math-block')
+      expect(screen.getAllByTestId('math-block')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('a^2 + b^2')
     })
   })
 })

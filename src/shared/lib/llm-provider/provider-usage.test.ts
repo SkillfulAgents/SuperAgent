@@ -52,13 +52,22 @@ describe('subscription allowance reads', () => {
     })
   }
   it('reports Platform seat consumption and distinct balances, including exhausted/negative credit', async () => {
-    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z' }, seat: { balanceCents: -100, startingBalanceCents: 1000 }, orgPool: { poolBalanceCents: 0 } })
+    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z', creditScope: 'seat' }, seat: { balanceCents: -100, startingBalanceCents: 1000 }, orgPool: { poolBalanceCents: 0 } })
     const usage = await new PlatformLlmProvider().getUsage()
     expect(usage.limits[0]).toMatchObject({ label: 'Seat allowance' })
     expect(usage.limits[0].kind === 'window' && usage.limits[0].usedPercent).toBeCloseTo(110)
     expect(usage.limits.slice(1)).toEqual([
       { kind: 'balance', id: 'seat-credits', label: 'Seat credits', remaining: -1, unit: 'USD' },
       { kind: 'balance', id: 'organization-credits', label: 'Organization credits', remaining: 0, unit: 'USD' },
+    ])
+  })
+  it('labels a pooled org\'s shared subscription credit as the team plan, with the same ids', async () => {
+    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z', creditScope: 'org' }, seat: { balanceCents: 30000, startingBalanceCents: 40000 }, orgPool: { poolBalanceCents: 500 } })
+    const usage = await new PlatformLlmProvider().getUsage()
+    expect(usage.limits[0]).toMatchObject({ kind: 'window', id: 'seat', label: 'Team plan allowance', resetsAt: '2026-10-01T00:00:00Z' })
+    expect(usage.limits.slice(1)).toEqual([
+      { kind: 'balance', id: 'seat-credits', label: 'Team plan credits', remaining: 300, unit: 'USD' },
+      { kind: 'balance', id: 'organization-credits', label: 'Organization credits', remaining: 5, unit: 'USD' },
     ])
   })
 })

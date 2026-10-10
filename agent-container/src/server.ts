@@ -9,6 +9,7 @@ import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -52,6 +53,7 @@ import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-pro
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
+import { mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -105,9 +107,16 @@ app.use('*', async (c, next) => {
   return next();
 });
 
+// Volumes mount at boot. Until they settle, /health holds the host's start check.
+let volumesSettled = false;
+const volumesMounted = mountVolumes(parseVolumes(process.env.SUPERAGENT_VOLUMES)).then(() => {
+  volumesSettled = true;
+});
+
 // Health check endpoint
 app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  if (!volumesSettled) return c.json({ status: 'starting' }, 503);
+  return c.json({ status: 'ok', timestamp: new Date().toISOString(), volumes: mountedVolumeIds() });
 });
 
 // Session endpoints
@@ -263,6 +272,7 @@ app.post('/sessions/:id/messages', async (c) => {
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
+      globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
     });
 
     return c.json({ success: true }, 201);
@@ -2367,6 +2377,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
+        globalInstructions: globalInstructionsSchema.parse(payload.globalInstructions),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
@@ -3275,11 +3286,15 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 // until a session has been created here at least once. Kicked off before the
 // dashboard scan below: on a cold container the two compete for the same two
 // CPUs, and only this one is in front of a waiting user.
-sessionManager.prewarmFromLastProfile();
+// Both wait for volumes to mount: the warm CLI keeps the prompt it starts with, which lists them.
+volumesMounted.then(() => {
+  if (isShuttingDown) return;
+  sessionManager.prewarmFromLastProfile();
 
-// Start dashboard processes asynchronously (don't block server startup)
-dashboardManager.scanAndStartAll().catch((error) => {
-  console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  // Start dashboard processes asynchronously (don't block server startup)
+  dashboardManager.scanAndStartAll().catch((error) => {
+    console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  });
 });
 
 // Sweep abandoned input requests. Entries the host never answers (session
@@ -3335,6 +3350,8 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true;
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
+  // The host stops containers with a 5s grace, then kills them.
+  const uploadDeadline = Date.now() + 4_000;
 
   // Close the browser even if an automated session released its ownership lock.
   if (browserState.location) {
@@ -3360,6 +3377,9 @@ async function gracefulShutdown(signal: string) {
   } catch (error) {
     console.error('Error stopping sessions:', error);
   }
+
+  // After sessions stop, so nothing is still writing to a volume.
+  await unmountVolumes(uploadDeadline);
 
   // Close WebSocket servers
   browserWss.close(() => {

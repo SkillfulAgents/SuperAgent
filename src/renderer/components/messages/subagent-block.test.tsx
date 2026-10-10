@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SubAgentBlock } from './subagent-block'
 import { createToolCall, createAssistantMessage } from '@renderer/test/factories'
@@ -394,5 +394,42 @@ describe('SubAgentBlock', () => {
     await user.click(screen.getByText('Explore'))
 
     expect(screen.getByText('Found 3 config files in the workspace.')).toBeInTheDocument()
+  })
+
+  it('keeps a mermaid fence in live sub-agent text as code and draws it in the settled result', async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({ name: 'Task', input: { subagent_type: 'Explore', description: 'Searching' }, result: undefined })
+    const fence = '```mermaid\ngraph LR\n  Request --> Response\n```'
+    const subagent = {
+      parentToolId: tc.id, agentId: 'sub-1', streamingToolUse: null, progressSummary: null,
+      subagentType: null, description: null, usage: null, lastToolName: null,
+    }
+
+    const live = render(
+      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive
+        activeSubagent={{ ...subagent, streamingMessage: fence }} />
+    )
+    // Let the lazy diagram chunk settle, so a settled render would have drawn by now.
+    await act(async () => { await import('./mermaid-diagram') })
+    expect(live.container.querySelector('pre')).toHaveTextContent('Request --> Response')
+    expect(screen.queryByTestId('mermaid-diagram')).toBeNull()
+    live.unmount()
+
+    render(
+      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted
+        activeSubagent={{ ...subagent, streamingMessage: null, resultText: fence }} />
+    )
+    await user.click(screen.getByText('Explore'))
+    expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
+  })
+
+  it('draws a mermaid fence in a saved sub-agent transcript item', async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({ name: 'Task', input: { subagent_type: 'Explore', description: 'Searching' }, result: 'Done', subagent: { agentId: 'sub-1', status: 'completed' } })
+    mockSubMessages = [createAssistantMessage({ content: { text: '```mermaid\ngraph LR\n  Saved --> Item\n```' } })]
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByText('Explore'))
+    expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
   })
 })
