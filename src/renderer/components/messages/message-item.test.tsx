@@ -652,6 +652,22 @@ describe('MessageItem', () => {
       expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
+    it('draws the sender avatar beside the name, from their profile image', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com', image: 'https://example.com/alice.png' },
+      })
+      render(<MessageItem message={msg} />)
+      const avatar = screen.getByRole('img', { name: 'Alice Baker' })
+      expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
+    })
+
+    it('falls back to initials for a sender lifted from a mirror prefix', () => {
+      const msg = createUserMessage({ content: { text: '\\[Dana Scully]: hello' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByRole('img', { name: 'Dana Scully' })).toHaveTextContent('DS')
+    })
+
     it('does not render sender name when sender is absent', () => {
       const msg = createUserMessage({ content: { text: 'Hello' } })
       render(<MessageItem message={msg} />)

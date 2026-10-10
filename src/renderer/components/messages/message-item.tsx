@@ -29,6 +29,7 @@ import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -174,6 +175,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // and the sender prefix into the sender label, leaving just the typed text.
   const userParts = isUser ? parseUserMessageParts(rawText) : null
   const senderFromPrefix = userParts?.sender ?? null
+  // A mirror prefix carries only a name, so it hashes the name for an initials avatar.
+  const sender = message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
   const attachedFiles = userParts?.attachedFiles ?? []
   const mountedFolders = userParts?.mountedFolders ?? []
   const cleanText = userParts?.text ?? rawText
@@ -310,8 +313,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         )}
       >
         {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
-        {isUser && !isIntegrationMessage && (message.sender?.name ?? senderFromPrefix) && (
-          <span className="text-xs text-muted-foreground">{message.sender?.name ?? senderFromPrefix}</span>
+        {isUser && !isIntegrationMessage && sender?.name && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            {sender.name}
+            <UserAvatar user={sender} size={18} />
+          </span>
         )}
 
         {/* Persisted thinking — collapsed cards above the message text, one per
