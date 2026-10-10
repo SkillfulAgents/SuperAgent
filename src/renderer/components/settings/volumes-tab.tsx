@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { Folder, Globe, Lock, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 import { Button } from '@renderer/components/ui/button'
@@ -32,7 +31,7 @@ export function VolumesTab() {
     <div className="space-y-6" data-testid="volumes-settings">
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">Save folders once, then attach them to any of your agents from their Volumes card.</p>
-        {canUseHostFeatures() && <Button size="sm" onClick={() => setEditing('new')}><Plus className="h-4 w-4" />Add volume</Button>}
+        <Button size="sm" onClick={() => setEditing('new')}><Plus className="h-4 w-4" />Add volume</Button>
       </div>
       {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load volumes. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading volumes…</p> : definitions.length === 0 ? (

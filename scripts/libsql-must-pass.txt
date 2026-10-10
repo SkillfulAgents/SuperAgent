@@ -54,3 +54,4 @@ src/shared/lib/db/data-migrations/0006-import-volume-definitions.test.ts
 src/api/routes/volumes.test.ts
 src/api/routes/volume-definitions.test.ts
 src/shared/lib/volumes/volumes.e2e.test.ts
+src/api/routes/dropbox-volumes.test.ts

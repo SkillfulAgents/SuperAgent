@@ -85,7 +85,7 @@ export function useVolumesManager(agentSlug: string) {
   const definitions = registry.data ?? []
   const { canUseAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
-  const canCreateMount = canModifyMounts && canUseHostFeatures()
+  const canCreateMount = canModifyMounts
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -168,8 +168,8 @@ export function useVolumesManager(agentSlug: string) {
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // Local creation uses the native picker; saved volumes can be reused from any target.
-    canAddMount: canModifyMounts && (canCreateMount || definitions.some(v => !mounts.some(m => m.volumeId === v.id))),
+    // Dropbox creation and saved volumes work on every target. Local folders keep the OS picker.
+    canAddMount: canModifyMounts,
     handleCreateMount,
     handleAttach,
     handleRemove,
