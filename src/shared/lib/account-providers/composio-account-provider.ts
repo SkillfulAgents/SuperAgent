@@ -173,8 +173,6 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     headers: Headers
     body: ArrayBuffer | null
   }): Promise<Response> {
-    const parameters = buildProxyParameters(params.headers)
-
     const contentType = params.headers.get('Content-Type')
     const requestBuffer = params.body ?? new ArrayBuffer(0)
     const translation = translateProxyBody(params.method, contentType, requestBuffer)
@@ -185,6 +183,13 @@ export class ComposioAccountProvider extends BaseAccountProvider {
         { status: translation.status, headers: { 'Content-Type': 'application/json' } },
       )
     }
+
+    const headers = new Headers(params.headers)
+    // Composio sets Content-Type from binary_body.content_type. Forwarding it
+    // as a parameter too produces duplicate upstream headers (Dropbox rejects
+    // the upload with HTTP 400). Keep the caller's headers intact for retries.
+    if (translation.binaryBody) headers.delete('Content-Type')
+    const parameters = buildProxyParameters(headers)
 
     const result = await proxyExecute({
       endpoint: params.targetUrl,
