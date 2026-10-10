@@ -3,11 +3,12 @@ import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
 import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '@shared/lib/tools/requests/request-schema'
 import type { IntegrationMessagePresentation } from './message-display-schema'
+import type { StoredModelSelection } from '@shared/lib/model-selection'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
 
 /** Persisted installation. Existing chat rows already satisfy this contract. */
-export interface AgentIntegrationRecord {
+export interface AgentIntegrationRecord extends StoredModelSelection {
   id: string
   agentSlug: string
   provider: string
@@ -16,10 +17,6 @@ export interface AgentIntegrationRecord {
   status: IntegrationStatus
   errorMessage: string | null
   createdByUserId: string | null
-  llmProviderId: string | null
-  model: string | null
-  effort: string | null
-  speed: string | null
   createdAt: Date
   updatedAt: Date
   /** Optional family-specific settings. Legacy chat rows keep their existing columns. */

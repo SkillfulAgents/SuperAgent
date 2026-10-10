@@ -16,7 +16,7 @@ import {
   updateWebhookTriggerRuntimeOptions,
 } from '@shared/lib/services/webhook-trigger-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import { modelSelectionPatchSchema } from '@shared/lib/model-selection'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -128,19 +128,13 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
+    const parsed = modelSelectionPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
-    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
-    if ('model' in body) updates.model = parsed.data.model ?? null
-    if ('effort' in body) updates.effort = parsed.data.effort ?? null
-    if ('speed' in body) updates.speed = parsed.data.speed ?? null
-
-    await assertConnectionSelectionAccess(updates.llmProviderId, trigger?.llmProviderId)
-    const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
+    await assertConnectionSelectionAccess(parsed.data.llmProviderId, trigger?.llmProviderId)
+    const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, parsed.data)
     if (!updated) {
       return c.json({ error: 'Trigger not found or cancelled' }, 404)
     }

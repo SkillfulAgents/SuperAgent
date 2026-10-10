@@ -572,5 +572,20 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791587287364,
     "hash": "ccb3ac557a4bd7f0eef3ed27cf5565d1aef1081f89551803b42299e6e31ee1a6"
+  },
+  {
+    "sql": [
+      "PRAGMA foreign_keys=OFF;",
+      "\nCREATE TABLE `__new_todos` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`title` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`agent_slug` text,\n\t`new_agent` integer DEFAULT false NOT NULL,\n\t`llm_provider_id` text,\n\t`model` text,\n\t`effort` text,\n\t`speed` text,\n\t`session_id` text,\n\t`status` text DEFAULT 'draft' NOT NULL,\n\t`position` real NOT NULL,\n\t`start_claim` text,\n\t`start_claimed_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`started_at` integer,\n\t`completed_at` integer,\n\tFOREIGN KEY (`llm_provider_id`) REFERENCES `llm_connections`(`id`) ON UPDATE no action ON DELETE set null,\n\tCONSTRAINT \"todos_session_check\" CHECK(\"__new_todos\".\"session_id\" is null or (\"__new_todos\".\"agent_slug\" is not null and \"__new_todos\".\"status\" <> 'draft'))\n);\n",
+      "\nINSERT INTO `__new_todos`(\"id\", \"user_id\", \"title\", \"description\", \"agent_slug\", \"new_agent\", \"llm_provider_id\", \"model\", \"effort\", \"speed\", \"session_id\", \"status\", \"position\", \"start_claim\", \"start_claimed_at\", \"created_at\", \"updated_at\", \"started_at\", \"completed_at\") SELECT \"id\", \"user_id\", \"title\", \"description\", \"agent_slug\", \"new_agent\", CASE WHEN \"llm_provider_id\" IN (SELECT \"id\" FROM `llm_connections`) THEN \"llm_provider_id\" END, \"model\", \"effort\", \"speed\", \"session_id\", \"status\", \"position\", \"start_claim\", \"start_claimed_at\", \"created_at\", \"updated_at\", \"started_at\", \"completed_at\" FROM `todos`;",
+      "\nDROP TABLE `todos`;",
+      "\nALTER TABLE `__new_todos` RENAME TO `todos`;",
+      "\nPRAGMA foreign_keys=ON;",
+      "\nCREATE INDEX `todos_user_idx` ON `todos` (`user_id`);",
+      "\nCREATE INDEX `todos_agent_session_idx` ON `todos` (`agent_slug`,`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1791588148766,
+    "hash": "91d0ab5be97536ef49033d3c4a8dbe71f6b939d5960666b46b36753ebf7f7cf0"
   }
 ]

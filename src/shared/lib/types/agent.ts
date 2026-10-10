@@ -4,7 +4,8 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
+import type { ModelSelection } from '@shared/lib/model-selection'
+import type { SlashCommandInfo } from '../container/types'
 
 // ============================================================================
 // Agent Roles
@@ -75,7 +76,7 @@ export interface SessionUsage {
   contextWindow: number
 }
 
-export interface SessionMetadata {
+export interface SessionMetadata extends ModelSelection {
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
@@ -119,14 +120,9 @@ export interface SessionMetadata {
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
-  // Last effort level used by the user on this session (seeds the composer on reload)
-  effort?: EffortLevel
-  // Last processing speed used by the user on this session (seeds the composer on reload)
-  speed?: SpeedLevel
-  // Last model used by the user on this session (seeds the composer on reload).
-  // Stored as the provider's pinned ID, not the family.
-  model?: string
-  llmProviderId?: string | null
+  // The model selection inherited from ModelSelection is the last one the user
+  // used on this session; it seeds the composer on reload. Its model is the
+  // provider's pinned ID, not the family.
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string

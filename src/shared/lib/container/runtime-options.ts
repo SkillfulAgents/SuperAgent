@@ -1,41 +1,20 @@
 import { z } from 'zod'
 import type { AgentPreferences } from '@shared/lib/types/agent-preferences'
-import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from './types'
+import type { EffortLevel, SpeedLevel } from './types'
+import { modelSelectionFields, modelSelectionSchema, type ModelSelection } from '@shared/lib/model-selection'
 
 /**
- * Runtime options sent alongside a message: the per-invocation knobs that
- * control how the agent thinks (effort) and which model serves the response.
+ * Runtime options sent alongside a message: the model selection for the turn
+ * (see `@shared/lib/model-selection`) plus per-message flags.
  *
  * Defined in one place so the host API, container API, and renderer all
- * validate the same shape. Add new optional fields here as they appear
- * (e.g. thinkingBudget, maxOutputTokens overrides).
+ * validate the same shape.
  */
-export const RuntimeOptionsSchema = z
-  .object({
-    effort: z.enum(EFFORT_LEVELS).optional(),
-    speed: z.enum(SPEED_LEVELS).optional(),
-    model: z.string().optional(),
-    llmProviderId: z.string().min(1).nullable().optional(),
-    shouldQuery: z.boolean().optional(),
-  })
+export const RuntimeOptionsSchema = modelSelectionSchema
+  .extend({ shouldQuery: z.boolean().optional() })
   .strict()
 
 export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>
-
-/**
- * PATCH-body shape for stored per-entity runtime overrides (scheduled tasks,
- * webhook triggers): each field may carry a value, be null (explicitly clears
- * the override back to the default), or be absent (left untouched). Strict so
- * an unsupported knob fails loudly instead of 200-ing as a silent no-op.
- */
-export const RuntimeOptionsPatchSchema = z
-  .object({
-    effort: z.enum(EFFORT_LEVELS).nullish(),
-    speed: z.enum(SPEED_LEVELS).nullish(),
-    model: z.string().nullish(),
-    llmProviderId: z.string().min(1).nullish(),
-  })
-  .strict()
 
 /**
  * Lenient parser: returns whatever fields are individually valid and drops
@@ -43,29 +22,14 @@ export const RuntimeOptionsPatchSchema = z
  * pieces than reject the whole call.
  */
 export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const obj = raw as Record<string, unknown>
-
-  const result: RuntimeOptions = {}
-  const effortResult = z.enum(EFFORT_LEVELS).safeParse(obj.effort)
-  if (effortResult.success) result.effort = effortResult.data as EffortLevel
-
-  const speedResult = z.enum(SPEED_LEVELS).safeParse(obj.speed)
-  if (speedResult.success) result.speed = speedResult.data as SpeedLevel
-
-  if (typeof obj.model === 'string' && obj.model.length > 0) {
-    result.model = obj.model
+  const obj = asRecord(raw)
+  if (!obj) return {}
+  const result: Record<string, unknown> = {}
+  for (const [key, schema] of Object.entries(RuntimeOptionsSchema.shape)) {
+    const parsed = schema.safeParse(obj[key])
+    if (parsed.success && parsed.data !== undefined) result[key] = parsed.data
   }
-
-  if (obj.llmProviderId === null || (typeof obj.llmProviderId === 'string' && obj.llmProviderId.length > 0)) {
-    result.llmProviderId = obj.llmProviderId
-  }
-
-  if (typeof obj.shouldQuery === 'boolean') {
-    result.shouldQuery = obj.shouldQuery
-  }
-
-  return result
+  return result as RuntimeOptions
 }
 
 const inheritModelsSchema = z.object({
@@ -78,12 +42,12 @@ function presentString(value: unknown): string | undefined {
 }
 
 function optionalEffort(value: unknown): EffortLevel | undefined {
-  const parsed = z.enum(EFFORT_LEVELS).safeParse(value)
+  const parsed = modelSelectionFields.effort.safeParse(value)
   return parsed.success ? parsed.data : undefined
 }
 
 function optionalSpeed(value: unknown): SpeedLevel | undefined {
-  const parsed = z.enum(SPEED_LEVELS).safeParse(value)
+  const parsed = modelSelectionFields.speed.safeParse(value)
   return parsed.success ? parsed.data : undefined
 }
 
@@ -92,12 +56,8 @@ function asRecord(raw: unknown): Record<string, unknown> | null {
   return raw as Record<string, unknown>
 }
 
-export type RuntimeInherit = {
-  model: string
-  llmProviderId?: string | null
-  effort?: EffortLevel
-  speed?: SpeedLevel
-}
+/** A fully resolved selection: a model always, the rest where some rung set them. */
+export type RuntimeInherit = ModelSelection & { model: string }
 
 /**
  * Surface override → agent default → app default.

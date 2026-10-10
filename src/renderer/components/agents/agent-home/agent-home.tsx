@@ -1,4 +1,5 @@
 import { AgentMemberStack } from '@renderer/components/agents/agent-member-stack'
+import { agentDefaultSelection } from '@shared/lib/model-selection'
 import { Plus } from 'lucide-react'
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
@@ -113,13 +114,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const { data: agentPrefs } = useAgentPreferences(agent.slug)
   const carryover = useNewSessionCarryover(agent.slug)
   const composerOptions = useComposerOptions({
-    initialModel: carryover?.model,
-    initialEffort: carryover?.effort,
-    initialSpeed: carryover?.speed,
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    initial: { model: carryover?.model, effort: carryover?.effort, speed: carryover?.speed },
+    agentDefault: agentDefaultSelection(agentPrefs),
     agentKey: agent.slug,
     // The default-model card sits next to this composer; an untouched selection
     // must visibly track it, including a reset back to the global default.

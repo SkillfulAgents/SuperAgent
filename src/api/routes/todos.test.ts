@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
+import { sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 const state = vi.hoisted(() => ({
@@ -17,12 +18,14 @@ vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
 vi.mock('@shared/lib/auth/config', () => ({
   getCurrentUserId: (c: Context) => (c.get('user' as never) as { id: string }).id,
 }))
-vi.mock('../middleware/auth', () => ({
+vi.mock('../middleware/auth', async () => ({
+  // Like the real one: the request runs as its user, which connection access reads.
   Authenticated: (): MiddlewareHandler => async (c, next) => {
     const id = c.req.header('Test-User')
     if (!id) return c.json({ error: 'Unauthorized' }, 401)
     c.set('user' as never, { id } as never)
-    return next()
+    const { runWithRequestUser } = await import('@shared/lib/platform-attribution/request-context')
+    return runWithRequestUser(id, () => next())
   },
   getReadableAgentIds: async (c: Context, ids: readonly string[]) => {
     const mine = state.readable.get((c.get('user' as never) as { id: string }).id) ?? new Set()
@@ -68,6 +71,15 @@ async function createDraft(body: Record<string, unknown> = { title: 'Write the r
   const res = await call('', 'POST', body, user)
   expect(res.status).toBe(201)
   return res.json()
+}
+
+/** A connection: global when `owner` is null, else that person's own. */
+async function addConnection(id: string, owner: string | null) {
+  const now = Date.now()
+  if (owner) {
+    await database.db.run(sql`INSERT OR IGNORE INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (${owner}, ${owner}, ${owner + '@example.com'}, 0, ${now}, ${now})`)
+  }
+  await database.db.run(sql`INSERT INTO llm_connections (id, user_id, name, provider, config, created_at, updated_at) VALUES (${id}, ${owner}, ${id}, 'anthropic', '{}', ${now}, ${now})`)
 }
 
 async function startDraft(agentSlug = 'agent-a', sessionId = 'session-1') {
@@ -154,11 +166,21 @@ describe('drafts', () => {
   })
 
   it('keeps the model, effort and speed picked for a draft, and forgets them on null', async () => {
+    await addConnection('anthropic-main', null)
     const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a', model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
     expect(draft).toMatchObject({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' })
     const cleared = await (await call(`/${draft.id}`, 'PATCH', { model: null, llmProviderId: null, effort: null, speed: null })).json()
     expect(cleared).toMatchObject({ model: null, llmProviderId: null, effort: null, speed: null })
     expect((await call(`/${draft.id}`, 'PATCH', { effort: 'extreme' })).status).toBe(400)
+  })
+
+  it('takes only a connection the person may pick, as every model picker does', async () => {
+    await addConnection('bobs-own', 'bob')
+    expect((await call('', 'POST', { title: 'x', model: 'opus', llmProviderId: 'no-such-connection' })).status).toBe(404)
+    expect((await call('', 'POST', { title: 'x', model: 'opus', llmProviderId: 'bobs-own' })).status).toBe(404)
+    const draft = await createDraft({ title: 'x' })
+    expect((await call(`/${draft.id}`, 'PATCH', { model: 'opus', llmProviderId: 'bobs-own' })).status).toBe(404)
+    expect((await call('', 'POST', { title: 'x', model: 'opus', llmProviderId: 'bobs-own' }, 'bob')).status).toBe(201)
   })
 
   it('cannot start a draft for a new agent until the agent is made and assigned', async () => {

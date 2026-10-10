@@ -52,6 +52,21 @@ export const llmConnections = sqliteTable('llm_connections', {
 }))
 
 /**
+ * The columns of a stored model selection (see `@shared/lib/model-selection`):
+ * a pick that overrides the agent's defaults, each null where nothing was
+ * picked. Every table that keeps one spreads this in, so a new knob reaches
+ * them all. Deleting a connection drops the pick of it back to the default.
+ */
+export function modelSelectionColumns() {
+  return {
+    llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+    model: text('model'),
+    effort: text('effort'),
+    speed: text('speed'),
+  }
+}
+
+/**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
  * this row; the refresh secret is stored only as a SHA-256 hash and deleting
  * the row revokes every session in the device family through the FK below.
@@ -261,11 +276,8 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // Timezone (IANA identifier, e.g. 'America/New_York')
   timezone: text('timezone'),
 
-  // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  // Runtime options (override the agent's defaults when set)
+  ...modelSelectionColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -691,11 +703,8 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Teardown must delete as this member; the proxy scopes DELETE to it.
   mintedByMemberId: text('minted_by_member_id'),
 
-  // Runtime options (override global defaults when set)
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'),
-  effort: text('effort'),
-  speed: text('speed'),
+  // Runtime options (override the agent's defaults when set)
+  ...modelSelectionColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -721,10 +730,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  model: text('model'), // Claude model override; null = use default
-  effort: text('effort'), // Effort level override; null = use default
-  speed: text('speed'), // Speed level override; null = use default
+  ...modelSelectionColumns(),
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -858,10 +864,7 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
-  model: text('model'),
-  llmProviderId: text('llm_provider_id'),
-  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
+  ...modelSelectionColumns(),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

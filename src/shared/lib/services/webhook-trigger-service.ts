@@ -1,4 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
+import { storedSelectionUpdate, type ModelSelectionPatch, type StoredModelSelection } from '@shared/lib/model-selection'
 /**
  * Webhook Trigger Service
  *
@@ -162,7 +163,7 @@ function notifyWebhookTriggersChanged(reason: string): void {
 // Types
 // ============================================================================
 
-export interface CreateWebhookTriggerParams {
+export interface CreateWebhookTriggerParams extends Partial<StoredModelSelection> {
   agentSlug: string
   /** 'composio' (default) or 'custom' (agent-minted platform webhook endpoint). */
   kind?: 'composio' | 'custom'
@@ -178,10 +179,6 @@ export interface CreateWebhookTriggerParams {
   createdByUserId?: string
   /** Acting platform member the upstream subscription was minted under (SUP-765). */
   mintedByMemberId?: string
-  llmProviderId?: string | null
-  model?: string
-  effort?: string
-  speed?: string
 }
 
 // ============================================================================
@@ -695,20 +692,12 @@ export async function updateWebhookTriggerName(
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
+  options: ModelSelectionPatch,
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
 
-  const updates: Record<string, string | null> = {}
-  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
-  if ('model' in options) {
-    updates.model = options.model ?? null
-    if (!options.model) updates.llmProviderId = null
-    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = trigger.llmProviderId ?? getSettings().llmDefault!.llmProviderId
-  }
-  if ('effort' in options) updates.effort = options.effort ?? null
-  if ('speed' in options) updates.speed = options.speed ?? null
+  const updates = storedSelectionUpdate(options, trigger, getSettings().llmDefault?.llmProviderId)
 
   const result = await db
     .update(webhookTriggers)

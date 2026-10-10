@@ -10,7 +10,7 @@ import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { agentDefaultSelection, fromStoredSelection, MODEL_SELECTION_KEYS, modelSelectionState, type ModelSelectionState } from '@shared/lib/model-selection'
 import {
   useCreateTodo,
   useDeleteTodo,
@@ -27,17 +27,13 @@ import { useTodoAgents } from './todo-shared'
 /** Which draft the dialog shows: a new one (not saved until there is something in it) or a saved one. */
 export type TodoDraftTarget = { kind: 'new' } | { kind: 'existing'; todo: TodoView }
 
-interface DraftFields {
+/** The form; its model selection is what was picked over the agent's defaults. */
+interface DraftFields extends ModelSelectionState {
   title: string
   description: string
   agentSlug: string | null
   /** Give it to an agent created for it when it starts. */
   newAgent: boolean
-  /** What was picked over the agent's defaults. */
-  model: string | null
-  llmProviderId: string | null
-  effort: EffortLevel | null
-  speed: SpeedLevel | null
 }
 
 /** The model picker's agent identity while "New Agent" is chosen: no agent defaults apply. */
@@ -51,22 +47,14 @@ const SAVE_DELAY_MS = 600
  */
 function failed() {}
 
+const sameSelection = (a: ModelSelectionState, b: ModelSelectionState) => MODEL_SELECTION_KEYS.every((key) => a[key] === b[key])
+
 const sameFields = (a: DraftFields, b: DraftFields) =>
   a.title === b.title && a.description === b.description && a.agentSlug === b.agentSlug &&
-  a.newAgent === b.newAgent && a.model === b.model && a.llmProviderId === b.llmProviderId &&
-  a.effort === b.effort && a.speed === b.speed
+  a.newAgent === b.newAgent && sameSelection(a, b)
 
 /** What a save sends for the form. */
-const payload = (f: DraftFields) => ({
-  title: f.title.trim(),
-  description: f.description,
-  agentSlug: f.agentSlug,
-  newAgent: f.newAgent,
-  model: f.model,
-  llmProviderId: f.llmProviderId,
-  effort: f.effort,
-  speed: f.speed,
-})
+const payload = (f: DraftFields) => ({ ...f, title: f.title.trim() })
 
 /**
  * The draft dialog: a title, a Markdown description, the agent to give it
@@ -134,10 +122,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     description: initial?.description ?? '',
     agentSlug: initial?.agentSlug ?? null,
     newAgent: initial?.newAgent ?? false,
-    model: initial?.model ?? null,
-    llmProviderId: initial?.llmProviderId ?? null,
-    effort: initial?.effort ?? null,
-    speed: initial?.speed ?? null,
+    ...modelSelectionState(initial ? fromStoredSelection(initial) : {}),
   }))
   const fieldsRef = useRef(fields)
   fieldsRef.current = fields
@@ -211,30 +196,19 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   // composer, until the person picks; a pick is kept with the draft.
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(fields.agentSlug ?? '')
   const composerOptions = useComposerOptions({
-    initialModel: initial?.model ?? undefined,
-    initialLlmProviderId: initial?.model ? initial.llmProviderId ?? undefined : undefined,
-    initialEffort: initial?.effort ?? undefined,
-    initialSpeed: initial?.speed ?? undefined,
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    initial: initial ? fromStoredSelection(initial) : undefined,
+    agentDefault: agentDefaultSelection(agentPrefs),
     agentKey: fields.newAgent ? NEW_AGENT_KEY : fields.agentSlug ?? '',
     agentDefaultsReady: !fields.agentSlug || agentPrefsFetched,
   })
-  const picked = composerOptions.toRuntimeOptions()
-  const pickedModel = picked.model ?? null
-  const pickedLlmProviderId = picked.model ? picked.llmProviderId ?? null : null
-  const pickedEffort = picked.effort ?? null
-  const pickedSpeed = picked.speed ?? null
+  const picked = modelSelectionState(composerOptions.toRuntimeOptions())
+  const pickedKey = JSON.stringify(picked)
   useEffect(() => {
-    const current = fieldsRef.current
-    if (current.model === pickedModel && current.llmProviderId === pickedLlmProviderId &&
-      current.effort === pickedEffort && current.speed === pickedSpeed) return
-    change({ model: pickedModel, llmProviderId: pickedLlmProviderId, effort: pickedEffort, speed: pickedSpeed })
-  // `change` only touches refs and setters.
+    if (sameSelection(fieldsRef.current, picked)) return
+    change(picked)
+  // `picked` is new each render; `pickedKey` is what it holds. `change` only touches refs and setters.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickedModel, pickedLlmProviderId, pickedEffort, pickedSpeed])
+  }, [pickedKey])
 
   /** Ends any dictation, so its tail lands in what is saved or started. */
   const finishDictation = async () => {

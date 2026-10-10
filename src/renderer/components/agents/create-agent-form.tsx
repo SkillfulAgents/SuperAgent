@@ -161,7 +161,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
   )
   // No agent exists yet to supply a per-agent override. The hook falls back
   // to the app-wide selection, then the active provider's catalog default.
-  const composerOptions = useComposerOptions({ initialModel: handoffSeedModel })
+  const composerOptions = useComposerOptions({ initial: { model: handoffSeedModel } })
 
   // Warm-precreated Untitled agent; deleted on abandon unless submit consumes it.
   const warmSlugOwnedRef = useRef<string | null>(null)

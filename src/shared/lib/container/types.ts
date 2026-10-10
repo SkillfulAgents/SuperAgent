@@ -1,4 +1,5 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { ModelSelection } from '@shared/lib/model-selection'
 import type { ContainerVolume } from '@shared/lib/types/mount'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
@@ -102,14 +103,13 @@ export interface StreamMessage {
   sessionId: string
 }
 
-export interface CreateSessionOptions {
+/** The session's model selection comes from ModelSelection; absent knobs use the agent's, then the app's, defaults. */
+export interface CreateSessionOptions extends ModelSelection {
   metadata?: Record<string, any>
   systemPrompt?: string
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
-  llmProviderId?: string | null
-  model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   dashboardBuilderModel?: string // Model for the dashboard-builder subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -118,8 +118,6 @@ export interface CreateSessionOptions {
   maxBudgetUsd?: number // Max cost in USD per session
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
-  effort?: EffortLevel // Initial thinking effort level
-  speed?: SpeedLevel // Initial processing speed tier
   /**
    * What the NEXT session on this agent will most likely ask for: the agent's
    * default model/effort/speed with the global fallback applied, ignoring any

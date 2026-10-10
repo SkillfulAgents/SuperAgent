@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
+import { modelSelectionFields } from '@shared/lib/model-selection'
 
 // Keep in sync with agent-container/src/file-hooks/agent-preferences-hook.ts
 export const agentPreferencesSchema = z.object({
@@ -8,12 +8,12 @@ export const agentPreferencesSchema = z.object({
   /** Days after which this agent's API / MCP audit rows are deleted. 0 = Never. */
   apiLogAutoDeleteDays: z.number().int().nonnegative().optional(),
   /** Default model for new sessions — a concrete id (pinned) or a bare family alias (latest). Overrides the global default; per-session/trigger picks still win. */
-  defaultLlmProviderId: z.string().min(1).nullish(),
-  defaultModel: z.string().trim().min(1).optional(),
+  defaultLlmProviderId: modelSelectionFields.llmProviderId.nullish(),
+  defaultModel: modelSelectionFields.model.optional(),
   /** Default effort for new sessions. Overrides the global default; per-session/trigger picks still win. */
-  defaultEffort: z.enum(EFFORT_LEVELS).optional(),
+  defaultEffort: modelSelectionFields.effort.optional(),
   /** Default processing speed for new sessions. Overrides the global default; per-session/trigger picks still win. */
-  defaultSpeed: z.enum(SPEED_LEVELS).optional(),
+  defaultSpeed: modelSelectionFields.speed.optional(),
 })
 
 export type AgentPreferences = z.infer<typeof agentPreferencesSchema>
@@ -25,10 +25,10 @@ export type AgentPreferences = z.infer<typeof agentPreferencesSchema>
 export const agentPreferencesUpdateSchema = z.object({
   autoDeleteInactiveDays: z.number().int().nonnegative().nullish(),
   apiLogAutoDeleteDays: z.number().int().nonnegative().nullish(),
-  defaultLlmProviderId: z.string().min(1).nullish(),
-  defaultModel: z.string().trim().min(1).nullish(),
-  defaultEffort: z.enum(EFFORT_LEVELS).nullish(),
-  defaultSpeed: z.enum(SPEED_LEVELS).nullish(),
+  defaultLlmProviderId: modelSelectionFields.llmProviderId.nullish(),
+  defaultModel: modelSelectionFields.model.nullish(),
+  defaultEffort: modelSelectionFields.effort.nullish(),
+  defaultSpeed: modelSelectionFields.speed.nullish(),
 })
 
 export type AgentPreferencesUpdate = z.infer<typeof agentPreferencesUpdateSchema>

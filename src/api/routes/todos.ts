@@ -14,6 +14,7 @@
 import { Hono, type Context } from 'hono'
 import type { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
 import { agentExists } from '@shared/lib/services/agent-service'
@@ -135,6 +136,20 @@ async function canAssign(c: Context, agentSlug: string): Promise<boolean> {
   return (await agentExists(agentSlug)) && (await getReadableAgentIds(c, [agentSlug])).has(agentSlug)
 }
 
+/**
+ * A connection the person may pick for a draft, checked as every other model
+ * picker's is; `currentId` is the one the draft already has.
+ */
+async function canPickConnection(llmProviderId: string | null | undefined, currentId?: string | null): Promise<boolean> {
+  try {
+    await assertConnectionSelectionAccess(llmProviderId, currentId)
+    return true
+  } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return false
+    throw error
+  }
+}
+
 // GET /api/todos — the person's board, in board order.
 todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
@@ -151,6 +166,7 @@ todosRouter.post('/', async (c) => {
   if (input.agentSlug && !(await canAssign(c, input.agentSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
+  if (!(await canPickConnection(input.llmProviderId))) return c.json({ error: 'LLM provider not found' }, 404)
   const row = await createTodo(getCurrentUserId(c), input)
   return c.json(await viewOf(c, row), 201)
 })
@@ -176,6 +192,10 @@ todosRouter.patch('/:id', async (c) => {
   if (!patch) return c.json({ error: 'Invalid todo' }, 400)
   if (patch.agentSlug && !(await canAssign(c, patch.agentSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
+  }
+  if (patch.llmProviderId) {
+    const current = await getTodo(getCurrentUserId(c), c.req.param('id'))
+    if (!(await canPickConnection(patch.llmProviderId, current?.llmProviderId))) return c.json({ error: 'LLM provider not found' }, 404)
   }
   return respond(c, await updateDraft(getCurrentUserId(c), c.req.param('id'), patch))
 })
