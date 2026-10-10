@@ -3899,7 +3899,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     try {
       const res = await postJson(app, URL, { content: 'hello', llmProviderId: 'private-provider' })
       expect(res.status).toBe(404)
-      expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+      expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
       expect(mockSendMessage).not.toHaveBeenCalled()
       expect(mockDbInsertValues).not.toHaveBeenCalled()
     } finally {

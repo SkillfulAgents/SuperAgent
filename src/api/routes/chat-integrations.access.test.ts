@@ -218,7 +218,7 @@ describe('chat-integrations access routes', () => {
       body: JSON.stringify({ llmProviderId: 'deleted-provider' }),
     })
     expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+    expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
     expect(updateAgentIntegration).not.toHaveBeenCalled()
   })
 

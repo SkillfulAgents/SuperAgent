@@ -1,4 +1,5 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -86,11 +87,15 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
   })
 }
 
-export function useCreateSession() {
+export function useCreateSession(options: {
+  /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
+  agentRuntimeErrorsShownInline?: boolean
+} = {}) {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
     mutationFn: async (data: {
       agentSlug: string
       message: string
@@ -118,7 +123,7 @@ export function useCreateSession() {
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to create session')
+      if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
       return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
