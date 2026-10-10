@@ -5,13 +5,15 @@ import * as path from 'path';
 import { promisify } from 'util';
 import { z } from 'zod';
 import { volumesEnvSchema, type ContainerMount } from './volume-mounts-schema';
+import { createVolumeCache, preserveVolumeCache } from './volume-recovery';
 
 const execFileAsync = promisify(execFile);
 
 const MOUNTS_DIR = '/mounts';
 const MOUNT_TIMEOUT_MS = 10_000;
 
-let mounted: (ContainerMount & { rclone: ChildProcess })[] = [];
+let mounted: (ContainerMount & { rclone: ChildProcess; cache: string })[] = [];
+let finished: Promise<{ drained: boolean; recovered: number; recoveryErrors: number }> | undefined;
 
 export function parseVolumes(raw: string | undefined): ContainerMount[] {
   if (!raw) return [];
@@ -27,7 +29,7 @@ function controlSocket(volumeId: string): string {
   return `/tmp/rclone-${volumeId}.sock`;
 }
 
-export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local'): string[] {
+export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
   return [
     'mount', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
@@ -40,6 +42,7 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     // back off from that 1ms, so 13 of them ride out an app restart as long as the default 10 did from 10ms.
     '--webdav-pacer-min-sleep', '1ms', '--low-level-retries', '13',
     '--vfs-cache-mode', cacheMode === 'remote' ? 'full' : 'writes',
+    '--cache-dir', cacheDir,
     // Remote reads benefit from a disk cache; keep its footprint bounded per mount.
     ...(cacheMode === 'remote' ? ['--vfs-cache-max-size', '512M', '--vfs-cache-max-age', '1h'] : []),
     // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
@@ -67,15 +70,17 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
   await fs.promises.readdir(mountPath);
 }
 
-async function mountVolume({ volumeId, name, cacheMode }: ContainerMount): Promise<ChildProcess | undefined> {
+async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
+  const { volumeId, name, cacheMode } = volume;
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
   let settled = false;
   try {
     await fs.promises.mkdir(mountPath, { recursive: true });
+    const cache = await createVolumeCache(volume);
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode), {
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode, cache), {
       env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: process.env.PROXY_TOKEN },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
@@ -88,7 +93,7 @@ async function mountVolume({ volumeId, name, cacheMode }: ContainerMount): Promi
         timer = setTimeout(() => reject(new Error('mount timed out')), MOUNT_TIMEOUT_MS);
       }),
     ]);
-    return child;
+    return { ...volume, rclone: child, cache };
   } catch (error) {
     console.error(`[volumes] Leaving out ${mountPath}:`, error);
     rclone?.kill();
@@ -102,10 +107,8 @@ async function mountVolume({ volumeId, name, cacheMode }: ContainerMount): Promi
 
 export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
   const processes = await Promise.all(mounts.map(mountVolume));
-  mounted = mounts.flatMap((m, i) => {
-    const rclone = processes[i];
-    return rclone ? [{ ...m, rclone }] : [];
-  });
+  mounted = processes.filter((m): m is NonNullable<typeof m> => m !== undefined);
+  finished = undefined;
 }
 
 function rc(volumeId: string, command: string, params: object = {}): Promise<unknown> {
@@ -135,12 +138,11 @@ const uploadQueueSchema = z.object({
 // Starts every waiting upload now rather than after the write-back delay, and returns all still queued or uploading.
 async function startQueuedUploads(volumeId: string): Promise<string[]> {
   const reply = await rc(volumeId, 'vfs/queue');
-  // A gone rclone has nothing left to upload.
-  if (reply === undefined) return [];
+  if (reply === undefined) return ['upload status unavailable'];
   const parsed = uploadQueueSchema.safeParse(reply);
   if (!parsed.success) {
     console.error('[volumes] Unexpected vfs/queue reply:', reply);
-    return [];
+    return ['upload status unavailable'];
   }
   const { queue } = parsed.data;
   const waiting = queue.filter((u) => !u.uploading && u.expiry > 0);
@@ -151,7 +153,7 @@ async function startQueuedUploads(volumeId: string): Promise<string[]> {
 // A closed file uploads in the background, and rclone drops that upload when stopped.
 // Returns what was still pending once the deadline passes.
 export async function waitForUploads(uploads: () => Promise<string[]>, deadline: number): Promise<string[]> {
-  let pending: string[] = [];
+  let pending: string[] = ['upload status not checked'];
   while (Date.now() < deadline) {
     // FUSE queues a file after close() has returned, so an answer right away can miss it.
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -161,15 +163,49 @@ export async function waitForUploads(uploads: () => Promise<string[]>, deadline:
   return pending;
 }
 
-export async function unmountVolumes(deadline: number): Promise<void> {
-  await Promise.all(mounted.map(async ({ volumeId, name, rclone }) => {
-    const pending = await waitForUploads(() => startQueuedUploads(volumeId), deadline);
-    if (pending.length > 0) console.error(`[volumes] Unmounting /mounts/${name} with uploads unfinished:`, pending);
-    // SIGTERM makes rclone unmount.
-    const exited = new Promise((resolve) => rclone.once('exit', resolve));
-    rclone.kill();
-    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now())))]);
+export async function drainVolumeUploads(deadline: number): Promise<boolean> {
+  const queues = await Promise.all(mounted.map(({ volumeId }) => {
+    let empty = 0;
+    return waitForUploads(async () => {
+      const queue = await startQueuedUploads(volumeId);
+      empty = queue.length === 0 ? empty + 1 : 0;
+      return empty >= 2 ? [] : queue.length ? queue : ['checking uploads'];
+    }, deadline);
   }));
+  return queues.every(queue => queue.length === 0);
+}
+
+export function finishVolumeStop(drained: boolean): Promise<{ drained: boolean; recovered: number; recoveryErrors: number }> {
+  return finished ??= (async () => {
+    const result = { drained, recovered: 0, recoveryErrors: 0 };
+    await Promise.all(mounted.map(async ({ rclone, cache }) => {
+      // Freeze the cache before moving it: a late upload must not remove the
+      // preserved copy. Killing rclone also prevents any further FUSE writes.
+      if (rclone.exitCode === null && rclone.signalCode === null) {
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, 1_000);
+          rclone.once('exit', () => { clearTimeout(timer); resolve(); });
+          rclone.kill('SIGKILL');
+        });
+      }
+      try {
+        if (drained) await fs.promises.rm(cache, { recursive: true, force: true });
+        else { await preserveVolumeCache(cache); result.recovered++; }
+      } catch (error) {
+        // The original cache is already durable in /workspace/.volume-cache.
+        result.recoveryErrors++;
+        console.error('[volumes] Could not finalize workspace cache:', error);
+      }
+    }));
+    return result;
+  })();
+}
+
+export async function unmountVolumes(deadline: number): Promise<void> {
+  if (finished) { await finished; return; }
+  const drained = await drainVolumeUploads(deadline);
+  const result = await finishVolumeStop(drained);
+  if (!result.drained) console.error('[volumes] Unfinished uploads preserved in the workspace:', result);
 }
 
 export function mountedVolumePaths(): string[] {

@@ -17,6 +17,7 @@ const mockClearRunnerAvailabilityCache = vi.fn()
 const FUSE_FLAGS = '--device /dev/fuse --cap-add SYS_ADMIN'
 const mockVolumeRunFlags = vi.fn((): string | null => FUSE_FLAGS)
 const mockHealth = vi.fn()
+const mockVolumeStop = vi.fn(async () => Response.json({ drained: true, recovered: 0, recoveryErrors: 0 }))
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -29,7 +30,7 @@ vi.mock('./client-factory', () => ({
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
     getRuntimeGenerationId: () => null,
-    fetch: vi.fn(),
+    fetch: mockVolumeStop,
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
     health: (port?: number) => mockHealth(port),
     volumeRunFlags: () => mockVolumeRunFlags(),
@@ -531,6 +532,9 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockStart.mock.calls[0][0].volumes).toEqual([])
     expect(mountWarnings()).toEqual([[]])
     expect(mockHealth).not.toHaveBeenCalled()
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    await containerHost.runtime('test-agent').stopContainer()
+    expect(mockVolumeStop).not.toHaveBeenCalled()
   })
 
   // A later banner replaces an earlier one, so the one banner lists every folder left out.
@@ -1602,8 +1606,8 @@ describe('ContainerHost.stopAll', () => {
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
     const promise = containerHost.stopAll()
-    // Advance past the 30s timeout (full escalation chain)
-    await vi.advanceTimersByTimeAsync(31000)
+    // Preparation plus the existing runtime escalation chain.
+    await vi.advanceTimersByTimeAsync(51000)
     await promise
 
     // Both were attempted
@@ -1619,6 +1623,18 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     containerHost.clearRuntimes()
+  })
+
+  it('reports unfinished uploads and still stops the runtime', async () => {
+    const runtime = containerHost.runtime('pending-agent')
+    runtime.updateCachedStatus('running', 4001)
+    mockVolumeStop.mockResolvedValueOnce(Response.json({ drained: false, recovered: 1, recoveryErrors: 0 }))
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    await runtime.stopContainer()
+    expect(mockStop).toHaveBeenCalledOnce()
+    expect(mockVolumeStop.mock.invocationCallOrder[0]).toBeLessThan(mockStop.mock.invocationCallOrder[0])
+    expect(mockCaptureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ tags: { component: 'volumes', operation: 'stop-recovery' } }))
+    expect(runtime.getCachedInfo().status).toBe('stopped')
   })
 
   it('marks all other running agents as stopped when forceStopUsed', async () => {

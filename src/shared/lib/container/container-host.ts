@@ -323,8 +323,8 @@ export class ContainerHost {
     const runningIds = this.getRunningAgentIds()
     if (runningIds.length > 0) {
       // Timeout must accommodate the full escalation chain:
-      // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
-      const STOP_TIMEOUT_MS = 30000
+      // Volume preparation (20s), then the existing stop/kill/force chain (25s).
+      const STOP_TIMEOUT_MS = 50000
       const stopPromises = runningIds.map(async (slug) => {
         try {
           await Promise.race([
