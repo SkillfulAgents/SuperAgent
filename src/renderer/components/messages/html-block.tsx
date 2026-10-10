@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { useIsDark } from '@renderer/hooks/use-theme'
-import { CodeCopyButton } from './code-copy-button'
 
 // Scripts and styles are inline; nothing is fetched, posted, or framed. The app's web font
 // would need a network exception a script could leak data through, so text uses the font stack's fallbacks.
@@ -95,7 +94,6 @@ function renderHtmlBlockDocument(source: string, scheme: 'light' | 'dark'): stri
 export function HtmlBlock({ source, fallback }: { source: string; fallback: ReactNode }) {
   const scheme = useIsDark() ? 'dark' : 'light'
   const srcDoc = useMemo(() => renderHtmlBlockDocument(source, scheme), [source, scheme])
-  const getSource = useCallback(() => source, [source])
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(() => measuredHeights.get(source) ?? INITIAL_HEIGHT)
   const heightRef = useRef(height)
@@ -138,7 +136,7 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
   if (navigatedAway) return fallback
 
   return (
-    <div className="relative group my-3" data-testid="html-block">
+    <div className="my-3" data-testid="html-block">
       <iframe
         ref={frameRef}
         srcDoc={srcDoc}
@@ -150,7 +148,6 @@ export function HtmlBlock({ source, fallback }: { source: string; fallback: Reac
         style={{ height, colorScheme: scheme }}
         className="block w-full border-0 bg-transparent"
       />
-      <CodeCopyButton getText={getSource} />
     </div>
   )
 }
