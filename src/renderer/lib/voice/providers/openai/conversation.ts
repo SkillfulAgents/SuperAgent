@@ -6,6 +6,7 @@ import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceC
 /** Adapts Live media/mapping to the same agent-event contract as the chained engine. */
 export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   readonly capabilities = { speechSpeed: false, spokenTranscript: true }
+  readonly turnPolicy = { retainPausedReplies: true }
   private conversation: OpenAILiveConversation
   private state: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
   private releaseAudio: (() => void) | null = null
@@ -49,7 +50,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
     if (this.closed) return
     if (event.type === 'state') {
       this.state = event.state
-      this.conversation.setBusy(this.state.active || this.state.awaiting)
+      this.conversation.setBusy(this.state.active || !!this.state.background || this.state.awaiting)
     } else if (event.type === 'reset') {
       this.segment = null
       this.conversation.resetReply()
@@ -57,9 +58,11 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
       if (this.segment !== null && this.segment !== event.segment) this.conversation.nextReplySegment()
       this.segment = event.segment
       this.conversation.updateReply(event.text, event.complete)
+    } else if (event.type === 'turn-ended') {
+      this.conversation.finishTurn(event.outcome)
     } else if (event.type === 'error') {
-      this.conversation.nextReplySegment()
-      this.conversation.updateReply(`The agent reported an error: ${event.message}`, true)
+      this.segment = null
+      this.conversation.reportAgentError(event.message)
     } else if (event.type === 'input-requests') {
       this.conversation.setInputRequests(event.requests)
     }
@@ -75,10 +78,10 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   private publish() {
     if (this.closed) return
     this.events.onSnapshot({
-      phase: this.assistantSpeaking ? 'speaking' : !this.ready || this.state.active || this.state.awaiting ? 'thinking' : 'listening',
+      phase: this.assistantSpeaking ? 'speaking' : !this.ready || this.state.active || this.state.background || this.state.awaiting ? 'thinking' : 'listening',
       ready: this.ready, userSpeaking: this.userSpeaking, assistantSpeaking: this.assistantSpeaking,
       utterance: this.utterance, transcript: this.transcript,
-      hold: { allowed: this.ready && !this.paused && this.state.active, delayMs: 700 },
+      hold: { allowed: this.ready && !this.paused && (this.state.active || !!this.state.background), delayMs: 700 },
     })
   }
 }

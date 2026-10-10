@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
@@ -56,6 +57,7 @@ export interface PeerUserMessage {
 
 interface StreamState {
   isActive: boolean // True from user message until query result
+  turnOutcome: SessionTurnOutcome | null // Last backend outcome; delivery metadata only
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
@@ -108,6 +110,7 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 // Global state to track streaming per session
 const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
+  turnOutcome: null,
   isStreaming: false,
   streamingMessage: null,
   streamingToolUses: [],
@@ -450,9 +453,6 @@ function getOrCreateEventSource(
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
 
-      // Only session_active and session_idle events change isActive
-      // All other events preserve the current isActive value
-
       if (data.type === 'connected') {
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
@@ -471,6 +471,7 @@ function getOrCreateEventSource(
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUses: [],
@@ -588,6 +589,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -665,6 +667,7 @@ function getOrCreateEventSource(
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -843,6 +846,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUses: [],
@@ -868,6 +872,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -909,6 +914,7 @@ function getOrCreateEventSource(
           : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: updatedTools,
@@ -950,6 +956,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -1388,8 +1395,10 @@ function getOrCreateEventSource(
             ...current,
             isActive: false,
             isStreaming: false,
-            streamingMessage: null,
+            streamingMessage: current.streamingMessage,
             streamingToolUses: [],
+            backgroundTasks: [],
+            isWaitingBackground: false,
             error: null,
             apiErrorCode: null,
             errorPresentation: null,
@@ -1400,6 +1409,21 @@ function getOrCreateEventSource(
         }
       }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
+
+      // Replay only the outcome and its text. Working indicators continue to
+      // use the existing session_active/session_idle/background-task handlers.
+      const next = streamStates.get(sessionId)
+      const parsedOutcome = sessionTurnOutcomeSchema.safeParse(data.turnOutcome)
+      if (next && parsedOutcome.success) {
+        const outcome = parsedOutcome.data
+        const recovery = data.type === 'connected' || data.type === 'ping'
+        streamStates.set(sessionId, {
+          ...next, turnOutcome: outcome,
+          ...((!recovery || !next.isActive) && { streamingMessage: outcome.responseText, error: outcome.error }),
+        })
+      } else if (next && data.turnOutcome === null) {
+        streamStates.set(sessionId, { ...next, turnOutcome: null })
+      }
 
       // Notify all listeners
       streamListeners.get(sessionId)?.forEach((listener) => listener())
@@ -1418,7 +1442,7 @@ function getOrCreateEventSource(
       streamStates.set(sessionId, {
         ...current,
         isStreaming: false,
-        streamingMessage: null,
+        streamingMessage: current.streamingMessage,
         streamingToolUses: [],
       })
     }

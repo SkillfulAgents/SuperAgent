@@ -227,6 +227,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     },
     markInterrupted: (...args) => deps.messagePersister.markSessionInterrupted(slug, ...args),
     turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
+    turnOutcome: (sessionId) => deps.messagePersister.getSessionTurnOutcome(slug, sessionId),
     isWaitingBackground: (sessionId) => deps.messagePersister.isSessionWaitingBackground(slug, sessionId),
     hasOnlyUntrackedBackgroundWork: (sessionId) =>
       deps.messagePersister.hasOnlyUntrackedBackgroundWork(slug, sessionId),

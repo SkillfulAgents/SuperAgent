@@ -18,6 +18,10 @@ interface CoordinatorDependencies {
   onIssue(message: string | null): void
 }
 
+function outcomeKey(snapshot: VoiceAgentSnapshot): string | null {
+  return snapshot.turnOutcome?.id ?? null
+}
+
 /** One owner for ordering agent commands, acknowledging turns, and filtering stale replies. */
 export class VoiceAgentCoordinator {
   private closed = false
@@ -35,6 +39,7 @@ export class VoiceAgentCoordinator {
   private staleText: string | null
   private fedText = ''
   private fedComplete = false
+  private terminalKey: string | null = null
   private segment = 0
   private commands = 0
   private queue: Promise<VoiceCommandResult> | null = null
@@ -51,15 +56,21 @@ export class VoiceAgentCoordinator {
   constructor(private dependencies: CoordinatorDependencies, policy: Partial<VoiceTurnPolicy> = {}) {
     this.policy = { ...DEFAULT_TURN_POLICY, ...policy }
     this.latest = dependencies.snapshot()
-    this.followingTurn = this.latest.active
+    this.followingTurn = this.latest.active || !!this.latest.background
+    this.terminalKey = outcomeKey(this.latest)
     this.previousStart = this.latest.startedAt
     this.staleText = this.latest.text
     this.sawIdle = !this.latest.active
   }
 
   start(expectTurn: boolean) {
+    const finishedHandoff = expectTurn && !this.latest.active && !this.latest.background && !!this.latest.turnOutcome
+    if (finishedHandoff) {
+      this.terminalKey = null
+      this.staleText = null
+    }
     this.followingTurn ||= expectTurn
-    this.awaiting = expectTurn && !this.latest.active
+    this.awaiting = expectTurn && !this.latest.active && !finishedHandoff
     this.update(this.latest)
     this.armWait()
   }
@@ -198,17 +209,18 @@ export class VoiceAgentCoordinator {
     if (newTurn) {
       this.previousStart = snapshot.startedAt
       this.toolsUsed = false
-      if (this.fedText) {
-        this.staleText = this.fedText
-        this.fedText = ''
-        this.fedComplete = false
-        this.segment++
-      }
+      if (this.fedText) this.staleText = this.fedText
+      this.fedText = ''
+      this.fedComplete = false
+      this.segment++
     }
     if (snapshot.error) {
       this.clearWait()
       this.awaiting = false
       this.dependencies.onIssue(snapshot.error)
+      // The error snapshot can contain the last confirmation of a side effect.
+      // Deliver it before the error, without emitting a completion cue.
+      if (this.followingTurn && !this.cancelled) this.feedReply(snapshot, false)
       if (snapshot.error !== this.lastError) this.dependencies.onEvent({ type: 'error', message: snapshot.error })
       this.lastError = snapshot.error
       this.publishState()
@@ -216,11 +228,12 @@ export class VoiceAgentCoordinator {
     }
     this.lastError = null
     if (this.cancelled) { this.publishState(); return }
-    if (snapshot.active) this.followingTurn = true
+    if (snapshot.active || snapshot.background) this.followingTurn = true
     if (!this.followingTurn) {
       // Persisted history can arrive after entering an idle conversation.
       // It is context, not newly generated speech.
       this.staleText = snapshot.text
+      this.terminalKey = outcomeKey(snapshot)
       this.publishState()
       return
     }
@@ -229,15 +242,19 @@ export class VoiceAgentCoordinator {
     // Publish the final text before the idle state: adapters may finish their
     // playback stream as soon as they observe an idle agent.
     if (!this.awaiting) {
-      if (snapshot.text !== this.staleText) {
-        this.staleText = null
-        const complete = !snapshot.active
-        if (snapshot.text !== this.fedText || complete !== this.fedComplete) {
-          if (this.fedText && !snapshot.text.startsWith(this.fedText)) this.segment++
-          this.fedText = snapshot.text
-          this.fedComplete = complete
-          this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: snapshot.text, complete })
+      const outcome = snapshot.turnOutcome
+      const freshOutcome = outcome && outcome.id !== this.terminalKey
+        && (outcome.status !== 'completed' || (!snapshot.active && !snapshot.background))
+      if (freshOutcome) this.staleText = null
+      this.feedReply(snapshot, !snapshot.active)
+      if (freshOutcome) {
+        this.terminalKey = outcome.id
+        if (outcome.status === 'completed' || outcome.status === 'cancelled') {
+          this.dependencies.onEvent({ type: 'turn-ended', turnId: outcome.id, outcome: outcome.status })
         }
+      } else if (outcome) {
+        // Recovery can include an earlier turn's outcome while new work runs.
+        this.terminalKey = outcome.id
       }
     }
     this.publishState()
@@ -246,13 +263,26 @@ export class VoiceAgentCoordinator {
     if (snapshot.active || freshText) this.clearWarning()
   }
 
+  private feedReply(snapshot: VoiceAgentSnapshot, complete: boolean) {
+    if (snapshot.text === this.staleText) return
+    this.staleText = null
+    // A foreground wake can precede its first token. Reopening the old text
+    // would make the chained reader replay the response it already finished.
+    if (snapshot.text === this.fedText && (!complete || complete === this.fedComplete)) return
+    if (this.fedText && !snapshot.text.startsWith(this.fedText)) this.segment++
+    this.fedText = snapshot.text
+    this.fedComplete = complete
+    this.dependencies.onEvent({ type: 'reply', segment: this.segment, text: snapshot.text, complete })
+  }
+
   private acknowledge(snapshot: VoiceAgentSnapshot) {
     if (this.cancelled) return
     const freshText = !!snapshot.text && snapshot.text !== this.staleText
     if (snapshot.active || freshText) this.clearWarning()
     if (!this.awaiting) return
     const newTurn = snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
-    if (snapshot.error || freshText || (snapshot.active && (this.sawIdle || newTurn))) {
+    const terminal = outcomeKey(snapshot)
+    if (snapshot.error || freshText || (terminal && terminal !== this.terminalKey) || (snapshot.active && (this.sawIdle || newTurn))) {
       this.awaiting = false
       this.pendingAccepted = false
       this.resumeWait = false
@@ -267,7 +297,7 @@ export class VoiceAgentCoordinator {
   }
 
   private publishState() {
-    const next = { active: !this.cancelled && this.latest.active, awaiting: this.awaiting, toolsUsed: this.toolsUsed }
+    const next = { active: !this.cancelled && this.latest.active, awaiting: this.awaiting, toolsUsed: this.toolsUsed, background: !this.cancelled && !!this.latest.background }
     this.dependencies.onState(next)
     this.dependencies.onEvent({ type: 'state', state: next })
   }
@@ -289,17 +319,19 @@ export class VoiceAgentCoordinator {
     // for a bounded, silent wait rather than handing it to the person at once.
     // A reply that arrived during the pause means the turn is over.
     const replyArrived = !!snapshot.text && snapshot.text !== this.staleText && snapshot.text !== this.fedText
-    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error) {
+    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error && outcomeKey(snapshot) === this.terminalKey) {
       this.awaiting = true
       this.resumeWait = true
       this.sawIdle = true
       this.previousStart = snapshot.startedAt
     }
     this.floorAtPause = false
-    this.staleText = snapshot.text
-    this.fedText = ''
-    this.fedComplete = false
-    this.segment++
+    if (!this.policy.retainPausedReplies) {
+      this.staleText = snapshot.text
+      this.fedText = ''
+      this.fedComplete = false
+      this.segment++
+    }
     this.update(snapshot)
     this.armWait()
   }

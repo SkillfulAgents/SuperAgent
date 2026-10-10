@@ -350,6 +350,8 @@ export interface SessionOps {
   markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): Promise<void>
   /** `messagePersister.getTurnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
   turnGeneration(sessionId: string): number
+  /** Last emitted backend outcome, replayed on renderer reconnect and heartbeat. */
+  turnOutcome(sessionId: string): import('../container/session-turn-outcome-schema').SessionTurnOutcome | null
   /** `messagePersister.isSessionWaitingBackground` */
   isWaitingBackground(sessionId: string): boolean
   /** `messagePersister.hasOnlyUntrackedBackgroundWork` */

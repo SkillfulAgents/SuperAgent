@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMessageStream } from './use-message-stream'
 import { useInterruptSession } from './use-messages'
 import { createVoiceConversation } from '@renderer/lib/voice/registry/conversation'
+import { toAgentSnapshot } from '@renderer/lib/voice/conversation/agent-snapshot'
 import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
@@ -76,13 +77,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     const handoff = initialHandoff.current
     let disposed = false
     let speechActive = false
-    const getAgentSnapshot = (): VoiceAgentSnapshot => {
-      const value = latest.current.stream
-      return {
-        active: value.isActive, text: value.streamingMessage ?? '', startedAt: value.activeStartTime ?? null,
-        toolsRunning: (value.streamingToolUses?.length ?? 0) > 0, error: value.error ?? null,
-      }
-    }
+    const getAgentSnapshot = (): VoiceAgentSnapshot => toAgentSnapshot(latest.current.stream)
     const conversation = createVoiceConversation(engine, { sessionId, agentSlug, history: latest.current.args.history ?? [] }, {
       onCommand: (command) => turns.command(command),
       onSnapshot: (next) => {
@@ -114,7 +109,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
         if (disposed) return
         if (!state.awaiting) handoff.pending = false
         setAgent(previous => previous.active === state.active && previous.awaiting === state.awaiting
-          && previous.toolsUsed === state.toolsUsed ? previous : state)
+          && previous.toolsUsed === state.toolsUsed && previous.background === state.background ? previous : state)
       },
       onIssue: (message) => { if (!disposed) setAgentIssue(message) },
     }, conversation.turnPolicy)
@@ -167,11 +162,8 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   }, [inputRequests, active, engine, sessionId, agentSlug])
 
   useEffect(() => {
-    coordinator.current?.update({
-      active: stream.isActive, text: stream.streamingMessage ?? '', startedAt: stream.activeStartTime ?? null,
-      toolsRunning: (stream.streamingToolUses?.length ?? 0) > 0, error: stream.error ?? null,
-    })
-  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error])
+    coordinator.current?.update(toAgentSnapshot(latest.current.stream))
+  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error, stream.turnOutcome, stream.isWaitingBackground])
 
   const pressMic = useCallback(() => adapter.current?.pressMic(), [])
   const getAnalyser = useCallback(() => adapter.current?.analyser ?? null, [])
@@ -189,7 +181,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   const clearError = useCallback(() => { setProviderError(null); setAgentIssue(null) }, [])
   return {
     ...snapshot, engine, capabilities,
-    working: active && !paused && snapshot.ready && agent.active,
+    working: active && !paused && snapshot.ready && (agent.active || !!agent.background),
     speechActive: snapshot.userSpeaking || snapshot.assistantSpeaking,
     error: agentIssue ?? providerError, clearError, pressMic, getAnalyser, getOutputAnalyser,
     micMuted, setMicMuted, outputMuted, setOutputMuted,

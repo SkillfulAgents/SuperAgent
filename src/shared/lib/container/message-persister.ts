@@ -1,3 +1,4 @@
+import type { SessionTurnOutcome } from './session-turn-outcome-schema'
 import { withSessionSendContext } from './session-send-context'
 import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { z } from 'zod'
@@ -252,6 +253,8 @@ function isInterruptedTurnContent(content: { type?: unknown; subtype?: unknown }
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
 // This class only handles SSE streaming updates to the frontend, not persistence.
 interface StreamingState {
+  turnOutcome?: SessionTurnOutcome
+  lastStreamedText?: string
   currentText: string
   isStreaming: boolean
   currentToolUse: { id: string; name: string } | null
@@ -675,6 +678,8 @@ class MessagePersister {
     // Initialize state
     this.streamingStates.set(ctx.key, {
       sessionId,
+      turnOutcome: prior?.turnOutcome,
+      lastStreamedText: prior?.lastStreamedText,
       currentText: '',
       isStreaming: false,
       currentToolUse: null,
@@ -808,6 +813,7 @@ class MessagePersister {
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(agentSlug: string, sessionId: string, state: StreamingState): void {
+    const outcome = state.isInterrupted ? 'cancelled' : state.lastResultCleanSuccess ? 'completed' : undefined
     // The session is truly settled: persist the automation outcome for a turn
     // that ended in a clean success. (Failures were already persisted at their
     // result — an error ends the turn immediately. Interrupts never set the
@@ -823,7 +829,7 @@ class MessagePersister {
     // — e.g. the markSessionIdle revert after markSessionActive's sync picked
     // up an open agent-scoped review.
     state.isAwaitingInput = false
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false })
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false, outcome })
     this.broadcastGlobal({
       type: 'session_idle',
       sessionId,
@@ -1687,7 +1693,7 @@ class MessagePersister {
     }
 
     // Broadcast to session-specific clients
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false })
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false, outcome: 'cancelled' })
 
     // Also broadcast globally so sidebar updates regardless of which session is being viewed
     if (agentSlug) {
@@ -2172,6 +2178,28 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(agentSlug: string, sessionId: string, data: unknown): void {
     const key = sessionKeyOf(agentSlug, sessionId)
+    const state = this.streamingStates.get(key)
+    const event = data as { type?: string; text?: string; error?: string; outcome?: SessionTurnOutcome['status']; interrupted?: boolean; queuedMidTurn?: boolean }
+    if (state && event) {
+      // Retain reply context for an error before its complete assistant frame.
+      if (event.type === 'stream_start' || (event.type === 'session_active' && !event.queuedMidTurn)) state.lastStreamedText = ''
+      if (event.type === 'stream_delta') state.lastStreamedText = (state.lastStreamedText ?? '') + (event.text ?? '')
+      // Record decisions already made by the lifecycle owner. This does not
+      // change activity, settle background tasks, or introduce another timer.
+      const status = event.type === 'session_error' ? 'failed'
+        : event.type === 'session_waiting_background' && event.interrupted ? 'cancelled'
+        : event.type === 'session_idle' ? event.outcome : undefined
+      if (status) {
+        state.turnOutcome = {
+          id: randomUUID(), status,
+          responseText: status === 'completed'
+            ? state.lastAssistantText || state.lastStreamedText || ''
+            : state.lastStreamedText || state.lastAssistantText,
+          error: status === 'failed' ? event.error ?? 'An unknown error occurred' : null,
+        }
+        data = { ...event, turnOutcome: state.turnOutcome }
+      }
+    }
     void this.capture?.recordOutput(sessionId, data)
     // Turn boundaries settle whatever the last turn left parked. That is the
     // only request bookkeeping on the broadcast path — registration itself
@@ -2213,6 +2241,11 @@ class MessagePersister {
         }
       })
     }
+  }
+
+  /** Replay the last emitted outcome when a renderer reconnects or misses a frame. */
+  getSessionTurnOutcome(agentSlug: string, sessionId: string): SessionTurnOutcome | null {
+    return this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))?.turnOutcome ?? null
   }
 
   // Handle incoming message from container

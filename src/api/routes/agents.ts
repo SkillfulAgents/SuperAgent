@@ -3191,7 +3191,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
       let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
@@ -3213,7 +3212,8 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
-          isActive,
+          isActive: actor.sessions.isActive(sessionId),
+          turnOutcome: actor.sessions.turnOutcome(sessionId),
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           // Always the array, even empty: an absent list reads as "unchanged" to
@@ -3242,7 +3242,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         try {
           const currentIsActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
           await stream.writeSSE({
-            data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
+            data: JSON.stringify({
+              type: 'ping', isActive: currentIsActive,
+              turnOutcome: actor.sessions.turnOutcome(sessionId),
+            }),
             event: 'message',
           })
         } catch {
