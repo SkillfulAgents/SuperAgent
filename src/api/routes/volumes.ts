@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { IsAgent } from '../middleware/auth'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { DropboxUnavailableError } from '@shared/lib/volumes/dropbox-error'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { resolveVolume } from '@shared/lib/services/mount-service'
 import { depthOf, destinationOf, multistatus, statusOf, volumePathOf } from '@shared/lib/volumes/webdav'
@@ -67,6 +68,9 @@ async function serve(c: Context<Env>, volumeId: string): Promise<Response> {
         return c.body(null, 405)
     }
   } catch (error) {
+    if (error instanceof DropboxUnavailableError) {
+      return c.body(null, error.status, error.retryAfter === undefined ? undefined : { 'Retry-After': String(error.retryAfter) })
+    }
     if (error instanceof WorkspaceFileError) return c.body(null, statusOf(c.req.method, path, error))
     throw error
   }

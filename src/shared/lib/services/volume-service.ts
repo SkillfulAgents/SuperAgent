@@ -8,6 +8,7 @@ import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@
 import { prepareVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { DropboxUnavailableError } from '@shared/lib/volumes/dropbox-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
 
 export type VolumeViewer = { userId: string | null; admin: boolean }
@@ -60,6 +61,7 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   try {
     prepared = await prepareVolume(input.type, input.config, viewer)
   } catch (error) {
+    if (error instanceof DropboxUnavailableError) throw error
     throw new VolumeError(error instanceof Error ? error.message : 'Invalid volume configuration', 400)
   }
   const config = volumeConfigSchema.parse(prepared).config
