@@ -2003,6 +2003,41 @@ describe('MessageList', () => {
     expect(screen.getByText('summary.pdf')).toBeInTheDocument()
   })
 
+  it('draws delivered images as pictures, laid out like a user upload, beside the other files\' rows', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Make a chart' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Here it is' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/chart.png' },
+            result: 'File delivered',
+          }),
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/data.csv' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const rows = screen.getAllByTestId('file-delivery-row')
+    expect(rows.map((row) => row.getAttribute('data-file-name'))).toEqual(['data.csv'])
+    const images = screen.getByTestId('delivered-images')
+    expect(images).toHaveAttribute('data-image-layout', 'single')
+    expect(images.querySelector('img')).toHaveAttribute('alt', 'chart.png')
+  })
+
   it('keeps delivered files visible when user sends a new message (pendingUserMessage)', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [

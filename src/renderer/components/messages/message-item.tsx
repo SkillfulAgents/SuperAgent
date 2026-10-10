@@ -13,7 +13,8 @@ import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
 import { classifyUserMessage } from './user-message-kinds'
-import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
+import { SentAttachmentChip } from './sent-attachment-chip'
+import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
 import type { MarkdownProps } from '@renderer/components/ui/markdown'
 import { AgentMarkdown } from './agent-markdown'
@@ -435,26 +436,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                   ))}
                 </div>
               )}
-              {imageAttachments.length > 0 && (() => {
-                const imageSize = imageSizeForCount(imageAttachments.length)
-                return (
-                  <div
-                    className={cn(
-                      imageSize === 'grid'
-                        // more than three: a 3-column grid of squares, right-aligned and bounded
-                        ? 'ml-auto grid w-full max-w-md grid-cols-3 gap-2'
-                        // up to three: stacked, each at native aspect
-                        : 'flex flex-col items-end gap-2',
-                    )}
-                    data-testid="sent-images"
-                    data-image-layout={imageSize}
-                  >
-                    {imageAttachments.map((filePath, index) => (
-                      <SentAttachmentChip key={`${filePath}#${index}`} filePath={filePath} agentSlug={agentSlug} imageSize={imageSize} />
-                    ))}
-                  </div>
-                )
-              })()}
+              {imageAttachments.length > 0 && (
+                <AttachedImages
+                  images={imageAttachments.map((filePath, index) => ({ key: `${filePath}#${index}`, filePath }))}
+                  agentSlug={agentSlug}
+                  align="end"
+                  data-testid="sent-images"
+                />
+              )}
             </>
           )
         })()}
