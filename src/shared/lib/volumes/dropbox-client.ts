@@ -55,7 +55,7 @@ const AUDITED = new Set<DropboxEndpoint>(['upload', 'upload_session/finish', 'cr
  * No caller-supplied URL, credential, or policy-bypass flag reaches the proxy. */
 export async function dropboxRequest(
   accountId: string, endpoint: DropboxEndpoint, args: unknown,
-  options: { agentSlug?: string; bytes?: ArrayBuffer; range?: string } = {},
+  options: { agentSlug?: string; bytes?: ArrayBuffer; range?: string; signal?: AbortSignal } = {},
 ): Promise<Response> {
   const content = endpoint === 'download' || endpoint === 'upload' || endpoint.startsWith('upload_session/')
   const targetHost = content ? 'content.dropboxapi.com' : 'api.dropboxapi.com'
@@ -78,7 +78,7 @@ export async function dropboxRequest(
       statusCode = response.status
       if (!response.ok) throw await responseError(response)
       return response
-    }))
+    }, options.signal))
   } finally {
     if (options.agentSlug && AUDITED.has(endpoint)) await writeProxyAuditEntry({
       agentSlug: options.agentSlug, accountId, toolkit: 'dropbox', targetHost, targetPath, method: 'POST',

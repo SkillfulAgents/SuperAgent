@@ -141,6 +141,53 @@ export function volumeContract(label: string, create: () => VolumeContractFixtur
       expect(f.bytes('file')).toEqual(bytes('keep'))
     })
 
+    it('refuses an already cancelled upload without sending content', async () => {
+      const signal = new AbortController()
+      signal.abort()
+      await expect(f.volume().write('file', body('x'), signal.signal)).rejects.toMatchObject({ status: 409 })
+      expect(f.count('content')).toBe(0)
+    })
+
+    it('protects an overwrite committed just as the client cancels', async () => {
+      f.put('file', bytes('before'))
+      const signal = new AbortController()
+      f.beforeCommit(() => signal.abort())
+      await expect(f.volume().write('file', body('committed'), signal.signal)).rejects.toMatchObject({ status: 409 })
+      await expect(f.volume().delete('file')).rejects.toMatchObject({ status: 409 })
+      expect(f.bytes('file')).toEqual(bytes('committed'))
+    })
+
+    it('allows mutations while another upload is waiting for its body', async () => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>
+      const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c } })
+      const writing = f.volume().write('slow', stream)
+      await new Promise(resolve => setImmediate(resolve))
+      await f.volume().mkdir('other')
+      expect(f.exists('other')).toBe(true)
+      controller.enqueue(bytes('x')); controller.close()
+      await writing
+    })
+
+    it('publishes only one of two simultaneous creates of the same name', async () => {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = []
+      const writes = Promise.allSettled(['first', 'second'].map(() => f.volume().write('same', new ReadableStream({ start(c) { controllers.push(c) } }))))
+      await new Promise(resolve => setImmediate(resolve))
+      controllers.forEach((c, i) => { c.enqueue(bytes(String(i))); c.close() })
+      expect((await writes).map(result => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+      expect(f.bytes('same')?.length).toBe(1)
+    })
+
+    it('rechecks account revocation before publishing a staged upload', async () => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>
+      const writing = f.volume().write('file', new ReadableStream({ start(c) { controller = c } })).catch(error => error)
+      await new Promise(resolve => setImmediate(resolve))
+      f.revoke()
+      controller.enqueue(bytes('x')); controller.close()
+      expect(await writing).toMatchObject({ code: 'not-accessible' })
+      expect(f.count('content')).toBe(0)
+      expect(f.exists('file')).toBe(false)
+    })
+
     it('removes only its own new file when cancellation arrives during publication', async () => {
       const signal = new AbortController()
       f.beforeCommit(() => signal.abort())
@@ -167,6 +214,18 @@ export function volumeContract(label: string, create: () => VolumeContractFixtur
       await f.volume().write('a/file', body('x'))
       await f.volume().list('b')
       expect(f.count('list', 'b')).toBe(count)
+    })
+
+    it('expires healthy advisory checks after one minute', async () => {
+      await f.volume().health()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 59_000)
+      try {
+        await f.volume().health()
+        expect(f.count('health')).toBe(1)
+        clock.mockReturnValue(Date.now() + 1_001)
+        await f.volume().health()
+        expect(f.count('health')).toBe(2)
+      } finally { clock.mockRestore() }
     })
 
     it('coalesces advisory health checks but rechecks account authorization', async () => {

@@ -9,6 +9,6 @@ import { dropboxRequest, withDropboxAccount } from './dropbox-client'
 remoteClientContract({
   toolkit: 'dropbox', lookup, forward, audit, owner,
   read: (id = 'account') => dropboxRequest(id, 'list_folder', {}, { agentSlug: 'agent' }),
-  write: () => dropboxRequest('account', 'upload', {}, { agentSlug: 'agent' }),
+  write: signal => dropboxRequest('account', 'upload', {}, { agentSlug: 'agent', signal }),
   operation: run => withDropboxAccount('account', run),
 })

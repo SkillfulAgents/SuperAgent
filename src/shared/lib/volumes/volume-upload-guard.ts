@@ -16,7 +16,11 @@ export class VolumeUploadGuard {
     state.active++
     try {
       throwIfUploadAborted(signal)
-      return await operation()
+      const result = await operation()
+      // The peer may have disconnected while an already-sent commit finished.
+      // Its cleanup DELETE is still unsafe even though the provider stored it.
+      throwIfUploadAborted(signal)
+      return result
     } catch (error) {
       state.failed++
       await body.cancel().catch(() => {})

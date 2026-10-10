@@ -101,8 +101,8 @@ agent identity and do not create agent logs.
   the short parent check and final commit are serialized. Existing files use a
   revision condition so concurrent edits cause a conflict.
 - Namespace mutations from this process are serialized per account across
-  overlapping mounts and invalidate every cached root for that account before
-  and after the operation, including failures. Mutation preconditions and download revisions
+  overlapping mounts. They update affected cached parents using returned metadata
+  and invalidate affected paths on failure; unrelated listings keep their cache age. Mutation preconditions and download revisions
   always use live metadata; folder deletion always checks a fresh listing.
   Each operation verifies that the account exists and is active, including cache
   hits, and shares its authorization/attribution across pages and chunks. Upload
@@ -168,7 +168,9 @@ successful write at the same path. An intentional delete after a failed upload
 may need to be retried. This is process-local protection against the WebDAV
 client's ambiguous cleanup, not a durable operation journal. Cancelled requests
 never intentionally publish staged bytes; cancellation during creation removes
-only the revision this request created.
+only the revision this request created. A cancelled in-flight overwrite remains
+protected from cleanup even if its commit succeeded. Cancellation also interrupts
+rate-limit waits, so a queued retry cannot publish after the client gives up.
 
 Mutations update already-cached parents using their returned metadata, preserving
 cache age and unrelated directories. Failed mutations invalidate affected paths.

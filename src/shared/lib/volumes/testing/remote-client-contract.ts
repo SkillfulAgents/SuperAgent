@@ -7,7 +7,7 @@ interface ClientContract {
   audit: Mock
   owner: Mock
   read(accountId?: string): Promise<Response>
-  write(): Promise<Response>
+  write(signal?: AbortSignal): Promise<Response>
   operation(run: () => Promise<void>): Promise<void>
 }
 
@@ -59,6 +59,22 @@ export function remoteClientContract(c: ClientContract): void {
       expect(await pending).toMatchObject({ status: 429 })
       expect(c.forward).toHaveBeenCalledTimes(4)
       expect(c.audit).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not send a cancelled request or retry one cancelled during backoff', async () => {
+      const aborted = new AbortController()
+      aborted.abort()
+      await expect(c.write(aborted.signal)).rejects.toMatchObject({ status: 409 })
+      expect(c.forward).not.toHaveBeenCalled()
+      const signal = new AbortController()
+      c.forward.mockResolvedValueOnce(Response.json({}, { status: 429, headers: { 'Retry-After': '2' } }))
+      const pending = c.write(signal.signal).catch(error => error)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(c.forward).toHaveBeenCalledTimes(1)
+      signal.abort()
+      expect(await pending).toMatchObject({ status: 409 })
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(c.forward).toHaveBeenCalledTimes(1)
     })
 
     it('never replays a mutation whose outcome is unknown', async () => {

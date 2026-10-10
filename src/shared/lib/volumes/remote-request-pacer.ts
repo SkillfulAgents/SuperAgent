@@ -1,4 +1,5 @@
 import { VolumeError } from './volume-error'
+import { throwIfUploadAborted } from './remote-transfer'
 
 const RETRY_BUDGET_MS = 10_000
 const MAX_ATTEMPTS = 4
@@ -11,6 +12,16 @@ export function retryAfterSeconds(response: Response, fallback?: number): number
     : Number.isFinite(date) ? Math.max(0, (date - Date.now()) / 1000) : fallback
 }
 
+async function wait(delay: number, signal?: AbortSignal): Promise<void> {
+  await new Promise<void>(resolve => {
+    const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); resolve() }
+    const timer = setTimeout(finish, delay)
+    signal?.addEventListener('abort', finish, { once: true })
+    if (signal?.aborted) finish()
+  })
+  throwIfUploadAborted(signal)
+}
+
 /** One pacer per provider. Explicit quota rejections delay every call on that
  * account. Only reads retry uncertain failures; replaying a mutation could apply
  * it twice. Long cooldowns return immediately to the caller with Retry-After. */
@@ -18,13 +29,14 @@ export class RemoteRequestPacer {
   private readonly cooldowns = new Map<string, number>()
   constructor(private readonly failure: (status: 429 | 503, retryAfter?: number) => VolumeError) {}
 
-  async run<T>(accountId: string, readOnly: boolean, operation: () => Promise<T>): Promise<T> {
+  async run<T>(accountId: string, readOnly: boolean, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const start = Date.now()
     for (let attempt = 0; ; attempt++) {
+      throwIfUploadAborted(signal)
       while ((this.cooldowns.get(accountId) ?? 0) > Date.now()) {
         const delay = this.cooldowns.get(accountId)! - Date.now()
         if (Date.now() + delay - start > RETRY_BUDGET_MS) throw this.failure(429, Math.ceil(delay / 1000))
-        await new Promise(resolve => setTimeout(resolve, delay))
+        await wait(delay, signal)
       }
       try { return await operation() } catch (error) {
         if (!(error instanceof VolumeError) || (error.status !== 429 && !(readOnly && error.status === 503))) throw error
@@ -36,7 +48,7 @@ export class RemoteRequestPacer {
         if (attempt === MAX_ATTEMPTS - 1 || Date.now() + delay - start > RETRY_BUDGET_MS) {
           throw this.failure(error.status, error.status === 429 ? Math.ceil(delay / 1000) : undefined)
         }
-        if (error.status !== 429) await new Promise(resolve => setTimeout(resolve, delay))
+        if (error.status !== 429) await wait(delay, signal)
       }
     }
   }

@@ -65,8 +65,8 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
     return this.remotePath(relative)
   }
 
-  private request(endpoint: DropboxEndpoint, args: unknown, bytes?: ArrayBuffer, range?: string) {
-    return dropboxRequest(this.config.accountId, endpoint, args, { agentSlug: this.agentSlug, bytes, range })
+  private request(endpoint: DropboxEndpoint, args: unknown, bytes?: ArrayBuffer, range?: string, signal?: AbortSignal) {
+    return dropboxRequest(this.config.accountId, endpoint, args, { agentSlug: this.agentSlug, bytes, range, signal })
   }
 
   private async metadata(relative: string): Promise<DropboxMetadata> {
@@ -172,11 +172,11 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
           let next = await chunks.next()
           let session: { session_id: string; offset: number } | undefined
           if (!next.done) {
-            const { session_id } = await json(await this.request('upload_session/start', { close: false }, first.value), dropboxSessionSchema)
+            const { session_id } = await json(await this.request('upload_session/start', { close: false }, first.value, undefined, signal), dropboxSessionSchema)
             session = { session_id, offset: first.value!.byteLength }
             do {
               throwIfUploadAborted(signal)
-              const response = await this.request('upload_session/append_v2', { cursor: session, close: false }, next.value)
+              const response = await this.request('upload_session/append_v2', { cursor: session, close: false }, next.value, undefined, signal)
               await response.body?.cancel()
               session.offset += next.value.byteLength
               next = await chunks.next()
@@ -187,8 +187,8 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
             await this.parentOf(relative)
             throwIfUploadAborted(signal)
             const response = session
-              ? await this.request('upload_session/finish', { cursor: session, commit })
-              : await this.request('upload', commit, first.value ?? new ArrayBuffer(0))
+              ? await this.request('upload_session/finish', { cursor: session, commit }, undefined, undefined, signal)
+              : await this.request('upload', commit, first.value ?? new ArrayBuffer(0), undefined, signal)
             const stored = await json(response, dropboxMetadataSchema)
             if (signal?.aborted && !previous && stored['.tag'] === 'file') {
               // Only our just-created revision can be removed, never a newer edit.
