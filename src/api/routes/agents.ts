@@ -1,6 +1,7 @@
 import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -2792,7 +2793,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // mid-turn is queued by the agent loop rather than starting a new turn.
       const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-      agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      // A rejected fresh turn is undone so the retry starts a new turn, unless a
+      // concurrent send, turn, or output has taken the session over meanwhile.
+      let undoFreshTurn: (() => void) | undefined
+      if (wasQueued) agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      else undoFreshTurn = agentRegistry.get(agentSlug).sessions.markProvisionalActive(sessionId)
 
       // A mid-turn send must not carry model/effort/speed: the container treats a
       // parameter change as interrupt/restart of the in-flight query. The
@@ -2814,7 +2819,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      try {
+        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      } catch (error) {
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
+        throw error
+      }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
