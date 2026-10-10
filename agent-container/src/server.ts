@@ -53,7 +53,8 @@ import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-pro
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
-import { mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { installVolumeStop } from './volume-stop';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -120,6 +121,13 @@ app.get('/health', (c) => {
 });
 
 // Session endpoints
+installVolumeStop(app, {
+  hasVolumes: () => mountedVolumeIds().length > 0,
+  stopWriters: async () => { await Promise.all([dashboardManager.stopAll(), sessionManager.stopAll()]); },
+  drain: drainVolumeUploads,
+  finish: finishVolumeStop,
+});
+
 app.post('/sessions', async (c) => {
   try {
     const body = await c.req.json<CreateSessionRequest>();

@@ -9,3 +9,10 @@ export const volumesEnvSchema = z.array(z.object({
 }));
 
 export type ContainerMount = z.infer<typeof volumesEnvSchema>[number];
+
+export const volumeRecoveryManifestSchema = z.object({
+  version: z.literal(1),
+  volumeId: z.string(),
+  mountPath: z.string(),
+  createdAt: z.string(),
+});

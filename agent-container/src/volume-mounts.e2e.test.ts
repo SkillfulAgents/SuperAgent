@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 
 const ENABLED = process.env.RUN_VOLUMES_E2E === '1';
 const IMAGE = 'superagent-volumes-e2e';
@@ -262,4 +263,37 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(fs.readFileSync(path.join(source, 'late.txt'), 'utf8')).toBe('late\n');
     fs.rmSync(source, { recursive: true });
   }, 60_000);
+
+  it.each(['local', 'remote', 'dead-rclone'] as const)('preserves unfinished %s uploads in the workspace after the container is removed', async mode => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-preserve-source-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-preserve-workspace-'));
+    for (const dir of [source, workspace]) fs.chmodSync(dir, 0o777);
+    try {
+      const container = startAgent(
+        'rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes --bwlimit 1M',
+        [{ volumeId: 'v_preserve', name: 'docs', cacheMode: mode === 'local' ? 'local' : 'remote' }],
+        'claude', ['-v', `${source}:/srv/v_preserve`, '-v', `${workspace}:/workspace`],
+      );
+      await healthUntilOk(container);
+      sh(container, 'head -c 40000000 /dev/urandom > /mounts/docs/pending.bin');
+      const expected = sh(container, 'sha256sum /mounts/docs/pending.bin').split(' ')[0];
+      if (mode === 'dead-rclone') sh(container, "pkill -KILL -f '^rclone mount(2)? '");
+      const started = Date.now();
+      const result = JSON.parse(sh(container, 'curl -sf -X POST localhost:3000/volumes/prepare-stop'));
+      expect(result).toEqual({ drained: false, recovered: 1, recoveryErrors: 0 });
+      expect(Date.now() - started).toBeLessThan(20_000);
+      docker('stop', '-t', '5', container);
+      docker('rm', container);
+      const root = path.join(workspace, 'recovered-volume-uploads');
+      const files = fs.readdirSync(root, { recursive: true, encoding: 'utf8' });
+      const saved = files.find(file => file.includes('/vfs/') && file.endsWith('/pending.bin'))!;
+      const bytes = fs.readFileSync(path.join(root, saved));
+      expect(bytes.length).toBe(40_000_000);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(expected);
+      expect(files.some(file => file.includes('/vfsMeta/') && file.endsWith('/pending.bin'))).toBe(true);
+    } finally {
+      fs.rmSync(source, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 90_000);
 });
