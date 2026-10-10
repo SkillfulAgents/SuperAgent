@@ -32,7 +32,7 @@ export function staleAfter(folderId: string, entries: DriveFile[], change: Drive
   const inFolder = !file.trashed && (file.parents ?? []).includes(folderId)
   if (!listed) return inFolder
   return !inFolder || listed.shortcutId !== undefined || listed.name !== file.name || listed.modifiedTime !== file.modifiedTime
-    || listed.size !== file.size || listed.mimeType !== file.mimeType
+    || listed.size !== file.size || listed.mimeType !== file.mimeType || listed.version !== file.version
 }
 
 interface Poll { arrivedAt: number; changes: DriveChange[] }

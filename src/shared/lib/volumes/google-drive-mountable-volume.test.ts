@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 
@@ -8,10 +8,10 @@ const { request, upload, requireAccount, TooLarge } = vi.hoisted(() => ({
   request: vi.fn<(accountId: string, request: DriveRequest, options?: { agentSlug?: string }) => Promise<Response>>(),
   upload: vi.fn(), requireAccount: vi.fn(), TooLarge: class extends Error {},
 }))
-vi.mock('./google-drive-client', () => ({ driveRequest: request, driveUpload: upload, requireGoogleDriveAccount: requireAccount, DriveExportTooLargeError: TooLarge }))
+vi.mock('./google-drive-client', () => ({ driveRequest: request, driveUpload: upload, withGoogleDriveAccount: async (_id: string, run: (account: unknown) => unknown) => run(await requireAccount()), requireGoogleDriveAccount: requireAccount, DriveExportTooLargeError: TooLarge }))
 let exportCache: GoogleDriveExportCache
 vi.mock('./google-drive-export-cache', async importOriginal => ({ ...await importOriginal<object>(), get googleDriveExportCache() { return exportCache } }))
-import { GoogleDriveMountableVolume, googleDriveChangedDownloads, googleDriveListingCache, googleDriveRecentListings, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
+import { GoogleDriveMountableVolume, googleDriveChangedDownloads, googleDriveHealthCache, googleDriveListingCache, googleDriveRecentListings, googleDriveRootChecks, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { GoogleDriveExportCache } from './google-drive-export-cache'
 import { DRIVE_FILE_FIELDS } from './google-drive-schema'
 
@@ -21,11 +21,24 @@ const folder = (id: string, name = id, fields: Record<string, unknown> = {}) => 
 const blob = (id: string, name: string, size = 11, fields: Record<string, unknown> = {}) => ({ id, name, mimeType: 'text/plain', size: String(size), modifiedTime: at, ...fields })
 const doc = (id: string, name: string) => ({ id, name, mimeType: 'application/vnd.google-apps.document', modifiedTime: at })
 const shortcut = (id: string, name: string) => ({ id, name, mimeType: 'application/vnd.google-apps.shortcut', modifiedTime: at })
-const volume = () => new GoogleDriveMountableVolume('attachment', 'Team', { accountId: 'account', folderId: 'root1', folderName: 'Team', driveName: 'My Drive' }, 'agent')
+let attachmentId = randomUUID()
+let recordUpload: (file: ReturnType<typeof blob>, session: { json: { parents?: string[] } }) => void = () => {}
+const volume = () => new GoogleDriveMountableVolume(attachmentId, 'Team', { accountId: 'account', folderId: 'root1', folderName: 'Team', driveName: 'My Drive' }, 'agent')
 
 /** Answer Drive calls from a tree of folder children, export bodies, file contents and the root's own metadata. */
 function serve(options: { folders?: Record<string, unknown[]>; exports?: Record<string, string | Error>; content?: Record<string, string>; root?: unknown; targets?: Record<string, unknown> } = {}) {
+  recordUpload = (file, session) => {
+    const folders = options.folders ?? {}
+    for (const children of Object.values(folders)) {
+      const index = children.findIndex(child => (child as { id: string }).id === file.id)
+      if (index >= 0) { children[index] = { ...children[index] as object, size: file.size }; return }
+    }
+    const parent = session.json.parents?.[0]
+    if (parent && folders[parent]) folders[parent].push(file)
+  }
   request.mockImplementation(async (_account, req) => {
+    if (req.path === 'drive/v3/changes/startPageToken') return Response.json({ startPageToken: 'start' })
+    if (req.path === 'drive/v3/changes') return Response.json({ changes: [], newStartPageToken: 'next' })
     if (req.path.startsWith('drive/v3/drives/')) return Response.json({ id: 'shared1', name: 'Gamut' })
     const parent = /'([^']+)' in parents/.exec(req.query?.q ?? '')
     if (req.method === 'GET' && req.path === 'drive/v3/files' && parent) return Response.json({ files: options.folders?.[parent[1]] ?? [] })
@@ -37,7 +50,7 @@ function serve(options: { folders?: Record<string, unknown[]>; exports?: Record<
     }
     const one = /^drive\/v3\/files\/([^/]+)$/.exec(req.path)
     if (one && req.method === 'GET' && req.query?.alt === 'media') return new Response(options.content?.[one[1]] ?? 'hello world')
-    if (one && req.method === 'GET') return Response.json(options.targets?.[one[1]] ?? options.root ?? folder('root1', 'Team'))
+    if (one && req.method === 'GET') return Response.json(options.targets?.[one[1]] ?? Object.values(options.folders ?? {}).flat().find(file => (file as { id: string }).id === one[1]) ?? options.root ?? folder('root1', 'Team'))
     // A change answers with the file as Drive now stores it.
     const json = req.json as { name?: string; mimeType?: string }
     if (req.method === 'POST') return Response.json({ id: 'made', name: json.name, mimeType: json.mimeType, modifiedTime: at })
@@ -50,16 +63,19 @@ const exportsOf = () => calls().filter(call => call.endsWith('/export'))
 
 beforeEach(() => {
   vi.resetAllMocks()
+  attachmentId = randomUUID()
+  googleDriveHealthCache.invalidate('account')
   googleDriveListingCache.invalidate('account')
   googleDriveRootChecks.clear()
   googleDriveRecentListings.clear()
   googleDriveChangedDownloads.clear()
   exportCache = new GoogleDriveExportCache()
   requireAccount.mockResolvedValue({})
-  upload.mockImplementation(async (_account, session: { path: string; json: { name?: string } }, _body, options?: { publish?: (send: () => Promise<unknown>) => Promise<unknown> }) => {
+  upload.mockImplementation(async (_account, session: { path: string; json: { name?: string; parents?: string[] } }, _body, options?: { publish?: (send: () => Promise<unknown>) => Promise<unknown> }) => {
     const id = session.json.name ? `made_${session.json.name.replace(/\W/g, '_')}` : session.path.split('/').at(-1)!
     const stored = blob(id, session.json.name ?? 'updated', 1)
-    return options?.publish ? options.publish(async () => stored) : stored
+    const send = async () => { recordUpload(stored, session); return stored }
+    return options?.publish ? options.publish(send) : send()
   })
 })
 
@@ -133,7 +149,7 @@ describe('Google Drive filesystem', () => {
     }))
     await volume().write('two.txt', new Blob(['x']).stream())
     await volume().list('')
-    expect(listings()).toBe(before + 1)
+    expect(listings()).toBe(before + 2)
   })
 
   it('re-reads only the folders a change touches, and caches what the change made instead of re-listing', async () => {
@@ -142,37 +158,37 @@ describe('Google Drive filesystem', () => {
     await volume().write('a/b/one.txt', new Blob(['x']).stream())
     await volume().write('a/b/two.txt', new Blob(['x']).stream())
     await volume().mkdir('a/b/c')
-    // root1, a and b once each. Each change checks against the listing the previous one left.
-    expect(listings()).toBe(3)
+    // Walk root1, a and b once, then recheck b before each upload publishes.
+    expect(listings()).toBe(5)
     expect((await volume().list('a/b')).map(entry => entry.name)).toEqual(['one.txt', 'two.txt', 'c'])
     // A folder this app made starts empty, so listing it reads nothing.
     expect(await volume().list('a/b/c')).toEqual([])
-    expect(listings()).toBe(3)
+    expect(listings()).toBe(5)
     // A failed change leaves Drive's state unknown, so the folder is read again.
     upload.mockImplementationOnce(async (_account, _session, _body, options) => options.publish(async () => { throw new Error('upstream') }))
     await expect(volume().write('a/b/three.txt', new Blob(['x']).stream())).rejects.toThrow('upstream')
     await volume().list('a/b')
-    expect(listings()).toBe(4)
+    expect(listings()).toBe(7)
   })
 
-  it('checks the root once per 5 s for writes at the top level, sharing a check in flight', async () => {
+  it('coalesces initial root checks but revalidates the parent at every publication', async () => {
     vi.useFakeTimers()
     try {
       serve({ folders: { root1: [] } })
       const rootChecks = () => calls().filter(call => call === 'GET drive/v3/files/root1').length
       await Promise.all([volume().write('one.txt', new Blob(['x']).stream()), volume().write('two.txt', new Blob(['x']).stream())])
       await volume().write('four.txt', new Blob(['x']).stream())
-      expect(rootChecks()).toBe(1)
+      expect(rootChecks()).toBe(4)
       vi.advanceTimersByTime(6000)
       await volume().write('three.txt', new Blob(['x']).stream())
-      expect(rootChecks()).toBe(2)
+      expect(rootChecks()).toBe(6)
       // A root found trashed is checked again by the next write, not remembered.
       vi.advanceTimersByTime(6000)
       serve({ folders: { root1: [] }, root: folder('root1', 'Team', { trashed: true }) })
       await expect(volume().write('five.txt', new Blob(['x']).stream())).rejects.toMatchObject({ code: 'not-found' })
       serve({ folders: { root1: [] } })
       await volume().write('six.txt', new Blob(['x']).stream())
-      expect(rootChecks()).toBe(4)
+      expect(rootChecks()).toBe(9)
     } finally {
       vi.useRealTimers()
     }
@@ -192,7 +208,7 @@ describe('Google Drive filesystem', () => {
     expect(googleDriveListingCache.cached(key)).toHaveLength(1)
   })
 
-  it('trusts a listing for 5 s from its last Drive read, however often changes update it', async () => {
+  it('rechecks names at publication even when the directory cache is young', async () => {
     vi.useFakeTimers()
     try {
       serve({ folders: { root1: [] } })
@@ -200,10 +216,10 @@ describe('Google Drive filesystem', () => {
       await volume().write('one.txt', new Blob(['x']).stream())
       vi.advanceTimersByTime(3000)
       await volume().write('two.txt', new Blob(['x']).stream())
-      expect(listings()).toBe(1)
+      expect(listings()).toBe(3)
       vi.advanceTimersByTime(3000)
       await volume().write('three.txt', new Blob(['x']).stream())
-      expect(listings()).toBe(2)
+      expect(listings()).toBe(4)
     } finally {
       vi.useRealTimers()
     }
@@ -229,6 +245,26 @@ describe('Google Drive filesystem', () => {
     await Promise.all([slow, queued])
   })
 
+  it('rechecks revocation after a mutation waits for its folder lock', async () => {
+    serve({ folders: { root1: [] } })
+    let release = () => {}
+    const held = new Promise<void>(resolve => { release = resolve })
+    const answer = request.getMockImplementation()!
+    request.mockImplementation(async (account, req, options) => {
+      if (req.method === 'POST' && (req.json as { name: string }).name === 'first') await held
+      return answer(account, req, options)
+    })
+    const first = volume().mkdir('first')
+    await vi.waitFor(() => expect(calls()).toContain('POST drive/v3/files'))
+    const queued = volume().mkdir('queued').catch(error => error)
+    await new Promise(resolve => setImmediate(resolve))
+    requireAccount.mockRejectedValue(new WorkspaceFileError('not-accessible'))
+    release()
+    await first
+    expect(await queued).toMatchObject({ code: 'not-accessible' })
+    expect(calls().filter(call => call === 'POST drive/v3/files')).toHaveLength(1)
+  })
+
   it('makes one Drive file when two uploads of a new name race, refusing the one that finishes second', async () => {
     serve({ folders: { root1: [] } })
     let release = () => {}
@@ -236,7 +272,7 @@ describe('Google Drive filesystem', () => {
     const sent = vi.fn()
     upload.mockImplementation(async (_account, _session, _body, options) => {
       await uploading
-      return options.publish(async () => { sent(); return blob('x', 'x.txt', 1) })
+      return options.publish(async () => { sent(); const file = blob('x', 'x.txt', 1); recordUpload(file, { json: { parents: ['root1'] } }); return file })
     })
     const writes = Promise.allSettled([volume().write('x.txt', new Blob(['1']).stream()), volume().write('x.txt', new Blob(['2']).stream())])
     await vi.waitFor(() => expect(upload).toHaveBeenCalledTimes(2))
@@ -264,6 +300,34 @@ describe('Google Drive filesystem', () => {
     await expect(volume().stat('Sub/a.txt/x')).rejects.toMatchObject({ code: 'not-a-directory' })
     await expect(volume().stat('sub/a.txt')).rejects.toMatchObject({ code: 'not-found' })
     await expect(volume().list('missing')).rejects.toMatchObject({ code: 'not-found' })
+  })
+
+  it('lists every exported file when the folder exceeds the byte cache', async () => {
+    const files = Array.from({ length: 21 }, (_, i) => doc(`d${i}`, `Doc ${i}`))
+    const text = 'x'.repeat(5 * 1024 * 1024)
+    serve({ folders: { root1: files }, exports: Object.fromEntries(files.map(file => [file.id, text])) })
+    const listing = await volume().list('')
+    expect(listing).toHaveLength(21)
+    expect(listing.map(file => file.size)).toEqual(Array(21).fill(text.length))
+    expect(await volume().list('')).toEqual(listing)
+    expect(exportsOf()).toHaveLength(21)
+  })
+
+  it('learns an older duplicate revealed when the newer Google file is too large', async () => {
+    serve({ folders: { root1: [doc('old', 'Plan'), { ...doc('new', 'Plan'), modifiedTime: '2026-10-07T13:00:00Z' }] }, exports: { new: new TooLarge(), old: 'readable' } })
+    expect(await volume().list('')).toMatchObject([{ name: 'Plan.md', size: 8 }])
+    expect(exportsOf()).toEqual(['GET drive/v3/files/new/export', 'GET drive/v3/files/old/export'])
+  })
+
+  it('keeps an oversized export hidden if a large listing evicts its cached marker', async () => {
+    const hidden = doc('huge', 'Huge')
+    await exportCache.learn('account', [{ file: hidden }], async () => 'too-large')
+    const files = Array.from({ length: 8001 }, (_, i) => doc(`d${i}`, `Doc ${i}`))
+    serve({ folders: { root1: [hidden, ...files] }, exports: Object.fromEntries(files.map(file => [file.id, 'x'])) })
+    const listed = await volume().list('')
+    expect(listed).toHaveLength(files.length)
+    expect(listed.some(file => file.name === 'Huge.md')).toBe(false)
+    expect(exportsOf()).not.toContain('GET drive/v3/files/huge/export')
   })
 
   it('hides and remembers an export over 10 MB, and fails the listing on a transient export failure', async () => {
@@ -353,13 +417,13 @@ describe('Google Drive filesystem', () => {
   })
 
   it('saves by rename: a file moved onto a file replaces its content, a Doc copy saves into the Doc, then the source is trashed', async () => {
-    serve({ folders: { root1: [doc('doc1', 'Plan'), blob('n', 'notes.txt'), blob('t1', 'notes.txt.tmp'), blob('t2', 'Plan.md.tmp')] }, content: { t1: 'new notes', t2: '# Plan' } })
+    serve({ folders: { root1: [doc('doc1', 'Plan'), blob('n', 'notes.txt'), blob('t1', 'notes.txt.tmp', 9), blob('t2', 'Plan.md.tmp', 6)] }, content: { t1: 'new notes', t2: '# Plan' } })
     await volume().move('notes.txt.tmp', 'notes.txt')
-    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/n', json: {} }, expect.any(ReadableStream), { agentSlug: 'agent' })
+    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/n', json: {} }, expect.any(ReadableStream), expect.objectContaining({ agentSlug: 'agent', publish: expect.any(Function) }))
     expect(await new Response(upload.mock.lastCall![2]).text()).toBe('new notes')
     expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/t1', json: { trashed: true } }, expect.anything())
     await volume().move('Plan.md.tmp', 'Plan.md')
-    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/doc1', json: {}, contentType: 'text/markdown' }, expect.any(ReadableStream), { agentSlug: 'agent' })
+    expect(upload).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'upload/drive/v3/files/doc1', json: {}, contentType: 'text/markdown' }, expect.any(ReadableStream), expect.objectContaining({ agentSlug: 'agent', publish: expect.any(Function) }))
     expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/t2', json: { trashed: true } }, expect.anything())
   })
 
@@ -402,10 +466,10 @@ describe('Google Drive filesystem', () => {
   })
 
   it('trashes a new file whose upload was cancelled while Drive committed it, as rclone sends it again under its new name', async () => {
-    serve({ folders: { root1: [] } })
+    serve({ folders: { root1: [] }, targets: { made: blob('made', 'replacement.svg', 1) } })
     const cancelled = new AbortController()
-    upload.mockImplementationOnce(async (_account, session, _body, options) => options.publish(async () => { cancelled.abort(); return blob('made', session.json.name, 1) }))
-    await volume().write('replacement.svg', new Blob(['x']).stream(), cancelled.signal)
+    upload.mockImplementationOnce(async (_account, session, _body, options) => options.publish(async () => { cancelled.abort(); return { ...blob('made', session.json.name, 1), size: 1 } }))
+    await expect(volume().write('replacement.svg', new Blob(['x']).stream(), cancelled.signal)).rejects.toThrow('cancelled')
     expect(request).toHaveBeenLastCalledWith('account', { method: 'PATCH', path: 'drive/v3/files/made', json: { trashed: true } }, expect.anything())
     expect((await volume().list('')).map(entry => entry.name)).not.toContain('replacement.svg')
   })
@@ -414,7 +478,7 @@ describe('Google Drive filesystem', () => {
     serve({ folders: { root1: [blob('n', 'notes.txt')] } })
     upload.mockRejectedValueOnce(new Error('rate limited'))
     await expect(volume().write('notes.txt', new Blob(['x']).stream())).rejects.toThrow('rate limited')
-    await volume().delete('notes.txt')
+    await expect(volume().delete('notes.txt')).rejects.toMatchObject({ status: 409 })
     expect(calls()).not.toContain('PATCH drive/v3/files/n')
     await volume().delete('notes.txt')
     expect(calls()).toContain('PATCH drive/v3/files/n')

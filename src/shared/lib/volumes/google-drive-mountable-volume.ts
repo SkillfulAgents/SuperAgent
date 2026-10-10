@@ -3,15 +3,19 @@ import path from 'node:path'
 import type { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { DriveExportTooLargeError, driveRequest, driveUpload, requireGoogleDriveAccount, type DriveRequest } from './google-drive-client'
+import { DriveExportTooLargeError, driveRequest, driveUpload, requireGoogleDriveAccount, withGoogleDriveAccount, type DriveRequest } from './google-drive-client'
 import pLimit from 'p-limit'
 import { googleDriveBrowseSchema, DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
-import { googleDriveExportCache, type Export } from './google-drive-export-cache'
-import { driveNameOf, folderView, isExport, isFolder, nameTaken, ownId, writeTarget, type VisibleEntry } from './google-drive-folder-view'
+import { googleDriveExportCache, type ExportSize, type Export } from './google-drive-export-cache'
+import { driveNameOf, folderView, isExport, isFolder, nameTaken, ownId, writeTarget, type VisibleEntry, type WriteTarget } from './google-drive-folder-view'
 import { RemoteListingCache, serialize } from './remote-listing-cache'
 import { GoogleDriveChangeFeed } from './google-drive-changes'
 import { volumeFolderBrowser } from './volume-folder-browser'
-import type { ByteRange } from '@shared/lib/agent-actor/types'
+import { rangedVolumeFile } from './remote-file'
+import { RemoteHealthCache } from './remote-health-cache'
+import { volumeUploads } from './volume-upload-guard'
+import { throwIfUploadAborted } from './remote-transfer'
+import { VolumeError } from './volume-error'
 
 /** Composio's proxy hands back a text or JSON body decoded, already whole in memory: JSON re-serialized (large
  * numbers rounded), bytes that are not UTF-8 replaced, a byte-order mark dropped, sometimes at the same length. When
@@ -34,61 +38,7 @@ export const googleDriveChangedDownloads = new Set<string>()
 const MAX_CHANGED_DOWNLOADS = 1_000
 const changedOnDownload = () => new WorkspaceFileError('not-accessible', 'The account connection changes this file on download (JSON, or text that is not UTF-8), so it cannot be read exactly')
 
-/** A file of a known size whose bytes come from `download`, a fetch of one byte range. The
- * download starts before WebDAV sends headers, so an upstream failure keeps its status. The
- * stream honors the range even when upstream ignores it, and fails rather than serve a cut or
- * mismatched file. */
-function rangedVolumeFile(size: number, download: (range: ByteRange) => Promise<Response>): VolumeFile {
-  let used = false
-  return {
-    size,
-    close: async () => { used = true },
-    stream: async range => {
-      if (used) throw new Error('Volume file has already been consumed')
-      used = true
-      const start = range?.start ?? 0
-      const end = range?.end ?? size - 1
-      let remaining = Math.max(0, end - start + 1)
-      const response = remaining ? await download({ start, end }) : null
-      if (response?.status === 206 && response.headers.get('content-range') !== `bytes ${start}-${end}/${size}`) {
-        await response.body?.cancel()
-        throw new Error('File download returned an unexpected byte range')
-      }
-      let skip = response?.status === 206 ? 0 : start
-      const reader = response?.body?.getReader()
-      if (remaining && !reader) throw new Error('File download returned no content')
-      return new ReadableStream<Uint8Array>({
-        pull: async controller => {
-          if (!remaining) { controller.close(); return }
-          while (reader) {
-            const { value, done } = await reader.read()
-            if (done) throw new Error('File download ended early')
-            const skipped = Math.min(skip, value.length)
-            skip -= skipped
-            const available = value.subarray(skipped)
-            const bytes = available.subarray(0, remaining)
-            if (!bytes.length) continue
-            // A range reaching the end must find no further bytes, or the file is longer than listed.
-            // Check before the last bytes go out, so a reader never sees a complete-looking cut file.
-            if (end === size - 1 && bytes.length === remaining && (available.length > remaining || !(await reader.read()).done)) {
-              throw new Error('File download returned more than its listed size')
-            }
-            remaining -= bytes.length
-            controller.enqueue(bytes)
-            if (!remaining) {
-              await reader.cancel()
-              controller.close()
-            }
-            return
-          }
-        },
-        cancel: async () => { await reader?.cancel() },
-      })
-    },
-  }
-}
-
-/** A listing this app read or changed this recently stands in for a re-read before a write or mkdir.
+/** A listing this app read or changed this recently stands in for a re-read before mkdir.
  * Drive has no conditional create, so a name can be taken behind any check. This widens that window
  * by at most this long. Deletes and moves always re-read, so they never act on a renamed entry. */
 const TRUSTED_LISTING_MS = 5_000
@@ -155,9 +105,26 @@ function updateSession(target: { id: string; convertFrom?: string }) {
   return { method: 'PATCH' as const, path: `upload/drive/v3/files/${target.id}`, json: {}, ...(target.convertFrom ? { contentType: target.convertFrom } : {}) }
 }
 
-/** When an overwrite of each volume path last failed, so rclone's cleanup delete after it can be told apart. */
-const failedWrites = new Map<string, number>()
-const FAILED_WRITE_CLEANUP_MS = 5_000
+export const googleDriveHealthCache = new RemoteHealthCache()
+
+const sameVersion = (before: DriveFile, now: DriveFile) => before.id === now.id
+  && (before.version && now.version ? before.version === now.version
+    : before.modifiedTime === now.modifiedTime && before.size === now.size && before.md5Checksum === now.md5Checksum)
+const changedDuringUpload = () => new VolumeError('The file changed in Google Drive during the upload.', 409)
+
+/** Validate the complete source before driveUpload publishes its last chunk. A
+ * corrupt proxy download may stage bytes, but never overwrites the destination. */
+function verifiedDownload(response: Response, file: DriveFile): ReadableStream<Uint8Array> {
+  const hash = createHash('md5')
+  let size = 0
+  return (response.body ?? new Blob([]).stream()).pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) { size += chunk.length; hash.update(chunk); controller.enqueue(chunk) },
+    flush() {
+      if (file.size !== undefined && size !== file.size) throw new VolumeError('File download size changed during the operation.', 503)
+      if (file.md5Checksum && hash.digest('hex') !== file.md5Checksum) throw changedOnDownload()
+    },
+  }))
+}
 
 /** A visible entry and the folder it was found in. */
 interface Located {
@@ -169,10 +136,12 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   // Before a definition exists: list My Drive/shared drives, or a selected folder's children.
   static readonly browseFolders = volumeFolderBrowser(googleDriveBrowseSchema, async ({ accountId, folderId }, viewer) => {
     await requireGoogleDriveAccount(accountId, viewer)
-    const folders = folderId
-      ? await driveChildren(accountId, folderId, { foldersOnly: true })
-      : await driveTopLevel(accountId)
-    return { folders: folders.map(({ id, name }) => ({ id, name })) }
+    return withGoogleDriveAccount(accountId, async () => {
+      const folders = folderId
+        ? await driveChildren(accountId, folderId, { foldersOnly: true })
+        : await driveTopLevel(accountId)
+      return { folders: folders.map(({ id, name }) => ({ id, name })) }
+    })
   })
 
   readonly type = 'googledrive'
@@ -195,8 +164,8 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     return driveRequest(this.config.accountId, request, { agentSlug: this.agentSlug })
   }
 
-  private view(children: DriveFile[]) {
-    return folderView(children, file => googleDriveExportCache.tooLarge(this.config.accountId, file))
+  private view(children: DriveFile[], sizes?: Map<DriveFile, ExportSize>) {
+    return folderView(children, file => (sizes?.get(file) ?? googleDriveExportCache.size(this.config.accountId, file)) === 'too-large')
   }
 
   private async children(folderId: string): Promise<DriveFile[]> {
@@ -255,6 +224,32 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     return located?.entry.file.id ?? this.config.folderId
   }
 
+  private async file(id: string): Promise<DriveFile> {
+    const file = driveFileSchema.parse(await (await this.request({ method: 'GET', path: `drive/v3/files/${id}`, query: { fields: DRIVE_FILE_FIELDS } })).json())
+    if (file.trashed) throw new WorkspaceFileError('not-found')
+    return file
+  }
+
+  private async liveParent(id: string): Promise<void> {
+    if (!isFolder(await this.file(id))) throw new WorkspaceFileError('not-a-directory')
+  }
+
+  private async currentEntry(found: Located): Promise<VisibleEntry> {
+    const file = await this.file(found.entry.file.id)
+    if (!found.entry.file.shortcutId && file.name !== found.entry.file.name) {
+      googleDriveListingCache.forget(keyOf(this.config.accountId, found.parentId))
+      throw new WorkspaceFileError('not-found')
+    }
+    if (file.capabilities?.canDownload === false) throw new WorkspaceFileError('not-accessible')
+    return { ...found.entry, file: { ...file, name: found.entry.file.name, shortcutId: found.entry.file.shortcutId } }
+  }
+
+  override async health(): Promise<VolumeEntry> {
+    return withGoogleDriveAccount(this.config.accountId, account => googleDriveHealthCache.check(
+      this.config.accountId, this.config.folderId, account.updatedAt?.getTime() ?? 0, () => this.statImpl(''),
+    ))
+  }
+
   /** The attached folder, which must still be a folder outside the trash. */
   private async root(): Promise<DriveFile> {
     const root = driveFileSchema.parse(await (await this.request({ method: 'GET', path: `drive/v3/files/${this.config.folderId}`, query: { fields: DRIVE_FILE_FIELDS } })).json())
@@ -263,18 +258,18 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     return root
   }
 
-  /** One change at a time per folder, across every mount of the account: a change holds the folders it
+  /** One change at a time per folder or target ID, across every mount of the account: a change holds the folders it
    * reads or changes, and waits for earlier changes to any of them. A folder it reads through `fresh` is
    * re-read from Drive once per change, unless a listing of it is younger than `trustedMs`, and `settle`
-   * records what the change did to it. On success those listings are cached as settled, so the next change
-   * through them lists nothing. On failure they are dropped, since what Drive committed is unknown. */
+   * records what the change did to it. On success those listings are cached as settled, so readers and
+   * folder creates can reuse them. On failure they are dropped, since what Drive committed is unknown. */
   private change<T>(folderIds: string[], operation: (
     fresh: (folderId: string, trustedMs?: number) => Promise<DriveFile[]>,
     settle: (folderId: string, update: (children: DriveFile[]) => DriveFile[]) => void,
   ) => Promise<T>): Promise<T> {
     const { accountId } = this.config
     googleDriveChangeFeed.keepFresh(accountId)
-    // `cached` is the listing a change started from, when it came from the cache rather than Drive.
+    // `cached` is the exact listing read by the change, to detect invalidation during publication.
     const touched = new Map<string, { entries: DriveFile[]; readAt: number; checkedAt: number; cached?: { readAt: number; checkedAt: number } }>()
     const fresh = async (folderId: string, trustedMs?: number) => {
       if (!folderIds.includes(folderId)) throw new Error('A change reads only the folders it holds')
@@ -288,7 +283,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       googleDriveListingCache.forget(keyOf(accountId, folderId))
       const readAt = Date.now()
       const entries = await this.children(folderId)
-      touched.set(folderId, { entries, readAt, checkedAt: readAt })
+      touched.set(folderId, { entries, readAt, checkedAt: readAt, cached: googleDriveListingCache.recent(keyOf(accountId, folderId), Infinity) })
       return entries
     }
     const settle = (folderId: string, update: (children: DriveFile[]) => DriveFile[]) => {
@@ -296,7 +291,8 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       if (!listing) throw new Error('A change settles only folders it read')
       touched.set(folderId, { ...listing, entries: update(listing.entries) })
     }
-    return serialize(folderIds.map(folderId => keyOf(accountId, folderId)), async () => {
+    return serialize(folderIds.map(folderId => keyOf(accountId, folderId)), () => withGoogleDriveAccount(accountId, async () => {
+      googleDriveHealthCache.invalidate(accountId)
       try {
         const result = await operation(fresh, settle)
         for (const [folderId, { entries, readAt, checkedAt, cached }] of touched) {
@@ -310,8 +306,8 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       } catch (error) {
         for (const folderId of touched.keys()) googleDriveListingCache.forget(keyOf(accountId, folderId))
         throw error
-      }
-    })
+      } finally { googleDriveHealthCache.invalidate(accountId) }
+    }, true))
   }
 
   /** The folder a new entry goes into. Children of a trashed folder are never listed, so only the root needs a live check. */
@@ -349,33 +345,49 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   /** Export each Google file among `entries` once per version. */
-  private learn(entries: VisibleEntry[]): Promise<void> {
+  private learn(entries: VisibleEntry[]): Promise<Map<DriveFile, ExportSize>> {
     return googleDriveExportCache.learn(this.config.accountId, entries.filter(isExport), entry => this.exportFile(entry.file, entry.format.mimeType))
   }
 
   /** The entry as listed. A Google file's size must already be learned. */
-  private entryOf({ name, file, format }: VisibleEntry): VolumeEntry {
+  private entryOf({ name, file, format }: VisibleEntry, learnedSize?: ExportSize): VolumeEntry {
     const mtimeMs = Date.parse(file.modifiedTime)
     if (isFolder(file)) return { name, kind: 'directory', size: 0, mtimeMs }
     if (!format) return { name, kind: 'file', size: file.size ?? 0, mtimeMs }
-    const size = googleDriveExportCache.size(this.config.accountId, file)
+    const size = learnedSize ?? googleDriveExportCache.size(this.config.accountId, file)
     if (typeof size !== 'number') throw new WorkspaceFileError('not-found')
     return { name, kind: 'file', size, mtimeMs }
   }
 
   async list(relative: string): Promise<VolumeEntry[]> {
+    return withGoogleDriveAccount(this.config.accountId, () => this.listImpl(relative))
+  }
+
+  private async listImpl(relative: string): Promise<VolumeEntry[]> {
     // Cache hits must not outlive deletion/revocation of the connected account.
-    await requireGoogleDriveAccount(this.config.accountId)
     const located = await this.resolve(relative)
     if (located && !isFolder(located.entry.file)) throw new WorkspaceFileError('not-a-directory')
     const folderId = located?.entry.file.id ?? this.config.folderId
     const children = await this.children(folderId)
     this.prefetchWalk(located?.parentId, folderId, children)
-    await this.learn(this.view(children).entries)
-    // A second pass hides exports found too large just now.
-    const { entries, warnings } = this.view(children)
-    for (const warning of warnings) console.warn(`[volumes] Google Drive folder ${folderId}: ${warning}`)
-    return entries.map(entry => this.entryOf(entry))
+    // Pin existing sizes and hidden-too-large markers before exports can evict
+    // them. Hiding a newly oversized duplicate may reveal an older file of the
+    // same name; learn that file too before publishing the complete listing.
+    const sizes = new Map<DriveFile, ExportSize>()
+    for (const file of children) {
+      const size = googleDriveExportCache.size(this.config.accountId, file)
+      if (size !== undefined) sizes.set(file, size)
+    }
+    for (;;) {
+      const { entries, warnings } = this.view(children, sizes)
+      const unknown = entries.filter(isExport).filter(entry => !sizes.has(entry.file))
+      if (unknown.length) {
+        for (const [file, size] of await this.learn(unknown)) sizes.set(file, size)
+        continue
+      }
+      for (const warning of warnings) console.warn(`[volumes] Google Drive folder ${folderId}: ${warning}`)
+      return entries.map(entry => this.entryOf(entry, sizes.get(entry.file)))
+    }
   }
 
   /** Once a folder is listed soon after its parent, list the parent's other subfolders and this folder's
@@ -403,17 +415,25 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async stat(relative: string): Promise<VolumeEntry> {
-    await requireGoogleDriveAccount(this.config.accountId)
+    return withGoogleDriveAccount(this.config.accountId, () => this.statImpl(relative))
+  }
+
+  private async statImpl(relative: string): Promise<VolumeEntry> {
     if (!relative) return { name: '', kind: 'directory', size: 0, mtimeMs: Date.parse((await this.root()).modifiedTime) }
-    const { entry } = await this.located(relative)
-    await this.learn([entry])
-    return this.entryOf(entry)
+    const found = await this.planned(relative)
+    const entry = isFolder(found.entry.file) ? found.entry : await this.currentEntry(found)
+    const sizes = await this.learn([entry])
+    return this.entryOf(entry, sizes.get(entry.file))
   }
 
   async read(relative: string): Promise<VolumeFile> {
+    return withGoogleDriveAccount(this.config.accountId, () => this.readImpl(relative))
+  }
+
+  private async readImpl(relative: string): Promise<VolumeFile> {
     if (!relative) throw new WorkspaceFileError('not-a-file')
-    await requireGoogleDriveAccount(this.config.accountId)
-    const { entry } = await this.located(relative)
+    const found = await this.planned(relative)
+    const entry = await this.currentEntry(found)
     if (isFolder(entry.file)) throw new WorkspaceFileError('not-a-file')
     const format = entry.format
     if (format) {
@@ -422,7 +442,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       return rangedVolumeFile(exported.length, async () => new Response(exported))
     }
     const { size } = this.entryOf(entry)
-    const version = JSON.stringify([this.config.accountId, entry.file.id, entry.file.modifiedTime])
+    const version = JSON.stringify([this.config.accountId, entry.file.id, entry.file.version ?? entry.file.modifiedTime])
     if (googleDriveChangedDownloads.has(version)) throw changedOnDownload()
     return rangedVolumeFile(size, async ({ start, end }) => {
       const response = await this.request({ method: 'GET', path: `drive/v3/files/${entry.file.id}`, query: { alt: 'media' }, headers: { Range: `bytes=${start}-${end}` } })
@@ -436,30 +456,40 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
-    let overwriting = false
+    return volumeUploads.write(JSON.stringify([this.id, relative]), body, signal, () =>
+      withGoogleDriveAccount(this.config.accountId, () => this.writeImpl(relative, body, signal)))
+  }
+
+  private async writeImpl(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
     try {
       const name = this.writableName(relative)
       const parentId = await this.parentOf(relative)
       const planned = writeTarget(this.view(await this.children(parentId)).entries, name)
       if (planned.kind === 'refused') throw new WorkspaceFileError('not-a-file')
-      overwriting = planned.kind === 'update'
+      const expected = planned.kind === 'update' ? await this.file(planned.id) : undefined
       // The bytes go up outside the folder's lock. Only the last piece, which makes the change,
       // waits for it, once the target is checked again.
       await driveUpload(this.config.accountId, planned.kind === 'update'
         ? updateSession(planned)
         : { method: 'POST', path: 'upload/drive/v3/files', json: { name, parents: [parentId] } }, body, {
         agentSlug: this.agentSlug, signal,
-        publish: send => this.change([parentId], async (fresh, settle) => {
-          const target = writeTarget(this.view(await fresh(parentId, TRUSTED_LISTING_MS)).entries, name)
+        publish: send => this.change([parentId, ...(expected ? [expected.id] : [])], async (fresh, settle) => {
+          throwIfUploadAborted(signal)
+          await this.liveParent(parentId)
+          const current = this.view(await fresh(parentId)).entries
+          const target = writeTarget(current, name)
           if (target.kind !== planned.kind || (target.kind === 'update' && planned.kind === 'update' && target.id !== planned.id)) {
-            throw new Error('The file changed in Google Drive during the upload')
+            throw changedDuringUpload()
           }
+          if (expected && !current.some(entry => entry.file.id === expected.id && sameVersion(expected, entry.file))) throw changedDuringUpload()
           const stored = await send()
           if (signal?.aborted && target.kind === 'create') {
             // rclone cancelled this upload while Drive committed it (the file was renamed mid-upload) and sends it
             // again under the new name. Its cleanup delete raced the commit, so the copy made here is a stray.
+            if (!sameVersion(stored, await this.file(stored.id))) throw changedDuringUpload()
             const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${stored.id}`, json: { trashed: true } })
             await trashed.body?.cancel()
+            throwIfUploadAborted(signal)
             return stored
           }
           settle(parentId, children => target.kind === 'update' ? children.map(child => settled(child, stored)) : [...children, stored])
@@ -467,13 +497,16 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
         }),
       })
     } catch (error) {
-      if (overwriting) failedWrites.set(`${this.id}:${relative}`, Date.now())
       await body.cancel().catch(() => {})
       throw error
     }
   }
 
   async mkdir(relative: string): Promise<void> {
+    return withGoogleDriveAccount(this.config.accountId, () => this.mkdirImpl(relative))
+  }
+
+  private async mkdirImpl(relative: string): Promise<void> {
     const name = this.writableName(relative)
     const parentId = await this.parentOf(relative)
     const madeAt = Date.now()
@@ -510,14 +543,15 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async delete(relative: string): Promise<void> {
-    // rclone deletes a file one second after its overwrite fails or is cancelled ("Remove failed upload", rclone's
-    // webdav.go). On Drive that would trash the file it meant to update, so the file keeps its old content instead.
-    const failedAt = failedWrites.get(`${this.id}:${relative}`)
-    failedWrites.delete(`${this.id}:${relative}`)
-    if (failedAt !== undefined && Date.now() - failedAt < FAILED_WRITE_CLEANUP_MS) return
+    return withGoogleDriveAccount(this.config.accountId, () => this.deleteImpl(relative))
+  }
+
+  private async deleteImpl(relative: string): Promise<void> {
+    this.writableName(relative)
+    volumeUploads.beforeDelete(JSON.stringify([this.id, relative]))
     const planned = await this.planned(relative)
     // A folder is held too, so nothing is written into it while it is checked empty and trashed.
-    await this.change([planned.parentId, ...(isFolder(planned.entry.file) ? [planned.entry.file.id] : [])], async (fresh, settle) => {
+    await this.change([planned.parentId, planned.entry.file.id], async (fresh, settle) => {
       const entry = await this.freshEntry(planned, fresh)
       if (isFolder(entry.file) && ownId(entry.file) !== ownId(planned.entry.file)) throw new Error('A different folder took this name in Google Drive during the change')
       // Trashing a folder trashes its contents: any raw child, shown or hidden, keeps it.
@@ -529,6 +563,10 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async move(from: string, to: string): Promise<void> {
+    return withGoogleDriveAccount(this.config.accountId, () => this.moveImpl(from, to))
+  }
+
+  private async moveImpl(from: string, to: string): Promise<void> {
     const name = this.writableName(to)
     const planned = await this.planned(from)
     if (from === to) return
@@ -537,28 +575,19 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       if (error instanceof WorkspaceFileError && error.code === 'not-found') throw new WorkspaceFileError('not-a-directory')
       throw error
     })
-    await this.change([...new Set([planned.parentId, parentId])], async (fresh, settle) => {
+    const target = writeTarget(this.view(await this.children(parentId)).entries, name)
+    if (target.kind === 'update' && !isFolder(planned.entry.file) && !planned.entry.format) {
+      if (target.id === planned.entry.file.id) return
+      return this.replaceByMove(planned, parentId, name, target)
+    }
+    await this.change([...new Set([planned.parentId, parentId, planned.entry.file.id])], async (fresh, settle) => {
       const source = { parentId: planned.parentId, entry: await this.freshEntry(planned, fresh) }
       const driveName = driveNameOf(source.entry, name)
       if (driveName === null) throw new WorkspaceFileError('invalid-path', 'A converted copy keeps its extension')
       const shownName = source.entry.format ? driveName + source.entry.format.extension : name
       const children = await fresh(parentId)
-      const entries = this.view(children).entries
-      if (nameTaken(children, entries, driveName, shownName, ownId(source.entry.file))) {
-        // A save by rename: a regular file moved onto a visible file replaces its content, so the destination keeps
-        // its ID, sharing and history, and a converted copy saves into its Google file. The source is trashed only
-        // after. Any other taken name keeps both entries.
-        const target = writeTarget(entries, name)
-        if (target.kind !== 'update' || isFolder(source.entry.file) || source.entry.format) throw new WorkspaceFileError('already-exists')
-        // Both names reach the same Drive file (one is a shortcut to it). As in POSIX, the rename does nothing.
-        if (target.id === source.entry.file.id) return
-        const content = await this.request({ method: 'GET', path: `drive/v3/files/${source.entry.file.id}`, query: { alt: 'media' } })
-        const stored = await driveUpload(this.config.accountId, updateSession(target), content.body ?? new Blob([]).stream(), { agentSlug: this.agentSlug })
-        const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${ownId(source.entry.file)}`, json: { trashed: true } })
-        await trashed.body?.cancel()
-        settle(source.parentId, children => children.filter(child => ownId(child) !== ownId(source.entry.file)))
-        settle(parentId, children => children.map(child => settled(child, stored)))
-        return
+      if (nameTaken(children, this.view(children).entries, driveName, shownName, ownId(source.entry.file))) {
+        throw new WorkspaceFileError('already-exists')
       }
       const response = await this.request({
         method: 'PATCH', path: `drive/v3/files/${ownId(source.entry.file)}`, json: { name: driveName },
@@ -569,6 +598,34 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       const listed = source.entry.file.shortcutId ? { ...source.entry.file, name: moved.name } : moved
       settle(source.parentId, children => children.filter(child => ownId(child) !== ownId(listed)))
       settle(parentId, children => [...children, listed])
+    })
+  }
+
+  /** Preserve the destination's ID/history when an editor saves by rename. The
+   * download and staged upload hold no mutation lock; only publication and source
+   * removal do. Checking both versions catches edits while the transfer ran. */
+  private async replaceByMove(planned: Located, parentId: string, name: string, target: Extract<WriteTarget, { kind: 'update' }>): Promise<void> {
+    const sourceFile = await this.file(planned.entry.file.id)
+    const expectedTarget = await this.file(target.id)
+    const content = await this.request({ method: 'GET', path: `drive/v3/files/${sourceFile.id}`, query: { alt: 'media' } })
+    await driveUpload(this.config.accountId, updateSession(target), verifiedDownload(content, sourceFile), {
+      agentSlug: this.agentSlug,
+      publish: send => this.change([...new Set([planned.parentId, parentId, sourceFile.id, target.id])], async (fresh, settle) => {
+        const source = await this.freshEntry(planned, fresh)
+        const destination = writeTarget(this.view(await fresh(parentId)).entries, name)
+        if (ownId(source.file) !== ownId(planned.entry.file) || destination.kind !== 'update' || destination.id !== target.id) throw changedDuringUpload()
+        await this.liveParent(parentId)
+        if (!sameVersion(sourceFile, await this.file(sourceFile.id)) || !sameVersion(expectedTarget, await this.file(target.id))) throw changedDuringUpload()
+        const stored = await send()
+        // An external edit after the upload started must never be thrown away.
+        // Drive has no conditional trash: this is the last available preflight.
+        if (!sameVersion(sourceFile, await this.file(sourceFile.id))) throw changedDuringUpload()
+        const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${ownId(source.file)}`, json: { trashed: true } })
+        await trashed.body?.cancel()
+        settle(planned.parentId, children => children.filter(child => ownId(child) !== ownId(source.file)))
+        settle(parentId, children => children.map(child => settled(child, stored)))
+        return stored
+      }),
     })
   }
 }

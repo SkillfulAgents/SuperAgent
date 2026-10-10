@@ -1,12 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { DRIVE_FILE_FIELDS, driveErrorSchema, driveFileSchema, type DriveFile } from './google-drive-schema'
 import { getAccountProviderByName } from '@shared/lib/account-providers/provider-factory'
-import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { writeProxyAuditEntry } from '@shared/lib/proxy/audit'
-import { requireAccount } from './remote-account'
-import { uploadChunks } from './remote-transfer'
+import { requireAccount, withRemoteAccount, withRemoteAttribution } from './remote-account'
+import { uploadChunks, throwIfUploadAborted } from './remote-transfer'
 import { VolumeError } from './volume-error'
-import { withRetry } from '@shared/lib/utils/retry'
+import { RemoteRequestPacer, retryAfterSeconds } from './remote-request-pacer'
 
 const HOST = 'www.googleapis.com'
 /** Composio's proxy refuses bodies from 768 KiB; Drive wants multiples of 256 KiB. */
@@ -17,11 +17,12 @@ export function requireGoogleDriveAccount(accountId: string, creator?: { userId:
   return requireAccount(accountId, 'googledrive', creator)
 }
 
-/** An upstream failure: a read may be retried, a change never is, since it may have been applied. */
-class DriveRetryableError extends VolumeError {}
-
-/** Drive refused the request for a rate limit without applying it, so any request may be retried. */
-class DriveRateLimitError extends DriveRetryableError {}
+export function withGoogleDriveAccount<T>(accountId: string, run: (account: Awaited<ReturnType<typeof requireGoogleDriveAccount>>) => Promise<T>, refresh = false): Promise<T> {
+  return withRemoteAccount(accountId, 'googledrive', run, refresh)
+}
+const unavailable = (status: 429 | 503, delay?: number) => new VolumeError(status === 429
+  ? 'Google Drive is busy. Please try again shortly.' : 'Google Drive is temporarily unavailable. Please try again.', status, delay)
+const pacer = new RemoteRequestPacer(unavailable)
 
 /** Drive refuses to export a Google file whose export would exceed 10 MB. */
 export class DriveExportTooLargeError extends Error {
@@ -57,28 +58,13 @@ async function throwDriveError(response: Response): Promise<never> {
   if (response.status === 401 || (response.status === 403 && !reasons.some(reason => reason && RATE_LIMIT_REASONS.includes(reason)))) {
     throw new WorkspaceFileError('not-accessible', 'Google Drive access is unavailable. Check the account connection and folder permissions.')
   }
-  const failure = `Google Drive request failed (${response.status})`
-  if (response.status === 403 || response.status === 429) {
-    const header = response.headers.get('Retry-After')
-    const seconds = header === null ? NaN : Number(header)
-    const until = header === null ? NaN : Date.parse(header)
-    const retryAfter = Number.isFinite(seconds) ? Math.max(0, Math.ceil(seconds))
-      : Number.isFinite(until) ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : undefined
-    throw new DriveRateLimitError('Google Drive is busy. Please try again shortly.', 429, retryAfter)
-  }
-  throw response.status >= 500
-    ? new DriveRetryableError('Google Drive is temporarily unavailable. Please try again.', 503)
-    : new Error(failure)
+  if (response.status === 403 || response.status === 429) throw unavailable(429, retryAfterSeconds(response))
+  if (response.status === 409 || response.status === 412) throw new VolumeError('The file changed in Google Drive during the operation.', 409)
+  throw unavailable(503)
 }
 
-/** Only the volume driver calls this; every request stays on the API host. A request refused for a
- * rate limit, or a read that hits an upstream failure, is tried three times, a second then two seconds apart. */
-export function driveRequest(accountId: string, request: DriveRequest, options: { agentSlug?: string } = {}): Promise<Response> {
-  const retryable = request.method === 'GET' ? DriveRetryableError : DriveRateLimitError
-  return withRetry(() => driveRequestOnce(accountId, request, options), 3, 1000, error => error instanceof retryable)
-}
-
-async function driveRequestOnce(accountId: string, request: DriveRequest, options: { agentSlug?: string }): Promise<Response> {
+/** Shared pacing, operation-scoped attribution and one audit row per published request. */
+export async function driveRequest(accountId: string, request: DriveRequest, options: { agentSlug?: string; staging?: boolean; signal?: AbortSignal } = {}): Promise<Response> {
   const url = urlOf(request)
   const headers = new Headers(request.headers)
   let body: ArrayBuffer | null = request.bytes ?? null
@@ -89,20 +75,21 @@ async function driveRequestOnce(accountId: string, request: DriveRequest, option
   const start = Date.now()
   let statusCode: number | undefined
   try {
-    // Re-read on each request: deleting or revoking an account revokes its mounts too.
-    const account = await requireGoogleDriveAccount(accountId)
-    const response = await runWithAttribution(await attribution.fromResourceCreator(account.userId), () =>
-      getAccountProviderByName(account.providerName).makeApiCall({
-        providerConnectionId: account.providerConnectionId, toolkitSlug: 'googledrive', targetUrl: url.toString(), method: request.method, headers, body,
-      }))
-    statusCode = response.status
-    // 308 is a resumable upload acknowledging a chunk.
-    if (!response.ok && response.status !== 308) return await throwDriveError(response)
-    return response
+    return await withRemoteAttribution(accountId, 'googledrive', account => pacer.run(accountId, request.method === 'GET', async () => {
+      let response: Response
+      try {
+        response = await getAccountProviderByName(account.providerName).makeApiCall({
+          providerConnectionId: account.providerConnectionId, toolkitSlug: 'googledrive', targetUrl: url.toString(), method: request.method, headers, body,
+        })
+      } catch { throw unavailable(503) }
+      statusCode = response.status
+      if (!response.ok && response.status !== 308) return throwDriveError(response)
+      return response
+    }, options.signal))
   } finally {
     // Like Dropbox, only published changes join the agent's audit trail: reads, upload
     // sessions and staged chunks are implementation traffic, and never product analytics.
-    const published = request.method !== 'GET' && statusCode !== 308 && !(url.pathname.startsWith('/upload/') && request.method !== 'PUT')
+    const published = request.method !== 'GET' && !options.staging && statusCode !== 308 && !(url.searchParams.get('uploadType') === 'resumable' && request.method !== 'PUT')
     if (options.agentSlug && published) await writeProxyAuditEntry({
       agentSlug: options.agentSlug, accountId, toolkit: 'googledrive', targetHost: HOST, targetPath: url.pathname.slice(1), method: request.method,
       statusCode, durationMs: Date.now() - start, policyDecision: 'allow',
@@ -111,52 +98,65 @@ async function driveRequestOnce(accountId: string, request: DriveRequest, option
   }
 }
 
-/** A resumable upload: open a session, then send the body in chunks, the last one carrying the total.
- * Sending the last chunk makes the change, and `publish` wraps that step alone, so a caller can check
- * and serialize it without holding anything across the upload. An empty body is one empty request.
- * Resolves to the file as stored. */
+/** A small upload carries metadata and bytes in one multipart request. Larger
+ * files stage 512 KiB chunks, holding back the final chunk until publication is
+ * authorized. Both paths finish reading/validating the body before publication. */
 export async function driveUpload(
   accountId: string, session: { method: 'POST' | 'PATCH'; path: string; json: unknown; contentType?: string },
   body: ReadableStream<Uint8Array>,
   options: { agentSlug?: string; signal?: AbortSignal; publish?: (send: () => Promise<DriveFile>) => Promise<DriveFile> } = {},
 ): Promise<DriveFile> {
-  // Naming the content type of a copy makes Drive convert it back into the Google file.
   const { contentType, ...open } = session
-  const opened = await driveRequest(accountId, {
-    ...open, query: { uploadType: 'resumable', fields: DRIVE_FILE_FIELDS }, ...(contentType ? { headers: { 'X-Upload-Content-Type': contentType } } : {}),
-  }, { agentSlug: options.agentSlug })
-  await opened.body?.cancel()
-  const location = opened.headers.get('location')
-  if (!location) throw new Error('Google Drive returned no upload session')
-  const put = async (bytes: ArrayBuffer, range?: string) => {
-    // A caller that gave up (rclone cancels an upload when the file is renamed or the mount stops)
-    // must not see the upload finish later: Drive discards a session that is never completed.
-    if (options.signal?.aborted) throw new Error('Upload cancelled by the client')
-    const response = await driveRequest(accountId, {
-      method: 'PUT', path: location, bytes, headers: { 'Content-Type': 'application/octet-stream', ...(range ? { 'Content-Range': range } : {}) },
-    }, { agentSlug: options.agentSlug })
-    return response
-  }
-  let offset = 0
-  let last: ArrayBuffer | undefined
-  // Hold one chunk back, so the last one is known to be last.
-  for await (const bytes of uploadChunks(body, UPLOAD_CHUNK_BYTES)) {
-    if (last) {
-      await (await put(last, `bytes ${offset}-${offset + last.byteLength - 1}/*`)).body?.cancel()
-      offset += last.byteLength
-    }
-    last = bytes
-  }
-  const total = offset + (last?.byteLength ?? 0)
+  const chunks = uploadChunks(body, UPLOAD_CHUNK_BYTES, options.signal)
   const publish = options.publish ?? (send => send())
-  // A cancelled upload never waits for the change it would have made.
-  if (options.signal?.aborted) throw new Error('Upload cancelled by the client')
-  return publish(async () => {
-    const done = last ? await put(last, `bytes ${offset}-${total - 1}/${total}`) : await put(new ArrayBuffer(0))
-    if (done.status === 308) throw new Error('Google Drive did not complete the upload')
-    // A converted file is stored in Google's form, so only a plain file's stored size must match what was sent.
-    const stored = driveFileSchema.parse(await done.json())
-    if (!contentType && stored.size !== undefined && stored.size !== total) throw new Error(`Google Drive stored ${stored.size} of ${total} bytes`)
-    return stored
-  })
+  const stored = async (response: Response, total: number) => {
+    if (response.status === 308) throw unavailable(503)
+    const file = driveFileSchema.parse(await response.json())
+    if (!contentType && file.size !== total) throw new VolumeError(`Google Drive stored ${file.size} of ${total} bytes`, 503)
+    return file
+  }
+  try {
+    const first = await chunks.next()
+    let next = await chunks.next()
+    if (next.done) {
+      const bytes = first.value ?? new ArrayBuffer(0)
+      const boundary = `gamut_${randomUUID()}`
+      const multipart = new Uint8Array(Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(open.json)}\r\n--${boundary}\r\nContent-Type: ${contentType ?? 'application/octet-stream'}\r\n\r\n`),
+        Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--\r\n`),
+      ])).buffer
+      throwIfUploadAborted(options.signal)
+      return await publish(async () => {
+        throwIfUploadAborted(options.signal)
+        return stored(await driveRequest(accountId, {
+          method: open.method, path: open.path, bytes: multipart,
+          query: { uploadType: 'multipart', fields: DRIVE_FILE_FIELDS }, headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+        }, { agentSlug: options.agentSlug, signal: options.signal }), bytes.byteLength)
+      })
+    }
+    throwIfUploadAborted(options.signal)
+    const opened = await driveRequest(accountId, {
+      ...open, query: { uploadType: 'resumable', fields: DRIVE_FILE_FIELDS }, ...(contentType ? { headers: { 'X-Upload-Content-Type': contentType } } : {}),
+    }, { agentSlug: options.agentSlug, staging: true, signal: options.signal })
+    await opened.body?.cancel()
+    const location = opened.headers.get('location')
+    if (!location) throw unavailable(503)
+    const put = async (bytes: ArrayBuffer, range: string, staging = false) => {
+      throwIfUploadAborted(options.signal)
+      return driveRequest(accountId, { method: 'PUT', path: location, bytes,
+        headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': range },
+      }, { agentSlug: options.agentSlug, staging, signal: options.signal })
+    }
+    let offset = 0
+    let last = first.value!
+    while (!next.done) {
+      await (await put(last, `bytes ${offset}-${offset + last.byteLength - 1}/*`, true)).body?.cancel()
+      offset += last.byteLength
+      last = next.value
+      next = await chunks.next()
+    }
+    const total = offset + last.byteLength
+    throwIfUploadAborted(options.signal)
+    return await publish(async () => stored(await put(last, `bytes ${offset}-${total - 1}/${total}`), total))
+  } finally { await chunks.return(undefined) }
 }

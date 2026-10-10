@@ -43,4 +43,45 @@ describe('Google Drive export cache', () => {
     await cache.learn('a', files, exporter)
     expect(exporter).toHaveBeenCalledTimes(41)
   })
+
+  it('retains every listing size after byte eviction, without re-exporting to list again', async () => {
+    const cache = new GoogleDriveExportCache()
+    const files = Array.from({ length: 21 }, (_, i) => item(`d${i}`))
+    const exporter = vi.fn(async () => new Uint8Array(5 * 1024 * 1024))
+    const learned = await cache.learn('a', files, exporter)
+    expect([...learned.values()]).toEqual(Array(21).fill(5 * 1024 * 1024))
+    expect(files.map(entry => cache.size('a', entry.file))).toEqual([...learned.values()])
+    await cache.learn('a', files, exporter)
+    expect(exporter).toHaveBeenCalledTimes(21)
+    // File bytes really were evicted; a later download loads them again.
+    await cache.exported('a', files[0].file, exporter)
+    expect(exporter).toHaveBeenCalledTimes(22)
+  })
+
+  it('returns a complete listing snapshot even beyond the metadata entry limit', async () => {
+    const cache = new GoogleDriveExportCache()
+    const files = Array.from({ length: 8001 }, (_, i) => item(`d${i}`))
+    const sizes = await cache.learn('a', files, async () => new Uint8Array(1))
+    expect(sizes.size).toBe(8001)
+    expect(sizes.get(files[0].file)).toBe(1)
+    expect(cache.size('a', files[0].file)).toBeUndefined()
+  })
+
+  it('coalesces concurrent exports and shares the concurrency cap across listings', async () => {
+    const cache = new GoogleDriveExportCache()
+    let active = 0, peak = 0
+    const exporter = vi.fn(async () => {
+      peak = Math.max(peak, ++active)
+      await new Promise(resolve => setTimeout(resolve, 1))
+      active--
+      return new Uint8Array(2)
+    })
+    const files = Array.from({ length: 40 }, (_, i) => item(`d${i}`))
+    const [first, second] = await Promise.all([cache.learn('a', files, exporter), cache.learn('a', files, exporter)])
+    expect(first.size).toBe(40)
+    expect(second.size).toBe(40)
+    expect(exporter).toHaveBeenCalledTimes(40)
+    expect(peak).toBe(16)
+  })
+
 })

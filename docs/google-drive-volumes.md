@@ -7,7 +7,7 @@ The folder picker lists My Drive and each shared drive at its top level, then th
 subfolders of whatever is opened. A folder must be chosen: the top level itself
 cannot be mounted. Changing accounts clears the previous folder selection. The
 details step says that Google Docs, Sheets and Slides appear as converted copies,
-and that saving one creates a separate file next to it.
+and that saving a converted copy updates the original Google file.
 
 A definition stores `{ accountId, folderId, folderName, driveName }` in the existing
 validated volume config, never OAuth credentials. The folder ID survives renames and
@@ -16,9 +16,11 @@ ID. The server reads both names from Drive on save and ignores the client's. The
 volume's label reads `Google Drive · <drive> / <folder>`. Only the
 account owner can browse it or create a source from it. Private/public rules, the
 attachment grant, the WebDAV route and the audit log are as for
-[Dropbox volumes](dropbox-volumes.md): every Drive request made for an agent is
-written to the API audit log with the actual agent and connected account, and no
-Google credential reaches the agent container.
+[Dropbox volumes](dropbox-volumes.md): published mutations are audited with the
+actual agent and connected account; reads and upload staging are not. Filesystem
+traffic never emits product analytics. No Google credential reaches the agent
+container. Authorization and attribution are shared across the pages/chunks of
+one operation, and upload publication rechecks account access.
 
 `GoogleDriveMountableVolume` implements the existing filesystem interface. All of
 its Drive calls go to `www.googleapis.com/drive/v3` through the connected account's
@@ -28,7 +30,7 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   listings (name, ID, type) from the attached folder, applying the folder view's
   naming rules at each step. Resolving a path exports nothing. Raw listings are
   kept for 15 seconds in the shared remote listing cache, keyed by account and
-  folder ID, so case never matters and overlapping volumes share listings.
+  folder ID, so overlapping volumes share listings without folding file-name case.
 - While a Drive volume is in use, the app polls Drive's account-wide change feed at
   most every 3 seconds. A poll that finds nothing touching a cached folder keeps its
   listing current as of 10 seconds before the poll, since changes reached the feed
@@ -58,15 +60,20 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   and the rest are hidden with a warning. Names are case-sensitive, as Drive is.
 - Google Docs read as `.md`, Sheets as `.xlsx`, and Slides as `.pptx`, with correct
   sizes. A Google file is exported only when its folder is
-  listed or the file itself is opened, at most 16 exports at a time per listing.
-  The export's bytes are kept, keyed by account, file ID and `modifiedTime`, oldest
-  dropped first past 100 MB, and a read serves those bytes. Drive's `.xlsx` and
+  listed or the file itself is opened. Concurrent requests for one version share
+  the export; all listings share a limit of 16 exports in flight. Bytes are keyed
+  by account, file ID and version (falling back to `modifiedTime`), with oldest
+  bytes dropped past 100 MiB. Sizes have a separate 8,000-entry cache, and each
+  listing retains its own size snapshot. Byte or metadata eviction therefore
+  cannot break a large listing. A read reuses retained bytes or re-exports an
+  evicted file and reports the size of those newly exported bytes. Drive's `.xlsx` and
   `.pptx` exports differ from one export to the next, sometimes in size, so a
-  second export could not serve the size the listing reported.
+  second export may differ from the size a previous listing reported.
   Drive refuses exports over 10 MB: such a file is hidden from the listing and the
   refusal is remembered for that version. A transient export failure (rate limit,
   5xx) fails that listing, keeping sizes already learned, so rclone retries.
-- Regular files are read as current content with byte ranges. Any read whose bytes
+- Explicit file stats and reads refresh metadata, even after a cached listing.
+  Regular files are read as current content with byte ranges. Any read whose bytes
   are fewer or more than the listed size fails rather than serve a cut or mixed
   file; rclone retries, and the next listing corrects the size.
 - On a Composio-managed connection, Composio's proxy returns a text or JSON download
@@ -76,7 +83,7 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   is the listed size, a body of another length, or a whole file whose MD5 differs
   from Drive's `md5Checksum`, is refused before any header goes out. That version is
   remembered, so rclone's retries fail without another download. The agent sees an
-  I/O error within about a second, and the app log says why. Valid UTF-8 text,
+  I/O error, and the app log says why. Valid UTF-8 text,
   binary files and Google file exports read exactly. A connection through our own
   Google OAuth app would fetch from Google directly and avoid this.
 - A write resolves its target through the folder view. A visible regular file is
@@ -87,13 +94,17 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   and comments, and loses text colors, fonts and alignment. A Doc with several tabs
   becomes one tab, each old tab's title a heading. A pending suggestion does not stay
   a suggestion. Drive's version history keeps the Doc as it was before the save.
-  Uploads use Drive's resumable upload in 512 KiB chunks,
-  the largest Composio's proxy mode accepts. If the client stops waiting (rclone
-  cancels an upload when the file is renamed mid-upload), the upload is never
-  finished and Drive discards it.
+  Uploads through 512 KiB use one `multipart/related` content request, including
+  empty files, overwrites and Google-file imports. Metadata and bytes travel
+  together through Composio as opaque binary data. Larger uploads use resumable
+  512 KiB chunks, keeping the base64 request below the platform limit. Cancellation
+  stops body reads/staging and is checked again before publication.
 - A request Drive refuses for a rate limit was not applied, so any request, change
-  or read, is tried three times, a second and then two seconds apart. Reads also
-  retry server errors. Changes never do, since a change may have been applied. The
+  or read, uses the same account-wide cooldown and bounded pacer as Dropbox:
+  Retry-After (seconds or HTTP date), exponential backoff, at most four attempts
+  and ten seconds of waiting. Longer cooldowns return 429 with Retry-After
+  immediately. Safe reads also retry transient server/transport errors. Changes
+  never replay uncertain failures, since a change may have been applied. The
   connection's Google project shares one per-minute quota across its users, so
   refusals come even at low rates.
 - rclone mounts Drive volumes with `--ignore-size`, because a converted file's
@@ -103,11 +114,14 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   before a delete, use the raw children, including entries the agent cannot see.
   Renaming an export strips the clash suffix and extension to get the Drive name,
   which must keep the extension. A change waits only for earlier changes to the
-  same folders, so changes in different folders run side by side. A file's bytes
+  same folders or target file IDs, including aliases reached through shortcuts.
+  Changes to unrelated files/folders can proceed independently. A file's bytes
   upload outside that wait, and only the final step, which makes the change, waits
-  its turn after checking the target again. Writes and folder creates check names
-  against a listing read from Drive in the last 5 seconds. Deletes and moves re-read
-  the folder, so they never act on an entry renamed in Drive. After a change, the
+  its turn after checking fresh parent/name metadata and the target version.
+  Folder creation may reuse a listing for 5 seconds; deletes and moves also
+  re-read their folders. Drive lacks a conditional name create/content update:
+  these checks detect changes during staging, but cannot eliminate an external
+  client racing the final preflight and API call. After a change, the
   cached listing is updated with what Drive returned instead of being read again.
   A followed shortcut keeps its own name and ID in that update.
 - rclone asks to make a file's folder before every upload. A folder that already
@@ -117,12 +131,21 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   the original). The destination keeps its ID, sharing and history, and a converted
   copy saves into its Google file. A folder, or a converted copy as the source,
   never replaces anything. A move between two names of the same file, such as a
-  file and a shortcut to it, does nothing.
-- rclone deletes a file one second after its overwrite fails or is cancelled. A delete
-  of a path whose overwrite failed in the last 5 seconds leaves the file as it was, so
-  a refused save (a quota refusal, a Sheet Drive cannot convert) never trashes the
-  Google file. A new file whose upload rclone cancelled while Drive committed it is
-  trashed, since rclone sends it again under its new name.
+  file and a shortcut to it, does nothing. A replacement downloads and validates
+  the source size/checksum outside the mutation locks, then checks both source
+  and destination versions before publication. Corrupt or truncated content
+  cannot replace the destination. The source is rechecked before trashing, so
+  an edit discovered then is retained. Drive has no atomic copy-and-trash or
+  conditional trash; external changes can still race the final preflight.
+- Failed or cancelled uploads use the shared cleanup protection described in
+  [Dropbox volumes](dropbox-volumes.md). The subsequent cleanup DELETE returns
+  409, rather than silently succeeding or becoming destructive after five seconds.
+  A newly created file cancelled during publication is trashed only if its current
+  version still matches the upload result; an external replacement is preserved.
+- Advisory Settings/mount health checks share Dropbox's policy: coalesced per
+  account/root, cached for 60 seconds on success or 5 seconds on failure. Every
+  call rechecks account access; mutation and account-version changes invalidate
+  health. Filesystem operations bypass this advisory cache.
 - Drive mounts trust a folder listing for 30 seconds, not the 5 minutes of other
   remote mounts, because people edit Drive files in Google's editors while agents
   work. rclone ends each read at the size it last listed. A read that ends short of a
@@ -131,10 +154,17 @@ provider with `supportsAllDrives=true`, and listings add `includeItemsFromAllDri
   cut short.
 - Delete moves to trash. A folder is trashed only when empty, because trashing a
   folder trashes its contents. A move or rename is one update call that changes
-  parent and name; a taken destination is a conflict that keeps both entries.
+  parent and name when the destination is free. Occupied files use the verified
+  replacement flow above; occupied folders are refused.
   A trashed attached folder reports not found, so the agent never writes into trash.
-- The adapter selects the `remote` cache mode: rclone caches directories for five
-  minutes and file reads/writes on disk.
+- The adapter selects the `remote` cache mode with the 30-second directory
+  override above and file reads/writes on disk.
+
+Both providers register the same filesystem and remote-client contract suites in
+`src/shared/lib/volumes/testing/`. A new adapter supplies a wire-level provider
+fixture with independent remote-state assertions and failure injection. Provider
+regressions remain separate: Drive exports, shortcuts, conversions and checksummed
+rename transfers; Dropbox revisions and backup/rollback renames.
 
 Validation uses a mocked Drive provider behind real SQLite/libSQL volume and WebDAV
 routes, a mocked Drive client behind the driver, and browser tests with deterministic

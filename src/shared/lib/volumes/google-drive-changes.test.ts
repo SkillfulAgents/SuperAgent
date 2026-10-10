@@ -16,6 +16,7 @@ describe('staleAfter', () => {
     ['a file it lists, unchanged', changed('a', 'a.txt', ['f']), false],
     ['a file it lists, renamed', changed('a', 'b.txt', ['f']), true],
     ['a file it lists, edited', changed('a', 'a.txt', ['f'], { modifiedTime: '2026-10-09T12:00:05.000Z', size: 9 }), true],
+    ['a file edited with the same time and size', changed('a', 'a.txt', ['f'], { version: '2' }), true],
     ['a file it lists, moved out', changed('a', 'a.txt', ['g']), true],
     ['a file it lists, trashed', changed('a', 'a.txt', ['f'], { trashed: true }), true],
     ['a file it lists, deleted or no longer shared', { fileId: 'a', removed: true }, true],

@@ -1,30 +1,25 @@
 import pLimit from 'p-limit'
 import type { DriveFile } from './google-drive-schema'
 
-/** An export's bytes, or that Drive refused it as over 10 MB. */
 export type Export = Uint8Array<ArrayBuffer> | 'too-large'
 export type ExportSize = number | 'too-large'
-
 const PARALLEL_EXPORTS = 16
 const MAX_EXPORTS = 8_000
 const MAX_BYTES = 100 * 1024 * 1024
-const keyOf = (accountId: string, file: DriveFile) => JSON.stringify([accountId, file.id, file.modifiedTime])
+const keyOf = (accountId: string, file: DriveFile) => JSON.stringify([accountId, file.id, file.version ?? file.modifiedTime])
 
-/** Exports by account, file and version, oldest dropped first past 100 MB. Drive's xlsx and pptx
- * exports differ from one export to the next, sometimes in size, so a read serves the bytes
- * its listing was sized from. */
+/** Byte eviction must not erase listing metadata. Each learn() also returns its
+ * own size snapshot, so even a listing exceeding both cache limits can complete.
+ * Identical exports in flight are coalesced and share one concurrency limit. */
 export class GoogleDriveExportCache {
   private readonly exports = new Map<string, Export>()
+  private readonly sizes = new Map<string, ExportSize>()
+  private readonly pending = new Map<string, Promise<Export>>()
+  private readonly limit = pLimit(PARALLEL_EXPORTS)
   private bytes = 0
 
-  size(accountId: string, file: DriveFile): ExportSize | undefined {
-    const held = this.exports.get(keyOf(accountId, file))
-    return held instanceof Uint8Array ? held.length : held
-  }
-
-  tooLarge(accountId: string, file: DriveFile): boolean {
-    return this.size(accountId, file) === 'too-large'
-  }
+  size(accountId: string, file: DriveFile): ExportSize | undefined { return this.sizes.get(keyOf(accountId, file)) }
+  tooLarge(accountId: string, file: DriveFile): boolean { return this.size(accountId, file) === 'too-large' }
 
   private drop(key: string): void {
     const held = this.exports.get(key)
@@ -32,27 +27,40 @@ export class GoogleDriveExportCache {
     this.exports.delete(key)
   }
 
-  /** The export of `file`, run now unless held. */
   async exported(accountId: string, file: DriveFile, exporter: () => Promise<Export>): Promise<Export> {
     const key = keyOf(accountId, file)
     const held = this.exports.get(key)
     if (held !== undefined) return held
-    const exported = await exporter()
-    this.drop(key)
-    this.exports.set(key, exported)
-    if (exported instanceof Uint8Array) this.bytes += exported.length
-    while (this.exports.size > MAX_EXPORTS || this.bytes > MAX_BYTES) this.drop(this.exports.keys().next().value!)
-    return exported
+    if (this.sizes.get(key) === 'too-large') return 'too-large'
+    const pending = this.pending.get(key)
+    if (pending) return pending
+    const request = this.limit(exporter).then(exported => {
+      this.drop(key)
+      this.exports.set(key, exported)
+      this.sizes.delete(key)
+      this.sizes.set(key, exported instanceof Uint8Array ? exported.length : exported)
+      if (exported instanceof Uint8Array) this.bytes += exported.length
+      while (this.exports.size > MAX_EXPORTS || this.bytes > MAX_BYTES) this.drop(this.exports.keys().next().value!)
+      while (this.sizes.size > MAX_EXPORTS) this.sizes.delete(this.sizes.keys().next().value!)
+      return exported
+    }).finally(() => this.pending.delete(key))
+    this.pending.set(key, request)
+    return request
   }
 
-  /** Export what `items` lack, at most sixteen at a time. A failed export fails the call
-   * once the rest have settled, keeping every export made. */
-  async learn<T extends { file: DriveFile }>(accountId: string, items: T[], exporter: (item: T) => Promise<Export>): Promise<void> {
-    const limit = pLimit(PARALLEL_EXPORTS)
-    const results = await Promise.allSettled(items.filter(item => !this.exports.has(keyOf(accountId, item.file)))
-      .map(item => limit(() => this.exported(accountId, item.file, () => exporter(item)))))
+  async learn<T extends { file: DriveFile }>(accountId: string, items: T[], exporter: (item: T) => Promise<Export>): Promise<Map<DriveFile, ExportSize>> {
+    const sizes = new Map<DriveFile, ExportSize>()
+    const results = await Promise.allSettled(items.map(async item => {
+      let size = this.size(accountId, item.file)
+      if (size === undefined) {
+        const exported = await this.exported(accountId, item.file, () => exporter(item))
+        size = exported instanceof Uint8Array ? exported.length : exported
+      }
+      sizes.set(item.file, size)
+    }))
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
     if (failed) throw failed.reason
+    return sizes
   }
 }
 

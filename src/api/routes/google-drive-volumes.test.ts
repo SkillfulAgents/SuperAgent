@@ -5,6 +5,7 @@ import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/cr
 import { agents, connectedAccounts, user, proxyAuditLog, volumeDefinitions } from '@shared/lib/db/schema'
 
 let handle: TestDatabase
+let testTime = Date.UTC(2035, 0, 1)
 vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 let exportCache: GoogleDriveExportCache
 vi.mock('@shared/lib/volumes/google-drive-export-cache', async importOriginal => ({ ...await importOriginal<object>(), get googleDriveExportCache() { return exportCache } }))
@@ -37,7 +38,7 @@ import volumes from './volumes'
 import { attachMount, listVolumes } from '@shared/lib/services/mount-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { DriveExportTooLargeError, driveRequest, driveUpload } from '@shared/lib/volumes/google-drive-client'
-import { googleDriveListingCache } from '@shared/lib/volumes/google-drive-mountable-volume'
+import { googleDriveListingCache, googleDriveHealthCache } from '@shared/lib/volumes/google-drive-mountable-volume'
 import { GoogleDriveExportCache } from '@shared/lib/volumes/google-drive-export-cache'
 const app = new Hono().route('/api/volume-types', types).route('/api/volume-definitions', definitions).route('/api/volumes', volumes)
 const at = '2026-10-07T12:00:00Z'
@@ -60,6 +61,9 @@ const urls = () => forward.mock.calls.map(([call]) => new URL(call.targetUrl))
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  testTime += 120_000
+  vi.spyOn(Date, 'now').mockImplementation(() => testTime)
+  googleDriveHealthCache.invalidate('drive')
   googleDriveListingCache.invalidate('drive')
   exportCache = new GoogleDriveExportCache()
   vi.stubEnv('AUTH_MODE', 'true')
@@ -71,7 +75,7 @@ beforeEach(async () => {
     id: 'drive', providerConnectionId: 'connection', toolkitSlug: 'googledrive', displayName: 'Google Drive',
     userId: 'alice', createdAt: new Date(), updatedAt: new Date(),
   }).run()
-  forward.mockImplementation(async ({ targetUrl, method }) => {
+  forward.mockImplementation(async ({ targetUrl, method, headers }) => {
     const url = new URL(targetUrl)
     if (url.pathname === '/drive/v3/files/root') return Response.json({ ...root, id: 'mydrive', name: 'My Drive' })
     if (url.pathname === '/drive/v3/drives') return Response.json({ drives: [{ id: 'shared1', name: 'Shared drive' }] })
@@ -81,14 +85,19 @@ beforeEach(async () => {
       return Response.json({ files: url.searchParams.get('q')?.includes('mimeType') ? children.filter(child => child.mimeType === root.mimeType) : children })
     }
     if (url.pathname === '/drive/v3/files/team') return Response.json(root)
-    if (url.pathname === '/drive/v3/files/notes') return new Response('hello world')
+    if (url.pathname === '/drive/v3/files/notes') return url.searchParams.get('alt') === 'media' ? new Response('hello world') : Response.json(file)
+    if (url.pathname === '/drive/v3/files/doc1') return Response.json(doc)
     if (url.pathname === '/drive/v3/files/doc1/export') return new Response('# Plan')
-    if (url.searchParams.get('upload_id') === 'session') return Response.json({ id: 'new', name: 'x', mimeType: 'application/octet-stream', modifiedTime: at })
+    if (url.searchParams.get('uploadType') === 'multipart') return Response.json({ id: 'new', name: 'x', mimeType: 'application/octet-stream', size: '7', modifiedTime: at })
+    if (url.searchParams.get('upload_id') === 'session') {
+      const range = headers.get('Content-Range') as string
+      return range.endsWith('/*') ? new Response(null, { status: 308 }) : Response.json({ id: 'new', name: 'x', mimeType: 'application/octet-stream', size: range.split('/')[1], modifiedTime: at })
+    }
     if (url.pathname === '/upload/drive/v3/files') return new Response(null, { headers: { Location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session' } })
     return Response.json(null)
   })
 })
-afterEach(async () => { await handle.close(); vi.unstubAllEnvs() })
+afterEach(async () => { await handle.close(); vi.unstubAllEnvs(); vi.restoreAllMocks() })
 
 describe('Google Drive volume access and transport', () => {
   it('uses the generic setup route for every listing page and keeps only folder IDs and names', async () => {
@@ -114,7 +123,9 @@ describe('Google Drive volume access and transport', () => {
 
   it('preserves an exhausted rate limit and Retry-After through the generic route', async () => {
     forward.mockImplementation(async () => Response.json({}, { status: 429, headers: { 'Retry-After': '60' } }))
+    vi.mocked(Date.now).mockRestore()
     vi.useFakeTimers()
+    vi.setSystemTime(testTime)
     try {
       const pending = browse('alice', { accountId: 'drive', folderId: 'team' })
       await vi.advanceTimersByTimeAsync(3000)
@@ -172,7 +183,7 @@ describe('Google Drive volume access and transport', () => {
     expect(resourceCreator).toHaveBeenCalledWith('alice')
     const audit = await handle.db.select().from(proxyAuditLog).all()
     // Two uploads published: reads, exports and upload sessions are not in the agent's trail.
-    expect(audit.map(row => [row.method, row.targetPath, row.statusCode])).toEqual([['PUT', 'upload/drive/v3/files', 200], ['PUT', 'upload/drive/v3/files', 200]])
+    expect(audit.map(row => [row.method, row.targetPath, row.statusCode])).toEqual([['POST', 'upload/drive/v3/files', 200], ['POST', 'upload/drive/v3/files', 200]])
     expect(trackServerEvent).not.toHaveBeenCalled()
     expect(audit.every(row => row.agentSlug === 'agent-a' && row.accountId === 'drive' && row.toolkit === 'googledrive' && row.policyDecision === 'allow')).toBe(true)
     expect(urls().every(url => url.hostname === 'www.googleapis.com')).toBe(true)
@@ -201,8 +212,10 @@ describe('Google Drive volume access and transport', () => {
     expect(failure).not.toHaveProperty('code')
     expect(forward.mock.calls.length - before).toBe(1)
     // A rate-limit refusal was not applied, so a change retries it with backoff. A read also retries
-    // upstream failures, and gives up after the third try.
+    // upstream failures, and gives up after the fourth try.
+    vi.mocked(Date.now).mockRestore()
     vi.useFakeTimers()
+    vi.setSystemTime(testTime)
     try {
       answer(429)
       answer(403, 'rateLimitExceeded')
@@ -215,15 +228,16 @@ describe('Google Drive volume access and transport', () => {
       const retried = driveRequest('drive', { method: 'GET', path: 'drive/v3/files/x' })
       await vi.advanceTimersByTimeAsync(3000)
       expect((await retried).ok).toBe(true)
-      answer(503); answer(503); answer(503)
+      answer(503); answer(503); answer(503); answer(503)
       const exhausted = driveRequest('drive', { method: 'GET', path: 'drive/v3/files/x' }).catch(error => error)
       await vi.advanceTimersByTimeAsync(3000)
       expect(await exhausted).toBeInstanceOf(Error)
     } finally {
       vi.useRealTimers()
+      vi.spyOn(Date, 'now').mockReturnValue(testTime + 10_000)
     }
     forward.mockResolvedValueOnce(new Response(null, { headers: { Location: 'https://evil.example/upload' } }))
-    await expect(driveUpload('drive', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'x' } }, new Blob(['x']).stream())).rejects.toThrow('www.googleapis.com')
+    await expect(driveUpload('drive', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'x' } }, new Blob([new Uint8Array(512 * 1024 + 1)]).stream())).rejects.toThrow('www.googleapis.com')
     const chunks = new Uint8Array(512 * 1024 + 3).fill(7)
     forward.mockClear()
     await driveUpload('drive', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'x', parents: ['team'] } }, new Blob([chunks]).stream(), { agentSlug: 'agent-a' })
