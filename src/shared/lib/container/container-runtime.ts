@@ -41,6 +41,7 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import { mergeCustomEnvVars } from './reserved-env-vars'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
+import { prepareVolumeStop } from './volume-stop'
 
 /**
  * Max age (in ms) of a cached 'running' status before ensureRunning re-verifies
@@ -101,6 +102,7 @@ async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[]
 }
 
 export class ContainerRuntime {
+  private volumesPresent: boolean | undefined
   private client: ContainerClient | null = null
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
@@ -349,6 +351,8 @@ export class ContainerRuntime {
     let stopped = true
 
     try {
+      const client = this.getClient()
+      if (this.volumesPresent !== false) await prepareVolumeStop(client, slug)
       // Stop the host browser before the container so it closes gracefully
       // instead of getting a "socket hang up" when the container dies
       const beforeStop = this.host.onBeforeContainerStop
@@ -358,7 +362,6 @@ export class ContainerRuntime {
         })
       }
 
-      const client = this.getClient()
       const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
       // Only an explicit `false` (stop+kill timed out with force-stop disabled)
@@ -688,6 +691,7 @@ export class ContainerRuntime {
     // A container already running got its volumes, and its banner, from an earlier start.
     // A runtime replaced meanwhile (a runner change) no longer owns the banner.
     if (alreadyRunning || this.disposed) return client
+    this.volumesPresent = !volumesDropped && volumes.length > 0
     let failed: NotMountedVolume[] = []
     if (volumesDropped) {
       failed = notMountedAll(volumes, 'start failed with folders')
@@ -781,6 +785,7 @@ export class ContainerRuntime {
    * stop the container.
    */
   dispose(): void {
+    this.volumesPresent = undefined
     this.disposed = true
     this.lifecycle++
     this.client = null
