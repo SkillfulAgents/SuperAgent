@@ -29,7 +29,7 @@ function controlSocket(volumeId: string): string {
   return `/tmp/rclone-${volumeId}.sock`;
 }
 
-export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
+export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, ignoreSize = false, dirCacheSeconds?: number, cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
   return [
     // mount's bazil FUSE adapter caches newly created entries for a minute,
     // regardless of --attr-timeout. After a directory rename/refresh those
@@ -54,6 +54,10 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     '--cache-dir', cacheDir,
     // Remote reads benefit from a disk cache; keep its footprint bounded per mount.
     ...(cacheMode === 'remote' ? ['--vfs-cache-max-size', '512M', '--vfs-cache-max-age', '1h'] : []),
+    // Drive stores a markdown file saved into a Google Doc as the Doc, and reports the Doc's export size after
+    // the upload. rclone would call that corruption and delete the file it just wrote. The host checks Drive's
+    // stored size for plain uploads instead.
+    ...(ignoreSize ? ['--ignore-size'] : []),
     // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
     // downloading the new contents.
     '--vfs-handle-caching', '0',
@@ -65,7 +69,7 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     '--vfs-write-back', '1s',
     // Local edits must appear promptly; remote listings are expensive. Writes through
     // this mount invalidate its cache, while outside changes appear after expiry.
-    '--dir-cache-time', cacheMode === 'remote' ? '5m' : '1s',
+    '--dir-cache-time', dirCacheSeconds ? `${dirCacheSeconds}s` : cacheMode === 'remote' ? '5m' : '1s',
     // WebDAV keeps no file mode and rclone ignores chmod, so every file is executable, or no script could run.
     '--file-perms', '0777',
     // Shutdown reads the upload queue through this socket and starts what is waiting. Any claude process can use it,
@@ -74,17 +78,25 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
   ];
 }
 
-export async function untilMountAnswers(mountPath: string, unmountedDev: number, settled: () => boolean): Promise<void> {
+// One authenticated PROPFIND of the volume root, the request rclone makes first. A 207 proves the app answers and
+// accepts the token without listing anything: a remote source may have to export every document a listing names.
+export async function volumeAnswers(hostApiUrl: string, volumeId: string, token: string): Promise<void> {
+  const response = await fetch(`${hostApiUrl}/volumes/${volumeId}`, { method: 'PROPFIND', headers: { Authorization: `Bearer ${token}`, Depth: '0' } });
+  await response.arrayBuffer();
+  if (response.status !== 207) throw new Error(`volume answered ${response.status}`);
+}
+
+export async function untilMountAnswers(mountPath: string, unmountedDev: number, settled: () => boolean, answers: () => Promise<void>): Promise<void> {
   while ((await fs.promises.stat(mountPath)).dev === unmountedDev) {
     if (settled()) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  // The mount exists even when the app is unreachable. Listing it proves the app answers and accepts the token.
-  await fs.promises.readdir(mountPath);
+  // The mount exists even when the app is unreachable.
+  await answers();
 }
 
 async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
-  const { volumeId, name, cacheMode, caseInsensitive } = volume;
+  const { volumeId, name, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds } = volume;
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -93,13 +105,15 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
     await fs.promises.mkdir(mountPath, { recursive: true });
     const cache = await createVolumeCache(volume);
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode, caseInsensitive, cache), {
-      env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: process.env.PROXY_TOKEN },
+    const hostApiUrl = process.env.SUPERAGENT_HOST_API_URL ?? '';
+    const token = process.env.PROXY_TOKEN ?? '';
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, hostApiUrl, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds, cache), {
+      env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: token },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     rclone = child;
     await Promise.race([
-      untilMountAnswers(mountPath, unmountedDev, () => settled),
+      untilMountAnswers(mountPath, unmountedDev, () => settled, () => volumeAnswers(hostApiUrl, volumeId, token)),
       new Promise((_, reject) => {
         child.once('error', reject);
         child.once('exit', (code) => reject(new Error(`rclone exited with code ${code}`)));

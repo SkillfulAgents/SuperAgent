@@ -3,6 +3,8 @@ import { VOLUME_TYPES, type StoredVolume, type VolumeType } from '@shared/lib/ty
 import { LocalMountableVolume, localVolumeConfigSchema, prepareLocalVolume } from './local-mountable-volume'
 import { DropboxMountableVolume, prepareDropboxVolume } from './dropbox-mountable-volume'
 import { dropboxVolumeConfigSchema } from './dropbox-schema'
+import { GoogleDriveMountableVolume, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
+import { googleDriveVolumeConfigSchema } from './google-drive-schema'
 import type { BaseMountableVolume } from './base-mountable-volume'
 import type { VolumeFolderBrowser, VolumeSetupViewer } from './volume-folder-browser'
 import { VolumeError } from './volume-error'
@@ -45,6 +47,7 @@ function volumeType<C>(
 
 const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume, DropboxMountableVolume.browseFolders),
+  googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume, GoogleDriveMountableVolume.browseFolders),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
 }
 
