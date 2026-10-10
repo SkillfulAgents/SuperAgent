@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the QA-20261007-195945-didg agent can successfully execute browser commands (open, navigate, extract page title, close) and return a response mentioning \"Example Domain\"",
+  "reason": "Browser use feature test - Agent successfully opened a browser, navigated to https://example.com, captured the page title \"Example Domain\", and reported back.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut home page showing agents list and sidebar navigation",
-    "Found and clicked \"QA-20261007-195945-didg\" agent in the sidebar — Successfully navigated to the agent's session page with chat interface",
-    "Clicked on chat input textbox and typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in textbox with text visible in input field",
-    "Clicked Send message button — Message successfully sent, page transitioned to new session with URL showing session ID (db84bb59-8600-4695-8e48-c37bea7e7bb1)",
-    "Waited for agent response with \"Working...\" status showing 3 tool calls (Open Browser, Close Browser) — Agent completed work in 5 seconds with 149,633 tokens used",
-    "Verified response mentions \"Example Domain\" — Response explicitly states: \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally, and I've closed the browser.\"",
-    "Took final screenshot documenting the complete response — Screenshot captured showing the agent's response with page title \"Example Domain\" clearly visible"
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut application homepage. Page title: \"Gamut\"",
+    "Found the \"QA-20261010-002908-fda7\" agent in the sidebar - Located the agent in the \"Your Agents\" folder section within the sidebar navigation",
+    "Clicked on the agent to open its page - Successfully navigated to the agent's detail page at URL http://localhost:47891/agents/qa-20261010-002908-fda7-or8erkv6ln. Page title changed to \"QA-20261010-002908-fda7 · Gamut\"",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully typed and sent the message to the agent. Session URL updated to http://localhost:47891/agents/qa-20261010-002908-fda7-or8erkv6ln/sessions/94e8e360-6eaa-4466-9202-cd5984cb7a36",
+    "Waited up to 3 minutes for a response - Response received within 4 seconds (well within the 3-minute timeout)",
+    "Verified response mentions \"Example Domain\" - ✅ CONFIRMED. The agent's response states: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" The response also shows 3 tool calls were executed and 150,117 tokens used."
   ],
   "bugs": [],
-  "durationMs": 70204,
-  "sessionId": "11850595-69da-462f-baab-4967189f3abd",
+  "durationMs": 228625,
+  "sessionId": "0facea03-cb33-4f23-ae68-cbfaf6460899",
   "cost": {
-    "inputTokens": 380,
-    "outputTokens": 10904,
-    "cacheCreationTokens": 83465,
-    "cacheReadTokens": 1130027,
+    "inputTokens": 536,
+    "outputTokens": 17851,
+    "cacheCreationTokens": 51654,
+    "cacheReadTokens": 1398172,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.272234
+    "totalCostUsd": 0.294176
   }
 }
