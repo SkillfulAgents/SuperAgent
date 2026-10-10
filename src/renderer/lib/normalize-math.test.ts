@@ -4,6 +4,12 @@ import { normalizeMath } from './normalize-math'
 describe('normalizeMath', () => {
   it('escapes prices so they never open inline math', () => {
     expect(normalizeMath('It costs $5 and $10.50 per seat.')).toBe('It costs \\$5 and \\$10.50 per seat.')
+    expect(normalizeMath('Pay $5-$10. Use $HOME later.')).toBe('Pay \\$5-\\$10. Use $HOME later.')
+  })
+
+  it('keeps math that starts with a digit', () => {
+    const text = '- $2T(n/2)$: two recursive calls on halves of size $n/2$.'
+    expect(normalizeMath(text)).toBe(text)
   })
 
   it('keeps $...$ and $$...$$ math as written', () => {
