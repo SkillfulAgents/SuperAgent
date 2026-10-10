@@ -23,7 +23,7 @@ export interface PendingMessage {
    * agent picks it up and it materializes in the transcript.
    */
   queued?: boolean
-  sender?: { id: string; name: string; email: string }
+  sender?: { id: string; name: string; email: string; image?: string | null }
 }
 
 /** True for user messages that start a new turn — queued (mid-turn) messages don't end the turn they appear in. */

@@ -1,6 +1,7 @@
 import { Outlet, useParams, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useUser } from '@renderer/context/user-context'
+import { getUserImage } from '@shared/lib/user-profile-schema'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -67,7 +68,7 @@ export function AgentShell() {
         const arr = [
           {
             ...seeded,
-            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : seeded.sender,
+            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email, image: getUserImage(user) } : seeded.sender,
           },
         ]
         pendingMessagesRef.current.set(sessionId, arr)
@@ -97,7 +98,7 @@ export function AgentShell() {
           text: content,
           sentAt: Date.now(),
           queued,
-          sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+          sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email, image: getUserImage(user) } : undefined,
         },
       ])
       forceUpdate((n) => n + 1)
@@ -158,7 +159,7 @@ export function AgentShell() {
             uuid: messageUuid,
             text: initialMessage,
             sentAt: Date.now(),
-            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email, image: getUserImage(user) } : undefined,
           },
         ])
       }
