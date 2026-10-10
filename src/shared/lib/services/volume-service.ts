@@ -58,7 +58,7 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   const userId = ownerFor(input.visibility, viewer)
   let prepared: Awaited<ReturnType<typeof prepareVolume>>
   try {
-    prepared = await prepareVolume(input.type, input.config)
+    prepared = await prepareVolume(input.type, input.config, viewer)
   } catch (error) {
     throw new VolumeError(error instanceof Error ? error.message : 'Invalid volume configuration', 400)
   }

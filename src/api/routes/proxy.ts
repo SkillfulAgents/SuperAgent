@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
@@ -9,45 +8,13 @@ import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
-import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { db } from '@shared/lib/db'
 import {
   connectedAccounts,
   agentConnectedAccounts,
-  proxyAuditLog,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
-
-interface ProxyAuditEntry {
-  agentSlug: string
-  accountId: string
-  toolkit: string
-  targetHost: string
-  targetPath: string
-  method: string
-  statusCode?: number
-  errorMessage?: string
-  policyDecision?: string
-  matchedScopes?: string
-}
-
-async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: number }): Promise<void> {
-  try {
-    await db.insert(proxyAuditLog).values({
-      id: crypto.randomUUID(),
-      ...entry,
-      statusCode: entry.statusCode ?? null,
-      errorMessage: entry.errorMessage ?? null,
-      durationMs: entry.durationMs ?? null,
-      policyDecision: entry.policyDecision ?? null,
-      matchedScopes: entry.matchedScopes ?? null,
-      createdAt: new Date(),
-    })
-    trackServerEvent('api_called', { slug: entry.toolkit })
-  } catch (error) {
-    console.error('[proxy] Failed to write audit log:', error)
-  }
-}
 
 const proxy = new Hono()
 

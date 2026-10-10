@@ -11,11 +11,12 @@ export interface VolumeEntry {
 
 /**
  * A file opened for reading: its size and bytes come from the same open. Call `stream` once, which
- * releases the open when it ends, or `close` when sending no body.
+ * releases the open when it ends, or `close` when sending no body. Await stream
+ * establishment before sending HTTP headers so remote failures retain their status.
  */
 export interface VolumeFile {
   size: number
-  stream(range?: ByteRange): ReadableStream<Uint8Array>
+  stream(range?: ByteRange): ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>
   close(): Promise<void>
 }
 
@@ -36,6 +37,8 @@ export function mountPathOf(name: string): string {
 export abstract class BaseMountableVolume<C> {
   abstract readonly type: VolumeType
   abstract readonly cacheMode: VolumeCacheMode
+  /** Case semantics belong to the source, independently of its cache policy. */
+  readonly caseInsensitive: boolean = false
 
   constructor(readonly id: string, readonly name: string, readonly config: C) {}
 
@@ -50,6 +53,8 @@ export abstract class BaseMountableVolume<C> {
 
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
+  /** Advisory root health for settings and mount status. Remote drivers may cache it. */
+  health(): Promise<VolumeEntry> { return this.stat('') }
   abstract read(path: string): Promise<VolumeFile>
   /** Replace a whole file. */
   abstract write(path: string, body: ReadableStream<Uint8Array>): Promise<void>

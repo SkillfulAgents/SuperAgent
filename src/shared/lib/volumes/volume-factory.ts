@@ -11,27 +11,27 @@ interface PreparedVolume {
 }
 
 interface VolumeTypeEntry {
-  instantiate(row: StoredVolume): BaseMountableVolume<unknown> | null
-  prepare(config: unknown): Promise<{ name: string; config: unknown }>
+  instantiate(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null
+  prepare(config: unknown, creator?: { userId: string | null }): Promise<{ name: string; config: unknown }>
 }
 
 // Each type's functions are bound to its schema, so they receive the config that schema produced.
 function volumeType<C>(
   schema: z.ZodType<C>,
-  create: (row: StoredVolume, config: C) => BaseMountableVolume<C>,
-  prepare: (config: C) => Promise<{ name: string; config: C }>,
+  create: (row: StoredVolume, config: C, agentSlug?: string) => BaseMountableVolume<C>,
+  prepare: (config: C, creator?: { userId: string | null }) => Promise<{ name: string; config: C }>,
 ): VolumeTypeEntry {
   return {
-    instantiate(row) {
+    instantiate(row, agentSlug) {
       const config = schema.safeParse(row.config)
-      if (config.success) return create(row, config.data)
+      if (config.success) return create(row, config.data, agentSlug)
       console.warn(`[volumes] Volume ${row.id} of type ${row.type} has an invalid config; leaving it out:`, config.error.message)
       return null
     },
-    async prepare(input) {
+    async prepare(input, creator) {
       const config = schema.safeParse(input)
       if (!config.success) throw new Error(`Invalid volume config: ${z.prettifyError(config.error)}`)
-      return prepare(config.data)
+      return prepare(config.data, creator)
     },
   }
 }
@@ -45,12 +45,12 @@ function isVolumeType(type: string): type is VolumeType {
 }
 
 /** The volume a stored row describes, or null when its config is not that type's. */
-export function instantiateVolume(row: StoredVolume): BaseMountableVolume<unknown> | null {
-  return volumeTypes[row.type].instantiate(row)
+export function instantiateVolume(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null {
+  return volumeTypes[row.type].instantiate(row, agentSlug)
 }
 
 /** A new volume of a type, checked by that type, or a rejection whose message is for the user. */
-export async function prepareVolume(type: string, config: unknown): Promise<PreparedVolume> {
+export async function prepareVolume(type: string, config: unknown, creator?: { userId: string | null }): Promise<PreparedVolume> {
   if (!isVolumeType(type)) throw new Error(`Unknown volume type: ${type}`)
-  return { type, ...(await volumeTypes[type].prepare(config)) }
+  return { type, ...(await volumeTypes[type].prepare(config, creator)) }
 }
