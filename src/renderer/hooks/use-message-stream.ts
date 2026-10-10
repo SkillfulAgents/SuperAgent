@@ -735,6 +735,7 @@ function getOrCreateEventSource(
             isSubagent: data.isSubagent,
             taskType: data.taskType,
             description: data.description,
+            subagentType: data.subagentType,
           }
           const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
@@ -1236,9 +1237,18 @@ function getOrCreateEventSource(
             usage: existing?.usage ?? null,
             lastToolName: existing?.lastToolName ?? null,
           }
+          // A new run under a call that already finished (CLI 2.1.296+ re-runs
+          // a subagent under its launching call to hand it the result of its
+          // own background work) is running again until its next completion.
+          let completedSubagents = current.completedSubagents
+          if (data.parentToolId && completedSubagents?.has(data.parentToolId)) {
+            completedSubagents = new Set(completedSubagents)
+            completedSubagents.delete(data.parentToolId)
+          }
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
+            completedSubagents,
           })
         }
       }
@@ -1369,7 +1379,7 @@ function getOrCreateEventSource(
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const updated: SubagentInfo = {
             parentToolId: data.parentToolId,
-            agentId: existing?.agentId ?? null,
+            agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: data.summary ?? existing?.progressSummary ?? null,

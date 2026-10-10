@@ -122,6 +122,8 @@ interface BackgroundTaskInfo {
   taskType?: string
   /** The SDK's description from its level set — the label when the transcript has none. */
   description?: string
+  /** A subagent task's type from the level set (SDK >= 0.3.293). */
+  subagentType?: string
   /**
    * The SDK's `ambient` flag (>= 0.3.284): a housekeeping task or live-update
    * watcher. Kept here because it is live work for settling, but never sent
@@ -141,6 +143,7 @@ export interface ActiveBackgroundTaskSnapshot {
   isSubagent?: boolean
   taskType?: string
   description?: string
+  subagentType?: string
 }
 
 function backgroundTaskSnapshot(taskId: string, info: BackgroundTaskInfo): ActiveBackgroundTaskSnapshot {
@@ -151,6 +154,7 @@ function backgroundTaskSnapshot(taskId: string, info: BackgroundTaskInfo): Activ
     isSubagent: info.isSubagent,
     taskType: info.taskType,
     description: info.description,
+    subagentType: info.subagentType,
   }
 }
 
@@ -2623,6 +2627,9 @@ class MessagePersister {
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'subagent_progress',
             parentToolId: content.tool_use_id,
+            // task_id === the subagent's agentId (see task_started), so every
+            // subagent event names its agent.
+            agentId: typeof content.task_id === 'string' ? content.task_id : undefined,
             summary: content.summary,
             subagentType: content.subagent_type,
             usage: content.usage,
@@ -2804,6 +2811,7 @@ class MessagePersister {
               this.upsertBackgroundTask(sessionId, state, task.task_id, {
                 taskType: task.task_type,
                 description: task.description,
+                subagentType: task.subagent_type,
                 isSubagent: task.task_type === 'local_agent' ? true : undefined,
                 isWorkflow: task.task_type === 'local_workflow' ? true : undefined,
                 // Always set: the level set is the authority on the flag, and
@@ -3314,10 +3322,31 @@ class MessagePersister {
     })
   }
 
+  // The entry a subagent frame belongs to. A frame names the call that first
+  // launched its agent (parent_tool_use_id), even during a later run started
+  // by SendMessage, whose task_started registered that run under the
+  // SendMessage call instead. Routing by parent_tool_use_id alone streamed a
+  // resumed run into the first run's finished entry while the live one stayed
+  // blank. The frame's agent_id names the agent, so its live run wins.
+  private sidechainRunToolId(state: StreamingState, parentToolId: string, agentId: string | undefined): string {
+    if (!agentId) return parentToolId
+    const named = state.activeSubagents.get(parentToolId)
+    if (named && !named.completed && (named.agentId === agentId || named.agentId === null)) return parentToolId
+    let live: string | null = null
+    for (const [toolId, sub] of state.activeSubagents) {
+      if (sub.agentId === agentId && !sub.completed) live = toolId
+    }
+    return live ?? parentToolId
+  }
+
   // Handle sidechain (subagent) messages — filter them out of main streaming state
   private handleSidechainMessage(sessionId: string, content: any, state: StreamingState): void {
     const { agentSlug } = state
-    const parentToolId = content.parent_tool_use_id as string
+    // SDK 0.3.292+ stamps `agent_id` on a subagent's assistant and user
+    // frames; `agentId` is the transcript-JSONL spelling, which the live
+    // stream never carried.
+    const messageAgentId = (content.agent_id ?? content.agentId) as string | undefined
+    const parentToolId = this.sidechainRunToolId(state, content.parent_tool_use_id as string, messageAgentId)
 
     // Look up or create the subagent entry for this parent tool
     let sub = state.activeSubagents.get(parentToolId)
@@ -3334,11 +3363,7 @@ class MessagePersister {
       state.activeSubagents.set(parentToolId, sub)
     }
 
-    // Extract agentId from the message if available (belt-and-suspenders with
-    // task_started). SDK 0.3.292+ stamps `agent_id` on a subagent's assistant
-    // and user frames; `agentId` is the transcript-JSONL spelling, which the
-    // live stream never carried, so before that this line never fired.
-    const messageAgentId = (content.agent_id ?? content.agentId) as string | undefined
+    // Learn the agentId from the frame (belt-and-suspenders with task_started).
     if (messageAgentId && !sub.agentId) {
       sub.agentId = messageAgentId
       this.broadcastToSSE(agentSlug, sessionId, {
