@@ -91,6 +91,40 @@ beforeEach(async () => {
 afterEach(async () => { await handle.close(); vi.unstubAllEnvs() })
 
 describe('Google Drive volume access and transport', () => {
+  it('uses the generic setup route for every listing page and keeps only folder IDs and names', async () => {
+    forward.mockImplementation(async ({ targetUrl }) => {
+      const url = new URL(targetUrl)
+      expect(url.searchParams.get('q')).toContain("mimeType = 'application/vnd.google-apps.folder'")
+      return Response.json(url.searchParams.has('pageToken')
+        ? { files: [{ ...sub, id: 'second', name: 'Second folder' }] }
+        : { files: [sub], nextPageToken: 'next' })
+    })
+    const response = await browse('alice', { accountId: 'drive', folderId: 'team' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ folders: [{ id: 'sub', name: 'Sub' }, { id: 'second', name: 'Second folder' }] })
+    expect(urls().map(url => url.searchParams.get('pageToken'))).toEqual([null, 'next'])
+  })
+
+  it('reports invalid upstream JSON as unavailable, not as invalid browse parameters', async () => {
+    forward.mockResolvedValueOnce(Response.json({ files: 'invalid upstream data' }))
+    const response = await browse('alice', { accountId: 'drive', folderId: 'team' })
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'The volume source is temporarily unavailable. Please try again.' })
+  })
+
+  it('preserves an exhausted rate limit and Retry-After through the generic route', async () => {
+    forward.mockImplementation(async () => Response.json({}, { status: 429, headers: { 'Retry-After': '60' } }))
+    vi.useFakeTimers()
+    try {
+      const pending = browse('alice', { accountId: 'drive', folderId: 'team' })
+      await vi.advanceTimersByTimeAsync(3000)
+      const response = await pending
+      expect(response.status).toBe(429)
+      expect(response.headers.get('Retry-After')).toBe('60')
+      expect(await response.json()).toEqual({ error: 'Google Drive is busy. Please try again shortly.' })
+    } finally { vi.useRealTimers() }
+  })
+
   it('lets only the account owner browse, listing My Drive and shared drives at the top and subfolders below', async () => {
     expect((await browse('')).status).toBe(401)
     for (const caller of ['bob', 'admin']) {
