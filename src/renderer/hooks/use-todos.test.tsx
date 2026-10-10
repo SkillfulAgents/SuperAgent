@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   createAgentForPrompt: vi.fn(),
   track: vi.fn(),
   claimedTodo: {} as Record<string, unknown>,
+  claimedAttachments: [] as { id: string; name: string; size: number; mimeType: string; addedAt: number }[],
 }))
 
 vi.mock('sonner', () => ({ toast: { error: state.toastError } }))
@@ -36,10 +37,13 @@ vi.mock('@renderer/lib/api', () => ({
     if (path === '/api/todos/t1/claim') {
       if (state.claimHeld) return new Response(JSON.stringify({ error: 'This is already starting' }), { status: 409 })
       state.claimHeld = true
-      return new Response(JSON.stringify({ claim: 'c1', todo: { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst', ...state.claimedTodo } }))
+      return new Response(JSON.stringify({ claim: 'c1', todo: { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst', attachments: state.claimedAttachments, ...state.claimedTodo } }))
     }
     if (path === '/api/todos/t1' && method === 'PATCH') {
       return new Response(JSON.stringify({ id: 't1', column: 'drafts', agentSlug: body.agentSlug, newAgent: false }))
+    }
+    if (path === '/api/agents/analyst/mounts' && method === 'POST') {
+      return new Response(JSON.stringify({ id: 'mount-1', name: 'notes' }))
     }
     if (path === '/api/todos/t1/release') {
       state.claimHeld = false
@@ -75,6 +79,7 @@ beforeEach(() => {
   state.createAgentForPrompt.mockReset()
   state.track.mockReset()
   state.claimedTodo = {}
+  state.claimedAttachments = []
 })
 
 describe('useTodos', () => {
@@ -187,6 +192,54 @@ describe('useStartTodo', () => {
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
     await expect(result.current.mutateAsync(draft())).rejects.toThrow()
     expect(state.toastError).not.toHaveBeenCalled()
+  })
+
+  it('names a stored path', async () => {
+    const att = { id: '11111111-1111-4111-8111-111111111111', name: 'note.txt', size: 5, mimeType: 'text/plain', addedAt: 1, kind: 'file' as const, path: '/workspace/uploads/note.txt', agentSlug: 'analyst' }
+    state.claimedAttachments = [att]
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft())
+
+    expect(state.createSession).toHaveBeenCalledWith({
+      agentSlug: 'analyst',
+      message: 'Churn\n\nWhy did it spike?\n\n[Attached files:]\n- /workspace/uploads/note.txt',
+    })
+  })
+
+  it('names a stored folder and binds a mount after the claim', async () => {
+    const folder = { id: '22222222-2222-4222-8222-222222222222', name: 'notes', size: 8, mimeType: 'inode/directory', addedAt: 1, kind: 'folder' as const, path: '/workspace/uploads/notes/', agentSlug: 'analyst' }
+    const mount = { id: '33333333-3333-4333-8333-333333333333', name: 'notes', size: 0, mimeType: 'inode/mount', addedAt: 1, kind: 'mount' as const, hostPath: '/tmp/notes', agentSlug: 'analyst' }
+    state.claimedAttachments = [folder, mount]
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft())
+
+    const claimAt = state.calls.findIndex((call) => call.path === '/api/todos/t1/claim')
+    const mountAt = state.calls.findIndex((call) => call.path === '/api/agents/analyst/mounts')
+    expect(mountAt).toBeGreaterThan(claimAt)
+    expect(state.createSession).toHaveBeenCalledWith({
+      agentSlug: 'analyst',
+      message: 'Churn\n\nWhy did it spike?\n\n[Mounted folders (read-write):]\n- /mounts/notes (from /tmp/notes)\n\n[Attached files:]\n- /workspace/uploads/notes/',
+    })
+  })
+
+  it('removes a mount when the session does not start', async () => {
+    const mount = { id: '33333333-3333-4333-8333-333333333333', name: 'notes', size: 0, mimeType: 'inode/mount', addedAt: 1, kind: 'mount' as const, hostPath: '/tmp/notes', agentSlug: 'analyst' }
+    state.claimedAttachments = [mount]
+    state.createSession.mockRejectedValue(new Error('The agent could not start'))
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await expect(result.current.mutateAsync(draft())).rejects.toThrow('The agent could not start')
+    await waitFor(() => expect(state.calls).toContainEqual({ path: '/api/agents/analyst/mounts/mount-1?restart=true', method: 'DELETE', body: undefined }))
+  })
+
+  it('refuses a file on another agent and gives the claim back', async () => {
+    const att = { id: '11111111-1111-4111-8111-111111111111', name: 'note.txt', size: 5, mimeType: 'text/plain', addedAt: 1, kind: 'file' as const, path: '/workspace/uploads/note.txt', agentSlug: 'other' }
+    state.claimedAttachments = [att]
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await expect(result.current.mutateAsync(draft())).rejects.toThrow('An attached file is not on this agent')
+    expect(state.createSession).not.toHaveBeenCalled()
+    await waitFor(() => expect(state.calls).toContainEqual({ path: '/api/todos/t1/release', method: 'POST', body: { claim: 'c1' } }))
   })
 
   it('gives the claim back when the session could not be created', async () => {

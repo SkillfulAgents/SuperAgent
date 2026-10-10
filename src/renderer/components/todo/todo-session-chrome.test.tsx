@@ -46,6 +46,7 @@ function todo(id: string, column: TodoView['column']): TodoView {
     updatedAt: clock,
     startedAt: clock,
     completedAt: null,
+    attachments: [],
     ask: null,
     pendingWakeAt: null,
   }

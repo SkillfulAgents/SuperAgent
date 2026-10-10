@@ -1,9 +1,25 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import {
+  folderChoice,
   getFolderFromDirectoryInput,
   getItemsFromDataTransfer,
 } from './file-utils'
+
+describe('folderChoice', () => {
+  it('mounts folders with a path on disk and copies the rest', () => {
+    const folders = [
+      { folderName: 'notes', folderPath: '/Users/me/notes', files: [] },
+      { folderName: 'web', files: [] },
+    ]
+    expect(folderChoice('mount', folders)).toEqual({
+      upload: [folders[1]],
+      mount: [{ folderName: 'notes', hostPath: '/Users/me/notes' }],
+    })
+    expect(folderChoice('upload', folders)).toEqual({ upload: folders, mount: [] })
+    expect(folderChoice('cancel', folders)).toEqual({ upload: [], mount: [] })
+  })
+})
 
 /**
  * Helper to create a mock FileList from an array of partial File objects.

@@ -33,6 +33,8 @@ vi.mock('@renderer/hooks/use-todos', () => ({
   useUpdateTodo: () => ({ mutateAsync: state.update }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
   useRenameTodo: () => ({ mutateAsync: state.rename, isPending: false }),
+  useSaveTodoPointer: () => ({ mutateAsync: vi.fn() }),
+  useRemoveTodoAttachment: () => ({ mutateAsync: vi.fn() }),
 }))
 
 import { TodoBoard } from './todo-board'
@@ -56,6 +58,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     updatedAt: Date.now(),
     startedAt: null,
     completedAt: null,
+    attachments: [],
     ask: null,
     pendingWakeAt: null,
     ...partial,

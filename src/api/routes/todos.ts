@@ -11,15 +11,20 @@
  *
  * Everything 404s for someone who has not turned the experiment on.
  */
+import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import type { z } from 'zod'
+import { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { FileOps } from '@shared/lib/agent-actor/types'
+import { normalizeWorkspacePath, workspaceBasename } from '@shared/lib/agent-actor/workspace-path'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
+import { openXAgentFile } from '@shared/lib/services/x-agent-attachment-service'
 import {
   addSessionTodo,
+  appendTodoAttachment,
   claimStart,
   createTodo,
   deleteTodo,
@@ -27,6 +32,7 @@ import {
   listTodos,
   moveTodo,
   releaseStart,
+  removeTodoAttachment,
   renameTodo,
   setTodoStatus,
   startClaimHeld,
@@ -39,6 +45,8 @@ import {
   addSessionTodoSchema,
   createTodoSchema,
   moveTodoSchema,
+  parseTodoAttachments,
+  todoAttachmentSchema,
   releaseStartSchema,
   renameTodoSchema,
   startTodoSchema,
@@ -46,6 +54,7 @@ import {
   todoColumn,
   todoStatusChangeSchema,
   updateTodoSchema,
+  type TodoAttachment,
   type TodoView,
 } from '@shared/lib/todos/todo-schema'
 import { Authenticated, getReadableAgentIds } from '../middleware/auth'
@@ -105,6 +114,7 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: Pendin
     pendingWakeAt: column === 'has_updates' && row.agentSlug && row.sessionId
       ? wakes.get(wakeKey(row.agentSlug, row.sessionId)) ?? null
       : null,
+    attachments: parseTodoAttachments(row.attachments),
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     startedAt: row.startedAt?.getTime() ?? null,
@@ -177,7 +187,28 @@ todosRouter.patch('/:id', async (c) => {
   if (patch.agentSlug && !(await canAssign(c, patch.agentSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
-  return respond(c, await updateDraft(getCurrentUserId(c), c.req.param('id'), patch))
+  const userId = getCurrentUserId(c)
+  const id = c.req.param('id')
+  const target = patch.agentSlug
+  const before = target ? await getTodo(userId, id) : undefined
+  const list = before ? parseTodoAttachments(before.attachments) : []
+  if (target && before && list.some((att) => att.agentSlug !== target)) {
+    // The files go along with the agent. The old copies stay, as they do in chat. A mount only takes the new name.
+    const sources = [...new Set(list.flatMap((att) => (att.kind === 'mount' || att.agentSlug === target ? [] : [att.agentSlug])))]
+    if (sources.length > 0) {
+      const readable = await getReadableAgentIds(c, sources)
+      if (!(await getReadableAgentIds(c, [target], 'user')).has(target) || sources.some((slug) => !readable.has(slug))) {
+        return c.json({ error: 'Agent not found' }, 404)
+      }
+    }
+    const copied = await copyToAgent(list, target)
+    if (!copied) return c.json({ error: 'Could not copy the attached files to that agent' }, 409)
+    const result = await updateDraft(userId, id, patch, { attachments: copied.list, from: before.attachments })
+    // Refused (a start took the draft mid-copy): nothing points at the copies.
+    if (!result.ok) await agentRegistry.get(target).files.delete(copied.dir, { recursive: true, confined: true }).catch(() => {})
+    return respond(c, result)
+  }
+  return respond(c, await updateDraft(userId, id, patch))
 })
 
 // Starting is three steps, because the session is created through the
@@ -246,6 +277,124 @@ todosRouter.post('/:id/position', async (c) => {
   const input = await parseBody(c, moveTodoSchema)
   if (!input) return c.json({ error: 'Invalid position' }, 400)
   return respond(c, await moveTodo(getCurrentUserId(c), c.req.param('id'), input.position))
+})
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function uuidParam(value: string): string | null {
+  return UUID.test(value) ? value : null
+}
+
+function uploadRelative(raw: string): string | null {
+  try {
+    const rel = normalizeWorkspacePath(raw)
+    return rel.startsWith('uploads/') ? rel : null
+  } catch {
+    return null
+  }
+}
+
+async function copyFile(source: FileOps, target: FileOps, from: string, to: string): Promise<void> {
+  const { body } = await openXAgentFile(source, from)
+  await target.write(to, body, { confined: true, overwrite: false })
+}
+
+async function copyTree(source: FileOps, target: FileOps, from: string, to: string): Promise<void> {
+  for (const entry of await source.list(from)) {
+    if (entry.kind === 'directory') await copyTree(source, target, entry.path, `${to}/${entry.name}`)
+    else await copyFile(source, target, entry.path, `${to}/${entry.name}`)
+  }
+}
+
+/** Copies each file and folder onto `target`, where cross-agent transfers land. Null, with nothing left behind, if one fails. */
+async function copyToAgent(list: TodoAttachment[], target: string): Promise<{ list: TodoAttachment[]; dir: string } | null> {
+  const files = agentRegistry.get(target).files
+  const dir = `uploads/x-agent/${randomUUID()}`
+  try {
+    const next: TodoAttachment[] = []
+    for (const [index, att] of list.entries()) {
+      if (att.kind === 'mount' || att.agentSlug === target) {
+        next.push({ ...att, agentSlug: target })
+        continue
+      }
+      const from = uploadRelative(att.path)
+      if (!from) throw new Error('Not an upload')
+      const to = `${dir}/${index}/${workspaceBasename(from)}`
+      const source = agentRegistry.get(att.agentSlug).files
+      if (att.kind === 'folder') await copyTree(source, files, from, to)
+      else await copyFile(source, files, from, to)
+      next.push({ ...att, agentSlug: target, path: `/workspace/${to}${att.kind === 'folder' ? '/' : ''}` })
+    }
+    return { list: next, dir }
+  } catch {
+    await files.delete(dir, { recursive: true, confined: true }).catch(() => {})
+    return null
+  }
+}
+
+const pointerSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  size: z.number().int().nonnegative().optional(),
+  mimeType: z.string().max(200).optional(),
+  path: z.string().min(1).max(4096).optional(),
+  hostPath: z.string().min(1).max(4096).optional(),
+  kind: z.enum(['file', 'folder', 'mount']).optional(),
+  id: z.string().uuid(),
+}).strict()
+
+// POST /api/todos/:id/attachments — remember a file already in the agent's workspace, or a mount path.
+todosRouter.post('/:id/attachments', async (c) => {
+  const todoId = uuidParam(c.req.param('id'))
+  if (!todoId) return c.json({ error: 'Todo not found' }, 404)
+  const body = await parseBody(c, pointerSchema)
+  if (!body) return c.json({ error: 'Invalid attachment' }, 400)
+  const userId = getCurrentUserId(c)
+  const existing = await getTodo(userId, todoId)
+  if (!existing) return c.json({ error: 'Todo not found' }, 404)
+  if (existing.status !== 'draft' || startClaimHeld(existing) || !existing.agentSlug) {
+    return c.json({ error: 'The todo has changed; reload and try again' }, 409)
+  }
+  if (!(await canAssign(c, existing.agentSlug))) return c.json({ error: 'Agent not found' }, 404)
+  const attId = body.id
+  let entry: TodoAttachment
+  if (body.kind === 'mount') {
+    if (!body.hostPath) return c.json({ error: 'Invalid attachment' }, 400)
+    entry = {
+      id: attId, name: body.name, size: 0, mimeType: 'inode/mount', addedAt: Date.now(),
+      kind: 'mount', hostPath: body.hostPath, agentSlug: existing.agentSlug,
+    }
+  } else {
+    const rel = body.path ? uploadRelative(body.path) : null
+    if (!rel) return c.json({ error: 'Invalid attachment' }, 400)
+    const stat = await agentRegistry.get(existing.agentSlug).files.stat(rel)
+    if (!stat) return c.json({ error: 'Invalid attachment' }, 400)
+    const kind = stat.kind === 'directory' ? 'folder' : 'file'
+    entry = {
+      id: attId,
+      name: body.name,
+      size: stat.size,
+      mimeType: kind === 'folder' ? 'inode/directory' : (body.mimeType || 'application/octet-stream'),
+      addedAt: Date.now(),
+      kind,
+      path: `/workspace/${rel}${kind === 'folder' ? '/' : ''}`,
+      agentSlug: existing.agentSlug,
+    }
+  }
+  const parsed = todoAttachmentSchema.safeParse(entry)
+  if (!parsed.success) return c.json({ error: 'Invalid attachment' }, 400)
+  const appended = await appendTodoAttachment(userId, todoId, parsed.data)
+  if (!appended.ok) {
+    return c.json(
+      { error: appended.reason === 'not_found' ? 'Todo not found' : 'The todo has changed; reload and try again' },
+      appended.reason === 'not_found' ? 404 : 409,
+    )
+  }
+  return c.json(await viewOf(c, appended.todo))
+})
+
+// DELETE /api/todos/:id/attachments/:attId — drop the pointer. The file stays in the workspace, as it does in chat.
+todosRouter.delete('/:id/attachments/:attId', async (c) => {
+  return respond(c, await removeTodoAttachment(getCurrentUserId(c), c.req.param('id'), c.req.param('attId')))
 })
 
 // DELETE /api/todos/:id — take it off the board. Its session, if any, stays.

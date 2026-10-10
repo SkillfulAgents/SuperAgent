@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, notExists, or } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, notExists, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
@@ -7,6 +7,7 @@ import {
   TODO_TRANSITIONS,
   type AddSessionTodoInput,
   type CreateTodoInput,
+  type TodoAttachment,
   type TodoStatusChange,
   type UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
@@ -69,6 +70,7 @@ export async function createTodo(userId: string, input: CreateTodoInput): Promis
     updatedAt: now,
     startedAt: null,
     completedAt: null,
+    attachments: '[]',
   }
   await db.insert(todos).values(row).run()
   return row
@@ -103,6 +105,7 @@ export async function addSessionTodo(userId: string, input: AddSessionTodoInput)
     updatedAt: now,
     startedAt: now,
     completedAt: null,
+    attachments: '[]',
   }
   const onBoard = and(eq(todos.userId, userId), eq(todos.agentSlug, input.agentSlug), eq(todos.sessionId, input.sessionId))
   const result = await insertWhere(todos, row, notExists(db.select({ id: todos.id }).from(todos).where(onBoard))).run()
@@ -126,7 +129,13 @@ async function reread(userId: string, id: string): Promise<TodoWriteResult> {
  * Edits a draft. Once started, the brief is what the agent was sent and
  * stays as it was; while starting, it is being sent.
  */
-export async function updateDraft(userId: string, id: string, patch: UpdateTodoInput): Promise<TodoWriteResult> {
+export async function updateDraft(
+  userId: string,
+  id: string,
+  patch: UpdateTodoInput,
+  // Pointers copied for a new agent, written with it only if the list is still the one copied from.
+  moved?: { attachments: TodoAttachment[]; from: string },
+): Promise<TodoWriteResult> {
   const now = new Date()
   const result = await db
     .update(todos)
@@ -141,6 +150,51 @@ export async function updateDraft(userId: string, id: string, patch: UpdateTodoI
       ...(patch.llmProviderId !== undefined ? { llmProviderId: patch.llmProviderId } : {}),
       ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
       ...(patch.speed !== undefined ? { speed: patch.speed } : {}),
+      ...(moved ? { attachments: JSON.stringify(moved.attachments) } : {}),
+      updatedAt: now,
+    })
+    .where(and(
+      eq(todos.id, id),
+      eq(todos.userId, userId),
+      eq(todos.status, 'draft'),
+      unclaimed(now),
+      ...(moved ? [eq(todos.attachments, moved.from)] : []),
+    ))
+    .run()
+  return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
+}
+
+/** Adds one pointer, or replaces the one with the same id. Refused unless the item is still an unclaimed draft. */
+export async function appendTodoAttachment(userId: string, id: string, entry: TodoAttachment): Promise<TodoWriteResult> {
+  const now = new Date()
+  const body = JSON.stringify(entry)
+  const result = await db
+    .update(todos)
+    .set({
+      attachments: sql`case
+        when exists (select 1 from json_each(${todos.attachments}) where json_extract(value, '$.id') = ${entry.id})
+        then (
+          select json_group_array(
+            case when json_extract(j.value, '$.id') = ${entry.id} then json(${body}) else json(j.value) end
+          )
+          from json_each(${todos.attachments}) as j
+        )
+        else json_insert(${todos.attachments}, '$[#]', json(${body}))
+      end`,
+      updatedAt: now,
+    })
+    .where(and(eq(todos.id, id), eq(todos.userId, userId), eq(todos.status, 'draft'), unclaimed(now)))
+    .run()
+  if (changesOf(result) === 0) return failure(userId, id)
+  return reread(userId, id)
+}
+
+export async function removeTodoAttachment(userId: string, id: string, attachmentId: string): Promise<TodoWriteResult> {
+  const now = new Date()
+  const result = await db
+    .update(todos)
+    .set({
+      attachments: sql`coalesce((select json_group_array(json(j.value)) from json_each(${todos.attachments}) as j where json_extract(j.value, '$.id') != ${attachmentId}), '[]')`,
       updatedAt: now,
     })
     .where(and(eq(todos.id, id), eq(todos.userId, userId), eq(todos.status, 'draft'), unclaimed(now)))
