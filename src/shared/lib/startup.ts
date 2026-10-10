@@ -38,6 +38,7 @@ import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
+import { configureUploadTimeouts } from './streaming-upload-timeout'
 
 const STARTUP_IO_CONCURRENCY = 3
 const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
@@ -267,6 +268,7 @@ async function initializeServicesInner() {
 
 /** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
 export function setupServerHandlers(server: ServerType): void {
+  if ('requestTimeout' in server) configureUploadTimeouts(server)
   setupBrowserStreamProxy(server)
   setupArtifactStreamProxy(server)
   // Self-gated to Electron main outside auth mode; a no-op everywhere else.

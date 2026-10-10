@@ -32,10 +32,10 @@ describe('rcloneMountArgs', () => {
   it("points rclone at the volume's address under the host API, and the driver settings", () => {
     const args = rcloneMountArgs('v_17', '/mounts/docs', 'http://host.docker.internal:47891/api')
     expect(args).toEqual([
-      'mount', ':webdav:', '/mounts/docs', '--webdav-url', 'http://host.docker.internal:47891/api/volumes/v_17',
+      'mount2', ':webdav:', '/mounts/docs', '--webdav-url', 'http://host.docker.internal:47891/api/volumes/v_17',
       '--webdav-vendor', 'rclone',
       '--webdav-pacer-min-sleep', '1ms', '--low-level-retries', '13',
-      '--vfs-cache-mode', 'writes', '--cache-dir', '/workspace/.volume-cache/v_17', '--vfs-handle-caching', '0', '--vfs-write-back', '1s', '--dir-cache-time', '1s',
+      '--vfs-cache-mode', 'writes', '--cache-dir', '/workspace/.volume-cache/v_17', '--vfs-handle-caching', '0', '--attr-timeout', '0s', '--vfs-write-back', '1s', '--dir-cache-time', '1s',
       '--file-perms', '0777',
       '--rc', '--rc-addr', 'unix:///tmp/rclone-v_17.sock', '--rc-no-auth',
     ])
@@ -43,6 +43,16 @@ describe('rcloneMountArgs', () => {
 })
 
 describe('remote mount cache policy', () => {
+  it('preserves case-insensitive file identity independently of cache policy', () => {
+    const mounts = parseVolumes(JSON.stringify([{ volumeId: 'dropbox', name: 'cloud', cacheMode: 'remote', caseInsensitive: true }]))
+    expect(mounts[0]?.caseInsensitive).toBe(true)
+    for (const mode of ['local', 'remote'] as const) {
+      const args = rcloneMountArgs('v', '/mounts/docs', 'http://host/api', mode, true)
+      expect(args[args.indexOf('--disable') + 1]).toBe('!CaseInsensitive')
+      expect(args).not.toContain('--vfs-case-insensitive')
+      expect(rcloneMountArgs('v', '/mounts/docs', 'http://host/api', mode)).not.toContain('--disable')
+    }
+  })
   it('caches directory listings and file reads while preserving the correctness settings', () => {
     const args = rcloneMountArgs('cloud', '/mounts/cloud', 'http://host/api', 'remote')
     const option = (name: string) => args[args.indexOf(name) + 1]
@@ -52,6 +62,7 @@ describe('remote mount cache policy', () => {
     expect(option('--vfs-cache-max-age')).toBe('1h')
     expect(option('--webdav-vendor')).toBe('rclone')
     expect(option('--vfs-handle-caching')).toBe('0')
+    expect(option('--attr-timeout')).toBe('0s')
     expect(option('--vfs-write-back')).toBe('1s')
   })
 })
