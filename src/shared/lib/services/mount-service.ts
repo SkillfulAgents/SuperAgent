@@ -77,19 +77,22 @@ export async function removeMount(slug: string, mountId: string): Promise<void> 
 /** The attachment is the grant; knowing a shared definition's id grants no access. */
 export async function resolveVolume(slug: string, mountId: string) {
   const row = (await getMounts(slug)).find(m => m.id === mountId)
-  return row ? instantiateVolume(row) : null
+  return row ? instantiateVolume(row, slug) : null
 }
 
 async function judgeVolumes(slug: string) {
-  return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row) })))
+  return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row, slug) })))
 }
 
 export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
   const judged = await judgeVolumes(slug)
   return {
-    volumes: judged.flatMap(({ row, reason }) => reason === null ? [{
-      volumeId: row.id, name: row.name, cacheMode: instantiateVolume(row)?.cacheMode ?? 'local',
-    }] : []),
+    volumes: judged.flatMap(({ row, reason }) => {
+      if (reason !== null) return []
+      const driver = instantiateVolume(row)
+      return [{ volumeId: row.id, name: row.name, cacheMode: driver?.cacheMode ?? 'local',
+        ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}) }]
+    }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
 }

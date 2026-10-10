@@ -470,10 +470,10 @@ describe('LocalMountableVolume', () => {
 
   it('writes a whole file, then reads it back whole and by range', async () => {
     await volume.write('notes.txt', new Blob(['hello world']).stream())
-    expect(await text((await volume.read('notes.txt')).stream())).toBe('hello world')
+    expect(await text(await (await volume.read('notes.txt')).stream())).toBe('hello world')
     const file = await volume.read('notes.txt')
     expect(file.size).toBe(11)
-    expect(await text(file.stream({ start: 6, end: 10 }))).toBe('world')
+    expect(await text(await file.stream({ start: 6, end: 10 }))).toBe('world')
     expect(await volume.stat('notes.txt')).toMatchObject({ name: 'notes.txt', kind: 'file', size: 11 })
   })
 })

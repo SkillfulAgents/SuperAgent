@@ -29,14 +29,23 @@ function controlSocket(volumeId: string): string {
   return `/tmp/rclone-${volumeId}.sock`;
 }
 
-export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
+export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
   return [
-    'mount', ':webdav:', mountPath,
+    // mount's bazil FUSE adapter caches newly created entries for a minute,
+    // regardless of --attr-timeout. After a directory rename/refresh those
+    // inodes can still refer to old VFS nodes. mount2 applies the configured
+    // expiry to creates and lookups alike.
+    'mount2', ':webdav:', mountPath,
     '--webdav-url', `${hostApiUrl}/volumes/${volumeId}`,
     // Plain WebDAV gives rclone no modification time, so a cached copy is checked against the app by size alone and a
     // same-size edit on the host is missed. The rclone vendor setting reads modification times. The app ignores the
     // X-OC-Mtime header it adds to uploads.
     '--webdav-vendor', 'rclone',
+    // WebDAV defaults to case-sensitive. On Dropbox, rclone otherwise deletes
+    // "FILE" as a separate destination before moving "file", deleting the source
+    // itself. Keep Linux VFS lookups case-sensitive: making both spellings the
+    // same inode lets the kernel silently skip a case-only rename.
+    ...(caseInsensitive ? ['--disable', '!CaseInsensitive'] : []),
     // rclone waits 10ms between WebDAV requests by default, while the app answers in about 1ms, so git on a mount
     // ran 15x slower than through a bind mount. Not 0, so retries after a server error still back off. Retries
     // back off from that 1ms, so 13 of them ride out an app restart as long as the default 10 did from 10ms.
@@ -48,6 +57,10 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
     // downloading the new contents.
     '--vfs-handle-caching', '0',
+    // A directory move replaces VFS child nodes. Kernel-cached dentries can
+    // still point at children with the old paths; resolve them through VFS on
+    // each lookup. The VFS directory/read caches above still serve those calls.
+    '--attr-timeout', '0s',
     // Every upload goes through rclone's queue, so a rename made right after close (as git and editors do) carries onto it.
     '--vfs-write-back', '1s',
     // Local edits must appear promptly; remote listings are expensive. Writes through
@@ -71,7 +84,7 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
 }
 
 async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
-  const { volumeId, name, cacheMode } = volume;
+  const { volumeId, name, cacheMode, caseInsensitive } = volume;
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -80,7 +93,7 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
     await fs.promises.mkdir(mountPath, { recursive: true });
     const cache = await createVolumeCache(volume);
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode, cache), {
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, process.env.SUPERAGENT_HOST_API_URL ?? '', cacheMode, caseInsensitive, cache), {
       env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: process.env.PROXY_TOKEN },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
