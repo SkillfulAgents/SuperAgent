@@ -6,12 +6,13 @@ import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
 const openFile = vi.fn()
 const openFolder = vi.fn()
 let sizeBytes: number | null = 2048
+const useFileSize = vi.fn((_apiPath: string | null) => ({ data: sizeBytes }))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({ openFile, openFolder }),
 }))
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => 'http://api.test' }))
-vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: () => ({ data: sizeBytes }) }))
+vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: (apiPath: string | null) => useFileSize(apiPath) }))
 
 describe('imageSizeForCount', () => {
   it('is single for up to three images, grid beyond', () => {
@@ -26,6 +27,7 @@ describe('SentAttachmentChip', () => {
   beforeEach(() => {
     openFile.mockClear()
     openFolder.mockClear()
+    useFileSize.mockClear()
     sizeBytes = 2048
   })
 
@@ -37,7 +39,7 @@ describe('SentAttachmentChip', () => {
     expect(chip).toHaveTextContent('2.0 KB')
     expect(chip.querySelector('[data-file-icon-size]')).not.toBeNull()
     fireEvent.click(chip)
-    expect(openFile).toHaveBeenCalledWith('/workspace/uploads/1788459888315-report.pdf', 'a1')
+    expect(openFile).toHaveBeenCalledWith('/workspace/uploads/1788459888315-report.pdf', 'a1', undefined)
   })
 
   it('renders an image at native aspect ratio with a height cap', () => {
@@ -76,7 +78,7 @@ describe('SentAttachmentChip', () => {
     expect(chip).toHaveTextContent('2.0 KB')
     expect(chip.querySelector('[data-file-icon-size]')).not.toBeNull()
     fireEvent.click(chip)
-    expect(openFile).toHaveBeenCalledWith('/workspace/uploads/1788459888336-photo.png', 'a1')
+    expect(openFile).toHaveBeenCalledWith('/workspace/uploads/1788459888336-photo.png', 'a1', undefined)
   })
 
   // Originals are uploaded at full resolution and drawn into a 256px box or a
@@ -108,5 +110,16 @@ describe('SentAttachmentChip', () => {
     fireEvent.keyDown(chip, { key: 'Enter' })
     expect(openFolder).toHaveBeenCalledWith('/workspace/uploads/1788459888315-my-project/', 'a1')
     expect(openFile).not.toHaveBeenCalled()
+  })
+
+  // A delivered image: the agent's description rides through to the drawer, and
+  // the size its deliver_file result reported is used instead of a HEAD request.
+  it('hands a delivery description to the drawer and trusts a known size', () => {
+    render(<SentAttachmentChip filePath="/workspace/chart.png" agentSlug="a1" description="Q3 revenue" sizeBytes={4096} />)
+    const chip = screen.getByTestId('file-pill')
+    expect(chip).toHaveAttribute('title', 'chart.png · 4.0 KB')
+    expect(useFileSize).toHaveBeenCalledWith(null)
+    fireEvent.click(chip)
+    expect(openFile).toHaveBeenCalledWith('/workspace/chart.png', 'a1', 'Q3 revenue')
   })
 })

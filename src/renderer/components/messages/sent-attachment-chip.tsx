@@ -16,6 +16,14 @@ interface SentAttachmentChipProps {
    * (cropped to fit) for the 3-column grid used when a message carries more.
    */
   imageSize?: ImageSize
+  /** Agent-supplied blurb from a deliver_file call, handed on to the drawer. */
+  description?: string
+  /**
+   * Byte size, when the caller already knows it (a deliver_file result reports
+   * one). Saves the HEAD request — which matters for a delivery, whose path the
+   * agent may rewrite, so a fetched size could not be cached forever.
+   */
+  sizeBytes?: number
 }
 
 export type ImageSize = 'single' | 'grid'
@@ -32,7 +40,7 @@ export function imageSizeForCount(count: number): ImageSize {
  * name and size. Clicking opens the file (or folder) in the
  * preview drawer. Unlike the composer chip there is no remove control.
  */
-export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }: SentAttachmentChipProps) {
+export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single', description, sizeBytes }: SentAttachmentChipProps) {
   const { openFile, openFolder } = useFilePreview()
   // A picture that will not load is worse than no picture: an alt-text box, or
   // a blank square in a grid. Falling back to the chip still names the file and
@@ -42,12 +50,13 @@ export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }
   const image = file.isImage && !imageBroken
   // An upload lives at a path stamped with the millisecond it arrived and is
   // never rewritten, so its size cannot go stale.
-  const { data: sizeBytes } = useFileSize(file.apiPath, 0, { immutable: true })
-  const sizeText = typeof sizeBytes === 'number' ? formatFileSize(sizeBytes) : null
+  const { data: fetchedSize } = useFileSize(sizeBytes === undefined ? file.apiPath : null, 0, { immutable: true })
+  const size = sizeBytes ?? fetchedSize
+  const sizeText = typeof size === 'number' ? formatFileSize(size) : null
 
   const open = () => {
     if (file.isFolder) openFolder(file.path, file.agentSlug)
-    else openFile(file.path, file.agentSlug)
+    else openFile(file.path, file.agentSlug, description)
   }
 
   return (
