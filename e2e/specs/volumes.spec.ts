@@ -30,7 +30,7 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
 
     await page.goto(`/agents/${second.slug}`)
     await page.getByTestId('add-mount-menu').click()
-    await expect(page.getByRole('menuitem', { name: 'New Volume' })).not.toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'New Volume' })).toBeVisible()
     await page.getByRole('menuitem', { name: renamed, exact: false }).click()
     await expect(page.getByRole('button', { name: 'Mount actions' })).toBeVisible()
     const secondMounts = await (await request.get(`/api/agents/${second.slug}/mounts`)).json() as Array<{ id: string; volumeId: string; name: string }>

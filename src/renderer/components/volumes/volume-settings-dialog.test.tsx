@@ -52,7 +52,7 @@ describe('volume folder selection', () => {
     const save = vi.fn()
     render(<VolumeSettingsDialog onSave={save} onClose={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
-    expect(screen.getByRole('button', { name: 'Local folder' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Dropbox' })).toBeVisible()
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
     expect(save).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
