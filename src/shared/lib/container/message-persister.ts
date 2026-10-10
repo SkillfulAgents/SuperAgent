@@ -369,10 +369,11 @@ interface StreamingState {
   // Latest system/background_tasks_changed snapshot (SDK >= 0.3.203): the full
   // authoritative set of live background task ids. null until the first frame
   // (older runtimes never send one — all gates then fall back to the
-  // incremental map alone). The snapshot LEADS per-task signals on the wire,
-  // so it may briefly announce a task the map hasn't registered yet (metadata
-  // arrives with the following task_started/tool-result) — liveness gates use
-  // the UNION of both.
+  // incremental map alone). The snapshot leads task_started, so it may
+  // briefly announce a task the map hasn't registered yet (metadata arrives
+  // with the following task_started/tool-result); its removal frame led the
+  // terminal signals up to CLI 2.1.284 and trails them since 2.1.296 (the SDK
+  // calls the order unspecified). Liveness gates use the UNION of both.
   bgTasksSnapshot: Set<string> | null
   // Identity of the CLI process the background-task bookkeeping above belongs
   // to, from the container's handshake. Those tasks are process-local, so when
@@ -2547,6 +2548,13 @@ class MessagePersister {
             if (existing) {
               if (agentId) existing.agentId = agentId
               if (isResumedSubagent) existing.isResumed = true
+              // A new run under the SAME launching call (CLI 2.1.296+: a
+              // subagent whose own background Bash finishes after the
+              // subagent's turn is re-run to receive that result). The entry
+              // still carries the first run's completion; without reopening
+              // it, both completion paths skip it and this run never reports
+              // subagent_completed.
+              if (isResumedSubagent && existing.completed) existing.completed = false
             } else {
               state.activeSubagents.set(toolUseId, {
                 agentId: agentId ?? null,
@@ -3326,8 +3334,11 @@ class MessagePersister {
       state.activeSubagents.set(parentToolId, sub)
     }
 
-    // Extract agentId from the message if available (belt-and-suspenders with task_started)
-    const messageAgentId = content.agentId as string | undefined
+    // Extract agentId from the message if available (belt-and-suspenders with
+    // task_started). SDK 0.3.292+ stamps `agent_id` on a subagent's assistant
+    // and user frames; `agentId` is the transcript-JSONL spelling, which the
+    // live stream never carried, so before that this line never fired.
+    const messageAgentId = (content.agent_id ?? content.agentId) as string | undefined
     if (messageAgentId && !sub.agentId) {
       sub.agentId = messageAgentId
       this.broadcastToSSE(agentSlug, sessionId, {
@@ -3522,9 +3533,9 @@ class MessagePersister {
   // task was actually present. Centralized so every terminal path — the idle/wake
   // `task_notification` and the busy `task_updated` — behaves identically.
   // How many background tasks keep the session from settling. The union of
-  // the incremental map and the latest SDK snapshot: the snapshot LEADS the
-  // per-task signals on the wire, so around a membership change each side may
-  // briefly know a task the other doesn't. Counting the union means a missed
+  // the incremental map and the latest SDK snapshot: around a membership
+  // change each side may briefly know a task the other doesn't (in either
+  // order — see bgTasksSnapshot). Counting the union means a missed
   // registration can't cause a premature idle and a missed terminal signal
   // can't pin the session forever (the snapshot self-heal below clears it).
   // Both directions must drain, or the union stops being a safety net and
@@ -3597,15 +3608,17 @@ class MessagePersister {
   }
 
   // A per-task terminal signal, weighed against the SDK's level set. A
-  // `completed` for a task the snapshot still lists is not an end: a subagent
-  // reports `completed` when its own turn ends, but it stays a live task while
-  // background work it started (e.g. a dev server) keeps running — its
-  // notification says so ("stopped with background work of its own still
-  // running"), and stop_task still finds it. Retiring it here removed it from
-  // the rows and the Stop dialog while the snapshot's next change put it back
-  // in the union, pinning the session on work nobody could see. The snapshot
-  // drops it when it really ends, and the self-heal clears it then. The other
-  // terminal statuses (stopped, failed, killed) end the task outright.
+  // `completed` for a task the snapshot still lists waits for the snapshot.
+  // Up to CLI 2.1.284 a subagent reported `completed` when its own turn
+  // ended yet stayed a live task while background work it started (e.g. a
+  // dev server) kept running; retiring it here removed it from the rows and
+  // the Stop dialog while the snapshot's next change put it back in the
+  // union, pinning the session on work nobody could see. Since 2.1.296 the
+  // subagent leaves the set and that work is listed itself (parent_task_id),
+  // and the snapshot dropping a finished task trails this signal — so a
+  // listed task is normally retired by the very next frame, via the
+  // self-heal. The other terminal statuses (stopped, failed, killed) end the
+  // task outright.
   private retireBackgroundTask(
     agentSlug: string,
     sessionId: string,
@@ -3615,7 +3628,7 @@ class MessagePersister {
   ): void {
     if (status === 'completed' && state.bgTasksSnapshot?.has(taskId)) {
       console.log(
-        `[MessagePersister] ${taskId} reported completed but the SDK still lists it — keeping it open`
+        `[MessagePersister] ${taskId} reported completed while the SDK still lists it — retiring it with the snapshot`
       )
       return
     }
@@ -3623,10 +3636,10 @@ class MessagePersister {
   }
 
   private clearBackgroundTask(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): boolean {
-    // Retire the id from the level set too. A terminal per-task signal normally
-    // trails the snapshot that already dropped the task and this is a no-op; if
-    // that removal frame never arrives, the freshest information has to win or
-    // the union pins the session. Mirrors SessionSettlementTracker.removeTask.
+    // Retire the id from the level set too. When the snapshot that drops the
+    // task came first (CLI <= 2.1.284) this is a no-op; if that removal frame
+    // never arrives, the freshest information has to win or the union pins
+    // the session. Mirrors SessionSettlementTracker.removeTask.
     state.bgTasksSnapshot?.delete(taskId)
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false

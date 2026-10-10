@@ -232,9 +232,21 @@ function assertBackgroundContract(timeline: ReplaySnapshot[], sseEvents: Array<R
   const started = sseEvents.filter((e) => e['type'] === 'background_task_started').map((e) => e['taskId'] as string)
   const completed = sseEvents.filter((e) => e['type'] === 'background_task_completed').map((e) => e['taskId'] as string)
 
-  // Every started background task completes exactly once, and nothing
-  // completes that never started.
-  expect([...completed].sort()).toEqual([...new Set(completed)].sort())
+  // Every start of a background task is closed by exactly one completion
+  // before the next start of the same id, and nothing completes that never
+  // started. A task_id can run more than once (a SendMessage resume, or a
+  // CLI 2.1.296+ re-run of a subagent whose own background work finished).
+  const runs = new Map<string, number>()
+  for (const e of sseEvents) {
+    const id = e['taskId'] as string
+    if (e['type'] === 'background_task_started') {
+      expect(runs.get(id) ?? 0, `${id} started again before it completed`).toBe(0)
+      runs.set(id, 1)
+    } else if (e['type'] === 'background_task_completed') {
+      expect(runs.get(id), `${id} completed while not running`).toBe(1)
+      runs.set(id, 0)
+    }
+  }
   expect([...completed].sort()).toEqual([...started].sort())
 
   // session_idle never fires while a background task is open, and the session
@@ -535,5 +547,74 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(fin.isActive).toBe(false)
       expect(fin.sessionIdleCount).toBe(0)
     })
+  })
+})
+
+// SDK 0.3.296 / CLI 2.1.296 captures (capture-fixtures.mjs in the
+// update-claude-deps skill). Two shape changes the persister must absorb:
+//   - a finishing task leaves background_tasks_changed AFTER its task_updated
+//     and task_notification (it led them up to 2.1.284);
+//   - a subagent's own background Bash is listed in the lead snapshot with
+//     parent_task_id, the subagent leaves the snapshot when its turn ends, and
+//     the child's completion re-runs the subagent under the same task_id.
+const SDK296_FIXTURES = [
+  'sdk296-bg-bash-premature-idle',
+  'sdk296-bg-subagent-no-idle',
+  'sdk296-bg-subagent-interrupt-noop',
+  'sdk296-bg-subagent-nested-bg-bash',
+  'sdk296-sendmessage-resumed-subagent',
+]
+
+describe('sdk 0.3.296 capture replays', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it.each(SDK296_FIXTURES)('%s: background contract holds and the session finalizes once', async (name) => {
+    const { sseEvents, timeline } = await replayTracked(name)
+
+    assertBackgroundContract(timeline, sseEvents)
+    // Every subagent run the UI was told about is also reported finished.
+    const subStarted = sseEvents.filter((e) => e['type'] === 'subagent_started').length
+    const subCompleted = sseEvents.filter((e) => e['type'] === 'subagent_completed').length
+    expect(subCompleted).toBe(subStarted)
+    const fin = finalSnapshot(timeline)
+    expect(fin.sessionIdleCount).toBe(1)
+    expect(fin.isActive).toBe(false)
+  })
+
+  it('a task the snapshot drops after its completed signal is retired by that snapshot', async () => {
+    // The trailing-snapshot order: completed arrives while the snapshot still
+    // lists the task (the persister holds it), then the next frame drops it.
+    // The row must end by that frame, not linger to some later one.
+    const { streamEntries, sseEvents } = await replayTracked('sdk296-bg-bash-premature-idle')
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const completedIdx = contents.findIndex((c) => c['subtype'] === 'task_notification' && c['status'] === 'completed')
+    const trailingIdx = contents.findIndex(
+      (c, i) => i > completedIdx && c['subtype'] === 'background_tasks_changed'
+    )
+    expect(completedIdx).toBeGreaterThan(0)
+    expect(trailingIdx).toBeGreaterThan(completedIdx)
+    const taskId = contents[completedIdx]['task_id'] as string
+    expect((contents[trailingIdx]['tasks'] as Array<{ task_id: string }>).map((t) => t.task_id)).not.toContain(taskId)
+    expect(sseEvents.filter((e) => e['type'] === 'background_task_completed' && e['taskId'] === taskId)).toHaveLength(1)
+  })
+
+  it("a subagent's background Bash keeps the session waiting after the subagent itself completes", async () => {
+    const { streamEntries, timeline, sseEvents } = await replayTracked('sdk296-bg-subagent-nested-bg-bash')
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const childStart = contents.find((c) => c['subtype'] === 'task_started' && typeof c['parent_task_id'] === 'string')
+    expect(childStart, 'capture has a task launched by the subagent').toBeDefined()
+    const childId = childStart!['task_id'] as string
+    const childEnd = contents.findIndex(
+      (c) => c['subtype'] === 'task_notification' && c['task_id'] === childId
+    )
+    expect(childEnd).toBeGreaterThan(0)
+    // The child is a background task of the session in its own right: started
+    // and ended once, and no session_idle while it ran.
+    expect(sseEvents.filter((e) => e['type'] === 'background_task_started' && e['taskId'] === childId)).toHaveLength(1)
+    for (const snap of timeline.slice(0, childEnd)) {
+      expect(snap.sessionIdleCount, `idle at t=${snap.t} while ${childId} ran`).toBe(0)
+    }
   })
 })

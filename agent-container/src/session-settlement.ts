@@ -12,11 +12,14 @@ import { z } from 'zod';
 
 // --- background_tasks_changed (claude-agent-sdk >= 0.3.203) ---
 // The SDK emits the FULL set of the session's live background tasks on every
-// membership change. Observed wire ordering (see the sdk206-* fixtures): each
-// snapshot LEADS its per-task signal — the frame announcing an addition
-// arrives just before task_started, the frame announcing a removal just
-// before the terminal task_notification/task_updated. The snapshot covers
-// only the lead session's own tasks (a subagent's inner tasks never appear).
+// membership change. The SDK documents its order against the per-task
+// signals as unspecified, and it has changed: the frame announcing an
+// addition arrives just before task_started, while the frame announcing a
+// removal arrived just before the terminal task_updated/task_notification up
+// to CLI 2.1.284 (sdk206-*/sdk272-* fixtures) and just AFTER them since
+// 2.1.296 (sdk296-*). Nothing here may depend on either order. Since 2.1.296
+// the set also lists a subagent's own background tasks, each with
+// parent_task_id naming the subagent; earlier CLIs left them out.
 
 const backgroundTaskSchema = z.object({
   task_id: z.string(),
@@ -119,9 +122,9 @@ export class SessionSettlementTracker {
   // ignored (stale idle racing a fresh message).
   private lastResultSubtype: string | null = null;
   // Edge-tracked tasks (task_started .. terminal signal) unioned with the
-  // latest SDK snapshot. The snapshot leads the per-task signals on the wire,
-  // so around a membership change each side may briefly know a task the
-  // other doesn't; counting the union means a missed registration can't
+  // latest SDK snapshot. Around a membership change each side may briefly
+  // know a task the other doesn't (in either order — see the header);
+  // counting the union means a missed registration can't
   // cause premature settlement and a missed terminal signal can't pin the
   // session forever (the snapshot self-heal clears it).
   private edgeTaskIds = new Set<string>();
@@ -261,13 +264,16 @@ export class SessionSettlementTracker {
   private removeTask(taskId: string, status: string, now: number): void {
     const hadOpenWork = this.openBackgroundTaskCount > 0;
     this.edgeTaskIds.delete(taskId);
-    // A terminal per-task signal normally trails the snapshot that already
-    // dropped the task; if a snapshot was missed the union would pin, so the
+    // A terminal per-task signal may come before or after the snapshot that
+    // drops the task. If a snapshot was missed the union would pin, so the
     // freshest information wins on both sides — except a `completed` for a
-    // task the snapshot still lists. A subagent reports `completed` when its
-    // own turn ends yet stays a live task while background work it started
-    // keeps running; retiring it here would let the reaper settle the session
-    // and kill that work. The snapshot drops it when it really ends.
+    // task the snapshot still lists, which waits for the snapshot. Up to CLI
+    // 2.1.284 a subagent reported `completed` when its own turn ended yet
+    // stayed listed while background work it started kept running; retiring
+    // it here let the reaper kill that work. Since 2.1.296 the subagent leaves
+    // the set and the work is listed itself, and the snapshot dropping a
+    // finished task trails this signal — so here a listed task is normally
+    // retired by the very next frame.
     if (!(status === 'completed' && this.snapshotTaskIds?.has(taskId))) {
       this.snapshotTaskIds?.delete(taskId);
     }

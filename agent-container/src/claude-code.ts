@@ -1103,6 +1103,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Gamut plugin (`plugins` below); plugin skills and agent-created
         // skills under /workspace/.claude/skills are unaffected by this flag.
         disableBundledSkills: true,
+        // CLI 2.1.296 lists a built-in `plugin-authoring` skill (making
+        // "mods" to Claude Code's own terminal UI and hooks) that
+        // disableBundledSkills does not remove — verified with the
+        // claude-prompt-drift capture. Meaningless inside an agent session.
+        skillOverrides: { 'plugin-authoring': 'off' },
         // CLI features that default on "once available" and would run work of
         // their own inside the session. Both start ambient background tasks:
         // the SDK lists them in background_tasks_changed, so they keep the
