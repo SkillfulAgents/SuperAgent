@@ -80,6 +80,19 @@ const config: Config = {
 			md: 'calc(var(--radius) - 2px)',
 			sm: 'calc(var(--radius) - 4px)'
 		},
+		// Slussen is declared in globals.css (@font-face) and set on <body> from
+		// this stack, so `font-sans` (e.g. on <kbd> chips, which default to
+		// monospace) resolves to the app font rather than Tailwind's system-ui.
+		// ss08 is Slussen's arrow set: it draws ->, <-, -->, <-- and <-> as
+		// arrows (the text itself is unchanged) and touches no other glyph.
+		// Preflight puts it on <html>; code/kbd/samp/pre reset to the mono
+		// stack's own settings, so code keeps a literal ->.
+		fontFamily: {
+			sans: [
+				['Slussen', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+				{ fontFeatureSettings: '"ss08"' },
+			],
+		},
 		fontSize: {
 			// Proportional ~13/14 reduction applied to the default Tailwind scale.
 			// `2xs` is a new micro-label size below Tailwind's defaults for badges/chips.
@@ -98,7 +111,7 @@ const config: Config = {
 			'8xl': ['88px', { lineHeight: '5.875rem' }],
 			'9xl': ['120px', { lineHeight: '7.75rem' }],
 		},
-		// Inter is never rendered heavier than Medium (500) anywhere in the app,
+		// Text is never rendered heavier than Medium (500) anywhere in the app,
 		// but @tailwindcss/typography's defaults reach 600-900 (h1 800, h2 700,
 		// h3/h4 600, strong 600 and up to 900 inside a heading, code/th/dt 600).
 		// Cap them here - one lever for every `prose` block (session markdown,
