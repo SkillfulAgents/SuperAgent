@@ -1,5 +1,4 @@
 import type { RuntimeOptions } from './runtime-options'
-import type { ModelSelection } from '@shared/lib/model-selection'
 import type { ContainerVolume } from '@shared/lib/types/mount'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
@@ -21,6 +20,8 @@ export class ContainerNotFoundError extends Error {
 }
 
 export interface SendMessageOptions extends RuntimeOptions {
+  /** false appends the message to the transcript without starting a turn. */
+  shouldQuery?: boolean
   /** Internal: a queued message keeps the active turn configuration. */
   preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
@@ -103,8 +104,8 @@ export interface StreamMessage {
   sessionId: string
 }
 
-/** The session's model selection comes from ModelSelection; absent knobs use the agent's, then the app's, defaults. */
-export interface CreateSessionOptions extends ModelSelection {
+/** The session's runtime options; absent knobs use the agent's, then the app's, defaults. */
+export interface CreateSessionOptions extends RuntimeOptions {
   metadata?: Record<string, any>
   systemPrompt?: string
   availableEnvVars?: string[]

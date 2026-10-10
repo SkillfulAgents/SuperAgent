@@ -1,5 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
-import { storedSelectionUpdate, type ModelSelectionPatch, type StoredModelSelection } from '@shared/lib/model-selection'
+import { storedRuntimeOptionsUpdate, type RuntimeOptionsPatch, type StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 /**
  * Webhook Trigger Service
  *
@@ -163,7 +163,7 @@ function notifyWebhookTriggersChanged(reason: string): void {
 // Types
 // ============================================================================
 
-export interface CreateWebhookTriggerParams extends Partial<StoredModelSelection> {
+export interface CreateWebhookTriggerParams extends Partial<StoredRuntimeOptions> {
   agentSlug: string
   /** 'composio' (default) or 'custom' (agent-minted platform webhook endpoint). */
   kind?: 'composio' | 'custom'
@@ -692,12 +692,12 @@ export async function updateWebhookTriggerName(
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: ModelSelectionPatch,
+  options: RuntimeOptionsPatch,
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
 
-  const updates = storedSelectionUpdate(options, trigger, getSettings().llmDefault?.llmProviderId)
+  const updates = storedRuntimeOptionsUpdate(options, trigger, getSettings().llmDefault?.llmProviderId)
 
   const result = await db
     .update(webhookTriggers)

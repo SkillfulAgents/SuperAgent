@@ -2695,6 +2695,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+    // Per message, not a runtime option: false appends without starting a turn.
+    const shouldQuery = typeof body.shouldQuery === 'boolean' ? body.shouldQuery : undefined
 
     // cancelAwaitingInput / markSessionActive / broadcastSessionEvent below are
     // all keyed by session id alone: an unowned id would cancel another agent's
@@ -2729,7 +2731,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     if (agentRegistry.get(agentSlug).messages.coalesceIfRecovering(sessionId, {
       uuid: messageUuid,
       text: agentText,
-      ...(runtimeOptions.shouldQuery === false ? { shouldQuery: false as const } : {}),
+      ...(shouldQuery === false ? { shouldQuery: false as const } : {}),
     })) {
       await persistAndBroadcastUserMessage(c, {
         messageUuid,
@@ -2760,7 +2762,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // pending input to cancel, and marking the session active would leave it
     // "working" with no idle event to ever clear it. Runtime options are
     // dropped for the same reason a queued send drops them.
-    if (runtimeOptions.shouldQuery === false) {
+    if (shouldQuery === false) {
       await persistAndBroadcastUserMessage(c, {
         messageUuid,
         sessionId,
@@ -2811,7 +2813,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(shouldQuery !== undefined ? { shouldQuery } : {}), ...(wasQueued ? { preserveRuntime: true } : {}) })
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort

@@ -6,7 +6,7 @@
  */
 
 import type { HealthCheckResult } from '@shared/lib/container/types'
-import type { ModelSelection, StoredModelSelection } from '@shared/lib/model-selection'
+import type { RuntimeOptions, StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
@@ -126,7 +126,7 @@ export interface ApiDiscoverableAgent {
 /**
  * Session response from API
  */
-export interface ApiSession extends ModelSelection {
+export interface ApiSession extends RuntimeOptions {
   id: string
   agentSlug: string
   name: string
@@ -152,8 +152,8 @@ export interface ApiSession extends ModelSelection {
   // parent's metadata on the single-session GET; undefined when the parent is gone.
   forkedFromSessionId?: string
   forkedFromSessionName?: string
-  // The model selection inherited from ModelSelection is the last one used on
-  // this session; it seeds the composer.
+  // The inherited RuntimeOptions are the last ones used on this session; they
+  // seed the composer.
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
   pendingWakeAt?: string
@@ -413,7 +413,7 @@ export interface ApiSkillsetConfig {
 /**
  * Scheduled task response from API
  */
-export interface ApiScheduledTask extends StoredModelSelection {
+export interface ApiScheduledTask extends StoredRuntimeOptions {
   id: string
   agentSlug: string
   scheduleType: 'at' | 'cron'

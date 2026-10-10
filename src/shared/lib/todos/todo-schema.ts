@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
-import { modelSelectionPatchSchema, type StoredModelSelection } from '@shared/lib/model-selection'
+import { RuntimeOptionsPatchSchema, type StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -39,7 +39,7 @@ export const createTodoSchema = z
     description: descriptionSchema.default(''),
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
-    ...modelSelectionPatchSchema.shape,
+    ...RuntimeOptionsPatchSchema.shape,
   })
   .strict()
   .refine((todo) => !(todo.newAgent && todo.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
@@ -59,7 +59,7 @@ export const updateTodoSchema = z
     description: descriptionSchema.optional(),
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
-    ...modelSelectionPatchSchema.shape,
+    ...RuntimeOptionsPatchSchema.shape,
   })
   .strict()
   .refine((patch) => !(patch.newAgent && patch.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
@@ -181,10 +181,10 @@ export const TODO_ASK_LABELS: Record<TodoAsk, string> = {
 
 /**
  * What the list endpoint returns per item. Times are epoch milliseconds. Its
- * model selection is what was picked to run it on; each null starts it on the
+ * runtime options are what was picked to run it on; each null starts it on the
  * agent's default.
  */
-export interface TodoView extends StoredModelSelection {
+export interface TodoView extends StoredRuntimeOptions {
   id: string
   title: string
   description: string

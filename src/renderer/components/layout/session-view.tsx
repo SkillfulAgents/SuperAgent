@@ -1,5 +1,5 @@
 import { SessionChatColumn } from './session-chat-column'
-import { pickModelSelection } from '@shared/lib/model-selection'
+import { pickRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { CalendarClock, GitFork, Wrench, Zap } from 'lucide-react'
@@ -171,7 +171,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               pendingUserMessages={getPendingMessages(sessionId)}
               isViewOnly={isViewOnly}
               contextPercent={contextPercent}
-              selection={session && pickModelSelection(session)}
+              selection={session && pickRuntimeOptions(session)}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}

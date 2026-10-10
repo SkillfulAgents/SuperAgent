@@ -1,5 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
-import type { StoredModelSelection } from '@shared/lib/model-selection'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 /**
  * Agent integration persistence. Physical table names are retained for upgrades.
  */
@@ -35,7 +35,7 @@ export class DuplicateIntegrationIdentityError extends Error {
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export interface CreateAgentIntegrationParams extends Partial<StoredModelSelection> {
+export interface CreateAgentIntegrationParams extends Partial<StoredRuntimeOptions> {
   agentSlug: string
   provider: string
   name?: string
@@ -46,7 +46,7 @@ export interface CreateAgentIntegrationParams extends Partial<StoredModelSelecti
   createdByUserId?: string
 }
 
-export interface UpdateAgentIntegrationParams extends Partial<StoredModelSelection> {
+export interface UpdateAgentIntegrationParams extends Partial<StoredRuntimeOptions> {
   name?: string
   config?: Record<string, unknown>
   showToolCalls?: boolean

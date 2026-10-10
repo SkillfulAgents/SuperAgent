@@ -1,5 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
-import type { ModelSelection } from '@shared/lib/model-selection'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -313,7 +313,7 @@ export function useSendMessage(options: {
        * with its next turn, without starting one (the voice-mode notices).
        */
       shouldQuery?: boolean
-    } & ModelSelection) => {
+    } & RuntimeOptions) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

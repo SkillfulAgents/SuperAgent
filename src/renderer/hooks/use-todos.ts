@@ -9,7 +9,7 @@ import type {
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
 import { todoPrompt } from '@shared/lib/todos/todo-schema'
-import { fromStoredSelection } from '@shared/lib/model-selection'
+import { fromStoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
 import { useExperiment } from './use-experiment'
@@ -234,7 +234,7 @@ export function useStartTodo() {
         sessionId = (await createSession.mutateAsync({
           agentSlug: claimed.agentSlug ?? agentSlug,
           message: todoPrompt(claimed),
-          ...fromStoredSelection(claimed),
+          ...fromStoredRuntimeOptions(claimed),
         })).id
       } catch (error) {
         if (error instanceof Error) reportedBySessionCreation.add(error)

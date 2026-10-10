@@ -29,7 +29,7 @@ import {
   connectionConfigSchema,
   connectionInputSchema,
   mergeConnectionConfig,
-  modelSelectionSchema,
+  LlmSelectionSchema,
   resolveSelection,
   type ConnectionInfo,
 } from './connection-schema'
@@ -273,7 +273,7 @@ export async function setGlobalSelection(
   raw: unknown
 ): Promise<void> {
   const selection =
-    raw === null && purpose === 'summarizer' ? null : modelSelectionSchema.parse(raw)
+    raw === null && purpose === 'summarizer' ? null : LlmSelectionSchema.parse(raw)
   await mutateConnections(async () => {
     const resolved = await resolveConnectionSelection(selection)
     if (selection && (!resolved || resolved.connection.userId !== null))
@@ -299,7 +299,7 @@ export async function setGlobalSelection(
   })
 }
 
-type StoredModelSelection = { llmProviderId: string; model?: string }
+type StoredRuntimeOptions = { llmProviderId: string; model?: string }
 
 function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer' = 'agent') {
   const catalog = connectionCatalog(row)
@@ -314,7 +314,7 @@ function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 's
 }
 
 export async function resolveConnectionSelection(
-  selection: StoredModelSelection | null | undefined,
+  selection: StoredRuntimeOptions | null | undefined,
   allowLegacyPin = false,
 ) {
   if (!selection) return null
@@ -335,13 +335,13 @@ export async function resolveConnectionSelection(
 }
 export type ResolvedConnection = NonNullable<Awaited<ReturnType<typeof resolveConnectionSelection>>>
 
-const legacySelections = new WeakSet<StoredModelSelection>()
+const legacySelections = new WeakSet<StoredRuntimeOptions>()
 
 /** Undefined ID is legacy data. Explicit NULL is a cleared/deleted binding. */
 export function storedSelection(
   model?: string | null,
   llmProviderId?: string | null
-): StoredModelSelection | null {
+): StoredRuntimeOptions | null {
   if (llmProviderId === null || (!model && !llmProviderId)) return null
   const id = llmProviderId ?? getSettings().llmLegacyProviderId
   if (!id) return null
@@ -371,7 +371,7 @@ export async function resolveGlobalSelection(): Promise<ResolvedConnection | nul
 }
 
 export async function resolveSelectionHierarchy(
-  ...candidates: (StoredModelSelection | null | undefined)[]
+  ...candidates: (StoredRuntimeOptions | null | undefined)[]
 ): Promise<ResolvedConnection> {
   for (const candidate of candidates) {
     const resolved = await resolveConnectionSelection(candidate, true)

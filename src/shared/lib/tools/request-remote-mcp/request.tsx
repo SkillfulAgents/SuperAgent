@@ -202,11 +202,11 @@ export function RemoteMcpRequestItem({
   const hasAutoSelected = useRef(false)
   useEffect(() => {
     if (hasAutoSelected.current) return
-    const initialSelection =
+    const initialRuntimeOptions =
       servers.find((server) => server.url === targetUrl && server.status === 'active') ||
       targetServiceServers.find((server) => server.status === 'active')
-    if (initialSelection) {
-      setSelectedMcpIds(new Set([initialSelection.id]))
+    if (initialRuntimeOptions) {
+      setSelectedMcpIds(new Set([initialRuntimeOptions.id]))
       hasAutoSelected.current = true
     }
   }, [servers, targetServiceServers, targetUrl])

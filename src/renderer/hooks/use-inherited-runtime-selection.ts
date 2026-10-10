@@ -1,5 +1,4 @@
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
-import type { StoredModelSelection } from '@shared/lib/model-selection'
 import { useCallback, useMemo } from 'react'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useModelSettings } from '@renderer/hooks/use-settings'
@@ -9,13 +8,14 @@ import {
   clampSpeedForDisplay,
   resolveRuntimeInherit,
   type RuntimeInherit,
+  type StoredRuntimeOptions,
 } from '@shared/lib/container/runtime-options'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /** A surface's stored override row; null, undefined, and '' all mean "unset". */
-export type RuntimeSurface = Partial<StoredModelSelection>
+export type RuntimeSurface = Partial<StoredRuntimeOptions>
 
 /** What the host will send (surface override → agent default → app default), plus how to show it. */
 export type InheritedRuntimeSelection = RuntimeInherit & {

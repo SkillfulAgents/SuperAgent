@@ -16,7 +16,7 @@ import {
   updateWebhookTriggerRuntimeOptions,
 } from '@shared/lib/services/webhook-trigger-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import { modelSelectionPatchSchema } from '@shared/lib/model-selection'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -128,7 +128,7 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = modelSelectionPatchSchema.safeParse(body)
+    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }

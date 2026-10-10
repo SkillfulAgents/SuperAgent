@@ -1,14 +1,19 @@
 import { oauthCredentialSchema } from './oauth-schema'
 import { isReservedEnvVar } from '../container/reserved-env-vars'
 import { z } from 'zod'
+import { runtimeOptionFields } from '../container/runtime-options'
 import { LLM_PROVIDER_IDS } from './provider-types'
 import { catalogOverrideEntrySchema, isFamilyAlias, modelCatalogSchema, modelDefinitionSchema, type ModelDefinition, type CatalogOverrideEntry } from './model-catalog-schema'
 
-export const modelSelectionSchema = z.object({
-  llmProviderId: z.string().min(1),
-  model: z.string().min(1),
+/**
+ * An app-wide pick of a model on a connection (the default, the summarizer):
+ * the connection and model of a `RuntimeOptions`, both required.
+ */
+export const LlmSelectionSchema = z.object({
+  llmProviderId: runtimeOptionFields.llmProviderId,
+  model: runtimeOptionFields.model,
 })
-export type ModelSelection = z.infer<typeof modelSelectionSchema>
+export type LlmSelection = z.infer<typeof LlmSelectionSchema>
 
 export const apiFormatSchema = z.enum(['messages', 'chat-completions', 'responses'])
 
@@ -153,9 +158,9 @@ export type ConnectionInfo = z.infer<typeof connectionInfoSchema>
 /** Shared by the renderer and execution surfaces. Catalogs are local data;
  * network/auth errors never mean that a model was deleted. */
 export function resolveSelection(
-  selection: ModelSelection | null | undefined,
+  selection: LlmSelection | null | undefined,
   connections: readonly Pick<ConnectionInfo, 'id' | 'catalog'>[]
-): (ModelSelection & { wireModel: string }) | null {
+): (LlmSelection & { wireModel: string }) | null {
   if (!selection) return null
   const connection = connections.find((c) => c.id === selection.llmProviderId)
   const model =

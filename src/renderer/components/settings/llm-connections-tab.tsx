@@ -32,7 +32,7 @@ import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalo
 import type {
   ConnectionInfo,
   ConnectionConfig,
-  ModelSelection,
+  LlmSelection,
 } from '@shared/lib/llm-provider/connection-schema'
 import { isOAuthProvider, type LlmProviderId, type OAuthProvider } from '@shared/lib/llm-provider/provider-types'
 import { SIGN_IN, type SubscriptionSignInProvider } from './subscription-sign-in'
@@ -93,7 +93,7 @@ export function LlmConnectionsTab() {
   const [editing, setEditing] = useState<ConnectionInfo | 'pick' | { provider: LlmProviderId } | null>(null)
   const defaultRequiresSummarizer = data?.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false
   const summarizerSelection = data?.summarizerSelection ?? (defaultRequiresSummarizer ? null : data?.defaultSelection)
-  const changeDefault = (purpose: string, selection: ModelSelection | null) =>
+  const changeDefault = (purpose: string, selection: LlmSelection | null) =>
     mutation.mutate(
       { path: `/defaults/${purpose}`, method: 'PUT', body: selection },
       { onError: (e) => toast.error(e.message) }

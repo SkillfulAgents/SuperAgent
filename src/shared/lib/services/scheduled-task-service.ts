@@ -1,5 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
-import { storedSelectionUpdate, type ModelSelectionPatch, type StoredModelSelection } from '@shared/lib/model-selection'
+import { storedRuntimeOptionsUpdate, type RuntimeOptionsPatch, type StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 /**
  * Scheduled Task Service
  *
@@ -22,7 +22,7 @@ export type { ScheduledTask, NewScheduledTask }
 // Types
 // ============================================================================
 
-export interface CreateScheduledTaskParams extends Partial<StoredModelSelection> {
+export interface CreateScheduledTaskParams extends Partial<StoredRuntimeOptions> {
   agentSlug: string
   scheduleType: 'at' | 'cron'
   scheduleExpression: string
@@ -712,12 +712,12 @@ export async function recordManualExecution(
  */
 export async function updateTaskRuntimeOptions(
   taskId: string,
-  options: ModelSelectionPatch,
+  options: RuntimeOptionsPatch,
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
 
-  const updates = storedSelectionUpdate(options, task, getSettings().llmDefault?.llmProviderId)
+  const updates = storedRuntimeOptionsUpdate(options, task, getSettings().llmDefault?.llmProviderId)
 
   const result = await db
     .update(scheduledTasks)

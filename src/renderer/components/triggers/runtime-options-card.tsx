@@ -5,14 +5,14 @@ import { SettingsModelSelect } from '@renderer/components/settings/settings-mode
 import { useInheritedRuntimeSelection } from '@renderer/hooks/use-inherited-runtime-selection'
 import { DetailCard } from './detail-card'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
-import type { ModelSelectionPatch, StoredModelSelection } from '@shared/lib/model-selection'
+import type { RuntimeOptionsPatch, StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 
 interface RuntimeOptionsCardProps {
   agentSlug: string
   /** The surface's stored pick (a scheduled task, a webhook trigger): what overrides the agent's defaults. */
-  stored: StoredModelSelection
+  stored: StoredRuntimeOptions
   disabled?: boolean
-  onUpdate: (patch: ModelSelectionPatch) => void
+  onUpdate: (patch: RuntimeOptionsPatch) => void
 }
 
 export function RuntimeOptionsCard({ agentSlug, stored, disabled, onUpdate }: RuntimeOptionsCardProps) {

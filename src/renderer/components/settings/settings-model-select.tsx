@@ -1,5 +1,5 @@
 import { ProviderSelect } from './provider-select'
-import { resolveSelection, type ConnectionInfo, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
+import { resolveSelection, type ConnectionInfo, type LlmSelection } from '@shared/lib/llm-provider/connection-schema'
 import { memo, useContext, useMemo, type ReactNode } from 'react'
 import { Check, ChevronDown, RotateCcw, Settings } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
@@ -22,7 +22,7 @@ interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalo
   llmProviderId?: string | null
   globalOnly?: boolean
   directApiOnly?: boolean
-  onSelectionChange?: (selection: ModelSelection) => void
+  onSelectionChange?: (selection: LlmSelection) => void
   onModelChange: (model: string) => void
 }
 

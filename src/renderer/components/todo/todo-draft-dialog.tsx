@@ -10,7 +10,7 @@ import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
-import { agentDefaultSelection, fromStoredSelection, MODEL_SELECTION_KEYS, modelSelectionState, type ModelSelectionState } from '@shared/lib/model-selection'
+import { agentDefaultRuntimeOptions, fromStoredRuntimeOptions, RUNTIME_OPTION_KEYS, runtimeOptionsState, type RuntimeOptionsState } from '@shared/lib/container/runtime-options'
 import {
   useCreateTodo,
   useDeleteTodo,
@@ -27,8 +27,8 @@ import { useTodoAgents } from './todo-shared'
 /** Which draft the dialog shows: a new one (not saved until there is something in it) or a saved one. */
 export type TodoDraftTarget = { kind: 'new' } | { kind: 'existing'; todo: TodoView }
 
-/** The form; its model selection is what was picked over the agent's defaults. */
-interface DraftFields extends ModelSelectionState {
+/** The form; its runtime options are what was picked over the agent's defaults. */
+interface DraftFields extends RuntimeOptionsState {
   title: string
   description: string
   agentSlug: string | null
@@ -47,7 +47,7 @@ const SAVE_DELAY_MS = 600
  */
 function failed() {}
 
-const sameSelection = (a: ModelSelectionState, b: ModelSelectionState) => MODEL_SELECTION_KEYS.every((key) => a[key] === b[key])
+const sameSelection = (a: RuntimeOptionsState, b: RuntimeOptionsState) => RUNTIME_OPTION_KEYS.every((key) => a[key] === b[key])
 
 const sameFields = (a: DraftFields, b: DraftFields) =>
   a.title === b.title && a.description === b.description && a.agentSlug === b.agentSlug &&
@@ -122,7 +122,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     description: initial?.description ?? '',
     agentSlug: initial?.agentSlug ?? null,
     newAgent: initial?.newAgent ?? false,
-    ...modelSelectionState(initial ? fromStoredSelection(initial) : {}),
+    ...runtimeOptionsState(initial ? fromStoredRuntimeOptions(initial) : {}),
   }))
   const fieldsRef = useRef(fields)
   fieldsRef.current = fields
@@ -196,12 +196,12 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   // composer, until the person picks; a pick is kept with the draft.
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(fields.agentSlug ?? '')
   const composerOptions = useComposerOptions({
-    initial: initial ? fromStoredSelection(initial) : undefined,
-    agentDefault: agentDefaultSelection(agentPrefs),
+    initial: initial ? fromStoredRuntimeOptions(initial) : undefined,
+    agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: fields.newAgent ? NEW_AGENT_KEY : fields.agentSlug ?? '',
     agentDefaultsReady: !fields.agentSlug || agentPrefsFetched,
   })
-  const picked = modelSelectionState(composerOptions.toRuntimeOptions())
+  const picked = runtimeOptionsState(composerOptions.toRuntimeOptions())
   const pickedKey = JSON.stringify(picked)
   useEffect(() => {
     if (sameSelection(fieldsRef.current, picked)) return

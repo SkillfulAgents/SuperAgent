@@ -52,12 +52,12 @@ export const llmConnections = sqliteTable('llm_connections', {
 }))
 
 /**
- * The columns of a stored model selection (see `@shared/lib/model-selection`):
+ * The columns of stored runtime options (see `@shared/lib/container/runtime-options`):
  * a pick that overrides the agent's defaults, each null where nothing was
  * picked. Every table that keeps one spreads this in, so a new knob reaches
  * them all. Deleting a connection drops the pick of it back to the default.
  */
-export function modelSelectionColumns() {
+export function runtimeOptionsColumns() {
   return {
     llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
     model: text('model'),
@@ -277,7 +277,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override the agent's defaults when set)
-  ...modelSelectionColumns(),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -704,7 +704,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override the agent's defaults when set)
-  ...modelSelectionColumns(),
+  ...runtimeOptionsColumns(),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -730,7 +730,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  ...modelSelectionColumns(),
+  ...runtimeOptionsColumns(),
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -864,7 +864,7 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
-  ...modelSelectionColumns(),
+  ...runtimeOptionsColumns(),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

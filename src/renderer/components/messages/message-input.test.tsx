@@ -792,7 +792,7 @@ describe('MessageInput', () => {
       <MessageInput
         sessionId="s-1"
         agentSlug="agent-1"
-        initialSelection={{ model: 'sonnet', effort: 'high' }}
+        initialRuntimeOptions={{ model: 'sonnet', effort: 'high' }}
         registerSnapshot={registerSnapshot}
       />,
     )
@@ -1326,7 +1326,7 @@ describe('MessageInput', () => {
 
   it('seeds the effort on the trigger from initialEffort prop', () => {
     renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" initialSelection={{ effort: 'low' }} />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialRuntimeOptions={{ effort: 'low' }} />
     )
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent(/Low/)
   })
@@ -1358,7 +1358,7 @@ describe('MessageInput', () => {
 
   it('seeds the model on the trigger from initialModel prop', () => {
     renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" initialSelection={{ model: 'haiku' }} />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialRuntimeOptions={{ model: 'haiku' }} />
     )
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
   })
@@ -1372,7 +1372,7 @@ describe('MessageInput', () => {
   it('sends the newly-picked model on submit', async () => {
     const user = userEvent.setup()
     renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" initialSelection={{ model: 'opus' }} />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialRuntimeOptions={{ model: 'opus' }} />
     )
 
     await user.click(screen.getByTestId('composer-options-trigger'))
@@ -1407,7 +1407,7 @@ describe('MessageInput', () => {
       <MessageInput
         sessionId="s-1"
         agentSlug="agent-1"
-        initialSelection={{ model: 'opus' }}
+        initialRuntimeOptions={{ model: 'opus' }}
         onMessageUuidAssigned={onMessageUuidAssigned}
       />
     )
@@ -1427,7 +1427,7 @@ describe('MessageInput', () => {
     // A peer/cache refresh must not erase Haiku: the queued message did not
     // apply that choice to the live session, so it remains a local unsent edit.
     rerender(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" initialSelection={{ model: 'sonnet' }} />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialRuntimeOptions={{ model: 'sonnet' }} />
     )
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
   })

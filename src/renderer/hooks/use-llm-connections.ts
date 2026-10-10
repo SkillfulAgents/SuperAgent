@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import type { ConnectionInfo, ModelSelection } from '@shared/lib/llm-provider/connection-schema'
+import type { ConnectionInfo, LlmSelection } from '@shared/lib/llm-provider/connection-schema'
 
 export interface ConnectionsResponse {
   legacyLlmProviderId?: string
   connections: ConnectionInfo[]
-  defaultSelection: ModelSelection | null
-  summarizerSelection: ModelSelection | null
+  defaultSelection: LlmSelection | null
+  summarizerSelection: LlmSelection | null
 }
 export function useLlmConnections(
   agentSlug?: string,

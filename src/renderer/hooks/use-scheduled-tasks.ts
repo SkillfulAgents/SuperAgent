@@ -4,7 +4,7 @@
  * React Query hooks for managing scheduled tasks.
  */
 
-import { pickModelSelection, type ModelSelectionPatch } from '@shared/lib/model-selection'
+import { pickRuntimeOptions, type RuntimeOptionsPatch } from '@shared/lib/container/runtime-options'
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
@@ -262,8 +262,8 @@ export function useUpdateScheduledTaskRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ taskId, ...patch }: { taskId: string; agentSlug: string } & ModelSelectionPatch) => {
-      const body = pickModelSelection(patch)
+    mutationFn: async ({ taskId, ...patch }: { taskId: string; agentSlug: string } & RuntimeOptionsPatch) => {
+      const body = pickRuntimeOptions(patch)
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

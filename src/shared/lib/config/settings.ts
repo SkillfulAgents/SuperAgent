@@ -1,4 +1,4 @@
-import { modelSelectionSchema } from '../llm-provider/connection-schema'
+import { LlmSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
@@ -276,8 +276,8 @@ export const DEFAULT_APNS_RELAY_URL = 'https://apn-relay.gamutagents.com'
 
 export interface AppSettings {
   /** Connection selections; absent only before the legacy import. */
-  llmDefault?: import('../llm-provider/connection-schema').ModelSelection
-  llmSummarizer?: import('../llm-provider/connection-schema').ModelSelection | null
+  llmDefault?: import('../llm-provider/connection-schema').LlmSelection
+  llmSummarizer?: import('../llm-provider/connection-schema').LlmSelection | null
   /** Binding for model-only preferences written before connections existed. */
   llmLegacyProviderId?: string
 
@@ -435,7 +435,7 @@ export type ModelPickerSettingsResponse = Pick<
   'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
 > & {
   connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
-  defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
+  defaultSelection?: import('../llm-provider/connection-schema').LlmSelection
   legacyLlmProviderId?: string
 }
 
@@ -568,8 +568,8 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
-    llmDefault: loaded.llmDefault === undefined ? undefined : modelSelectionSchema.parse(loaded.llmDefault),
-    llmSummarizer: loaded.llmSummarizer == null ? loaded.llmSummarizer : modelSelectionSchema.parse(loaded.llmSummarizer),
+    llmDefault: loaded.llmDefault === undefined ? undefined : LlmSelectionSchema.parse(loaded.llmDefault),
+    llmSummarizer: loaded.llmSummarizer == null ? loaded.llmSummarizer : LlmSelectionSchema.parse(loaded.llmSummarizer),
     llmLegacyProviderId: loaded.llmLegacyProviderId,
     // Recover a pre-collapse selection: webSearchProvider shipped (v0.4.5-0.4.7) and the single
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the

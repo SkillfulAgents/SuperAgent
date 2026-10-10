@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { type ModelSelection } from '@shared/lib/model-selection'
+import { type RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
@@ -28,8 +28,8 @@ interface SessionChatColumnProps {
   pendingUserMessages: PendingMessage[]
   isViewOnly: boolean
   contextPercent: number | null
-  /** The model selection last used on this session; seeds the composer. */
-  selection?: ModelSelection
+  /** The runtime options last used on this session; seeds the composer. */
+  selection?: RuntimeOptions
   onPendingMessageAppeared: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
@@ -149,7 +149,7 @@ export function SessionChatColumn({
                     onMessageSent={onMessageSent}
                     onMessageUuidAssigned={onMessageUuidAssigned}
                     onMessageFailed={onMessageFailed}
-                    initialSelection={selection}
+                    initialRuntimeOptions={selection}
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                     inputRequests={voiceInputRequests}

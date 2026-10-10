@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { agentDefaultSelection, type ModelSelection } from '@shared/lib/model-selection'
+import { agentDefaultRuntimeOptions, type RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -51,8 +51,8 @@ interface MessageInputProps {
   onMessageUuidAssigned?: (localId: string, uuid: string, queued: boolean) => void
   /** Called when the POST fails, so the caller can drop the optimistic copy. */
   onMessageFailed?: (localId: string) => void
-  /** The model selection last used on this session; seeds the composer's picker. Absent knobs fall back to the agent's, then the app's, defaults. */
-  initialSelection?: ModelSelection
+  /** The runtime options last used on this session; seeds the composer's picker. Absent knobs fall back to the agent's, then the app's, defaults. */
+  initialRuntimeOptions?: RuntimeOptions
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
   /**
@@ -79,7 +79,7 @@ function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): 
   return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialSelection, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialRuntimeOptions, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -88,9 +88,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
-    initial: initialSelection,
+    initial: initialRuntimeOptions,
     sessionId,
-    agentDefault: agentDefaultSelection(agentPrefs),
+    agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })

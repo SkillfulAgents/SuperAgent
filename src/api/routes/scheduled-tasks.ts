@@ -31,7 +31,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { modelSelectionPatchSchema } from '@shared/lib/model-selection'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -247,7 +247,7 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = modelSelectionPatchSchema.safeParse(body)
+    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }

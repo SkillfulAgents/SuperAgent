@@ -1,5 +1,5 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
-import type { ModelSelection } from '@shared/lib/model-selection'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -101,7 +101,7 @@ export function useCreateSession() {
       origin?: 'user' | 'onboarding'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
-    } & ModelSelection) => {
+    } & RuntimeOptions) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -4,7 +4,7 @@
  * React Query hooks for managing webhook triggers.
  */
 
-import { pickModelSelection, type ModelSelectionPatch } from '@shared/lib/model-selection'
+import { pickRuntimeOptions, type RuntimeOptionsPatch } from '@shared/lib/container/runtime-options'
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { PublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -84,8 +84,8 @@ export function useUpdateWebhookTriggerRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ triggerId, ...patch }: { triggerId: string; agentSlug: string } & ModelSelectionPatch) => {
-      const body = pickModelSelection(patch)
+    mutationFn: async ({ triggerId, ...patch }: { triggerId: string; agentSlug: string } & RuntimeOptionsPatch) => {
+      const body = pickRuntimeOptions(patch)
       const res = await apiFetch(`/api/webhook-triggers/${triggerId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

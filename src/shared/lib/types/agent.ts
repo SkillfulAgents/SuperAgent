@@ -4,7 +4,7 @@
  * Type definitions for file-based agent storage
  */
 
-import type { ModelSelection } from '@shared/lib/model-selection'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { SlashCommandInfo } from '../container/types'
 
 // ============================================================================
@@ -76,7 +76,7 @@ export interface SessionUsage {
   contextWindow: number
 }
 
-export interface SessionMetadata extends ModelSelection {
+export interface SessionMetadata extends RuntimeOptions {
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
@@ -120,9 +120,9 @@ export interface SessionMetadata extends ModelSelection {
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
-  // The model selection inherited from ModelSelection is the last one the user
-  // used on this session; it seeds the composer on reload. Its model is the
-  // provider's pinned ID, not the family.
+  // The inherited RuntimeOptions are the last ones the user used on this
+  // session; they seed the composer on reload. The model is the provider's
+  // pinned ID, not the family.
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string

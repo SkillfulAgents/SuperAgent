@@ -3,12 +3,12 @@ import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
 import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '@shared/lib/tools/requests/request-schema'
 import type { IntegrationMessagePresentation } from './message-display-schema'
-import type { StoredModelSelection } from '@shared/lib/model-selection'
+import type { StoredRuntimeOptions } from '@shared/lib/container/runtime-options'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
 
 /** Persisted installation. Existing chat rows already satisfy this contract. */
-export interface AgentIntegrationRecord extends StoredModelSelection {
+export interface AgentIntegrationRecord extends StoredRuntimeOptions {
   id: string
   agentSlug: string
   provider: string

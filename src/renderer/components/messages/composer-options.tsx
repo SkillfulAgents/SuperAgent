@@ -7,7 +7,7 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
-import type { ModelSelection } from '@shared/lib/model-selection'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -50,7 +50,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): ModelSelection
+  toRuntimeOptions(): RuntimeOptions
 }
 
 /** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
@@ -61,7 +61,7 @@ export interface ComposerOptionsController extends ComposerOptionsState {
    * must not be overwritten by a session-detail refetch. Afterwards, newer
    * initial values are authoritative (another window may have spoken).
    */
-  markSubmitted(options: ModelSelection): void
+  markSubmitted(options: RuntimeOptions): void
 }
 
 /**
@@ -87,9 +87,9 @@ export interface UseComposerOptionsArgs {
    * session; each knob it has seeds the picker. A `null` connection means the
    * selection names none, which is not the same as leaving it out.
    */
-  initial?: ModelSelection
-  /** The agent's own defaults (see `agentDefaultSelection`). Each knob slots between `initial` and the app-wide default. */
-  agentDefault?: ModelSelection
+  initial?: RuntimeOptions
+  /** The agent's own defaults (see `agentDefaultRuntimeOptions`). Each knob slots between `initial` and the app-wide default. */
+  agentDefault?: RuntimeOptions
   /**
    * Identity of the agent the defaults belong to. When it changes (quick-dispatch
    * switching agents) a locked, untouched selection unlocks and re-adopts the new
@@ -257,7 +257,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [connections])
 
   const markSubmitted = useCallback(
-    (options: ModelSelection) => {
+    (options: RuntimeOptions) => {
       if (options.llmProviderId === effectiveLlmProviderId) connectionDirty.current = false
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,

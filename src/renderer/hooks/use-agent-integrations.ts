@@ -4,7 +4,7 @@
  * React Query hooks for managing external agent integrations.
  */
 
-import type { ModelSelectionPatch } from '@shared/lib/model-selection'
+import type { RuntimeOptionsPatch } from '@shared/lib/container/runtime-options'
 import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
@@ -170,7 +170,7 @@ export function useCreateAgentIntegration() {
       config: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-    } & ModelSelectionPatch) => {
+    } & RuntimeOptionsPatch) => {
       const { agentSlug, ...body } = params
       const res = await apiFetch(`/api/agent-integrations/agents/${agentSlug}`, {
         method: 'POST',
@@ -218,7 +218,7 @@ export function useUpdateAgentIntegration() {
       showToolCalls?: boolean
       sessionTimeout?: number | null
       status?: 'active' | 'paused'
-    } & ModelSelectionPatch) => {
+    } & RuntimeOptionsPatch) => {
       const res = await apiFetch(`/api/agent-integrations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
