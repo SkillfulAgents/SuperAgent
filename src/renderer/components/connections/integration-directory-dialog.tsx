@@ -175,13 +175,14 @@ interface IntegrationDirectoryDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialTab?: DirectoryTab
+  initialFilter?: string
   onApiConnected?: (connection: NewApiConnection) => void
   onMcpConnected?: (connection: NewMcpConnection) => void
 }
 
-export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'all', onApiConnected, onMcpConnected }: IntegrationDirectoryDialogProps) {
+export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'all', initialFilter = '', onApiConnected, onMcpConnected }: IntegrationDirectoryDialogProps) {
   const [tab, setTab] = useState<DirectoryTab>(initialTab)
-  const [filter, setFilter] = useState('')
+  const [filter, setFilter] = useState(initialFilter)
   const prevOpen = useRef(open)
 
   // Reset only when the dialog transitions from closed → open, not when the
@@ -189,10 +190,10 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
   useEffect(() => {
     if (open && !prevOpen.current) {
       setTab(initialTab)
-      setFilter('')
+      setFilter(initialFilter)
     }
     prevOpen.current = open
-  }, [open, initialTab])
+  }, [open, initialTab, initialFilter])
 
   // The query survives a tab switch — CrossDirectoryHint hands it to the All
   // tab, and clearing it there would throw away what the user just typed.

@@ -42,7 +42,7 @@ describe('volume settings', () => {
     await userEvent.clear(screen.getByLabelText('Name'))
     await userEvent.type(screen.getByLabelText('Name'), 'Team notes')
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
-    expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes', path: undefined, visibility: 'private' })
+    expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes', visibility: 'private' })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
   it('creates a private volume using the native folder picker', async () => {
@@ -50,15 +50,15 @@ describe('volume settings', () => {
     render(<VolumesTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Add volume' }))
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeDisabled()
-    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
     expect(window.electronAPI!.openDirectory).toHaveBeenCalledOnce()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/new/folder')
     expect(screen.getByLabelText('Name')).toHaveValue('folder')
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Who can attach this volume?')).not.toBeInTheDocument()
     expect(screen.getByText('Only me')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
-    expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'folder', path: '/new/folder', visibility: 'private' })
+    expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'folder', source: { type: 'local', config: { path: '/new/folder' } }, visibility: 'private' })
   })
   it('shows public sources without management controls for other users', () => {
     state.host = false
@@ -81,7 +81,7 @@ describe('volume settings', () => {
   it('confirms deletion of an unused definition', async () => {
     render(<VolumesTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Delete Notes' }))
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('The folder and its files will stay on disk')
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('The source folder and its files will remain unchanged')
     expect(state.remove).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Delete volume' }))
     expect(state.remove).toHaveBeenCalledWith('v1')

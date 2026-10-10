@@ -12,6 +12,7 @@ export interface StoredVolume {
 
 /** A volume as the API returns it: no config, only the host folder the card shows. */
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
+  sourceLabel?: string // display-only description for remote sources
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 
@@ -44,6 +45,7 @@ export interface ContainerVolume {
   name: string
   /** Older hosts omit this; the image preserves local-folder behavior in that case. */
   cacheMode?: VolumeCacheMode
+  /** Lets rclone recognize aliases of the same file before replacing a target. */
   caseInsensitive?: boolean
 }
 
