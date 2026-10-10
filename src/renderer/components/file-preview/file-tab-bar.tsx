@@ -3,10 +3,11 @@ import { X } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { DrawerTabStrip, drawerTabClassName } from '@renderer/components/tray/drawer-tab-strip'
 import { cn } from '@shared/lib/utils/cn'
-import { getPreviewTabKey, type PreviewTab } from '@renderer/context/file-preview-context'
+import type { FileBrowserTab } from '@renderer/hooks/use-file-preview-tabs'
 
-interface FileTabBarProps {
-  tabs: PreviewTab[]
+interface FileTabBarProps<T extends FileBrowserTab> {
+  tabs: T[]
+  getTabKey: (tab: T) => string
   activeIndex: number
   onTabClick: (index: number) => void
   onCloseTab: (tabKey: string) => void
@@ -20,14 +21,15 @@ interface FileTabBarProps {
   trailing?: ReactNode
 }
 
-export function FileTabBar({
+export function FileTabBar<T extends FileBrowserTab>({
   tabs,
+  getTabKey,
   activeIndex,
   onTabClick,
   onCloseTab,
   onLeadingTabFlush,
   trailing,
-}: FileTabBarProps) {
+}: FileTabBarProps<T>) {
   if (tabs.length === 0) return null
   return (
     <DrawerTabStrip
@@ -46,7 +48,7 @@ export function FileTabBar({
           // its Enter handling hand-rolled. Two real buttons side by side get
           // keyboard activation from the browser.
           <div
-            key={getPreviewTabKey(tab)}
+            key={getTabKey(tab)}
             data-testid="file-tab"
             data-tab-kind={tab.kind}
             data-file-name={tab.displayName}
@@ -77,13 +79,13 @@ export function FileTabBar({
                 {tab.displayName}
               </span>
             </button>
-            <button
+            {!(tab.kind === 'folder' && tab.closable === false) && <button
               type="button"
               data-testid="file-tab-close"
               data-file-name={tab.displayName}
               data-path={tab.kind === 'file' ? tab.filePath : tab.rootPath}
               aria-label={`Close ${tab.displayName}`}
-              onClick={() => onCloseTab(getPreviewTabKey(tab))}
+              onClick={() => onCloseTab(getTabKey(tab))}
               className={cn(
                 'shrink-0 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
                 // the selected tab keeps its close visible; the rest reveal it on hover
@@ -91,7 +93,7 @@ export function FileTabBar({
               )}
             >
               <X className="h-3 w-3" />
-            </button>
+            </button>}
           </div>
         ))
       }
