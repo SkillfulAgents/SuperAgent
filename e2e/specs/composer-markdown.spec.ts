@@ -79,10 +79,11 @@ test.describe('composer Markdown blocks', () => {
     await expect.poll(() => input.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   })
 
-  test('keeps contextual ligatures enabled in the editor', async ({ page }) => {
+  test('keeps ligatures and the arrow set enabled in the editor', async ({ page }) => {
     const input = page.locator('[data-testid="home-message-input"]')
-    // prosemirror-view's stylesheet disables ligatures on .ProseMirror, which
-    // would also kill Inter's -> / => arrow substitutions; globals.css must win.
+    // prosemirror-view's stylesheet sets `font-feature-settings: "liga" 0` on
+    // .ProseMirror, which would replace the inherited "ss08" (Slussen's arrow
+    // set, drawing -> as an arrow); globals.css must win.
     await expect(input).toHaveClass(/ProseMirror/)
     const styles = await input.evaluate((element) => {
       const computed = window.getComputedStyle(element)
@@ -92,7 +93,7 @@ test.describe('composer Markdown blocks', () => {
       }
     })
     expect(styles.ligatures).toBe('normal')
-    expect(styles.features).toBe('normal')
+    expect(styles.features).toBe('"ss08"')
   })
 
   test('creates a code block before session Enter-to-send', async ({ page }) => {
