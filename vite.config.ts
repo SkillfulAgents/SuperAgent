@@ -102,15 +102,11 @@ export default defineConfig({
             })
         }
         server.httpServer?.on('close', async () => {
-          try {
-            const { shutdownServices } = await server.ssrLoadModule(
-              path.resolve(__dirname, 'src/shared/lib/startup.ts'),
-            )
-            await shutdownServices()
-          } catch (error) {
-            // Config reload may already have closed the SSR module runner.
-            console.error('Development server closed without completing agent shutdown; restart it to resume volume uploads:', error)
-          }
+          const { shutdownServices } = await server.ssrLoadModule(
+            path.resolve(__dirname, 'src/shared/lib/startup.ts'),
+          )
+          await shutdownServices()
+          console.log('All services stopped.')
         })
       },
     },

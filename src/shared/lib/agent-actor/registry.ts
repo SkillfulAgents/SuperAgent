@@ -1,5 +1,4 @@
 import { containerHost } from '@shared/lib/container/container-host'
-import { agentCatalog } from './agent-catalog'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
@@ -78,7 +77,6 @@ export function createAgentRegistry(
   // this is where it gets the way in. Wired here, by the package that owns
   // the actors, so no entry point has to remember to.
   deps.containerHost.attachAgentWorkspaces({
-    exists: (slug) => agentCatalog.exists(slug),
     files: (slug) => get(slug).files,
     instructions: (slug) => get(slug).config.get('instructions'),
   })

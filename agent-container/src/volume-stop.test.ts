@@ -1,121 +1,56 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installVolumeStop } from './volume-stop';
 
 afterEach(() => vi.useRealTimers());
-const stop = (app: Hono) => app.request('/volumes/prepare-stop', { method: 'POST' });
+function setup(timeout = 40) {
+  const dependencies = {
+    hasVolumes: () => true,
+    stopWriters: vi.fn(async () => {}),
+    drain: vi.fn(async () => true),
+    finish: vi.fn(async (drained: boolean) => ({ drained, recovered: drained ? 0 : 1, recoveryErrors: 0 })),
+  };
+  const app = new Hono();
+  installVolumeStop(app, dependencies, timeout);
+  app.post('/sessions', c => c.json({ started: true }));
+  return { app, dependencies };
+}
 
-describe('safe volume stop', () => {
-  it('checks uploads, quiesces accepted writes, and drains files closed by stopped writers', async () => {
-    let release!: () => void;
-    const write = new Promise<void>(resolve => { release = resolve; });
-    const order: string[] = [];
-    const app = new Hono();
-    installVolumeStop(app, {
-      hasVolumes: () => true,
-      stopWriters: async () => { order.push('stopped'); },
-      drain: async () => { order.push('drained'); return true; },
-    });
-    app.post('/write', async c => { await write; order.push('written'); return c.text('done'); });
-    const accepted = app.request('/write', { method: 'POST' });
-    const stopping = stop(app);
-    await vi.waitFor(async () => expect((await app.request('/new-write', { method: 'POST' })).status).toBe(503));
-    expect((await app.request('/write', { method: 'POST' })).status).toBe(503);
-    release();
-    await accepted;
-    expect((await stopping).status).toBe(200);
-    expect(order).toEqual(['drained', 'written', 'stopped', 'drained']);
-    expect((await app.request('/write', { method: 'POST' })).status).toBe(503);
+describe('bounded volume stop', () => {
+  it('closes writers before draining and coalesces repeated stop calls', async () => {
+    const { app, dependencies: d } = setup();
+    d.drain.mockImplementation(async () => { expect(d.stopWriters).toHaveBeenCalledOnce(); return true; });
+    const [a, b] = await Promise.all([app.request('/volumes/prepare-stop', { method: 'POST' }), app.request('/volumes/prepare-stop', { method: 'POST' })]);
+    expect(await a.json()).toEqual({ drained: true, recovered: 0, recoveryErrors: 0 });
+    expect(b.status).toBe(200);
+    expect(d.finish).toHaveBeenCalledExactlyOnceWith(true);
+    expect((await app.request('/sessions', { method: 'POST' })).status).toBe(503);
   });
 
-  it('leaves sessions and dashboards alone when the account is disconnected or rclone is dead', async () => {
-    const app = new Hono();
-    const drain = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
-    const stopWriters = vi.fn();
-    installVolumeStop(app, { hasVolumes: () => true, stopWriters, drain });
-    app.post('/write', c => c.text('done'));
-    const declined = await stop(app);
-    expect(declined.status).toBe(409);
-    expect(await declined.json()).toEqual({ ready: false, workStopped: false });
-    expect(stopWriters).not.toHaveBeenCalled();
-    expect((await app.request('/write', { method: 'POST' })).status).toBe(200);
-    expect((await stop(app)).status).toBe(200);
-    expect(drain).toHaveBeenCalledTimes(3);
+  it.each(['writers', 'uploads', 'refused'])('preserves cache and accepts shutdown when %s do not finish', async failure => {
+    const { app, dependencies: d } = setup();
+    if (failure === 'writers') d.stopWriters.mockImplementation(() => new Promise(() => {}));
+    else if (failure === 'uploads') d.drain.mockImplementation(() => new Promise(() => {}));
+    else d.drain.mockResolvedValue(false);
+    const response = await app.request('/volumes/prepare-stop', { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ drained: false, recovered: 1, recoveryErrors: 0 });
+    expect(d.finish).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it('reports interrupted work if closing a writer enqueues an upload that cannot finish', async () => {
-    const app = new Hono();
-    const stopWriters = vi.fn();
-    installVolumeStop(app, {
-      hasVolumes: () => true, stopWriters,
-      drain: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
-    });
-    const declined = await stop(app);
-    expect(declined.status).toBe(409);
-    expect(await declined.json()).toEqual({ ready: false, workStopped: true });
-    expect(stopWriters).toHaveBeenCalledOnce();
+  it('reports failed preservation and still accepts shutdown', async () => {
+    const { app, dependencies: d } = setup();
+    d.drain.mockResolvedValue(false);
+    d.finish.mockRejectedValue(new Error('workspace unavailable'));
+    const response = await app.request('/volumes/prepare-stop', { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ drained: false, recoveryErrors: 1 });
   });
 
-  it.each(['/browser/run', '/browser/wait'])('does not wait for a long %s request to stop its owning session', async path => {
-    let release!: () => void;
-    const waiting = new Promise<void>(resolve => { release = resolve; });
-    const app = new Hono();
-    const stopWriters = vi.fn(async () => { release(); });
-    installVolumeStop(app, { hasVolumes: () => true, stopWriters, drain: async () => true }, 100);
-    app.post(path, async c => { await waiting; return c.text('done'); });
-    const browser = app.request(path, { method: 'POST' });
-    try {
-      expect((await stop(app)).status).toBe(200);
-      expect(stopWriters).toHaveBeenCalledOnce();
-    } finally { release(); await browser; }
-  });
-
-  it.each(['drain', 'stopWriters'] as const)('bounds a hung %s and reopens admissions for retry', async hung => {
-    vi.useFakeTimers();
-    const app = new Hono();
-    const never = () => new Promise<never>(() => {});
-    const drain = vi.fn().mockResolvedValue(true);
-    const stopWriters = vi.fn().mockResolvedValue(undefined);
-    if (hung === 'drain') drain.mockImplementationOnce(never);
-    else stopWriters.mockImplementationOnce(never);
-    installVolumeStop(app, { hasVolumes: () => true, stopWriters, drain }, 100);
-    app.post('/write', c => c.text('done'));
-    const stopping = stop(app);
-    await vi.advanceTimersByTimeAsync(101);
-    const declined = await stopping;
-    expect(declined.status).toBe(409);
-    expect(await declined.json()).toEqual({ ready: false, workStopped: hung === 'stopWriters' });
-    expect((await app.request('/write', { method: 'POST' })).status).toBe(200);
-    expect((await stop(app)).status).toBe(200);
-  });
-
-  it('does not interrupt sessions if an accepted file write has not finished', async () => {
-    vi.useFakeTimers();
-    let release!: () => void;
-    const waiting = new Promise<void>(resolve => { release = resolve; });
-    const app = new Hono();
-    const stopWriters = vi.fn();
-    installVolumeStop(app, { hasVolumes: () => true, stopWriters, drain: async () => true }, 100);
-    app.put('/files/upload', async c => { await waiting; return c.text('done'); });
-    const upload = app.request('/files/upload', { method: 'PUT' });
-    const stopping = stop(app);
-    await vi.advanceTimersByTimeAsync(101);
-    expect((await stopping).status).toBe(409);
-    expect(stopWriters).not.toHaveBeenCalled();
-    release();
-    await upload;
-  });
-
-  it('deduplicates concurrent stops and recovers if the host never sends SIGTERM', async () => {
-    vi.useFakeTimers();
-    const app = new Hono();
-    const stopWriters = vi.fn();
-    installVolumeStop(app, { hasVolumes: () => true, stopWriters, drain: async () => true });
-    app.post('/write', c => c.text('done'));
-    const responses = await Promise.all([stop(app), stop(app)]);
-    expect(responses.map(response => response.status)).toEqual([200, 200]);
-    expect(stopWriters).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(15_001);
-    expect((await app.request('/write', { method: 'POST' })).status).toBe(200);
+  it('does no work for an agent without volumes', async () => {
+    const { app, dependencies: d } = setup();
+    d.hasVolumes = () => false;
+    expect((await app.request('/volumes/prepare-stop', { method: 'POST' })).status).toBe(200);
+    expect(d.stopWriters).not.toHaveBeenCalled();
   });
 });

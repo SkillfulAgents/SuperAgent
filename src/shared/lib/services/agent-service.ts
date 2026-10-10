@@ -9,8 +9,6 @@
  * rename, so the agent still sees who it is and exports still carry it.
  */
 
-import { withAgentDeletion } from '@shared/lib/container/lifecycle-gate'
-
 import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -332,9 +330,8 @@ export async function updateAgent(
     const updated = await commitIdentity(record, changes, document, body)
     if (!updated) return null
 
-    // Like agent reads/listing, metadata edits use the last observed status.
-    // A runtime outage must not turn an already-saved edit into a failed request.
-    const info = agentRegistry.get(slug).container.status()
+    // Get container status
+    const info = await agentRegistry.get(slug).container.info()
 
     return toApiAgent(updated, info.status, info.port, body)
   })
@@ -404,7 +401,7 @@ export class AgentContainerStopError extends Error {
   readonly slug: string
   constructor(slug: string, cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause)
-    super(`Failed to stop the container for agent "${slug}": ${detail}`, { cause })
+    super(`Failed to stop the container for agent "${slug}": ${detail}`)
     this.name = 'AgentContainerStopError'
     this.slug = slug
   }
@@ -413,44 +410,35 @@ export class AgentContainerStopError extends Error {
 /**
  * Delete an agent and all its data
  */
-export async function deleteAgent(slug: string, options?: {
-  discardPendingUploads?: boolean
-  /** Revoke credentials and remove peripheral rows after draining, before removing the workspace. */
-  cleanup?: () => Promise<void>
-}): Promise<boolean> {
-  return withAgentDeletion(slug, async () => {
-    if (!(await agentCatalog.exists(slug))) {
-      return false
-    }
+export async function deleteAgent(slug: string): Promise<boolean> {
+  if (!(await agentCatalog.exists(slug))) {
+    return false
+  }
 
-    // Stop the container before removing the workspace.
-    //
-    // stopContainer is idempotent for already-stopped/missing containers: the
-    // underlying client silently ignores benign "no such container" cases and
-    // resolves without throwing. Therefore any rejection here signals a GENUINE
-    // runtime failure (e.g. a wedged VM or an unexpected stop error), in which
-    // case the container may still be running or be in an unknown stop state.
-    //
-    // We must NOT delete the host workspace in that situation. Re-throw as a
-    // typed error so the API/UI can surface an actionable failure; the catalog
-    // removal below never runs, so the workspace is preserved and the delete is
-    // retryable.
-    try {
-      const container = agentRegistry.get(slug).container
-      await container.stop(options?.discardPendingUploads ? { discardPendingUploads: true } : undefined)
-    } catch (error) {
-      throw new AgentContainerStopError(slug, error)
-    }
+  // Stop the container before removing the workspace.
+  //
+  // stopContainer is idempotent for already-stopped/missing containers: the
+  // underlying client silently ignores benign "no such container" cases and
+  // resolves without throwing. Therefore any rejection here signals a GENUINE
+  // runtime failure (e.g. a wedged VM or an unexpected stop error), in which
+  // case the container may still be running or be in an unknown stop state.
+  //
+  // We must NOT delete the host workspace in that situation. Re-throw as a
+  // typed error so the API/UI can surface an actionable failure; the catalog
+  // removal below never runs, so the workspace is preserved and the delete is
+  // retryable.
+  try {
+    await agentRegistry.get(slug).container.stop()
+  } catch (error) {
+    throw new AgentContainerStopError(slug, error)
+  }
 
-    await options?.cleanup?.()
+  // Remove the agent only after the container has been confirmed stopped, then
+  // forget the handle and runtime the stop above created for it.
+  await agentCatalog.remove(slug)
+  agentRegistry.evict(slug)
 
-    // Remove the agent only after the container has been confirmed stopped, then
-    // forget the handle and runtime the stop above created for it.
-    await agentCatalog.remove(slug)
-    agentRegistry.evict(slug)
-
-    return true
-  })
+  return true
 }
 
 // ============================================================================

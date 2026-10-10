@@ -9,9 +9,6 @@
  * `RuntimeHost`.
  */
 import { z } from 'zod'
-import { ContainerStopDeferredError } from './volume-stop-schema'
-import { assertAgentCanStart } from './lifecycle-gate'
-import { withinStopDeadline } from './stop-deadline'
 import { createContainerClient } from './client-factory'
 import { ActivityClock } from './activity-clock'
 import { IdleAlarm } from './idle-alarm'
@@ -37,13 +34,14 @@ import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { listVolumes, completeMountRemovals } from '@shared/lib/services/mount-service'
+import { listVolumes } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
+import { prepareVolumeStop } from './volume-stop'
 
 /**
  * Max age (in ms) of a cached 'running' status before ensureRunning re-verifies
@@ -104,6 +102,7 @@ async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[]
 }
 
 export class ContainerRuntime {
+  private volumesPresent: boolean | undefined
   private client: ContainerClient | null = null
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
@@ -128,10 +127,8 @@ export class ContainerRuntime {
   private healthWarnings: HealthCheckResult[] = []
   /** Being stopped — skip health checks, sync, and connection error recovery */
   private stopping = false
-  private stopTask: Promise<void> | null = null
   /** In-flight ensureRunning promise — deduplicates concurrent start requests */
   private starting: Promise<ContainerClient> | null = null
-  private launching: Promise<ContainerInfo | void> | null = null
   /** Counts starts, stops and disposal: a start whose number moved on was overtaken and no longer owns the banner. */
   private lifecycle = 0
   /**
@@ -225,9 +222,14 @@ export class ContainerRuntime {
         try {
           await this.syncAgentStatus()
         } catch (err) {
-          // A connection error plus failed inspection is still unknown. Only a
-          // successful observation may mark the container/sessions stopped.
-          console.error(`[ContainerRuntime] Failed to sync status after connection error; keeping the last observation:`, err)
+          console.error(`[ContainerRuntime] Failed to sync status after connection error:`, err)
+          this.markAsStopped()
+          messagePersister.markAllSessionsInactiveForAgent(slug)
+          messagePersister.broadcastGlobal({
+            type: 'agent_status_changed',
+            agentSlug: slug,
+            status: 'stopped',
+          })
         }
       },
     }).catch((err) => {
@@ -240,8 +242,6 @@ export class ContainerRuntime {
   }
 
   private assertNotStopping(op: 'start' | 'restart'): void {
-    assertAgentCanStart(this.slug)
-    if (this.disposed) throw new Error(`Cannot ${op} a disposed agent runtime`)
     if (this.stopping) {
       throw new Error(`Cannot ${op} agent ${this.slug} while it is stopping`)
     }
@@ -249,7 +249,6 @@ export class ContainerRuntime {
 
   // A stop, a later start, or a runner change since this start began owns the agent now.
   private assertCurrent(lifecycle: number): void {
-    this.assertNotStopping('start')
     if (lifecycle !== this.lifecycle) {
       throw new Error(`Cannot finish starting agent ${this.slug}: a stop or a later start overtook it`)
     }
@@ -305,8 +304,6 @@ export class ContainerRuntime {
     return { status: 'stopped', port: null }
   }
 
-  needsStop(): boolean { return this.cached?.status !== 'stopped' || this.starting !== null }
-
   /**
    * Update cached container status. Called after start/stop operations.
    */
@@ -324,7 +321,7 @@ export class ContainerRuntime {
   }
 
   /**
-   * Record a confirmed stop, including an observed exit or runtime teardown.
+   * Mark the container as stopped in cache (e.g., when connection fails).
    * Prefer using stopContainer() which also stops the actual container.
    */
   markAsStopped(): void {
@@ -340,49 +337,42 @@ export class ContainerRuntime {
    * Marks the runtime as "stopping" so health checks, status sync, and connection
    * error handlers stop spawning CLI commands into a potentially overloaded VM.
    */
-  stopContainer(options?: StopOptions): Promise<void> {
-    this.stopTask ??= this.performStop(options).finally(() => { this.stopTask = null })
-    return this.stopTask
-  }
-
-  private async performStop(options?: StopOptions): Promise<void> {
+  async stopContainer(options?: StopOptions): Promise<void> {
     const slug = this.slug
     // Mark as stopping immediately to prevent health checks / sync from spawning
     // more CLI processes into an overloaded VM
     this.stopping = true
     this.lifecycle++
-    const launching = this.launching
     this.starting = null
 
     let forceStopUsed = false
-    let stopped = false
+    // Default true: if stop() throws, preserve prior behavior of marking the
+    // agent stopped. Only the explicit force-stop-disabled bail returns false.
+    let stopped = true
 
     try {
       const client = this.getClient()
-      // A launch already submitted to the runtime must settle before the stop;
-      // otherwise it could create a container after deletion removed its workspace.
-      if (launching) await withinStopDeadline(launching.catch(() => {}), AbortSignal.timeout(30_000))
+      if (this.volumesPresent !== false) await prepareVolumeStop(client, slug)
+      // Stop the host browser before the container so it closes gracefully
+      // instead of getting a "socket hang up" when the container dies
       const beforeStop = this.host.onBeforeContainerStop
-      const result = await client.stop(beforeStop ? {
-        ...options,
-        beforeStop: async () => {
-          await withinStopDeadline(beforeStop(slug), AbortSignal.timeout(5_000)).catch(err => {
-            console.warn(`[ContainerRuntime] Browser cleanup failed for ${slug}:`, err)
-          })
-          await options?.beforeStop?.()
-        },
-      } : options)
+      if (beforeStop) {
+        await beforeStop(slug).catch((err) => {
+          console.warn(`[ContainerRuntime] Pre-stop hook failed for ${slug}:`, err)
+        })
+      }
+
+      const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
-      // A declined upload drain also keeps the container running.
+      // Only an explicit `false` (stop+kill timed out with force-stop disabled)
+      // means the container is still running; anything else counts as stopped.
       stopped = result.stopped ?? true
-      if (!stopped && result.deferredReason) throw new ContainerStopDeferredError(result.deferredReason, result.workStopped)
-      if (!stopped) throw new Error('Container did not stop')
-      await completeMountRemovals(slug)
     } finally {
       this.stopping = false
 
       if (!stopped) {
-        // The stop was deferred: leave cached status untouched so the UI
+        // stop+kill timed out and force-stop was disabled (auto-sleep): the
+        // container is still running. Leave cached status untouched so the UI
         // and the next auto-sleep sweep see reality, and skip the stopped-side
         // effects below.
         console.warn(
@@ -422,8 +412,8 @@ export class ContainerRuntime {
    * Restart the container by stopping and re-starting it.
    * Volume attachments are re-loaded from SQLite on start.
    */
-  async restartContainer(options?: StopOptions): Promise<ContainerClient> {
-    await this.stopContainer(options)
+  async restartContainer(): Promise<ContainerClient> {
+    await this.stopContainer()
     return this.ensureRunning()
   }
 
@@ -541,7 +531,7 @@ export class ContainerRuntime {
         this.updateCachedStatus('running', cached.port)
       } else {
         console.warn(`[ContainerRuntime] Cached 'running' status for ${slug} failed liveness check, (re)starting`)
-        // A failed health probe followed by failed inspect must still drain at quit.
+        this.markAsStopped()
         needsStart = true
       }
     }
@@ -563,12 +553,6 @@ export class ContainerRuntime {
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
     const slug = this.slug
     const lifecycle = ++this.lifecycle
-    // A scheduled task may have checked existence before deletion and resumed
-    // after its guard was released. Never recreate that deleted workspace.
-    if (this.host.agentWorkspaces?.exists && !await this.host.agentWorkspaces.exists(slug)) {
-      throw new Error(`Agent ${slug} no longer exists`)
-    }
-    this.assertCurrent(lifecycle)
     // Pass proxy config and account metadata (no raw tokens)
     const envVars: Record<string, string> = {}
 
@@ -672,16 +656,13 @@ export class ContainerRuntime {
     // Start container (user secrets are in .env file in workspace).
     let volumesDropped = false
     let alreadyRunning = false
-    this.assertCurrent(lifecycle)
-    const launch = client.start({
+    const startedInfo = await client.start({
       envVars,
       agentName,
       volumes,
       onVolumesDropped: () => { volumesDropped = true },
       onAlreadyRunning: () => { alreadyRunning = true },
     })
-    this.launching = launch
-    const startedInfo = await launch.finally(() => { if (this.launching === launch) this.launching = null })
 
     // Stop won the race: do not cache/broadcast running for a port about to die.
     this.assertNotStopping('start')
@@ -692,8 +673,6 @@ export class ContainerRuntime {
     // return, which the ContainerClient contract still allows. (Can't use
     // syncAgentStatus here — it is guarded against updates during startup.)
     const info = startedInfo ?? await client.getInfoFromRuntime()
-    this.assertCurrent(lifecycle)
-    if (!alreadyRunning) await completeMountRemovals(slug, listed.pendingRemovalIds ?? [])
     this.assertCurrent(lifecycle)
     this.updateCachedStatus(info.status, info.port)
 
@@ -712,6 +691,7 @@ export class ContainerRuntime {
     // A container already running got its volumes, and its banner, from an earlier start.
     // A runtime replaced meanwhile (a runner change) no longer owns the banner.
     if (alreadyRunning || this.disposed) return client
+    this.volumesPresent = !volumesDropped && volumes.length > 0
     let failed: NotMountedVolume[] = []
     if (volumesDropped) {
       failed = notMountedAll(volumes, 'start failed with folders')
@@ -805,6 +785,7 @@ export class ContainerRuntime {
    * stop the container.
    */
   dispose(): void {
+    this.volumesPresent = undefined
     this.disposed = true
     this.lifecycle++
     this.client = null

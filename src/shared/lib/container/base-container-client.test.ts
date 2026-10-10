@@ -4,7 +4,6 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape } from './base-container-client'
-import { runtimeHasVolumes, RuntimeStatusUnavailableError, isMissingRuntimeContainer } from './volume-stop-schema'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
@@ -36,134 +35,7 @@ class TestContainerClient extends BaseContainerClient {
   public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
   }
-  public testPrepareVolumeStop() {
-    return this.prepareVolumeStop()
-  }
-  public testSetRunningVolumes(value: boolean) { this.runningHasVolumes = value }
 }
-
-describe('stop with pending volume uploads', () => {
-  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
-
-  it('preserves the container and websocket connections when draining is declined', async () => {
-    const client = new TestContainerClient({ agentId: 'test-volumes' })
-    client.testSetRunningVolumes(true)
-    const response = vi.spyOn(client, 'fetch').mockResolvedValue(Response.json({ ready: false }, { status: 409 }))
-    // Any CLI action, including rm/kill, would first need the runner.
-    const runner = vi.spyOn(client as any, 'getRunnerCommand')
-    const sockets = vi.spyOn(client as any, 'terminateWebSocketConnections')
-    await expect(client.stop()).resolves.toMatchObject({ stopped: false, forceStopUsed: false, deferredReason: expect.any(String) })
-    expect(response).toHaveBeenCalledWith('/volumes/prepare-stop', expect.objectContaining({ method: 'POST' }))
-    expect(runner).not.toHaveBeenCalled()
-    expect(sockets).not.toHaveBeenCalled()
-  })
-
-  it.each([200, 404])('permits a confirmed drain or a legacy image (%s)', async status => {
-    const client = new TestContainerClient({ agentId: 'test-volumes' })
-    client.testSetRunningVolumes(true)
-    vi.spyOn(client, 'fetch').mockResolvedValue(Response.json({ ready: true }, { status }))
-    await expect(client.testPrepareVolumeStop()).resolves.toBeUndefined()
-  })
-
-  it('accepts a confirmed exit after a failed drain and closes the browser before teardown', async () => {
-    const client = new TestContainerClient({ agentId: 'test-dead' })
-    client.testSetRunningVolumes(true)
-    vi.spyOn(client, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
-    const inspect = vi.spyOn(client, 'getInfoFromRuntime').mockResolvedValue({ status: 'stopped', port: null })
-    vi.spyOn(client as any, 'getRunnerCommand').mockReturnValue('true')
-    const sockets = vi.spyOn(client as any, 'terminateWebSocketConnections')
-    const beforeStop = vi.fn(async () => { expect(sockets).not.toHaveBeenCalled() })
-    await expect(client.stop({ beforeStop })).resolves.toMatchObject({ stopped: true })
-    expect(inspect).toHaveBeenCalledOnce()
-    expect(beforeStop).toHaveBeenCalledOnce()
-  })
-
-  it('does not mistake an inspect failure for an exited container or skip the drain', async () => {
-    const client = new TestContainerClient({ agentId: 'test-unknown' })
-    vi.spyOn(client as any, 'getRunnerCommand').mockReturnValue('false')
-    await expect(client.getInfoFromRuntime()).rejects.toBeInstanceOf(RuntimeStatusUnavailableError)
-    const beforeStop = vi.fn()
-    await expect(client.stop({ beforeStop })).resolves.toMatchObject({ stopped: false, workStopped: false })
-    expect(beforeStop).not.toHaveBeenCalled()
-    expect(isMissingRuntimeContainer(new Error('Error: No such container: superagent-test'))).toBe(true)
-    expect(isMissingRuntimeContainer(new Error('sh: container: command not found'))).toBe(false)
-  })
-
-  it('preserves a live container when both drain and the runtime recheck fail', async () => {
-    const client = new TestContainerClient({ agentId: 'test-unreachable' })
-    client.testSetRunningVolumes(true)
-    vi.spyOn(client, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
-    vi.spyOn(client, 'getInfoFromRuntime').mockRejectedValue(new RuntimeStatusUnavailableError('timeout'))
-    const beforeStop = vi.fn()
-    await expect(client.stop({ beforeStop })).resolves.toMatchObject({ stopped: false })
-    expect(beforeStop).not.toHaveBeenCalled()
-  })
-
-  it('keeps a running container when upload status cannot be verified', async () => {
-    const client = new TestContainerClient({ agentId: 'test-volumes' })
-    client.testSetRunningVolumes(true)
-    vi.spyOn(client, 'fetch').mockRejectedValue(new Error('timeout'))
-    vi.spyOn(client, 'getInfoFromRuntime').mockResolvedValue({ status: 'running', port: 4001 })
-    await expect(client.stop()).resolves.toMatchObject({ stopped: false, forceStopUsed: false })
-  })
-  it('skips the endpoint for a container started without volumes, even if its server is hung', async () => {
-    const client = new TestContainerClient({ agentId: 'test-empty' })
-    client.testSetRunningVolumes(false)
-    const request = vi.spyOn(client, 'fetch').mockImplementation(() => new Promise(() => {}))
-    vi.spyOn(client as any, 'getRunnerCommand').mockReturnValue('true')
-    await expect(client.stop()).resolves.toMatchObject({ stopped: true })
-    expect(request).not.toHaveBeenCalled()
-  })
-
-  it('uses the inspected running generation when reconnecting to a container', async () => {
-    const client = new TestContainerClient({ agentId: 'test-reattach' })
-    vi.spyOn(client, 'getInfoFromRuntime').mockImplementation(async () => {
-      client.testSetRunningVolumes(false)
-      return { status: 'running', port: 4001 }
-    })
-    const request = vi.spyOn(client, 'fetch')
-    await expect(client.testPrepareVolumeStop()).resolves.toBeUndefined()
-    expect(request).not.toHaveBeenCalled()
-    expect(runtimeHasVolumes({ State: { Running: true }, Config: { Env: [] } })).toBe(false)
-    expect(runtimeHasVolumes({ State: { Running: true }, Config: { Env: ['SUPERAGENT_VOLUMES=[{"volumeId":"old-mount"}]'] } })).toBe(true)
-    expect(runtimeHasVolumes({ State: { Running: true } })).toBeUndefined()
-  })
-
-  it('bounds a completely hung endpoint and permits a subsequent explicit discard', async () => {
-    vi.useFakeTimers()
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
-      const controller = new AbortController()
-      setTimeout(() => controller.abort(new Error('deadline')), ms)
-      return controller.signal
-    })
-    const client = new TestContainerClient({ agentId: 'test-hung' })
-    vi.spyOn(client, 'getInfoFromRuntime').mockResolvedValue({ status: 'running', port: 4001 })
-    client.testSetRunningVolumes(true)
-    const request = vi.spyOn(client, 'fetch').mockImplementation(() => new Promise(() => {}))
-    const stopping = client.stop()
-    await vi.advanceTimersByTimeAsync(28_001)
-    await expect(stopping).resolves.toMatchObject({ stopped: false, workStopped: true })
-    expect(request.mock.calls[0][1]?.signal?.aborted).toBe(true)
-    vi.useRealTimers()
-    vi.spyOn(client as any, 'getRunnerCommand').mockReturnValue('true')
-    await expect(client.stop({ discardPendingUploads: true })).resolves.toMatchObject({ stopped: true })
-    expect(request).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not confuse shared-runtime force escalation with permission to discard uploads', async () => {
-    const client = new TestContainerClient({ agentId: 'test-volumes' })
-    client.testSetRunningVolumes(true)
-    vi.spyOn(client, 'fetch').mockResolvedValue(Response.json({ ready: false, workStopped: false }, { status: 409 }))
-    await expect(client.stop({ escalateToForceStop: true })).resolves.toMatchObject({ stopped: false, workStopped: false })
-  })
-
-  it('reports that work was interrupted when the final drain fails', async () => {
-    const client = new TestContainerClient({ agentId: 'test-volumes' })
-    client.testSetRunningVolumes(true)
-    vi.spyOn(client, 'fetch').mockResolvedValue(Response.json({ ready: false, workStopped: true }, { status: 409 }))
-    await expect(client.stop()).resolves.toMatchObject({ stopped: false, workStopped: true, deferredReason: expect.stringContaining('Active work was interrupted') })
-  })
-})
 
 describe('buildAgentEnv', () => {
   afterEach(() => {

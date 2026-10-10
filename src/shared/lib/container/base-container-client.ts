@@ -1,6 +1,4 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
-import { runtimeHasVolumes, volumeRuntimeStateSchema, volumeStopResponseSchema, RuntimeStatusUnavailableError, isMissingRuntimeContainer } from './volume-stop-schema'
-import { withinStopDeadline } from './stop-deadline'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
 import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
@@ -294,7 +292,6 @@ const interruptResponseSchema = z.object({
 
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
-  protected runningHasVolumes: boolean | undefined
   private wsConnections: Map<string, WebSocket> = new Map()
   private wsReadyRejectors = new WeakMap<WebSocket, (error: Error) => void>()
 
@@ -589,12 +586,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} inspect ${containerName}`, { timeoutMs: 5_000 }
+        `${runner} inspect ${containerName}`
       )
       const inspectData = JSON.parse(stdout.trim())
       const container = Array.isArray(inspectData) ? inspectData[0] : inspectData
-      volumeRuntimeStateSchema.parse(container)
-      this.runningHasVolumes = runtimeHasVolumes(container)
       const running = container?.State?.Running === true
       const portKey = `${CONTAINER_INTERNAL_PORT}/tcp`
       const portBindings = container?.NetworkSettings?.Ports?.[portKey]
@@ -603,9 +598,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         status: running ? 'running' : 'stopped',
         port: hostPort ? parseInt(hostPort, 10) : null,
       }
-    } catch (error) {
-      if (isMissingRuntimeContainer(error)) return { status: 'stopped', port: null }
-      throw new RuntimeStatusUnavailableError(error)
+    } catch {
+      return { status: 'stopped', port: null }
     }
   }
 
@@ -791,7 +785,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
           try {
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
-            this.runningHasVolumes = !!volumes?.length
           } catch (runError: any) {
             // 1. Host-port allocation race — re-pick a port (bounded).
             if (this.isPortConflictError(runError) && portRetries < MAX_PORT_RETRIES) {
@@ -971,9 +964,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async stop(options?: StopOptions): Promise<StopResult> {
-    const deferred = options?.discardPendingUploads ? undefined : await this.prepareVolumeStop()
-    if (deferred) return { forceStopUsed: false, stopped: false, ...deferred }
-    await options?.beforeStop?.()
     this.rememberRunningPort(null)
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
@@ -1072,48 +1062,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       throw error
     }
 
-    this.runningHasVolumes = undefined
     return { forceStopUsed, stopped: true }
-  }
-
-  protected async prepareVolumeStop(): Promise<Pick<StopResult, 'deferredReason' | 'workStopped'> | undefined> {
-    const signal = AbortSignal.timeout(28_000)
-    let requested = false
-    try {
-      if (this.runningHasVolumes === undefined) {
-        const info = await withinStopDeadline(this.getInfoFromRuntime(), signal)
-        if (info.status === 'stopped') return
-      }
-      if (this.runningHasVolumes === false) return
-      // Bound the entire call, including port discovery and reading the body.
-      requested = true
-      const result = await withinStopDeadline(
-        (async () => {
-          const response = await this.fetch('/volumes/prepare-stop', { method: 'POST', signal })
-          if (response.status === 404) return { ready: true, workStopped: false }
-          const body = volumeStopResponseSchema.parse(await response.json())
-          return { ...body, ready: response.ok && body.ready }
-        })(), signal)
-      // Images released before the drain protocol retain their existing stop behavior.
-      if (result.ready) return
-      return {
-        deferredReason: result.workStopped
-          ? 'Active work was interrupted, but volume uploads have not finished. The container was kept running to preserve unsynced files.'
-          : 'Volume uploads have not finished. This stop attempt did not interrupt active work.',
-        workStopped: result.workStopped,
-      }
-    } catch {
-      // The server may be unreachable because the container already exited.
-      // Only a successful runtime probe (including confirmed absence) proves it.
-      if (requested) {
-        const info = await withinStopDeadline(this.getInfoFromRuntime(), AbortSignal.timeout(5_000)).catch(() => null)
-        if (info?.status === 'stopped') return
-      }
-      return {
-        deferredReason: 'Could not confirm that volume uploads finished. The container was kept running to preserve unsynced files; active work may have been interrupted.',
-        workStopped: requested,
-      }
-    }
   }
 
   /**

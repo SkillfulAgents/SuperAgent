@@ -453,63 +453,6 @@ describe('SessionManager pre-warm pool', () => {
     expect(warmed.disposeCalls).toBe(1)
   })
 
-  it('can warm another session after a volume drain leaves the container running', async () => {
-    await manager.prewarm(profileFor('claude-sonnet-5'))
-    const previous = MockClaudeProcess.spawned.at(-1)!
-    await manager.stopAll(false)
-    expect(previous.disposeCalls).toBe(1)
-    await manager.prewarm(profileFor('claude-sonnet-5'))
-    expect(MockClaudeProcess.spawned.at(-1)).not.toBe(previous)
-    expect(MockClaudeProcess.spawned.at(-1)!.disposeCalls).toBe(0)
-  })
-
-  it('bounds a hung warm-up and never clears sessions created after a refused stop', async () => {
-    let release!: () => void
-    prewarmGate = new Promise<void>(resolve => { release = resolve })
-    await manager.createSession(baseRequest)
-    const previousWarm = MockClaudeProcess.spawned.at(-1)!
-    const controller = new AbortController()
-    const stopping = manager.stopAll(false, controller.signal)
-    controller.abort(new Error('deadline'))
-    await expect(stopping).rejects.toThrow('deadline')
-    prewarmGate = null
-    // A changed profile starts cold rather than waiting on the old warm-up.
-    const next = await manager.createSession({ ...baseRequest, model: 'claude-sonnet-5' })
-    release()
-    await vi.waitFor(() => expect(previousWarm.disposeCalls).toBe(1))
-    expect(manager.getAllSessions().map(session => session.id)).toContain(next.id)
-  })
-
-  it('does not forget an old writer when cancellation is followed by another safe stop', async () => {
-    const session = await manager.createSession(baseRequest)
-    const writer = MockClaudeProcess.spawned.find(process => process.sessionId === session.id)!
-    let release!: () => void
-    vi.spyOn(writer, 'dispose').mockReturnValue(new Promise<void>(resolve => { release = resolve }))
-    try {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const controller = new AbortController()
-        const stopping = manager.stopAll(false, controller.signal)
-        controller.abort(new Error('deadline'))
-        await expect(stopping).rejects.toThrow('deadline')
-      }
-    } finally { release() }
-    await expect(manager.stopAll(false)).resolves.toBeUndefined()
-  })
-
-  it('delivers final events while stopping and ignores events from a retired writer', async () => {
-    const session = await manager.createSession(baseRequest)
-    const writer = MockClaudeProcess.spawned.find(process => process.sessionId === session.id)!
-    const receive = vi.fn()
-    manager.subscribe(session.id, receive)
-    const final = { type: 'system', subtype: 'flush-marker' }
-    vi.spyOn(writer, 'dispose').mockImplementation(async () => { writer.emit('message', final) })
-    await manager.stopAll(false)
-    expect(receive).toHaveBeenCalledWith(final)
-    writer.emit('message', { type: 'system', subtype: 'late-marker' })
-    expect(receive).toHaveBeenCalledTimes(1)
-    expect(writer.listenerCount('message')).toBe(0)
-  })
-
   it('does not pre-warm when disabled', async () => {
     const off = new SessionManager(workDir, {
       idleEvictionMs: -1,

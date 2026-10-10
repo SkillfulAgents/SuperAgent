@@ -171,10 +171,6 @@ export interface HealthCheckResult {
 }
 
 export interface StopOptions {
-  /** Host cleanup after a safe drain is accepted, before runtime teardown. */
-  beforeStop?: () => Promise<void>
-  /** Explicit user override: stopping may discard uploads cached only in this container. */
-  discardPendingUploads?: boolean
   stopTimeoutMs?: number
   killTimeoutMs?: number
   /**
@@ -197,14 +193,10 @@ export interface StopResult {
   forceStopUsed: boolean
   /**
    * True if the container was actually stopped (gracefully, killed, or via
-   * force-stop). False when an upload drain is incomplete, or stop+kill timed
-   * out with force-stop disabled. The container is still running.
+   * force-stop). False only when stop+kill timed out and force-stop was
+   * disabled — the container is still running and should be retried.
    */
   stopped: boolean
-  /** A safe stop was declined, preserving pending volume data in the container. */
-  deferredReason?: string
-  /** Some work was already interrupted while attempting the final upload drain. */
-  workStopped?: boolean
 }
 
 // Verdict from probing a host-side TCP endpoint from the runner's network side.

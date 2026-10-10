@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, exists, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, exists, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
@@ -23,13 +23,13 @@ function availableMountName(slug: string, base: string) {
     order by n limit 1)`
 }
 
-export async function getMounts(slug: string, includePending = false): Promise<MountedVolume[]> {
+export async function getMounts(slug: string): Promise<MountedVolume[]> {
   const rows = await db.select({ volume: volumeDefinitions, mount: agentVolumes })
     .from(agentVolumes).innerJoin(volumeDefinitions, eq(agentVolumes.volumeId, volumeDefinitions.id))
-    .where(and(eq(agentVolumes.agentSlug, slug), includePending ? undefined : eq(agentVolumes.pendingRemoval, false))).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
+    .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
   return rows.flatMap(({ volume, mount }) => {
     const stored = storedDefinition(volume)
-    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id, ...(mount.pendingRemoval ? { pendingRemoval: true } : {}) }] : []
+    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id }] : []
   })
 }
 
@@ -60,7 +60,7 @@ export async function attachMount(slug: string, volumeId: string, viewer: Volume
   const result = await insertWhere(agentVolumes, {
     id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), createdAt: new Date(),
   }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
-    .onConflictDoUpdate({ target: [agentVolumes.agentSlug, agentVolumes.volumeId], set: { pendingRemoval: false } }).run()
+    .onConflictDoNothing({ target: [agentVolumes.agentSlug, agentVolumes.volumeId] }).run()
   // Idempotent attachment still requires current visibility.
   if (changesOf(result) === 0 && !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection).get()) {
     throw new VolumeError('Volume not found', 404)
@@ -71,35 +71,22 @@ export async function attachMount(slug: string, volumeId: string, viewer: Volume
 }
 
 export async function removeMount(slug: string, mountId: string): Promise<void> {
-  // Keep the current generation's upload grant until a confirmed stop or a
-  // fresh launch. The next generation's desired configuration excludes it.
-  await db.update(agentVolumes).set({ pendingRemoval: true })
-    .where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
-}
-
-export async function completeMountRemovals(slug: string, ids?: string[]): Promise<void> {
-  if (ids?.length === 0) return
-  await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.pendingRemoval, true),
-    ids ? inArray(agentVolumes.id, ids) : undefined)).run()
+  await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
 }
 
 /** The attachment is the grant; knowing a shared definition's id grants no access. */
 export async function resolveVolume(slug: string, mountId: string) {
-  const row = (await getMounts(slug, true)).find(m => m.id === mountId)
+  const row = (await getMounts(slug)).find(m => m.id === mountId)
   return row ? instantiateVolume(row) : null
 }
 
-async function judgeVolumes(slug: string, includePending = false) {
-  return Promise.all((await getMounts(slug, includePending)).filter(row => includePending || !row.pendingRemoval)
-    .map(async row => ({ row, reason: row.pendingRemoval ? null : await volumeProblem(row) })))
+async function judgeVolumes(slug: string) {
+  return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row) })))
 }
 
-export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[]; pendingRemovalIds?: string[] }> {
-  const all = await judgeVolumes(slug, true)
-  const pendingRemovalIds = all.filter(({ row }) => row.pendingRemoval).map(({ row }) => row.id)
-  const judged = all.filter(({ row }) => !row.pendingRemoval)
+export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+  const judged = await judgeVolumes(slug)
   return {
-    ...(pendingRemovalIds.length ? { pendingRemovalIds } : {}),
     volumes: judged.flatMap(({ row, reason }) => reason === null ? [{
       volumeId: row.id, name: row.name, cacheMode: instantiateVolume(row)?.cacheMode ?? 'local',
     }] : []),
@@ -108,8 +95,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 }
 
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
-  return (await judgeVolumes(slug, true)).map(({ row, reason }) => ({
+  return (await judgeVolumes(slug)).map(({ row, reason }) => ({
     ...volumeSummary(row), volumeId: row.volumeId, health: reason === null ? 'ok' : 'missing',
-    ...(row.pendingRemoval ? { pendingRemoval: true } : {}),
   }))
 }

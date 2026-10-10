@@ -53,7 +53,6 @@ import {
 } from '@shared/lib/agent-actor'
 import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
-import { ContainerStopDeferredError, forceStopQuerySchema } from '@shared/lib/container/volume-stop-schema'
 import {
   sessionDashboardDispatchSchema,
   type SessionDashboardDispatch,
@@ -82,7 +81,7 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, completeMountRemovals, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
 import { addMountSchema } from '@shared/lib/services/mount-schema'
 import { VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
@@ -1452,23 +1451,30 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
-    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
+    // The container is stopped, and its runtime forgotten, inside deleteAgent
+    // below: forgetting it here first would leave the stop to a fresh runtime
+    // while the old client's callbacks still pointed at the dropped one.
 
-    // Drain while the token and attachment grants still work. Cleanup must
-    // finish before the service removes the workspace (SUP-208).
-    const deleted = await deleteAgent(slug, {
-      discardPendingUploads: force.data === 'true',
-      cleanup: async () => {
-        try {
-          await revokeProxyToken(slug)
-        } catch (error) {
-          console.error('Failed to revoke proxy token:', error)
-        }
-        await deletePoliciesForAgent(slug)
-        await cleanupAgentData(slug)
-      },
-    })
+    // Clean up proxy token (best-effort — a revoked token is harmless on its own).
+    try {
+      await revokeProxyToken(slug)
+    } catch (error) {
+      console.error('Failed to revoke proxy token:', error)
+    }
+
+    // Clean up x-agent invoke policies referencing this agent (caller or target).
+    await deletePoliciesForAgent(slug)
+
+    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
+    // This runs BEFORE the irreversible workspace removal: if any peripheral
+    // cleanup throws, the route returns 500 with the workspace still intact, so
+    // the delete is safely retryable instead of leaving orphaned rows pointing
+    // at a workspace that no longer exists (SUP-208).
+    await cleanupAgentData(slug)
+
+    // Irreversible: remove the agent workspace directory. Done LAST so it only
+    // happens once every peripheral cleanup above has succeeded.
+    const deleted = await deleteAgent(slug)
     if (!deleted) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -1490,7 +1496,11 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     return c.body(null, 204)
   } catch (error) {
     if (error instanceof AgentContainerStopError) {
-      if (error.cause instanceof ContainerStopDeferredError) return c.json(error.cause.toResponse(), 409)
+      // SUP-209: the container couldn't be stopped, so deleteAgent aborted
+      // before removing the workspace. The agent is preserved and the delete is
+      // retryable — surface an actionable 409 instead of a generic 500. (The
+      // peripheral cleanup above has already run; a retry once the container
+      // un-wedges completes the deletion.)
       console.error('Agent deletion aborted — container stop failed:', error)
       return c.json(
         { error: "Couldn't stop the agent's container, so it wasn't deleted. It may be busy — please try again in a moment." },
@@ -1753,9 +1763,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
       })
     }
 
-    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
-    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
-    await agentRegistry.get(slug).container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
+    await agentRegistry.get(slug).container.stop()
 
     return c.json({
       slug: agent.slug,
@@ -1768,7 +1776,6 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     })
   } catch (error) {
     console.error('Failed to stop agent:', error)
-    if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
     return c.json({ error: 'Failed to stop agent' }, 500)
   }
 })
@@ -6298,60 +6305,55 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const input = addMountSchema.parse(await c.req.json())
-    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
-    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
-    const container = agentRegistry.get(agentSlug).container
-    const restart = input.restart && container.status().status === 'running'
-    // Decline before creating anything. A force-confirmed retry cannot create
-    // a second definition, and cancellation leaves the mount configuration intact.
-    if (restart) await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
+    let mount
+    let restart: boolean | undefined
     try {
-      const mount = 'volumeId' in input
+      const input = addMountSchema.parse(await c.req.json())
+      restart = input.restart
+      mount = 'volumeId' in input
         ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
         : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
-      const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
-      await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
-      return c.json(summary, 201)
-    } finally {
-      // Once this request stopped the agent, restore it even if the definition
-      // disappeared, vendor validation failed, or audit persistence failed.
-      if (restart) await container.start()
+    } catch (err) {
+      if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
+      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
+      throw err
     }
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
+
+    if (restart) {
+      const cachedInfo = agentRegistry.get(agentSlug).container.status()
+      if (cachedInfo.status === 'running') {
+        await agentRegistry.get(agentSlug).container.restart()
+      }
+    }
+
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
+    return c.json(summary, 201)
   } catch (error) {
-    if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
-    if (error instanceof VolumeError) return c.json({ error: error.message }, error.status)
-    if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
     console.error('Failed to add mount:', error)
     return c.json({ error: 'Failed to add mount' }, 500)
   }
 })
 
-// DELETE /api/agents/:id/mounts/:mountId - Stage removal, optionally applying it now.
+// DELETE /api/agents/:id/mounts/:mountId - Remove a mount
 agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
-    const force = forceStopQuerySchema.safeParse(c.req.query('force'))
-    if (!force.success) return c.json({ error: 'Invalid force option' }, 400)
-    const container = agentRegistry.get(agentSlug).container
-    const wasRunning = container.status().status === 'running'
-    if (restart) await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
+
     await removeMount(agentSlug, mountId)
+
     if (restart) {
-      await completeMountRemovals(agentSlug)
-      if (wasRunning) await container.start()
-    } else if (!wasRunning) {
-      // The cached default after an app restart is not proof of exit. Keep the
-      // grant if inspection is unavailable; otherwise detach immediately.
-      const info = await container.info().catch(() => null)
-      if (info?.status === 'stopped') await completeMountRemovals(agentSlug, [mountId])
+      const cachedInfo = agentRegistry.get(agentSlug).container.status()
+      if (cachedInfo.status === 'running') {
+        await agentRegistry.get(agentSlug).container.restart()
+      }
     }
+
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'deleted' })
     return c.json({ success: true })
   } catch (error) {
-    if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
     console.error('Failed to remove mount:', error)
     return c.json({ error: 'Failed to remove mount' }, 500)
   }

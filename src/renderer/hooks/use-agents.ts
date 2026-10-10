@@ -1,5 +1,4 @@
 import { apiFetch } from '@renderer/lib/api'
-import { fetchWithVolumeStopConfirmation } from '@renderer/lib/volume-stop'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -122,7 +121,7 @@ export function useDeleteAgent() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
-      const res = await fetchWithVolumeStopConfirmation(`/api/agents/${slug}`, { method: 'DELETE' }, 'Delete')
+      const res = await apiFetch(`/api/agents/${slug}`, { method: 'DELETE' })
       if (!res.ok) {
         // Surface the server's message (e.g. the SUP-209 "container is busy" 409)
         // so the UI can explain why the delete failed, not a generic string.
@@ -228,11 +227,8 @@ export function useStopAgent() {
 
   return useMutation({
     mutationFn: async (slug: string) => {
-      const res = await fetchWithVolumeStopConfirmation(`/api/agents/${slug}/stop`, { method: 'POST' }, 'Stop')
-      if (!res.ok) {
-        const body = await res.json().catch(() => null)
-        throw new Error(typeof body?.error === 'string' ? body.error : 'Failed to stop agent')
-      }
+      const res = await apiFetch(`/api/agents/${slug}/stop`, { method: 'POST' })
+      if (!res.ok) throw new Error('Failed to stop agent')
       return res.json()
     },
     onSuccess: (_, slug) => {

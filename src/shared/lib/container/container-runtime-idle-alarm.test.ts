@@ -115,10 +115,7 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: () => 'UTC' }))
-vi.mock('@shared/lib/services/mount-service', () => ({
-  completeMountRemovals: vi.fn(async () => {}),
-  listVolumes: async () => ({ volumes: [], notMounted: [] }),
-}))
+vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }) }))
 
 import { containerHost } from './container-host'
 

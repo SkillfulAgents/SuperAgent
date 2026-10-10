@@ -53,7 +53,7 @@ import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-pro
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
-import { drainVolumeUploads, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
 import { installVolumeStop } from './volume-stop';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
@@ -123,14 +123,9 @@ app.get('/health', (c) => {
 // Session endpoints
 installVolumeStop(app, {
   hasVolumes: () => mountedVolumeIds().length > 0,
-  checkWriters: signal => sessionManager.waitForStoppingWriters(signal),
-  stopWriters: async (signal) => {
-    signal.throwIfAborted();
-    await dashboardManager.stopAll();
-    signal.throwIfAborted();
-    await sessionManager.stopAll(false, signal);
-  },
+  stopWriters: async () => { await Promise.all([dashboardManager.stopAll(), sessionManager.stopAll()]); },
   drain: drainVolumeUploads,
+  finish: finishVolumeStop,
 });
 
 app.post('/sessions', async (c) => {

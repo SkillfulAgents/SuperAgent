@@ -64,17 +64,11 @@ async function gracefulShutdown(signal: string) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`)
 
   // Stop all background services and containers
-  let containersStopped = false
   try {
-    await shutdownServices({ onContainersStopped: () => { containersStopped = true } })
+    await shutdownServices()
     console.log('All services stopped.')
   } catch (error) {
-    if (!containersStopped) {
-      console.error('Shutdown cancelled; keep the server available for pending uploads and retry the signal:', error)
-      isShuttingDown = false
-      return
-    }
-    console.error('Service cleanup failed after all containers stopped; finishing shutdown:', error)
+    console.error('Error stopping services:', error)
   }
 
   // Close the server

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { apiFetch } from '@renderer/lib/api'
-import { fetchWithVolumeStopConfirmation } from '@renderer/lib/volume-stop'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
 import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
@@ -37,13 +36,13 @@ export function useAddMount() {
       if (!data.volumeId && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
-      const res = await fetchWithVolumeStopConfirmation(`/api/agents/${data.agentSlug}/mounts`, {
+      const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
           ? { volumeId: data.volumeId, restart: data.restart }
           : { type: 'local', config: { path: data.hostPath }, name: data.name, visibility: data.visibility, restart: data.restart }),
-      }, 'Restart')
+      })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<VolumeSummary>
     },
@@ -63,12 +62,11 @@ export function useRemoveMount() {
   return useMutation({
     mutationFn: async (data: { agentSlug: string; mountId: string; restart?: boolean }) => {
       const url = `/api/agents/${data.agentSlug}/mounts/${data.mountId}${data.restart ? '?restart=true' : ''}`
-      const res = await fetchWithVolumeStopConfirmation(url, { method: 'DELETE' }, 'Remove volume')
+      const res = await apiFetch(url, { method: 'DELETE' })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove mount'))
     },
     onSuccess: () => {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
     },
@@ -77,8 +75,7 @@ export function useRemoveMount() {
 
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
-  const attachments = Array.isArray(mountsData) ? mountsData : []
-  const mounts = attachments.filter(mount => !mount.pendingRemoval)
+  const mounts = Array.isArray(mountsData) ? mountsData : []
   const registry = useVolumeDefinitions()
   const definitions = registry.data ?? []
   const { canUseAgent } = useUser()
@@ -138,7 +135,7 @@ export function useVolumesManager(agentSlug: string) {
     setIsRestarting(true)
     setRestartError(null)
     try {
-      const stopRes = await fetchWithVolumeStopConfirmation(`/api/agents/${agentSlug}/stop`, { method: 'POST' }, 'Restart')
+      const stopRes = await apiFetch(`/api/agents/${agentSlug}/stop`, { method: 'POST' })
       if (!stopRes.ok) throw new Error(await parseErrorMessage(stopRes, 'Failed to stop agent'))
       const startRes = await apiFetch(`/api/agents/${agentSlug}/start`, { method: 'POST' })
       if (!startRes.ok) throw new Error(await parseErrorMessage(startRes, 'Failed to start agent'))
@@ -161,7 +158,7 @@ export function useVolumesManager(agentSlug: string) {
     operationError: operationError ?? (registry.error ? 'Could not load saved volumes' : null),
     canModifyMounts,
     canCreateMount,
-    pendingRestart: isAgentRunning && (pendingRestart || attachments.some(mount => mount.pendingRemoval)),
+    pendingRestart,
     isRestarting,
     restartError,
     isAddingMount: addMount.isPending,

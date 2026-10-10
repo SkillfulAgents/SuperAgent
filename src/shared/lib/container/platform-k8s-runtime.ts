@@ -131,8 +131,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     return { status: 'running', port: CONTAINER_INTERNAL_PORT }
   }
 
-  async stop(options?: StopOptions): Promise<StopResult> {
-    await options?.beforeStop?.()
+  async stop(_options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
     const { namespace } = getKubeConfig()
     await this.teardownResources(namespace)

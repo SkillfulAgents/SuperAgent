@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 
 const ENABLED = process.env.RUN_VOLUMES_E2E === '1';
 const IMAGE = 'superagent-volumes-e2e';
@@ -246,50 +247,6 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     fs.rmSync(source, { recursive: true });
   }, 60_000);
 
-  it.each(['local', 'remote'] as const)('%s mounts decline shutdown while uploads are pending, then safely stop after draining', async (cacheMode) => {
-    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
-    fs.chmodSync(source, 0o777);
-    const container = startAgent(
-      'rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes --bwlimit 1M',
-      [{ volumeId: 'v_cloud_stop', name: 'cloud', cacheMode }],
-      'claude', ['-v', `${source}:/srv/v_cloud_stop`],
-    );
-    await healthUntilOk(container);
-    sh(container, 'head -c 40000000 /dev/urandom > /mounts/cloud/pending.bin');
-    const expected = sh(container, 'sha256sum /mounts/cloud/pending.bin').split(' ')[0];
-    const prepare = 'curl -s -o /tmp/stop-reply -w "%{http_code}" -X POST localhost:3000/volumes/prepare-stop';
-    expect(sh(container, prepare)).toBe('409');
-    expect(JSON.parse(sh(container, 'cat /tmp/stop-reply'))).toEqual({ ready: false, workStopped: false });
-    expect(docker('inspect', '-f', '{{.State.Running}}', container)).toBe('true');
-    expect(sh(container, prepare)).toBe('200');
-    expect(sh(container, 'sha256sum /srv/v_cloud_stop/pending.bin').split(' ')[0]).toBe(expected);
-    docker('stop', '-t', '5', container);
-    expect(docker('inspect', '-f', '{{.State.ExitCode}}', container)).toBe('0');
-    docker('rm', container);
-    expect(fs.statSync(path.join(source, 'pending.bin')).size).toBe(40_000_000);
-    fs.rmSync(source, { recursive: true });
-  }, 120_000);
-
-  it('a dead rclone refuses a safe stop within the deadline and still permits explicit container shutdown', async () => {
-    const container = startAgent(
-      'mkdir -p /tmp/src/v_dead && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes',
-      [{ volumeId: 'v_dead', name: 'dead' }],
-    );
-    await healthUntilOk(container);
-    expect(healthVolumes(container)).toEqual(['v_dead']);
-    sh(container, "pkill -KILL -f '^rclone mount(2)? '");
-    await waitFor(() => sh(container, "pgrep -f '^rclone mount(2)? ' || true") === '', 2_000);
-    const started = Date.now();
-    expect(sh(container, 'curl -s -o /tmp/stop-reply -w "%{http_code}" -X POST localhost:3000/volumes/prepare-stop')).toBe('409');
-    expect(Date.now() - started).toBeLessThan(28_000);
-    expect(JSON.parse(sh(container, 'cat /tmp/stop-reply'))).toEqual({ ready: false, workStopped: false });
-    expect(sh(container, 'curl -s -o /dev/null -w "%{http_code}" localhost:3000/sessions')).toBe('200');
-    // An explicit discard bypasses the handshake and takes this normal stop
-    // path. A dead rclone must not make the agent impossible to stop.
-    docker('stop', '-t', '5', container);
-    expect(docker('inspect', '-f', '{{.State.Running}}', container)).toBe('false');
-  }, 60_000);
-
   it('uploads a file still waiting in the queue when the host stops the container', async () => {
     const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-src-'));
     fs.chmodSync(source, 0o777);
@@ -306,4 +263,37 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(fs.readFileSync(path.join(source, 'late.txt'), 'utf8')).toBe('late\n');
     fs.rmSync(source, { recursive: true });
   }, 60_000);
+
+  it.each(['local', 'remote', 'dead-rclone'] as const)('preserves unfinished %s uploads in the workspace after the container is removed', async mode => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-preserve-source-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-preserve-workspace-'));
+    for (const dir of [source, workspace]) fs.chmodSync(dir, 0o777);
+    try {
+      const container = startAgent(
+        'rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes --bwlimit 1M',
+        [{ volumeId: 'v_preserve', name: 'docs', cacheMode: mode === 'local' ? 'local' : 'remote' }],
+        'claude', ['-v', `${source}:/srv/v_preserve`, '-v', `${workspace}:/workspace`],
+      );
+      await healthUntilOk(container);
+      sh(container, 'head -c 40000000 /dev/urandom > /mounts/docs/pending.bin');
+      const expected = sh(container, 'sha256sum /mounts/docs/pending.bin').split(' ')[0];
+      if (mode === 'dead-rclone') sh(container, "pkill -KILL -f '^rclone mount(2)? '");
+      const started = Date.now();
+      const result = JSON.parse(sh(container, 'curl -sf -X POST localhost:3000/volumes/prepare-stop'));
+      expect(result).toEqual({ drained: false, recovered: 1, recoveryErrors: 0 });
+      expect(Date.now() - started).toBeLessThan(20_000);
+      docker('stop', '-t', '5', container);
+      docker('rm', container);
+      const root = path.join(workspace, 'recovered-volume-uploads');
+      const files = fs.readdirSync(root, { recursive: true, encoding: 'utf8' });
+      const saved = files.find(file => file.includes('/vfs/') && file.endsWith('/pending.bin'))!;
+      const bytes = fs.readFileSync(path.join(root, saved));
+      expect(bytes.length).toBe(40_000_000);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(expected);
+      expect(files.some(file => file.includes('/vfsMeta/') && file.endsWith('/pending.bin'))).toBe(true);
+    } finally {
+      fs.rmSync(source, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 90_000);
 });
