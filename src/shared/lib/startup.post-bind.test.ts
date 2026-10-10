@@ -13,10 +13,6 @@ const getSettings = vi.fn().mockReturnValue({})
 const getPlatformAccessToken = vi.fn().mockReturnValue(null)
 const isAuthMode = vi.fn().mockReturnValue(true)
 const clearPendingApprovalBans = vi.fn()
-const stopAgents = vi.fn(async () => {})
-const stopCredentials = vi.fn(async () => {})
-const stopRunner = vi.fn(async () => {})
-vi.mock('../../api/credentials/credential-broker', () => ({ credentialBroker: { shutdown: () => stopCredentials() } }))
 const ensureManagedPlatformConnection = vi.fn(async () => {})
 vi.mock('./llm-provider/connection-settings', () => ({
   ensureManagedPlatformConnection: () => ensureManagedPlatformConnection(),
@@ -58,7 +54,7 @@ vi.mock('./container/container-host', async () => {
       onBeforeContainerStop: null,
       stopStatusSync: vi.fn(),
       stopHealthMonitor: vi.fn(),
-      stopAll: () => stopAgents(),
+      stopAll: () => Promise.resolve(),
     }),
   }
 })
@@ -128,23 +124,13 @@ vi.mock('./services/platform-service', () => ({
   platformService: { start: vi.fn(), stop: vi.fn() },
 }))
 vi.mock('./container/client-factory', () => ({
-  shutdownActiveRunner: () => stopRunner(),
+  shutdownActiveRunner: () => Promise.resolve(),
 }))
 vi.mock('./computer-use/executor', () => ({
   shutdownAC: () => Promise.resolve(),
 }))
 
 describe('initializeServices post-bind critical path', () => {
-  it('keeps credentials and the runtime alive until the bounded agent stops finish', async () => {
-    stopAgents.mockImplementationOnce(async () => {
-      expect(stopCredentials).not.toHaveBeenCalled()
-      expect(stopRunner).not.toHaveBeenCalled()
-    })
-    const { shutdownServices } = await import('./startup')
-    await shutdownServices()
-    expect(stopCredentials).toHaveBeenCalledOnce()
-    expect(stopRunner).toHaveBeenCalledOnce()
-  })
   beforeEach(() => {
     vi.resetModules()
     reconcile.mockReset()

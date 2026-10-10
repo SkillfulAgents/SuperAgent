@@ -283,11 +283,6 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   servicesShuttingDown = true
-  taskScheduler.stop()
-  triggerManager.stop()
-  getWebhookRelay().stop()
-  // Stop agents while credentials and provider connections can still upload.
-  await containerHost.stopAll()
   reviewManager.rejectAll()
   accountReauthManager.rejectAll()
   mcpReauthManager.rejectAll()
@@ -295,6 +290,9 @@ export async function shutdownServices() {
   agentIntegrationManager.stop()
   await credentialBroker.shutdown()
   await stopAllProviders()
+  taskScheduler.stop()
+  triggerManager.stop()
+  getWebhookRelay().stop()
   platformNotificationsManager.stop()
   sessionAutoDeleteMonitor.stop()
   apiLogAutoDeleteMonitor.stop()
@@ -302,6 +300,7 @@ export async function shutdownServices() {
   platformService.stop()
   containerHost.stopStatusSync()
   containerHost.stopHealthMonitor()
+  await containerHost.stopAll()
   await shutdownActiveRunner()
   await shutdownAC()
 }
