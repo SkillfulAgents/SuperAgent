@@ -5,7 +5,7 @@ import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { prepareVolume } from '@shared/lib/volumes/volume-factory'
+import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
@@ -119,4 +119,26 @@ export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): 
     throw new VolumeError('Detach this volume from all agents before deleting it', 409)
   }
   throw new VolumeError('Volume not found', 404)
+}
+
+/** User-facing access to a source, independent of any agent or running container. */
+export async function getVisibleVolumeDefinition(id: string, viewer: VolumeViewer): Promise<StoredVolume> {
+  const row = await db.select().from(volumeDefinitions)
+    .where(and(eq(volumeDefinitions.id, id), selectableVolumes(viewer))).get()
+  if (!row) throw new VolumeError('Volume not found', 404)
+  const stored = storedDefinition(row)
+  if (!stored) throw new VolumeError('Volume configuration is unavailable', 400)
+  return stored
+}
+
+export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
+  const volume = instantiateVolume(await getVisibleVolumeDefinition(id, viewer))
+  if (!volume) throw new VolumeError('Volume configuration is unavailable', 400)
+  return volume
+}
+
+export async function listVolumeAttachments(id: string, viewer: VolumeViewer) {
+  await getVisibleVolumeDefinition(id, viewer)
+  return db.select({ agentSlug: agentVolumes.agentSlug, mountId: agentVolumes.id })
+    .from(agentVolumes).where(eq(agentVolumes.volumeId, id)).all()
 }

@@ -11,6 +11,7 @@ let handle: TestDatabase
 let folder: string
 vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 vi.mock('../middleware/auth', () => ({
+  getReadableAgentIds: vi.fn(async () => new Set(['agent'])),
   Authenticated: (): MiddlewareHandler => async (c, next) => {
     const id = c.req.header('Test-User')
     if (!id) return c.json({ error: 'Unauthorized' }, 401)
@@ -73,5 +74,77 @@ describe('volume definition API', () => {
     vi.stubEnv('AUTH_MODE', 'false')
     expect((await request('', 'POST', input())).status).toBe(201)
     expect(await (await request()).json()).toMatchObject([{ userId: null, canManage: true }])
+  })
+})
+
+
+describe('volume browsing', () => {
+  it('browses a stopped local source, with folders first and exact file names', async () => {
+    fs.mkdirSync(path.join(folder, 'Reports'))
+    fs.writeFileSync(path.join(folder, 'Reports', 'Q1 # 日本語.txt'), 'Volume preview')
+    fs.writeFileSync(path.join(folder, 'a.txt'), 'root')
+    const { id } = await (await request('', 'POST', input())).json()
+    expect(await (await request(`/${id}/folders`)).json()).toEqual({ root: '', path: '', truncated: false, entries: [
+      { name: 'Reports', path: 'Reports', type: 'directory' }, { name: 'a.txt', path: 'a.txt', type: 'file' },
+    ] })
+    const filePath = encodeURIComponent('Reports/Q1 # 日本語.txt')
+    const listing = await request(`/${id}/folders?path=Reports`)
+    expect(await listing.json()).toMatchObject({ entries: [{ name: 'Q1 # 日本語.txt', path: 'Reports/Q1 # 日本語.txt' }] })
+    const file = await request(`/${id}/file?path=${filePath}&inline=true`)
+    expect(file.status).toBe(200)
+    expect(await file.text()).toBe('Volume preview')
+    expect(file.headers.get('content-type')).toContain('text/plain')
+    expect(file.headers.get('cache-control')).toContain('no-store')
+    expect(file.headers.get('content-security-policy')).toContain('sandbox')
+  })
+  it('authorizes each browse, download and attachment request against the definition', async () => {
+    fs.writeFileSync(path.join(folder, 'private.txt'), 'Private')
+    const { id } = await (await request('', 'POST', input())).json()
+    await attachMount('agent', id, { userId: 'alice', admin: false })
+    for (const suffix of ['/folders', '/file?path=private.txt', '/agents']) {
+      expect((await request(`/${id}${suffix}`, 'GET', undefined, 'bob')).status).toBe(404)
+      expect((await request(`/${id}${suffix}`, 'GET', undefined, 'admin')).status).toBe(404)
+      expect((await app.request(`/volumes/${id}${suffix}`)).status).toBe(401)
+    }
+    expect(await (await request(`/${id}/agents`)).json()).toMatchObject({ attachments: [{ agentSlug: 'agent' }] })
+  })
+  it('serves public sources to other users and hides agents they cannot read', async () => {
+    fs.writeFileSync(path.join(folder, 'shared.txt'), 'Shared')
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    await handle.db.insert(agents).values({ slug: 'hidden', name: 'Hidden', createdAt: new Date() }).run()
+    await attachMount('agent', id, { userId: 'alice', admin: false })
+    await attachMount('hidden', id, { userId: 'alice', admin: false })
+    expect((await request(`/${id}/folders`, 'GET', undefined, 'bob')).status).toBe(200)
+    expect(await (await request(`/${id}/file?path=shared.txt`, 'GET', undefined, 'bob')).text()).toBe('Shared')
+    const result = await (await request(`/${id}/agents`, 'GET', undefined, 'bob')).json()
+    expect(result.attachments.map((item: { agentSlug: string }) => item.agentSlug)).toEqual(['agent'])
+  })
+  it('rejects traversal and symlink escapes without reading another source', async () => {
+    const { id } = await (await request('', 'POST', input())).json()
+    for (const badPath of ['../outside', '/etc/passwd', 'Reports/../../outside', 'Reports/../a', 'a\\b', 'a\0b']) {
+      for (const route of ['folders', 'file']) {
+        expect((await request(`/${id}/${route}?path=${encodeURIComponent(badPath)}`)).status).toBe(400)
+      }
+    }
+    fs.symlinkSync(os.tmpdir(), path.join(folder, 'escape'))
+    expect((await request(`/${id}/folders?path=escape`)).status).toBe(404)
+    expect((await request(`/${id}/file?path=escape/anything.txt`)).status).toBe(400)
+    expect((await request(`/${id}/file`)).status).toBe(400)
+  })
+  it('serves ranges and HEAD for previews, and offers original downloads', async () => {
+    fs.writeFileSync(path.join(folder, 'clip.mp4'), '0123456789')
+    const { id } = await (await request('', 'POST', input())).json()
+    const ranged = await app.request(`/volumes/${id}/file?path=clip.mp4&inline=true`, { headers: { 'Test-User': 'alice', Range: 'bytes=2-5' } })
+    expect(ranged.status).toBe(206)
+    expect(ranged.headers.get('content-range')).toBe('bytes 2-5/10')
+    expect(await ranged.text()).toBe('2345')
+    const head = await request(`/${id}/file?path=clip.mp4`, 'HEAD')
+    expect(head.headers.get('content-length')).toBe('10')
+    expect(await head.text()).toBe('')
+    const invalid = await app.request(`/volumes/${id}/file?path=clip.mp4`, { headers: { 'Test-User': 'alice', Range: 'bytes=100-200' } })
+    expect(invalid.status).toBe(416)
+    const download = await request(`/${id}/file?path=clip.mp4`)
+    expect(download.headers.get('content-disposition')).toMatch(/^attachment;/)
+    expect(await download.text()).toBe('0123456789')
   })
 })

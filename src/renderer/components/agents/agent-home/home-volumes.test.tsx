@@ -30,6 +30,7 @@ vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: mockCanUseHo
 
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children, search }: { children: React.ReactNode; search: { volume: string } }) => <a href={`/settings/volumes?volume=${search.volume}`}>{children}</a> }))
 import { HomeVolumes } from './home-volumes'
 
 /**
@@ -191,4 +192,11 @@ describe('saved volume picker', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
     expect(screen.queryByRole('button', { name: /remove mount/i })).not.toBeInTheDocument()
   })
+})
+
+
+it('links mount settings to the shared definition rather than the attachment', async () => {
+  render(<HomeVolumes agentSlug="a1" />)
+  await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+  expect(screen.getByRole('link', { name: 'Volume settings' })).toHaveAttribute('href', '/settings/volumes?volume=v1')
 })

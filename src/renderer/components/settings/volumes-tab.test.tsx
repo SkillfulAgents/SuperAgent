@@ -6,19 +6,27 @@ import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 
 const state = vi.hoisted(() => ({
   definitions: [] as VolumeDefinitionSummary[],
+  selectedId: undefined as string | undefined, navigate: vi.fn(),
   host: true, isAdmin: true, save: vi.fn(), remove: vi.fn(),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
+  useVolumeAgents: () => ({ data: { attachments: [] }, isLoading: false }),
   useVolumeDefinitions: () => ({ data: state.definitions, isLoading: false }),
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
   useDeleteVolumeDefinition: () => ({ mutateAsync: state.remove, isPending: false }),
 }))
 vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => state.host }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useSearch: () => ({ volume: state.selectedId }) }))
+vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: React.ReactNode }) => <a href="/settings/volumes?volume=v1">{children}</a> }))
+vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
+vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: [], isLoading: false }) }))
+vi.mock('@renderer/hooks/use-mounts', () => ({ useAddMount: () => ({}), useRemoveMount: () => ({}) }))
 import { VolumesTab } from './volumes-tab'
 
 beforeEach(() => {
   vi.resetAllMocks()
+  state.selectedId = undefined
   state.host = true
   state.isAdmin = true
   state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok' }]
@@ -32,9 +40,9 @@ afterEach(() => {
 describe('volume settings', () => {
   it('edits a definition without offering to change its folder or attached mount paths', async () => {
     state.definitions[0].attachmentCount = 2
+    state.selectedId = 'v1'
     render(<VolumesTab />)
-    expect(screen.getByRole('button', { name: 'Delete Notes' })).toBeDisabled()
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Notes' }))
+    expect(screen.getByRole('button', { name: 'Delete volume' })).toBeDisabled()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/notes')
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
@@ -43,7 +51,8 @@ describe('volume settings', () => {
     await userEvent.type(screen.getByLabelText('Name'), 'Team notes')
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes', visibility: 'private' })
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument())
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
   it('creates a private volume using the native folder picker', async () => {
     state.isAdmin = false
@@ -60,6 +69,11 @@ describe('volume settings', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
     expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'folder', source: { type: 'local', config: { path: '/new/folder' } }, visibility: 'private' })
   })
+  it('links the volume name to its dedicated page instead of offering a pencil modal', () => {
+    render(<VolumesTab />)
+    expect(screen.getByRole('link', { name: 'Notes' })).toHaveAttribute('href', '/settings/volumes?volume=v1')
+    expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
+  })
   it('shows public sources without management controls for other users', () => {
     state.host = false
     state.isAdmin = false
@@ -70,13 +84,14 @@ describe('volume settings', () => {
     expect(screen.queryByRole('button', { name: 'Delete Notes' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add volume' })).toBeInTheDocument()
   })
-  it('keeps the dialog open with the server error when a volume cannot be saved', async () => {
+  it('keeps inline edits with the server error when a volume cannot be saved', async () => {
+    state.selectedId = 'v1'
     state.save.mockRejectedValue(new Error('Detach this volume from all agents before changing its access'))
     render(<VolumesTab />)
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Notes' }))
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Detach this volume')
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByTestId('volume-detail-page')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
   it('confirms deletion of an unused definition', async () => {
     render(<VolumesTab />)
