@@ -40,8 +40,8 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
         onTabClick={onSelectTab} onCloseTab={onCloseTab}
         onLeadingTabFlush={onLeadingTabFlush} trailing={trailing}
       />
-      {/* File content: a card inset 16px on every side, on the same gray as the tab rail. */}
-      <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-4 pb-4">
+      {/* File content: a card inset 8px on every side, on the same gray as the tab rail. */}
+      <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-2 pb-2">
         <div
           className={cn(
             'flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border border-black/5 bg-background dark:border-white/5',

@@ -33,6 +33,7 @@ export function FileTabBar<T extends FileBrowserTab>({
   if (tabs.length === 0) return null
   return (
     <DrawerTabStrip
+      inset="sm"
       tabCount={tabs.length}
       activeIndex={activeIndex}
       onLeadingTabFlush={onLeadingTabFlush}
