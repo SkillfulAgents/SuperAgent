@@ -56,8 +56,7 @@ describe('useComposerOptions default adoption', () => {
     // Agent preferences resolve later: the agent default wins.
     rerender({
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
-      agentDefaultEffort: 'high',
+      agentDefault: { model: 'haiku', effort: 'high' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('haiku')
@@ -67,8 +66,7 @@ describe('useComposerOptions default adoption', () => {
   it('locks once both sources answered: a background default change cannot swap an untouched selection', () => {
     const { result, rerender } = render({
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
-      agentDefaultEffort: 'high',
+      agentDefault: { model: 'haiku', effort: 'high' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('haiku')
@@ -76,8 +74,7 @@ describe('useComposerOptions default adoption', () => {
     // Another window edits the default and the query refetches mid-compose.
     rerender({
       agentKey: 'a',
-      agentDefaultModel: 'sonnet',
-      agentDefaultEffort: 'low',
+      agentDefault: { model: 'sonnet', effort: 'low' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('haiku')
@@ -88,12 +85,12 @@ describe('useComposerOptions default adoption', () => {
     const { result, rerender } = render({
       agentKey: 'a',
       followDefaults: true,
-      agentDefaultModel: 'haiku',
+      agentDefault: { model: 'haiku' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('haiku')
 
-    rerender({ agentKey: 'a', followDefaults: true, agentDefaultModel: 'sonnet', agentDefaultsReady: true })
+    rerender({ agentKey: 'a', followDefaults: true, agentDefault: { model: 'sonnet' }, agentDefaultsReady: true })
     expect(result.current.model).toBe('sonnet')
 
     // Reset-to-global on the agent-home card: defaults cleared → global default.
@@ -104,8 +101,7 @@ describe('useComposerOptions default adoption', () => {
   it('an agentKey change unlocks and re-adopts, dropping to medium effort when the new agent has no defaults', () => {
     const { result, rerender } = render({
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
-      agentDefaultEffort: 'max',
+      agentDefault: { model: 'haiku', effort: 'max' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('haiku')
@@ -127,8 +123,7 @@ describe('useComposerOptions default adoption', () => {
 
     rerender({
       agentKey: 'b',
-      agentDefaultModel: 'haiku',
-      agentDefaultEffort: 'max',
+      agentDefault: { model: 'haiku', effort: 'max' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('claude-opus-4-7')
@@ -138,8 +133,7 @@ describe('useComposerOptions default adoption', () => {
   it('omits untouched knobs from runtime options so the server resolves the defaults', () => {
     const { result } = render({
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
-      agentDefaultEffort: 'high',
+      agentDefault: { model: 'haiku', effort: 'high' },
       agentDefaultsReady: true,
     })
     // Adopted for display, but nothing was explicitly chosen — the wire bag
@@ -158,8 +152,7 @@ describe('useComposerOptions default adoption', () => {
     expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-opus-4-7' })
 
     const seeded = render({
-      initialModel: 'claude-opus-4-6',
-      initialEffort: 'xhigh',
+      initial: { model: 'claude-opus-4-6', effort: 'xhigh' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -180,11 +173,9 @@ describe('useComposerOptions default adoption', () => {
 
   it('session-seeded initial values win over defaults', () => {
     const { result } = render({
-      initialModel: 'claude-opus-4-6',
-      initialEffort: 'xhigh',
+      initial: { model: 'claude-opus-4-6', effort: 'xhigh' },
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
-      agentDefaultEffort: 'low',
+      agentDefault: { model: 'haiku', effort: 'low' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('claude-opus-4-6')
@@ -193,9 +184,9 @@ describe('useComposerOptions default adoption', () => {
 
   it('adopts a newer authoritative session model after mounting from stale cached detail', () => {
     const { result, rerender } = render({
-      initialModel: 'claude-opus-4-6',
+      initial: { model: 'claude-opus-4-6' },
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
+      agentDefault: { model: 'haiku' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('claude-opus-4-6')
@@ -204,9 +195,9 @@ describe('useComposerOptions default adoption', () => {
     // refetched last-used model. The refreshed session value must replace the
     // stale seed and be the value sent on the next turn.
     rerender({
-      initialModel: 'claude-sonnet-4-6',
+      initial: { model: 'claude-sonnet-4-6' },
       agentKey: 'a',
-      agentDefaultModel: 'haiku',
+      agentDefault: { model: 'haiku' },
       agentDefaultsReady: true,
     })
     expect(result.current.model).toBe('claude-sonnet-4-6')
@@ -215,7 +206,7 @@ describe('useComposerOptions default adoption', () => {
 
   it('protects an unsent model pick, then follows session updates after submit succeeds', () => {
     const { result, rerender } = render({
-      initialModel: 'claude-opus-4-6',
+      initial: { model: 'claude-opus-4-6' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -224,7 +215,7 @@ describe('useComposerOptions default adoption', () => {
     // A peer update/refetch must not erase a local choice that has not reached
     // the server yet.
     rerender({
-      initialModel: 'claude-haiku-4-5',
+      initial: { model: 'claude-haiku-4-5' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -232,14 +223,14 @@ describe('useComposerOptions default adoption', () => {
 
     act(() => result.current.markSubmitted({ model: 'claude-sonnet-4-6' }))
     rerender({
-      initialModel: 'claude-sonnet-4-6',
+      initial: { model: 'claude-sonnet-4-6' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
 
     // Once acknowledged, a later peer's accepted model is authoritative.
     rerender({
-      initialModel: 'claude-opus-4-8',
+      initial: { model: 'claude-opus-4-8' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -249,15 +240,13 @@ describe('useComposerOptions default adoption', () => {
 
   it('applies the same authoritative refresh and unsent-edit protection to effort and speed', () => {
     const { result, rerender } = render({
-      initialEffort: 'medium',
-      initialSpeed: 'normal',
+      initial: { effort: 'medium', speed: 'normal' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
 
     rerender({
-      initialEffort: 'high',
-      initialSpeed: 'fast',
+      initial: { effort: 'high', speed: 'fast' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -269,8 +258,7 @@ describe('useComposerOptions default adoption', () => {
       result.current.setSpeed('slow')
     })
     rerender({
-      initialEffort: 'xhigh',
-      initialSpeed: 'normal',
+      initial: { effort: 'xhigh', speed: 'normal' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -279,14 +267,12 @@ describe('useComposerOptions default adoption', () => {
 
     act(() => result.current.markSubmitted({ effort: 'low', speed: 'slow' }))
     rerender({
-      initialEffort: 'low',
-      initialSpeed: 'slow',
+      initial: { effort: 'low', speed: 'slow' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
     rerender({
-      initialEffort: 'high',
-      initialSpeed: 'fast',
+      initial: { effort: 'high', speed: 'fast' },
       agentKey: 'a',
       agentDefaultsReady: true,
     })
@@ -324,9 +310,9 @@ describe('connection/model selection', () => {
 
   it('binds a model pick to the inherited connection before the initial query has settled', () => {
     state.connections = undefined
-    const { result, rerender } = render({ initialModel: 'same' })
+    const { result, rerender } = render({ initial: { model: 'same' } })
     state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
-    rerender({ initialModel: 'same' })
+    rerender({ initial: { model: 'same' } })
     act(() => result.current.setModel('same'))
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
   })
@@ -337,32 +323,32 @@ describe('connection/model selection', () => {
       { ...model('grok-id'), family: 'grok', isDefault: true, isLatest: true },
     ] }
     state.connections = { connections: [first, platform], defaultSelection: { llmProviderId: 'global', model: 'same' } }
-    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    const { result } = render({ initial: { llmProviderId: 'global', model: 'same' } })
     act(() => result.current.setConnection?.('platform'))
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform', model: 'grok' })
   })
 
   it('changes accounts even when both expose the same model ID', () => {
-    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    const { result } = render({ initial: { llmProviderId: 'global', model: 'same' } })
     act(() => result.current.setConnection?.('personal'))
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
     expect(result.current.catalog).toEqual(second.catalog)
   })
   it('drops the whole deleted pair instead of charging another account for the orphaned model', () => {
-    const { result, rerender } = render({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    const { result, rerender } = render({ initial: { llmProviderId: 'personal', model: 'same' } })
     state.connections = { connections: [first], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
-    rerender({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    rerender({ initial: { llmProviderId: 'personal', model: 'same' } })
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'global-default' })
   })
   it('drops a removed model before considering an agent default', () => {
-    const { result } = render({ initialLlmProviderId: 'personal', initialModel: 'removed', agentDefaultLlmProviderId: 'personal', agentDefaultModel: 'personal-other' })
+    const { result } = render({ initial: { llmProviderId: 'personal', model: 'removed' }, agentDefault: { llmProviderId: 'personal', model: 'personal-other' } })
     expect(result.current.llmProviderId).toBe('personal')
     expect(result.current.model).toBe('personal-other')
   })
   it('protects an unsent account change from an authoritative refetch', () => {
-    const { result, rerender } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    const { result, rerender } = render({ initial: { llmProviderId: 'global', model: 'same' } })
     act(() => result.current.setConnection?.('personal'))
-    rerender({ initialLlmProviderId: 'global', initialModel: 'global-default' })
+    rerender({ initial: { llmProviderId: 'global', model: 'global-default' } })
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
   })
 })

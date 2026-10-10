@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { agentDefaultSelection } from '@shared/lib/model-selection'
 import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
 import { targetIsRemote } from '@renderer/lib/api-target'
@@ -95,10 +96,7 @@ export function QuickDispatch() {
   // edits can't swap the selection while the user types.
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    agentDefault: agentDefaultSelection(agentPrefs),
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })

@@ -463,9 +463,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
           <RuntimeOptionsCard
             agentSlug={agentSlug}
-            model={task.model} llmProviderId={task.llmProviderId}
-            effort={task.effort}
-            speed={task.speed}
+            stored={task}
             disabled={!canCancel || !isActive}
             onUpdate={(options) => {
               updateRuntimeOptions.mutate({ taskId, agentSlug, ...options })

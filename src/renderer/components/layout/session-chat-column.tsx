@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { type ModelSelection } from '@shared/lib/model-selection'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
@@ -15,7 +16,6 @@ import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
 import { useStaleSession } from '@renderer/hooks/use-stale-session'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
@@ -28,10 +28,8 @@ interface SessionChatColumnProps {
   pendingUserMessages: PendingMessage[]
   isViewOnly: boolean
   contextPercent: number | null
-  effort?: EffortLevel
-  speed?: SpeedLevel
-  llmProviderId?: string | null
-  model?: string
+  /** The model selection last used on this session; seeds the composer. */
+  selection?: ModelSelection
   onPendingMessageAppeared: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
@@ -51,10 +49,7 @@ export function SessionChatColumn({
   pendingUserMessages,
   isViewOnly,
   contextPercent,
-  effort,
-  speed,
-  model,
-  llmProviderId,
+  selection,
   onPendingMessageAppeared,
   onMessageSent,
   onMessageUuidAssigned,
@@ -154,9 +149,7 @@ export function SessionChatColumn({
                     onMessageSent={onMessageSent}
                     onMessageUuidAssigned={onMessageUuidAssigned}
                     onMessageFailed={onMessageFailed}
-                    initialEffort={effort}
-                    initialSpeed={speed}
-                    initialModel={model} initialLlmProviderId={llmProviderId}
+                    initialSelection={selection}
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                     inputRequests={voiceInputRequests}

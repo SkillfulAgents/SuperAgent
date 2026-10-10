@@ -31,7 +31,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import { modelSelectionPatchSchema } from '@shared/lib/model-selection'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -247,19 +247,13 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
+    const parsed = modelSelectionPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
-    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
-    if ('model' in body) updates.model = parsed.data.model ?? null
-    if ('effort' in body) updates.effort = parsed.data.effort ?? null
-    if ('speed' in body) updates.speed = parsed.data.speed ?? null
-
     await assertConnectionSelectionAccess(parsed.data.llmProviderId, task?.llmProviderId)
-    const updated = await updateTaskRuntimeOptions(task!.id, updates)
+    const updated = await updateTaskRuntimeOptions(task!.id, parsed.data)
     if (!updated) {
       return c.json({ error: 'Task not found or not editable' }, 404)
     }

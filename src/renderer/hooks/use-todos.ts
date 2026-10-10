@@ -9,6 +9,7 @@ import type {
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
 import { todoPrompt } from '@shared/lib/todos/todo-schema'
+import { fromStoredSelection } from '@shared/lib/model-selection'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
 import { useExperiment } from './use-experiment'
@@ -233,9 +234,7 @@ export function useStartTodo() {
         sessionId = (await createSession.mutateAsync({
           agentSlug: claimed.agentSlug ?? agentSlug,
           message: todoPrompt(claimed),
-          ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
-          ...(claimed.effort ? { effort: claimed.effort } : {}),
-          ...(claimed.speed ? { speed: claimed.speed } : {}),
+          ...fromStoredSelection(claimed),
         })).id
       } catch (error) {
         if (error instanceof Error) reportedBySessionCreation.add(error)

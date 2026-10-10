@@ -1,4 +1,5 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
+import type { ModelSelection } from '@shared/lib/model-selection'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -8,7 +9,6 @@ import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 
@@ -94,10 +94,6 @@ export function useCreateSession() {
     mutationFn: async (data: {
       agentSlug: string
       message: string
-      effort?: EffortLevel
-      speed?: SpeedLevel
-      llmProviderId?: string | null
-      model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
       // Analytics-only: distinguishes auto-started sessions (template onboarding)
@@ -105,7 +101,7 @@ export function useCreateSession() {
       origin?: 'user' | 'onboarding'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
-    }) => {
+    } & ModelSelection) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

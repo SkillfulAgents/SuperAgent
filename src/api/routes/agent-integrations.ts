@@ -1,4 +1,4 @@
-import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import { modelSelectionPatchSchema } from '@shared/lib/model-selection'
 import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Shared Agent Integration CRUD Routes
@@ -43,7 +43,7 @@ import { SPEED_LEVELS } from '@shared/lib/container/types'
 const SENTRY_TAGS = { component: 'agent-integration' } as const
 
 // Speed override carried on create/update bodies: a level, null to clear, or absent.
-const speedOverrideSchema = z.enum(SPEED_LEVELS).nullable().optional()
+const speedOverrideSchema = modelSelectionPatchSchema.shape.speed
 
 const agentIntegrationsRouter = new Hono()
 
@@ -164,7 +164,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { provider, name, config, showToolCalls, sessionTimeout, llmProviderId, model, effort } = body
-    const parsedRuntime = RuntimeOptionsPatchSchema.omit({ speed: true }).safeParse({ llmProviderId, model, effort })
+    const parsedRuntime = modelSelectionPatchSchema.omit({ speed: true }).safeParse({ llmProviderId, model, effort })
     if (!parsedRuntime.success) return c.json({ error: 'Invalid runtime options' }, 400)
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {
@@ -276,7 +276,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     const id = c.req.param('integrationId')
     const body = await c.req.json()
     const { name, config, showToolCalls, sessionTimeout, llmProviderId, model, effort, status } = body
-    const parsedRuntime = RuntimeOptionsPatchSchema.omit({ speed: true }).safeParse({ llmProviderId, model, effort })
+    const parsedRuntime = modelSelectionPatchSchema.omit({ speed: true }).safeParse({ llmProviderId, model, effort })
     if (!parsedRuntime.success) return c.json({ error: 'Invalid runtime options' }, 400)
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {

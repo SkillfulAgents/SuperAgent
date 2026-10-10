@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { UserInputRequestKind } from '@shared/lib/tools/requests/request-schema'
-import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
+import { modelSelectionPatchSchema, type StoredModelSelection } from '@shared/lib/model-selection'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -32,13 +32,6 @@ export const TODO_DESCRIPTION_MAX = 20_000
 const titleSchema = z.string().trim().max(TODO_TITLE_MAX)
 const descriptionSchema = z.string().max(TODO_DESCRIPTION_MAX)
 const agentSlugSchema = z.string().trim().min(1).max(200)
-const modelSchema = z.string().trim().min(1).max(200)
-const runtimeFields = {
-  model: modelSchema.nullable().optional(),
-  llmProviderId: modelSchema.nullable().optional(),
-  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
-  speed: z.enum(SPEED_LEVELS).nullable().optional(),
-}
 
 export const createTodoSchema = z
   .object({
@@ -46,7 +39,7 @@ export const createTodoSchema = z
     description: descriptionSchema.default(''),
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
-    ...runtimeFields,
+    ...modelSelectionPatchSchema.shape,
   })
   .strict()
   .refine((todo) => !(todo.newAgent && todo.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
@@ -66,7 +59,7 @@ export const updateTodoSchema = z
     description: descriptionSchema.optional(),
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
-    ...runtimeFields,
+    ...modelSelectionPatchSchema.shape,
   })
   .strict()
   .refine((patch) => !(patch.newAgent && patch.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
@@ -186,19 +179,18 @@ export const TODO_ASK_LABELS: Record<TodoAsk, string> = {
   info: 'Needs info',
 }
 
-/** What the list endpoint returns per item. Times are epoch milliseconds. */
-export interface TodoView {
+/**
+ * What the list endpoint returns per item. Times are epoch milliseconds. Its
+ * model selection is what was picked to run it on; each null starts it on the
+ * agent's default.
+ */
+export interface TodoView extends StoredModelSelection {
   id: string
   title: string
   description: string
   agentSlug: string | null
   /** A draft to be given to an agent created for it when it starts. */
   newAgent: boolean
-  /** What was picked to run it on; each null starts it on the agent's default. */
-  model: string | null
-  llmProviderId: string | null
-  effort: EffortLevel | null
-  speed: SpeedLevel | null
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn
