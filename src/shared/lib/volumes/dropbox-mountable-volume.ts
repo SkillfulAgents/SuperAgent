@@ -9,8 +9,10 @@ import { dropboxReadCache } from './dropbox-read-cache'
 import { dropboxHealthCache } from './dropbox-health-cache'
 import { DropboxUnavailableError } from './dropbox-error'
 import { volumeFolderBrowser } from './volume-folder-browser'
-
-const mutations = new Map<string, Promise<unknown>>()
+import { serialize } from './remote-listing-cache'
+import { uploadChunks, throwIfUploadAborted } from './remote-transfer'
+import { volumeUploads } from './volume-upload-guard'
+import { rangedVolumeFile } from './remote-file'
 
 // Platform's Composio route accepts at most 1,000,000 bytes of JSON. Binary
 // bodies expand by 4/3 in base64; 512 KiB leaves room for the request envelope,
@@ -19,19 +21,8 @@ export const DROPBOX_UPLOAD_CHUNK_BYTES = 512 * 1024
 
 /** Serialize namespace commits across overlapping mounts. Body reads and upload
  * staging never hold this lock; Dropbox locks the namespace only at commit too. */
-async function mutate<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
-  const pending = (mutations.get(accountId) ?? Promise.resolve()).catch(() => {}).then(async () => {
-    dropboxReadCache.invalidate(accountId)
-    dropboxHealthCache.invalidate(accountId)
-    try { return await operation() } finally {
-      dropboxReadCache.invalidate(accountId)
-      dropboxHealthCache.invalidate(accountId)
-    }
-  })
-  mutations.set(accountId, pending)
-  try { return await pending } finally {
-    if (mutations.get(accountId) === pending) mutations.delete(accountId)
-  }
+function mutate<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
+  return serialize([`dropbox-commit:${accountId}`], operation)
 }
 
 /** Invalid upstream JSON is an availability error, not invalid user input. */
@@ -43,34 +34,6 @@ function entryOf(metadata: DropboxMetadata, name = metadata.name): VolumeEntry {
   return metadata['.tag'] === 'folder'
     ? { name, kind: 'directory', size: 0, mtimeMs: 0 }
     : { name, kind: 'file', size: metadata.size, mtimeMs: Date.parse(metadata.server_modified) }
-}
-
-/** Bound the encoded proxy request, even for large incoming stream chunks. */
-async function* uploadChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<ArrayBuffer> {
-  const reader = body.getReader()
-  let buffer = new Uint8Array(DROPBOX_UPLOAD_CHUNK_BYTES)
-  let used = 0
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      for (let offset = 0; offset < value.length;) {
-        const count = Math.min(value.length - offset, buffer.length - used)
-        buffer.set(value.subarray(offset, offset + count), used)
-        used += count
-        offset += count
-        if (used === buffer.length) {
-          yield buffer.buffer
-          buffer = new Uint8Array(DROPBOX_UPLOAD_CHUNK_BYTES)
-          used = 0
-        }
-      }
-    }
-    if (used) yield buffer.slice(0, used).buffer
-  } finally {
-    await reader.cancel().catch(() => {})
-    reader.releaseLock()
-  }
 }
 
 export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeConfig> {
@@ -181,7 +144,7 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
 
   override async health(): Promise<VolumeEntry> {
     return withDropboxAccount(this.config.accountId, account => dropboxHealthCache.check(
-      this.config.accountId, this.config.path, account.updatedAt?.getTime() ?? 0, () => this.statFresh(''),
+      this.config.accountId, this.config.path.toLowerCase(), account.updatedAt?.getTime() ?? 0, () => this.statFresh(''),
     ))
   }
 
@@ -190,51 +153,12 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
     const metadata = await withDropboxAccount(this.config.accountId, () => this.metadata(relative))
     if (metadata['.tag'] !== 'file') throw new WorkspaceFileError('not-a-file')
     if (metadata.is_downloadable === false || metadata.symlink_info) throw new WorkspaceFileError('not-accessible')
-    let used = false
-    return {
-      size: metadata.size,
-      close: async () => { used = true },
-      stream: async range => {
-        if (used) throw new Error('Volume file has already been consumed')
-        used = true
-        const start = range?.start ?? 0
-        const end = range?.end ?? metadata.size - 1
-        let skip = 0
-        let remaining = Math.max(0, end - start + 1)
-        // Establish the download before WebDAV sends headers, so a long
-        // cooldown can still return 429 + Retry-After instead of a broken 200.
-        const response = remaining ? await this.request('download', { path: `rev:${metadata.rev}` }, undefined, `bytes=${start}-${end}`) : null
-        if (response?.status === 206 && response.headers.get('content-range') !== `bytes ${start}-${end}/${metadata.size}`) {
-          await response.body?.cancel()
-          throw new DropboxUnavailableError()
-        }
-        skip = response?.status === 206 ? 0 : start
-        const reader = response?.body?.getReader()
-        if (remaining && !reader) throw new DropboxUnavailableError()
-        return new ReadableStream<Uint8Array>({
-          pull: async controller => {
-            if (!remaining) { controller.close(); return }
-            while (reader) {
-              const { value, done } = await reader.read()
-              if (done) throw new Error('Dropbox file download ended early')
-              const skipped = Math.min(skip, value.length)
-              skip -= skipped
-              const bytes = value.subarray(skipped, skipped + remaining)
-              if (!bytes.length) continue
-              remaining -= bytes.length
-              controller.enqueue(bytes)
-              if (!remaining) { await reader.cancel(); controller.close() }
-              return
-            }
-          },
-          cancel: async () => { await reader?.cancel() },
-        })
-      },
-    }
+    return rangedVolumeFile(metadata.size, async ({ start, end }) =>
+      this.request('download', { path: `rev:${metadata.rev}` }, undefined, `bytes=${start}-${end}`))
   }
 
-  async write(relative: string, body: ReadableStream<Uint8Array>): Promise<void> {
-    try {
+  async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
+    return volumeUploads.write(this.uploadKey(relative), body, signal, async () => {
       const target = this.writablePath(relative)
       await withDropboxAccount(this.config.accountId, async () => {
         const previous = await this.existingFile(relative)
@@ -242,53 +166,68 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
           path: target, mode: previous ? { '.tag': 'update', update: previous.rev } : 'add',
           autorename: false, strict_conflict: true,
         }
-        const chunks = uploadChunks(body)
+        const chunks = uploadChunks(body, DROPBOX_UPLOAD_CHUNK_BYTES, signal)
         try {
           const first = await chunks.next()
           let next = await chunks.next()
           let session: { session_id: string; offset: number } | undefined
           if (!next.done) {
-            // Stage large uploads concurrently; the first chunk fits in start.
             const { session_id } = await json(await this.request('upload_session/start', { close: false }, first.value), dropboxSessionSchema)
             session = { session_id, offset: first.value!.byteLength }
             do {
+              throwIfUploadAborted(signal)
               const response = await this.request('upload_session/append_v2', { cursor: session, close: false }, next.value)
               await response.body?.cancel()
               session.offset += next.value.byteLength
               next = await chunks.next()
             } while (!next.done)
           }
-          // Recheck authorization after streaming/queueing, and the parent just
-          // before commit: Dropbox would otherwise recreate a deleted parent.
-          await mutate(this.config.accountId, () => withDropboxAccount(this.config.accountId, async () => {
+          await this.change([target], settle => withDropboxAccount(this.config.accountId, async () => {
+            throwIfUploadAborted(signal)
             await this.parentOf(relative)
+            throwIfUploadAborted(signal)
             const response = session
               ? await this.request('upload_session/finish', { cursor: session, commit })
               : await this.request('upload', commit, first.value ?? new ArrayBuffer(0))
-            await response.body?.cancel()
-          }))
-        } finally {
-          await chunks.return(undefined)
-        }
+            const stored = await json(response, dropboxMetadataSchema)
+            if (signal?.aborted && !previous && stored['.tag'] === 'file') {
+              // Only our just-created revision can be removed, never a newer edit.
+              await (await this.request('delete_v2', { path: target, parent_rev: stored.rev })).body?.cancel()
+              throwIfUploadAborted(signal)
+            }
+            settle(target, stored)
+          }, true))
+        } finally { await chunks.return(undefined) }
       })
-    } catch (error) {
-      await body.cancel().catch(() => {})
-      throw error
-    }
+    })
+  }
+
+  private uploadKey(relative: string): string {
+    return JSON.stringify([this.id, relative.toLowerCase()])
+  }
+
+  private change<T>(paths: string[], operation: (settle: (path: string, entry: DropboxMetadata | null) => void) => Promise<T>): Promise<T> {
+    return mutate(this.config.accountId, async () => {
+      dropboxHealthCache.invalidate(this.config.accountId)
+      try { return await dropboxReadCache.change(this.config.accountId, paths, operation) }
+      finally { dropboxHealthCache.invalidate(this.config.accountId) }
+    })
   }
 
   async mkdir(relative: string): Promise<void> {
     const target = this.writablePath(relative)
-    await mutate(this.config.accountId, () => withDropboxAccount(this.config.accountId, async () => {
+    await this.change([target], settle => withDropboxAccount(this.config.accountId, async () => {
       await this.parentOf(relative)
       const response = await this.request('create_folder_v2', { path: target, autorename: false })
-      await response.body?.cancel()
+      const { metadata } = await json(response, z.object({ metadata: dropboxMetadataSchema }))
+      settle(target, metadata)
     }))
   }
 
   async delete(relative: string): Promise<void> {
     const target = this.writablePath(relative)
-    await mutate(this.config.accountId, () => withDropboxAccount(this.config.accountId, async () => {
+    volumeUploads.beforeDelete(this.uploadKey(relative))
+    await this.change([target], settle => withDropboxAccount(this.config.accountId, async () => {
       const metadata = await this.metadata(relative)
       // Dropbox delete is recursive. Never intentionally send it a full folder.
       if (metadata['.tag'] === 'folder' && (await this.listFresh(relative)).length) throw new WorkspaceFileError('not-empty')
@@ -296,13 +235,14 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
         path: target, ...(metadata['.tag'] === 'file' ? { parent_rev: metadata.rev } : {}),
       })
       await response.body?.cancel()
+      settle(target, null)
     }))
   }
 
   async move(from: string, to: string): Promise<void> {
     const source = this.writablePath(from)
     const target = this.writablePath(to)
-    await mutate(this.config.accountId, () => withDropboxAccount(this.config.accountId, async () => {
+    await this.change([source, target], settle => withDropboxAccount(this.config.accountId, async () => {
       const metadata = await this.metadata(from)
       if (from === to) return
       if (metadata['.tag'] === 'folder' && to.toLowerCase().startsWith(`${from.toLowerCase()}/`)) throw new WorkspaceFileError('invalid-path')
@@ -321,6 +261,8 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
       if (!destination || destination.id === metadata.id) {
         // Includes case-only renames on Dropbox's case-insensitive namespace.
         await relocate(source, target)
+        settle(source, null)
+        settle(target, { ...metadata, name: path.posix.basename(target) })
         return
       }
       // Only replace a regular file with another file; never recursively delete
@@ -342,12 +284,15 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
         }
         throw error
       }
+      settle(source, null)
+      settle(target, { ...metadata, name: path.posix.basename(target) })
       try {
         const response = await this.request('delete_v2', { path: backup, parent_rev: destination.rev })
         await response.body?.cancel()
       } catch {
         // The rename succeeded. A cleanup failure must not replay it or delete
         // another client's edit to the backup; leave that file recoverable.
+        settle(backup, { ...destination, name: path.posix.basename(backup) })
         console.warn(`[volumes] Dropbox rename succeeded; retained backup at ${backup}`)
       }
     }))

@@ -52,7 +52,8 @@ describe('Dropbox uploads through the managed Composio transport', () => {
           if (args.path === '/Team') return result({ '.tag': 'folder', name: 'Team', id: 'id:team' })
           return result({ error_summary: 'path/not_found/' }, 409)
         }
-        if (p.endpoint.endsWith('/upload')) { committed = bytes; return result(null) }
+        const metadata = { '.tag': 'file', name: 'test.bin', id: 'id:test', size, rev: 'new', server_modified: '2026-10-07T12:00:00Z' }
+        if (p.endpoint.endsWith('/upload')) { committed = bytes; return result(metadata) }
         if (p.endpoint.endsWith('/upload_session/start')) {
           staged.push(bytes)
           return result({ session_id: 'session' })
@@ -61,7 +62,7 @@ describe('Dropbox uploads through the managed Composio transport', () => {
         if (p.endpoint.endsWith('/upload_session/append_v2')) staged.push(bytes)
         else if (p.endpoint.endsWith('/upload_session/finish')) committed = Buffer.concat([...staged, bytes])
         else throw new Error('Unexpected upload endpoint')
-        return result(null)
+        return result(committed ? metadata : null)
       })
       const bytes = Uint8Array.from({ length: size }, (_, i) => i % 256)
       const volume = new DropboxMountableVolume('volume', 'Team', { accountId: 'account', path: '/Team' })

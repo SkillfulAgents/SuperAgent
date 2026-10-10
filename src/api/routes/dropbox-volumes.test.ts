@@ -70,6 +70,8 @@ beforeEach(async () => {
     if (targetUrl.endsWith('get_metadata')) return Response.json(args.path.endsWith('.txt') ? file : folder)
     if (targetUrl.endsWith('list_folder')) return Response.json({ entries: [folder, file], cursor: 'cursor', has_more: false })
     if (targetUrl.endsWith('download')) return new Response('hello world')
+    if (targetUrl.endsWith('/upload') || targetUrl.endsWith('/upload_session/finish')) return Response.json(file)
+    if (targetUrl.endsWith('/create_folder_v2')) return Response.json({ metadata: folder })
     if (targetUrl.endsWith('upload_session/start')) return Response.json({ session_id: 'session' })
     return Response.json(null)
   })
@@ -191,7 +193,7 @@ describe('Dropbox availability and UI health', () => {
     () => Response.json({ entries: 'invalid Dropbox response' }),
     () => new Response('invalid JSON'),
   ])('reports Dropbox availability errors in the folder picker, preserving invalid-input errors', async upstream => {
-    forward.mockImplementationOnce(async () => upstream())
+    forward.mockImplementation(async () => upstream())
     const response = await browse('alice')
     expect(response.status).toBe(503)
     expect(await response.json()).toEqual({ error: 'Dropbox is temporarily unavailable. Please try again.' })
@@ -250,15 +252,18 @@ describe('Dropbox availability and UI health', () => {
     await create()
     const list = () => app.request('/api/volume-definitions', { headers: { 'Test-User': 'alice' } })
     forward.mockClear()
-    forward.mockResolvedValueOnce(Response.json({}, { status: 503 }))
-    vi.useFakeTimers()
+    let failing = true
+    forward.mockImplementation(async () => failing ? Response.json({}, { status: 503 }) : Response.json(folder))
+    let now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
     try {
       expect(await (await list()).json()).toMatchObject([{ health: 'missing' }])
+      failing = false
       expect(await (await list()).json()).toMatchObject([{ health: 'missing' }])
-      expect(forward).toHaveBeenCalledOnce()
-      await vi.advanceTimersByTimeAsync(5_001)
+      expect(forward).toHaveBeenCalledTimes(4)
+      now += 5_001
       expect(await (await list()).json()).toMatchObject([{ health: 'ok' }])
-      expect(forward).toHaveBeenCalledTimes(2)
-    } finally { vi.useRealTimers() }
+      expect(forward).toHaveBeenCalledTimes(5)
+    } finally { clock.mockRestore() }
   })
 })

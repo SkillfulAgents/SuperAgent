@@ -70,8 +70,7 @@ agent identity and do not create agent logs.
   entries and child metadata for 15 seconds. The next folder PROPFIND can reuse
   its parent's metadata instead of fetching it again. Explicit file stats fetch
   fresh sizes/revisions, matching GET/HEAD after external edits. Concurrent requests for the
-  same listing share their work. The cache is scoped to account and selected
-  root, retaining at most 256 directories and 8,000 entries total. Oversized
+  same listing share their work. Overlapping mounts share the cache by account and remote path, retaining at most 256 directories and 8,000 entries total. Oversized
   listings are returned in full without being cached. Direct, nonrecursive
   listings keep the first scan focused on folders the agent actually visits;
   Dropbox's recursive listing may return many tiny cursor pages even with a
@@ -154,3 +153,26 @@ API references: [Dropbox files](https://docs.dropboxapi.com/dropbox-api/api-refe
 [downloads](https://docs.dropboxapi.com/dropbox-api/api-reference/user-endpoints/files/download),
 [upload sessions](https://docs.dropboxapi.com/dropbox-api/api-reference/user-endpoints/files/upload-session-finish),
 [moves](https://docs.dropboxapi.com/dropbox-api/api-reference/user-endpoints/files/move-v-2).
+
+The provider-independent contract suite in `src/shared/lib/volumes/testing/`
+checks binary and empty writes, the 512 KiB fast path, ranges, fresh metadata,
+create/rename/delete behavior, conflicts, cancelled/failed uploads, cache isolation,
+health and account revocation. A second suite checks retries, attribution and audits.
+Register a provider fixture to apply these same tests to a future adapter; keep
+provider-specific cases (case folding, revisions, exports) alongside them.
+
+Failed uploads protect their path against rclone's subsequent cleanup DELETE.
+That delete returns 409 and consumes the protection; it never silently claims a
+file was deleted. Protection has no five-second expiry and also covers a newer
+successful write at the same path. An intentional delete after a failed upload
+may need to be retried. This is process-local protection against the WebDAV
+client's ambiguous cleanup, not a durable operation journal. Cancelled requests
+never intentionally publish staged bytes; cancellation during creation removes
+only the revision this request created.
+
+Mutations update already-cached parents using their returned metadata, preserving
+cache age and unrelated directories. Failed mutations invalidate affected paths.
+Dropbox namespace commits remain serialized because Dropbox itself locks at that
+scope; request bodies and session staging stay outside the queue. Safe reads now
+retry transient upstream failures using the same bounded pacer as rate limits;
+mutations still never replay an uncertain result.
