@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import { VOLUME_TYPES, type StoredVolume, type VolumeType } from '@shared/lib/types/mount'
 import { LocalMountableVolume, localVolumeConfigSchema, prepareLocalVolume } from './local-mountable-volume'
+import { DropboxMountableVolume, prepareDropboxVolume } from './dropbox-mountable-volume'
+import { dropboxVolumeConfigSchema } from './dropbox-schema'
 import type { BaseMountableVolume } from './base-mountable-volume'
 
 /** A new volume's type, its checked config, and the name it is given before any clash suffix. */
@@ -37,6 +39,7 @@ function volumeType<C>(
 }
 
 const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
+  dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
 }
 

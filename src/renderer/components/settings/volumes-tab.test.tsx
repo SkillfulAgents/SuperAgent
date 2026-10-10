@@ -68,7 +68,7 @@ describe('volume settings', () => {
     expect(screen.getByText('Public')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete Notes' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Add volume' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add volume' })).toBeInTheDocument()
   })
   it('keeps the dialog open with the server error when a volume cannot be saved', async () => {
     state.save.mockRejectedValue(new Error('Detach this volume from all agents before changing its access'))
