@@ -1731,6 +1731,32 @@ describe('useMessageStream', () => {
     expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
   })
 
+  it('refetches subagent messages again once updates go quiet (the CLI writes the transcript after relaying)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, SUBAGENT_TRAILING_REFETCH_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      const invalidate = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true }) })
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-1', agentId: 'sub-1' }) })
+      const subagentInvalidations = () => invalidate.mock.calls.filter(([f]) => (f as { queryKey?: unknown[] })?.queryKey?.[0] === 'subagent-messages').length
+      expect(subagentInvalidations()).toBe(1)
+
+      // A second update inside the window pushes the trailing refetch out.
+      await act(async () => { await vi.advanceTimersByTimeAsync(SUBAGENT_TRAILING_REFETCH_MS - 100) })
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-1', agentId: 'sub-1' }) })
+      expect(subagentInvalidations()).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(SUBAGENT_TRAILING_REFETCH_MS - 100) })
+      expect(subagentInvalidations()).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(subagentInvalidations()).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('subagent_progress carries the agentId onto a run first seen through it', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()

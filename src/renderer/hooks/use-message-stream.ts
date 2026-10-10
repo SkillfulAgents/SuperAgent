@@ -336,6 +336,26 @@ function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string,
   })
 }
 
+// subagent_updated fires when the container relays a subagent's frame; the CLI
+// writes that frame to the subagent transcript a few hundred ms later, so the
+// refetch it triggers can read the file just before the write. Measured live
+// (SDK 0.3.296): a resumed run's first tool call landed ~0.6s after its
+// update, and a foreground command then sends no frame for its whole run, so
+// the block showed the previous run's content until the run ended. One more
+// refetch after the updates go quiet picks the write up.
+export const SUBAGENT_TRAILING_REFETCH_MS = 1500
+const trailingSubagentRefetch = new Map<string, ReturnType<typeof setTimeout>>()
+
+function refreshSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  invalidateSubagentMessages(queryClient, sessionId, agentId)
+  const key = `${sessionId}\u0000${agentId ?? ''}`
+  clearTimeout(trailingSubagentRefetch.get(key))
+  trailingSubagentRefetch.set(key, setTimeout(() => {
+    trailingSubagentRefetch.delete(key)
+    invalidateSubagentMessages(queryClient, sessionId, agentId)
+  }, SUBAGENT_TRAILING_REFETCH_MS))
+}
+
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
@@ -1273,7 +1293,7 @@ function getOrCreateEventSource(
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          invalidateSubagentMessages(queryClient, sessionId, updated.agentId)
+          refreshSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
@@ -1305,7 +1325,7 @@ function getOrCreateEventSource(
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          invalidateSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
+          refreshSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
           invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
