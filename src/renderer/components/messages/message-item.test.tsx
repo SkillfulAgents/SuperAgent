@@ -1036,4 +1036,33 @@ describe('MessageItem', () => {
       expect(container.querySelector('pre')).toHaveTextContent('a^2 + b^2')
     })
   })
+
+  describe('dollar math', () => {
+    it('renders $...$ inline and keeps prices as text', async () => {
+      const msg = createAssistantMessage({ content: { text: 'The area is $\\pi r^2$, and the plan costs $5 or $10.' } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const math = await screen.findByTestId('math-inline')
+      expect(math.querySelector('annotation')).toHaveTextContent('\\pi r^2')
+      expect(screen.getAllByTestId('math-inline')).toHaveLength(1)
+      expect(container).toHaveTextContent('the plan costs $5 or $10.')
+    })
+
+    it('renders $$ on its own lines as a display equation', async () => {
+      const msg = createAssistantMessage({ content: { text: 'Energy:\n\n$$\nE = mc^2\n$$' } })
+      render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('.katex-display')).not.toBeNull()
+      expect(block.querySelector('annotation')).toHaveTextContent('E = mc^2')
+    })
+
+    it('renders \\(...\\) inline like ChatGPT writes it', async () => {
+      const msg = createAssistantMessage({ content: { text: 'So \\(2^4 = 16\\) holds.' } })
+      render(<MessageItem message={msg} />)
+
+      const math = await screen.findByTestId('math-inline')
+      expect(math.querySelector('annotation')).toHaveTextContent('2^4 = 16')
+    })
+  })
 })

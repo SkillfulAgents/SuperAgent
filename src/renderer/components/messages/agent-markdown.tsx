@@ -1,6 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useCallback, useRef, memo, lazy, Suspense, type ReactNode } from 'react'
-import type { Components } from 'react-markdown'
+import { useCallback, useRef, memo, lazy, Suspense, type ComponentProps, type ReactNode } from 'react'
+import type { Components, ExtraProps } from 'react-markdown'
 import type { ElementContent } from 'hast'
 import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -34,6 +34,11 @@ function extractText(node: ReactNode): string {
   return ''
 }
 
+// remark-math marks `$$x$$` inside a sentence as code.language-math.math-inline.
+function isInlineMath(className: string | undefined): boolean {
+  return !!className?.split(' ').includes('math-inline')
+}
+
 // Wide tables break out of the readable column; see useBlockBreakout.
 function ExpandingTable({ children }: { children: ReactNode }) {
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -55,7 +60,7 @@ const STREAMING_COMPONENTS: Components = {
   // Style code blocks
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ children, className }) => {
-    const isInline = !className
+    const isInline = !className || isInlineMath(className)
     // A fence with no language also arrives here without a className, so the
     // chip is scoped to code outside a block. `:where` keeps the scope from
     // adding specificity, so screen wrappers can still restyle the chip.
@@ -103,6 +108,7 @@ const STREAMING_COMPONENTS: Components = {
 
 const MermaidDiagram = lazy(() => import('./mermaid-diagram').then(m => ({ default: m.MermaidDiagram })))
 const MathBlock = lazy(() => import('./math-block').then(m => ({ default: m.MathBlock })))
+const MathInline = lazy(() => import('./math-block').then(m => ({ default: m.MathInline })))
 
 function hastText(node: ElementContent): string {
   if (node.type === 'text') return node.value
@@ -144,9 +150,23 @@ const settledPre = (htmlPreview: boolean): Components['pre'] =>
   return codeBlock
 }
 
-const SETTLED_COMPONENTS: Components = { ...STREAMING_COMPONENTS, pre: settledPre(false) }
+const StreamingCode = STREAMING_COMPONENTS.code as (props: ComponentProps<'code'> & ExtraProps) => ReactNode
+
+function SettledCode(props: ComponentProps<'code'> & ExtraProps) {
+  const code = <StreamingCode {...props} />
+  if (!isInlineMath(props.className) || !props.node) return code
+  return (
+    <ErrorBoundary fallback={code}>
+      <Suspense fallback={code}>
+        <MathInline source={hastText(props.node)} fallback={code} />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+
+const SETTLED_COMPONENTS: Components = { ...STREAMING_COMPONENTS, pre: settledPre(false), code: SettledCode }
 // Only the agent's own replies run HTML: user, integration, and notification text can come from other people.
-const HTML_PREVIEW_COMPONENTS: Components = { ...STREAMING_COMPONENTS, pre: settledPre(true) }
+const HTML_PREVIEW_COMPONENTS: Components = { ...STREAMING_COMPONENTS, pre: settledPre(true), code: SettledCode }
 
 const MODE_COMPONENTS = { settled: SETTLED_COMPONENTS, streaming: STREAMING_COMPONENTS }
 

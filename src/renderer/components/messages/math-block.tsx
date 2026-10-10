@@ -10,17 +10,17 @@ interface MathBlockProps {
   fallback: ReactNode
 }
 
-function renderHtml(source: string): string | null {
+function renderHtml(source: string, displayMode: boolean): string | null {
   try {
     // trust stays off, so \href, \url and \htmlClass cannot emit links or attributes.
-    return katex.renderToString(source, { displayMode: true, throwOnError: true })
+    return katex.renderToString(source, { displayMode, throwOnError: true })
   } catch {
     return null
   }
 }
 
 export function MathBlock({ source, fallback }: MathBlockProps) {
-  const html = useMemo(() => renderHtml(source), [source])
+  const html = useMemo(() => renderHtml(source, true), [source])
   const getSource = useCallback(() => source, [source])
 
   // Wide equations break out like wide tables instead of overflowing the column.
@@ -38,4 +38,10 @@ export function MathBlock({ source, fallback }: MathBlockProps) {
       <CodeCopyButton getText={getSource} />
     </div>
   )
+}
+
+export function MathInline({ source, fallback }: MathBlockProps) {
+  const html = useMemo(() => renderHtml(source, false), [source])
+  if (!html) return <>{fallback}</>
+  return <span data-testid="math-inline" dangerouslySetInnerHTML={{ __html: html }} />
 }

@@ -12,6 +12,7 @@
 
 import type { Element, Parent, Root, RootContent, Text } from 'hast'
 import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
+import { normalizeMath } from '@renderer/lib/normalize-math'
 import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
@@ -128,14 +129,15 @@ export function rehypeSpokenWords(options: { offset?: number } = {}) {
   }
 }
 
-// Mirrors <Markdown>'s pipeline (remark-parse → REMARK_PLUGINS → remark-rehype
+// Mirrors <Markdown>'s pipeline (normalizeMath → remark-parse → REMARK_PLUGINS → remark-rehype
 // with raw HTML kept as `raw` nodes) so the tree walked here is the tree rendered.
 const processor = unified().use(remarkParse).use(REMARK_PLUGINS).use(remarkRehype, { allowDangerousHtml: true })
 
 /** Spoken words of a Markdown message, in the order the renderer shows them. */
 export function markdownToSpokenWords(markdown: string): SpokenWord[] {
+  const source = normalizeMath(markdown)
   // The source travels with the tree: remarkTrimAutolinkLiteral reads it.
-  const tree = processor.runSync(processor.parse(markdown), markdown) as Root
+  const tree = processor.runSync(processor.parse(source), source) as Root
   return collectSpokenWords(tree)
 }
 

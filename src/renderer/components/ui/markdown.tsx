@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
+import { normalizeMath } from '@renderer/lib/normalize-math'
 import { createMarkdownUrlTransform, markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
@@ -40,7 +41,7 @@ export function Markdown({ children, components, rehypePlugins, imageAliases, ag
   )
   return (
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={merged} urlTransform={urlTransform}>
-      {children}
+      {normalizeMath(children)}
     </ReactMarkdown>
   )
 }
