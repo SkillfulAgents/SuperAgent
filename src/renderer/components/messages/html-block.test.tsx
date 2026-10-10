@@ -16,4 +16,11 @@ describe('HtmlBlock', () => {
 
     expect(screen.getByTitle('HTML preview')).toBe(frame)
   })
+
+  it('shows the preview without a copy button', () => {
+    render(<HtmlBlock source="<p>Hello</p>" fallback={<pre>source</pre>} />)
+
+    expect(screen.getByTitle('HTML preview')).toBeInTheDocument()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
 })
