@@ -4,8 +4,10 @@ import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { resolveVolume } from '@shared/lib/services/mount-service'
 import { depthOf, destinationOf, multistatus, statusOf, volumePathOf } from '@shared/lib/volumes/webdav'
+import type { HttpBindings } from '@hono/node-server'
+import { allowStreamingUpload } from '@shared/lib/streaming-upload-timeout'
 
-type Env = { Variables: { agentSlug: string } }
+type Env = { Variables: { agentSlug: string }; Bindings: HttpBindings }
 
 const volumes = new Hono<Env>()
 
@@ -44,9 +46,10 @@ async function serve(c: Context<Env>, volumeId: string): Promise<Response> {
           await file.close()
           return c.body(null, served.status, served.headers)
         }
-        return c.body(file.stream(range), served.status, served.headers)
+        return c.body(await file.stream(range), served.status, served.headers)
       }
       case 'PUT':
+        allowStreamingUpload(c.env?.incoming)
         await ops.write(path, c.req.raw.body ?? new Blob([]).stream())
         return c.body(null, 201)
       case 'DELETE':

@@ -44,6 +44,7 @@ export interface ContainerVolume {
   name: string
   /** Older hosts omit this; the image preserves local-folder behavior in that case. */
   cacheMode?: VolumeCacheMode
+  caseInsensitive?: boolean
 }
 
 /** Why a volume is not in the container. */
