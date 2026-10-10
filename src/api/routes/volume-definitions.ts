@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { Authenticated } from '../middleware/auth'
 import { volumeViewer } from '../lib/volume-access'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -9,7 +10,11 @@ import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, 
 const routes = new Hono()
 routes.use('*', Authenticated())
 routes.onError((error, c) => {
-  if (error instanceof VolumeError) return c.json({ error: error.message }, error.status)
+  if (error instanceof VolumeError) {
+    if (error.retryAfter !== undefined) c.header('Retry-After', String(error.retryAfter))
+    return c.json({ error: error.message }, error.status)
+  }
+  if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
   if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid volume configuration' }, 400)
   console.error('[volumes] Definition request failed:', error)
   return c.json({ error: 'Could not update volumes' }, 500)

@@ -7,6 +7,7 @@ import xAgentIntegrations from './routes/x-agent-integrations'
 import webSearch from './routes/web-search'
 import volumes from './routes/volumes'
 import volumeDefinitions from './routes/volume-definitions'
+import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
@@ -251,6 +252,7 @@ app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/volumes', volumes)
 app.route('/api/volume-definitions', volumeDefinitions)
+app.route('/api/volume-types', volumeTypes)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
 app.route('/api/browser', browser)
