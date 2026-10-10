@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
-import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, refreshWrittenTabs, useFilePreview, type FileTab, type PreviewTab } from './file-preview-context'
+import { FilePreviewProvider, notifyMessageSent, getPreviewTabKey, getWorkspaceFileKey, refreshWrittenTabs, useFilePreview, type FileTab, type PreviewTab } from './file-preview-context'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -509,5 +509,25 @@ describe('refreshWrittenTabs', () => {
     expect(refreshWrittenTabs(tabs, 'agent-1', '/workspace/elsewhere.md', 2)).toBe(tabs)
     expect(refreshWrittenTabs(tabs, 'agent-1', '/workspace/c.pdf', 2)).toBe(tabs)
     expect(refreshWrittenTabs(tabs, 'agent-2', 'any', 2)).toBe(tabs)
+  })
+})
+
+describe('edits since your last message', () => {
+  it('grows one highlight per turn and starts a new one at the first change after a message', () => {
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    act(() => result.current.openFile('/workspace/notes.md', 'agent-1'))
+    const shownAs = (text: string) => act(() => result.current.recordShownText('/workspace/notes.md', 'agent-1', text))
+    const before = () => result.current.editsFor('/workspace/notes.md', 'agent-1')?.before
+
+    shownAs('a')
+    act(() => notifyMessageSent('session-1'))
+    shownAs('b')
+    shownAs('c')
+    expect(before()).toBe('a')
+
+    act(() => notifyMessageSent('session-1'))
+    expect(before()).toBe('a')
+    shownAs('d')
+    expect(before()).toBe('c')
   })
 })

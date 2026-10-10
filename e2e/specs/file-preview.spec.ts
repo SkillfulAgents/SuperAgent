@@ -277,6 +277,31 @@ test.describe('File Preview', () => {
     await expect(markdown(page).getByText('Old line.')).toHaveCount(0)
   })
 
+  test('highlights what the agent edited in an open file, behind a Show changes toggle', async ({ page }) => {
+    await agentPage.createAgent(`FileEdits ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+    const showEdits = page.getByTestId('file-preview-show-edits')
+    await expect(showEdits).toHaveCount(0)
+
+    await sessionPage.sendMessage('edit report')
+    await sessionPage.waitForResponse(15000)
+
+    const changed = markdown(page).locator('[data-edit="changed"]')
+    await expect(changed).toHaveCount(1, { timeout: 10000 })
+    await expect(changed).toHaveText('New line.')
+    await expect(showEdits).toHaveAttribute('aria-pressed', 'true')
+
+    await showEdits.click()
+    await expect(changed).toHaveCount(0)
+    await expect(markdown(page).getByText('New line.')).toBeVisible()
+  })
+
   test('renders CSV as a table and supports the raw toggle', async ({ page }) => {
     await agentPage.createAgent(`CsvPreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
