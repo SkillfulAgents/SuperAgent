@@ -34,7 +34,7 @@ function extractText(node: ReactNode): string {
   return ''
 }
 
-// remark-math marks `$$x$$` inside a sentence as code.language-math.math-inline.
+// remark-math marks inline `$x$` as code.language-math.math-inline.
 function isInlineMath(className: string | undefined): boolean {
   return !!className?.split(' ').includes('math-inline')
 }
