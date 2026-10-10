@@ -233,9 +233,9 @@ export class ContainerHost {
         try {
           await runtime.syncAgentStatus()
         } catch (error) {
-          console.error(`[ContainerHost] Failed to sync status for ${runtime.slug}:`, error)
-          // Mark as stopped on error
-          runtime.markAsStopped()
+          // A failed observation does not prove exit. Preserve unknown/running
+          // state so quit still attempts this agent's safe stop.
+          console.error(`[ContainerHost] Failed to sync status for ${runtime.slug}; keeping the last observation:`, error)
         }
       }
 

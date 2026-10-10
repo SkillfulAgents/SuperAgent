@@ -332,8 +332,9 @@ export async function updateAgent(
     const updated = await commitIdentity(record, changes, document, body)
     if (!updated) return null
 
-    // Get container status
-    const info = await agentRegistry.get(slug).container.info()
+    // Like agent reads/listing, metadata edits use the last observed status.
+    // A runtime outage must not turn an already-saved edit into a failed request.
+    const info = agentRegistry.get(slug).container.status()
 
     return toApiAgent(updated, info.status, info.port, body)
   })

@@ -122,6 +122,7 @@ import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { ContainerShutdownError } from '@shared/lib/container/volume-stop-schema'
+import { createFatalShutdown } from './fatal-shutdown'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1891,23 +1892,29 @@ app.on('before-quit', async (event) => {
   if (await gracefulShutdown(true)) setImmediate(() => app.quit())
 })
 
+const shutdownAfterFatalError = createFatalShutdown({
+  flush: () => flushErrorReporting(3000),
+  shutdown: () => gracefulShutdown(),
+  // Bypass before-quit: a refused drain cannot veto this fatal exit.
+  exit: code => app.exit(code),
+  logError: (message, error) => console.error(message, error ?? ''),
+})
+
 // Handle uncaught exceptions
-process.on('uncaughtException', async (error) => {
+process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error)
   // Persist to disk before any async work — if the network is down (or flush
   // hangs, or shutdown throws again) the Sentry event below is lost, and the
   // marker is then the only record that this exit was a crash.
   recordFatalError('uncaughtException', error)
   captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
-  await flushErrorReporting(3000)
-  if (await gracefulShutdown()) setImmediate(() => app.quit())
+  shutdownAfterFatalError()
 })
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', async (reason) => {
+process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason)
   recordFatalError('unhandledRejection', reason)
   captureException(toReportableError(reason), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
-  await flushErrorReporting(3000)
-  if (await gracefulShutdown()) setImmediate(() => app.quit())
+  shutdownAfterFatalError()
 })

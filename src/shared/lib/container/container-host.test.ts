@@ -206,6 +206,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 
 import { containerHost } from './container-host'
 import { ContainerRuntime } from './container-runtime'
+import { ContainerShutdownError, RuntimeStatusUnavailableError } from './volume-stop-schema'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
   beforeEach(() => {
@@ -860,6 +861,18 @@ describe('ContainerRuntime.ensureRunning — cached running liveness TTL', () =>
     expect(containerHost.runtime('test-agent').getCachedInfo()).toEqual({ status: 'running', port: 4001 })
   })
 
+  it('still needs a safe stop when an unhealthy container cannot be inspected for restart', async () => {
+    vi.useFakeTimers()
+    const runtime = containerHost.runtime('test-agent')
+    runtime.updateCachedStatus('running', 4001)
+    mockIsHealthy.mockResolvedValue(false)
+    mockStart.mockRejectedValueOnce(new RuntimeStatusUnavailableError('inspect timeout'))
+    vi.advanceTimersByTime(11_000)
+    await expect(runtime.ensureRunning()).rejects.toBeInstanceOf(RuntimeStatusUnavailableError)
+    expect(runtime.getCachedInfo()).toEqual({ status: 'running', port: 4001 })
+    expect(runtime.needsStop()).toBe(true)
+  })
+
   it('restarts when the stale cached running status fails the liveness probe', async () => {
     vi.useFakeTimers()
     containerHost.runtime('test-agent').updateCachedStatus('running', 4001)
@@ -1402,6 +1415,42 @@ describe('ContainerRuntime.syncAgentStatus', () => {
     expect(runtime.getCachedInfo()).toEqual({ status: 'running', port: 4001 })
     expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalled()
     expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it.each(['periodic', 'recovery'] as const)('keeps the agent eligible for a quit drain after %s inspection fails', async source => {
+    const runtime = containerHost.runtime('sync-agent')
+    runtime.getClient()
+    runtime.updateCachedStatus('running', 4001)
+    mockGetInfoFromRuntime.mockRejectedValueOnce(new RuntimeStatusUnavailableError('inspect timeout'))
+    if (source === 'periodic') await containerHost.syncAllStatuses()
+    else {
+      const finished = Promise.withResolvers<void>()
+      const sync = runtime.syncAgentStatus.bind(runtime)
+      vi.spyOn(runtime, 'syncAgentStatus').mockImplementation(async () => {
+        try { return await sync() } finally { finished.resolve() }
+      })
+      runtime.handleUnexpectedDeath()
+      await finished.promise
+      await Promise.resolve()
+    }
+    expect(runtime.getCachedInfo()).toEqual({ status: 'running', port: 4001 })
+    expect(runtime.needsStop()).toBe(true)
+    expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    mockStop.mockResolvedValueOnce({ stopped: false, forceStopUsed: false, deferredReason: 'Pending uploads' })
+    await expect(containerHost.stopAll()).rejects.toBeInstanceOf(ContainerShutdownError)
+    expect(mockStop).toHaveBeenCalledWith({ escalateToForceStop: false })
+  })
+
+  it('keeps an unobserved agent eligible for shutdown when startup inspection fails', async () => {
+    const runtime = containerHost.runtime('unknown-agent')
+    runtime.getClient()
+    mockGetInfoFromRuntime.mockRejectedValueOnce(new RuntimeStatusUnavailableError('inspect timeout'))
+    await containerHost.syncAllStatuses()
+    expect(runtime.needsStop()).toBe(true)
+    mockStop.mockResolvedValueOnce({ stopped: false, forceStopUsed: false, deferredReason: 'Pending uploads' })
+    await expect(containerHost.stopAll()).rejects.toBeInstanceOf(ContainerShutdownError)
+    expect(mockStop).toHaveBeenCalled()
   })
 
   it('updates cached status from runtime', async () => {

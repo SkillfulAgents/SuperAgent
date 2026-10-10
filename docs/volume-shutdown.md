@@ -4,13 +4,13 @@ A file closed by an agent can still be waiting in rclone’s upload queue. Safe 
 
 The container first checks existing uploads and unfinished writer cleanup. It then prevents new writes, closes sessions and dashboards, and drains again to include their final writes. A failed preflight leaves current work alone. A final drain can fail after work was interrupted; the API reports that distinction. A previous failed writer cleanup is checked before interrupting a new turn.
 
-The host closes the host browser after preparation succeeds and before container teardown. Runtime inspection failures mean unknown, not stopped. If the container API is unreachable, a successful runtime inspection can confirm that the container already exited; otherwise safe stop declines. Explicit force stop bypasses preparation and may discard unsynced files.
+The host closes the host browser after preparation succeeds and before container teardown. Runtime inspection failures mean unknown, not stopped. Periodic and recovery status sync preserve the previous observation when inspection fails, so quit still attempts a drain. If the container API is unreachable, a successful runtime inspection can confirm that the container already exited; otherwise safe stop declines. Explicit force stop bypasses preparation and may discard unsynced files.
 
 ## Mount configuration
 
 Removing a mount stages its removal in SQLite and displays a restart banner. It does not interrupt the current turn. Its upload grant remains valid until a confirmed stop or until a fresh container starts without that mount. Reattaching the same definition cancels the pending removal. Pending removals survive host restarts.
 
-Adding a mount with immediate restart first obtains a safe stop, before creating the definition or attachment. A declined stop returns the structured upload warning. The renderer can offer an explicit force retry without creating duplicate volumes.
+Adding a mount with immediate restart first obtains a safe stop, before creating the definition or attachment. A declined stop returns the structured upload warning. The renderer can offer an explicit force retry without creating duplicate volumes. After an accepted stop, the agent is restarted even if definition creation or attachment fails.
 
 Deletion prevents all new starts, including scheduled tasks and webhooks, throughout stop, credential cleanup, and workspace removal. A launch already submitted to the runtime must settle before teardown.
 
@@ -18,7 +18,9 @@ Deletion prevents all new starts, including scheduled tasks and webhooks, throug
 
 Desktop quit attempts safe stops while the API, credentials and background services remain available. If any agent cannot stop safely, the app offers **Cancel** or **Quit Anyway**. Cancel keeps the app and pending-upload dependencies available. Quit Anyway explicitly allows discarding remaining uploads. The shared runtime is shut down only after every container has stopped; a safe quit never force-kills the shared VM as a fallback for one agent.
 
-There is no process-exit deadline competing with the safe-drain deadline. Each container shutdown attempt is bounded, including an in-flight launch, preparation, browser cleanup and runtime teardown. The final desktop process-exit fallback only starts after container shutdown succeeds.
+For ordinary user-requested quit there is no process-exit deadline competing with the safe-drain deadline. Each container shutdown attempt is bounded, including an in-flight launch, preparation, browser cleanup and runtime teardown. The final desktop process-exit fallback only starts after container shutdown succeeds.
+
+An uncaught exception or unhandled rejection is fatal: Electron attempts the same safe shutdown but exits with status 1 within two minutes even if reporting or shutdown hangs or the drain is declined. A declined or failed attempt is logged explicitly. The fatal deadline bypasses cancellable quit and can leave containers running with unsynced files; restart the host to restore their upload endpoint.
 
 The standalone server cancels a SIGTERM/SIGINT shutdown if safe stop fails, logs the failure, and continues serving uploads. Resolve the problem or explicitly force-stop the affected agents through the app/API, then send the signal again. A supervisor can still kill the process externally; that cannot guarantee upload completion.
 

@@ -225,14 +225,9 @@ export class ContainerRuntime {
         try {
           await this.syncAgentStatus()
         } catch (err) {
-          console.error(`[ContainerRuntime] Failed to sync status after connection error:`, err)
-          this.markAsStopped()
-          messagePersister.markAllSessionsInactiveForAgent(slug)
-          messagePersister.broadcastGlobal({
-            type: 'agent_status_changed',
-            agentSlug: slug,
-            status: 'stopped',
-          })
+          // A connection error plus failed inspection is still unknown. Only a
+          // successful observation may mark the container/sessions stopped.
+          console.error(`[ContainerRuntime] Failed to sync status after connection error; keeping the last observation:`, err)
         }
       },
     }).catch((err) => {
@@ -329,7 +324,7 @@ export class ContainerRuntime {
   }
 
   /**
-   * Mark the container as stopped in cache (e.g., when connection fails).
+   * Record a confirmed stop, including an observed exit or runtime teardown.
    * Prefer using stopContainer() which also stops the actual container.
    */
   markAsStopped(): void {
@@ -546,7 +541,7 @@ export class ContainerRuntime {
         this.updateCachedStatus('running', cached.port)
       } else {
         console.warn(`[ContainerRuntime] Cached 'running' status for ${slug} failed liveness check, (re)starting`)
-        this.markAsStopped()
+        // A failed health probe followed by failed inspect must still drain at quit.
         needsStart = true
       }
     }

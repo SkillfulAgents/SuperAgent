@@ -6306,13 +6306,18 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
     // Decline before creating anything. A force-confirmed retry cannot create
     // a second definition, and cancellation leaves the mount configuration intact.
     if (restart) await container.stop(force.data === 'true' ? { discardPendingUploads: true } : undefined)
-    const mount = 'volumeId' in input
-      ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
-      : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
-    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
-    if (restart) await container.start()
-    return c.json(summary, 201)
+    try {
+      const mount = 'volumeId' in input
+        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
+        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
+      const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
+      return c.json(summary, 201)
+    } finally {
+      // Once this request stopped the agent, restore it even if the definition
+      // disappeared, vendor validation failed, or audit persistence failed.
+      if (restart) await container.start()
+    }
   } catch (error) {
     if (error instanceof ContainerStopDeferredError) return c.json(error.toResponse(), 409)
     if (error instanceof VolumeError) return c.json({ error: error.message }, error.status)

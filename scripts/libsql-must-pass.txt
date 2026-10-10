@@ -55,3 +55,5 @@ src/api/routes/volumes.test.ts
 src/api/routes/volume-definitions.test.ts
 src/shared/lib/volumes/volumes.e2e.test.ts
 src/shared/lib/services/agent-service.delete-stop-failure.sup209.test.ts
+src/shared/lib/services/agent-service.update-status.test.ts
+src/shared/lib/services/agent-service.test.ts

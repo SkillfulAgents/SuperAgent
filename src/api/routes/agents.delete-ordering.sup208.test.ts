@@ -248,6 +248,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 // Import the router after all mocks are registered.
 import agents from './agents'
 import { ContainerStopDeferredError } from '@shared/lib/container/volume-stop-schema'
+import { VolumeError } from '@shared/lib/services/volume-service'
 
 function appWithAgents() {
   const app = new Hono()
@@ -378,10 +379,40 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     expect(declined.status).toBe(409)
     expect(await declined.json()).toMatchObject({ code: 'volume_stop_deferred' })
     expect(mockAddMount).not.toHaveBeenCalled()
+    expect(mockStartContainer).not.toHaveBeenCalled()
     const forced = await appWithAgents().request('/api/agents/test-agent/mounts?force=true', request)
     expect(forced.status).toBe(201)
     expect(mockAddMount).toHaveBeenCalledOnce()
     expect(mockStopContainer).toHaveBeenLastCalledWith('test-agent', { discardPendingUploads: true })
+    expect(mockStartContainer).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { input: { volumeId: 'missing' }, operation: mockAttachMount, status: 404, message: 'Volume not found' },
+    { input: { type: 'local', config: { path: '/test/notes' } }, operation: mockAddMount, status: 400, message: 'Folder is unavailable' },
+    { input: { type: 'local', config: { path: '/test/notes' } }, operation: mockAddMount, status: 500, message: 'Failed to add mount' },
+  ] as const)('restarts after mount creation/attachment fails with $status', async ({ input, operation, status, message }) => {
+    operation.mockRejectedValueOnce(status === 500 ? new Error('Volume provider unavailable') : new VolumeError(message, status))
+    const response = await appWithAgents().request('/api/agents/test-agent/mounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...input, restart: true }),
+    })
+    expect(response.status).toBe(status)
+    expect(await response.json()).toEqual({ error: message })
+    expect(mockStopContainer).toHaveBeenCalledOnce()
+    expect(mockStartContainer).toHaveBeenCalledOnce()
+    expect(mockStopContainer.mock.invocationCallOrder[0]).toBeLessThan(operation.mock.invocationCallOrder[0])
+    expect(operation.mock.invocationCallOrder[0]).toBeLessThan(mockStartContainer.mock.invocationCallOrder[0])
+  })
+
+  it('restarts after audit persistence fails following a successful attachment', async () => {
+    mockAttachMount.mockResolvedValueOnce({ id: 'mount', volumeId: 'saved', name: 'notes', type: 'local' })
+    mockLogAuditEvent.mockRejectedValueOnce(new Error('audit write failed'))
+    const response = await appWithAgents().request('/api/agents/test-agent/mounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ volumeId: 'saved', restart: true }),
+    })
+    expect(response.status).toBe(500)
     expect(mockStartContainer).toHaveBeenCalledOnce()
   })
 

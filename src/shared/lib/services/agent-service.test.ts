@@ -2,10 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import * as schema from '@shared/lib/db/schema'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import {
   SAMPLE_INSTRUCTIONS,
   SAMPLE_INSTRUCTIONS_MINIMAL,
@@ -47,8 +45,8 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 
 // The catalog is the `agents` table: one in-memory database per test, so a
 // test's agents never leak into the next.
-let testDb: ReturnType<typeof drizzle>
-let sqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let database: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 // Import after mocking
@@ -84,9 +82,8 @@ describe('agent-service', () => {
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
 
-    sqlite = new Database(':memory:')
-    testDb = drizzle(sqlite, { schema })
-    migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
+    database = await createTestDatabase()
+    testDb = database.db
 
     // Reset mocks
     vi.clearAllMocks()
@@ -102,7 +99,7 @@ describe('agent-service', () => {
 
     // Clean up temp directory
     await fs.promises.rm(testDir, { recursive: true, force: true })
-    sqlite.close()
+    await database.close()
 
     // Reset module cache
     vi.resetModules()
@@ -692,7 +689,7 @@ Instructions`
 
       await deleteAgent('test-agent')
 
-      expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+      expect(mockStopContainer).toHaveBeenCalledWith('test-agent', undefined)
     })
   })
 
