@@ -7,3 +7,4 @@ export type LocalVolumeConfig = z.infer<typeof localVolumeConfigSchema>
 export const volumeConfigSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('local'), config: localVolumeConfigSchema }),
 ])
+export type VolumeSource = z.infer<typeof volumeConfigSchema>
