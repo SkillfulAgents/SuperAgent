@@ -16,7 +16,8 @@ const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.
 interface FileRendererProps {
   filePath: string
   fileUrl: string
-  agentSlug: string
+  agentSlug?: string
+  downloadUrl?: string
   pdfPage: number
   onPdfPageChange: (page: number) => void
 }
@@ -24,7 +25,8 @@ interface FileRendererProps {
 export function FileRenderer({
   filePath,
   fileUrl,
-  agentSlug,
+  agentSlug = '',
+  downloadUrl,
   pdfPage,
   onPdfPageChange,
 }: FileRendererProps) {
@@ -72,6 +74,6 @@ export function FileRenderer({
       )
 
     default:
-      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} />
+      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
   }
 }

@@ -1,5 +1,10 @@
 import { useState } from 'react'
-import { Folder, Globe, Lock, Pencil, Plus, Trash2 } from 'lucide-react'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import { AppLink } from '@renderer/components/ui/app-link'
+import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
+import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
+import { RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { Folder, Globe, Lock, Plus, Trash2 } from 'lucide-react'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 import { Button } from '@renderer/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
@@ -11,10 +16,14 @@ export function VolumesTab() {
   const registry = useVolumeDefinitions()
   const remove = useDeleteVolumeDefinition()
   const save = useSaveVolumeDefinition()
-  const [editing, setEditing] = useState<VolumeDefinitionSummary | 'new' | null>(null)
+  const [creating, setCreating] = useState(false)
+  const navigate = useNavigate()
+  const { volume: selectedId } = useSearch({ strict: false }) as { volume?: string }
+  const backToList = () => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: undefined }) }) }
   const [deleting, setDeleting] = useState<VolumeDefinitionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
   const definitions = registry.data ?? []
+  const selectedVolume = definitions.find(volume => volume.id === selectedId)
 
   const deleteVolume = async () => {
     if (!deleting) return
@@ -22,6 +31,7 @@ export function VolumesTab() {
       setError(null)
       await remove.mutateAsync(deleting.id)
       setDeleting(null)
+      if (selectedId === deleting.id) backToList()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete volume')
     }
@@ -29,9 +39,12 @@ export function VolumesTab() {
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
+      {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={backToList} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
+        : <div className="space-y-3"><Button variant="ghost" onClick={backToList}>Back to volumes</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading volume…' : registry.error ? 'Could not load this volume. Please try again.' : 'This volume is no longer available.'}</p></div>
+        : <>
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">Save folders once, then attach them to any of your agents from their Volumes card.</p>
-        <Button size="sm" onClick={() => setEditing('new')}><Plus className="h-4 w-4" />Add volume</Button>
+        <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Add volume</Button>
       </div>
       {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load volumes. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading volumes…</p> : definitions.length === 0 ? (
@@ -44,10 +57,11 @@ export function VolumesTab() {
         <div className="divide-y rounded-lg border">
           {definitions.map(volume => (
             <div key={volume.id} className="flex items-center gap-3 p-4" data-testid="saved-volume-row">
-              <Folder className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <VolumeIcon type={volume.type} className="h-5 w-5 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{volume.name}</span>
+                  <AppLink to="/settings/$tab" params={{ tab: 'volumes' }} search={prev => ({ ...prev, volume: volume.id })}
+                    className="group inline-flex min-w-0 items-center gap-2 text-sm font-medium hover:underline"><span className="truncate">{volume.name}</span><RowHoverChevron /></AppLink>
                   <VolumeStatusBadge health={volume.health} />
                 </div>
                 {(volume.sourceLabel ?? volume.hostPath) && <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</p>}
@@ -57,7 +71,6 @@ export function VolumesTab() {
                 </div>
               </div>
               {volume.canManage && <div className="flex shrink-0 items-center gap-1">
-                <Button variant="ghost" size="icon" aria-label={`Edit ${volume.name}`} onClick={() => setEditing(volume)}><Pencil className="h-4 w-4" /></Button>
                 <Button variant="ghost" size="icon" aria-label={`Delete ${volume.name}`} disabled={volume.attachmentCount > 0}
                   title={volume.attachmentCount > 0 ? 'Detach from all agents before deleting' : 'Delete saved volume'}
                   onClick={() => { setError(null); setDeleting(volume) }}><Trash2 className="h-4 w-4" /></Button>
@@ -66,10 +79,10 @@ export function VolumesTab() {
           ))}
         </div>
       )}
-      {editing && <VolumeSettingsDialog
-        volume={editing === 'new' ? undefined : editing}
-        onSave={input => save.mutateAsync({ ...input, id: editing === 'new' ? undefined : editing.id })}
-        onClose={() => setEditing(null)}
+      </>}
+      {creating && <VolumeSettingsDialog
+        onSave={input => save.mutateAsync(input)}
+        onClose={() => setCreating(false)}
       />}
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>
         <AlertDialogContent>

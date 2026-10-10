@@ -57,6 +57,7 @@ export function useAddMount() {
       // display-slug route, so a targeted key would miss it.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }
@@ -74,6 +75,7 @@ export function useRemoveMount() {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }

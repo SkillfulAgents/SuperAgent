@@ -93,6 +93,7 @@ export const settingsSearchSchema = z
     ...arrivalParams,
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
+    volume: z.string().min(1).max(255).optional(),
     connectionView: z.literal('logs').optional(),
   })
   .refine((s) => !s.connectionView || !!s.detail, {
