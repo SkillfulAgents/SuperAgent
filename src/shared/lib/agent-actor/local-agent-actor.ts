@@ -18,7 +18,7 @@ import type {
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
-import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
+import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
@@ -118,12 +118,13 @@ export class LocalAgentActor implements AgentActor {
         transitions: deps.userInputRequestManager,
         // A test double of the persister may not carry the projection; the real one does.
         syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting?.(slug),
+        isSessionActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
       })
     this.files = this.store.files
     this.memories = createMemoryOps(this.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
-    this.sessions = createSessionOps(slug, this.store, deps)
+    this.sessions = createSessionOps(slug, this.store, this.state, deps)
     this.messages = createMessageOps(slug, this.store, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
@@ -173,7 +174,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
   }
 }
 
-function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActorDeps): SessionOps {
+function createSessionOps(slug: AgentSlug, store: SessionStore, state: AgentState, deps: LocalActorDeps): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
@@ -225,7 +226,10 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
       deps.containerHost.runtime(slug).noteSessionActivity()
       deps.messagePersister.markSessionIdle(slug, sessionId)
     },
-    markInterrupted: (...args) => deps.messagePersister.markSessionInterrupted(slug, ...args),
+    markInterrupted: async (sessionId, ...rest) => {
+      await deps.messagePersister.markSessionInterrupted(slug, sessionId, ...rest)
+      settleStoppedSession(state, sessionId)
+    },
     turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
     isWaitingBackground: (sessionId) => deps.messagePersister.isSessionWaitingBackground(slug, sessionId),
     hasOnlyUntrackedBackgroundWork: (sessionId) =>
@@ -250,7 +254,10 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
 
     subscribeStream: (sessionId, containerSessionId) =>
       deps.messagePersister.subscribeToSession(slug, sessionId, client(), containerSessionId),
-    unsubscribeStream: (sessionId) => deps.messagePersister.unsubscribeFromSession(slug, sessionId),
+    unsubscribeStream: (sessionId) => {
+      releaseSessionState(state, sessionId)
+      deps.messagePersister.unsubscribeFromSession(slug, sessionId)
+    },
     isStreamSubscribed: (sessionId) => deps.messagePersister.isSubscribed(slug, sessionId),
   }
 }
@@ -323,7 +330,7 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     pending: () => deps.reviewManager.getPendingReviewsForAgent(slug),
     submit: (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
-    denyAll: () => deps.reviewManager.denyAllForAgent(slug),
+    denyAll: (sessionId) => deps.reviewManager.denyAllForAgent(slug, sessionId),
     resolveMatching: (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),

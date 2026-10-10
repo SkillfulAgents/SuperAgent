@@ -13,10 +13,14 @@ messagePersister.attachSessionStores(createInMemorySessionStore)
 import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { ReviewManager } from './review-manager'
+import { releaseSessionState } from '@shared/lib/agent-actor/agent-state'
 
 // Likewise the actors' in-memory stores (requests, reviews), which the
 // persister and the review manager route to.
-const agents = attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
+const agents = attachInMemoryAgentState({
+  syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug),
+  isSessionActive: (slug, sessionId) => messagePersister.isSessionActive(slug, sessionId),
+})
 
 const SESSION_ID = 'proxy-review-awaiting-session'
 const AGENT_SLUG = 'proxy-review-awaiting-agent'
@@ -125,5 +129,92 @@ describe('proxy review session awaiting', () => {
     expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
 
     userInputRequestManager.resolve('secret-1', 'cancelled')
+  })
+
+  describe('when the call names its session', () => {
+    const OTHER_SESSION_ID = 'proxy-review-awaiting-other-session'
+
+    beforeEach(() => {
+      messagePersister.markSessionActive(AGENT_SLUG, OTHER_SESSION_ID)
+    })
+
+    it('marks only that session awaiting', async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+
+      expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
+      expect(messagePersister.getSessionActivity(AGENT_SLUG, OTHER_SESSION_ID)).toBe('working')
+
+      const [review] = manager.getPendingReviewsForAgent(AGENT_SLUG)
+      expect(manager.submitDecision(review.id, 'allow', AGENT_SLUG)).toBe(true)
+      await expect(promise).resolves.toBe('allow')
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('marks every session awaiting when that session is not running', async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: 'session-that-ended' })
+
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, OTHER_SESSION_ID)).toBe(true)
+
+      const [review] = manager.getPendingReviewsForAgent(AGENT_SLUG)
+      manager.submitDecision(review.id, 'deny', AGENT_SLUG)
+      await expect(promise).resolves.toBe('deny')
+    })
+
+    it('"allow all" for a scope settles a review shown in one session', async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+
+      manager.resolveMatchingPending(AGENT_SLUG, 'GMAIL_SEND_EMAIL', 'allow')
+
+      await expect(promise).resolves.toBe('allow')
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it("stopping another session leaves this session's review open", async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+
+      manager.denyAllForAgent(AGENT_SLUG, OTHER_SESSION_ID)
+      expect(manager.getPendingReviewsForAgent(AGENT_SLUG)).toHaveLength(1)
+
+      manager.denyAllForAgent(AGENT_SLUG, SESSION_ID)
+      await expect(promise).resolves.toBe('deny')
+    })
+
+    it('keeps the session awaiting after its turn ends while its own review is open', async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+
+      messagePersister.markSessionIdle(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      const [review] = manager.getPendingReviewsForAgent(AGENT_SLUG)
+      manager.submitDecision(review.id, 'allow', AGENT_SLUG)
+      await expect(promise).resolves.toBe('allow')
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('an idle session is not awaiting on an agent-wide review', async () => {
+      messagePersister.markSessionIdle(AGENT_SLUG, SESSION_ID)
+      const promise = manager.requestReview(reviewDetails())
+
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, OTHER_SESSION_ID)).toBe(true)
+
+      const [review] = manager.getPendingReviewsForAgent(AGENT_SLUG)
+      manager.submitDecision(review.id, 'deny', AGENT_SLUG)
+      await expect(promise).resolves.toBe('deny')
+    })
+
+    it('deleting the session denies the call parked on its review', async () => {
+      const promise = manager.requestReview({ ...reviewDetails(), callerSessionId: SESSION_ID })
+      const state = agents.states.get(AGENT_SLUG)!
+
+      releaseSessionState(state, SESSION_ID)
+      messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+
+      await expect(promise).resolves.toBe('deny')
+      expect(state.reviews.settlerIds()).toEqual([])
+      expect(manager.getPendingReviewsForAgent(AGENT_SLUG)).toHaveLength(0)
+    })
   })
 })

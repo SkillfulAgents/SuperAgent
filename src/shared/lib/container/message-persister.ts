@@ -544,10 +544,10 @@ class MessagePersister {
     if (!agentSlug) return
 
     if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
-      // Reviews are agent-scoped — attribute the notification to the first
-      // active session, the same heuristic the awaiting projection applies.
-      // No active session (a dashboard-triggered review) → no notification;
-      // the dashboard panel is the surface for those.
+      // A review scoped to the session whose call it holds notifies that
+      // session; an agent-scoped one is attributed to the first active
+      // session. No active session (a dashboard-triggered review) → no
+      // notification; the dashboard panel is the surface for those.
       const sessionId = request.scope.sessionId ?? this.getActiveSessionIdsForAgent(agentSlug)[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
@@ -570,8 +570,8 @@ class MessagePersister {
     // Agent-scoped reviews and re-auth requests have no session id and no safe
     // actionable OS-notification flow; their in-app cards are the prompt.
     if (!sessionId) return
-    // Defensive type boundary if a future caller violates the agent-scoped
-    // re-auth invariant; these kinds are not accepted notification categories.
+    // Re-auth cards scoped to the calling session are not notification
+    // categories either; the in-app card is the prompt.
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
     const { kind, payload } = request
     notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, { kind, payload }).catch((err) => {
@@ -830,6 +830,10 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
+    // A call parked on this session's own card outlives the turn: keep the
+    // session awaiting, which also keeps an automation's stream from being
+    // released (and the card dropped) under it.
+    this.syncSessionAwaiting(agentSlug, sessionId)
     this.maybeReleaseSessionTransport(state)
   }
 
@@ -1914,13 +1918,15 @@ class MessagePersister {
   // `isSessionAwaiting` projection — this is the ONE place that flips it in
   // response to requests opening/settling (turn-boundary teardown paths reset
   // it directly, alongside isActive, without broadcasting). An inactive
-  // session is never awaiting: its parked requests died with the turn, even
-  // when a stale entry (or an agent-scoped review) is still open.
+  // session is awaiting only on a call parked on its own card, which a
+  // background script can hold past the turn; its other requests died with
+  // the turn, and an agent-scoped review is still open in every session.
   private syncSessionAwaiting(agentSlug: string, sessionId: string): void {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return
     const derived =
-      state.isActive && userInputRequestManager.isSessionAwaiting(agentSlug, sessionId)
+      (state.isActive && userInputRequestManager.isSessionAwaiting(agentSlug, sessionId)) ||
+      userInputRequestManager.hasParkedCall(agentSlug, sessionId)
     if (derived === state.isAwaitingInput) return
     state.isAwaitingInput = derived
     if (derived) {

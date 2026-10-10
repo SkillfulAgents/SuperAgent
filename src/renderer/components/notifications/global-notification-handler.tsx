@@ -76,9 +76,9 @@ export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }
 // would strand the orange dot until the refetch.
 const SESSION_LIFECYCLE_ECHO = {
   session_active: { isActive: true },
-  // Awaiting implies active server-side (the projection is
-  // `state.isActive && …`), so assert both.
-  session_awaiting_input: { isActive: true, isAwaitingInput: true },
+  // An idle session can be awaiting on a call parked on its own card, so this
+  // asserts awaiting only; session_active owns the active flag.
+  session_awaiting_input: { isAwaitingInput: true },
   session_input_provided: { isAwaitingInput: false },
   session_idle: { isActive: false, isAwaitingInput: false },
   session_error: { isActive: false, isAwaitingInput: false },

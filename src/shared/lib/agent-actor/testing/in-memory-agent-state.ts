@@ -25,6 +25,12 @@ import { createAgentState, releaseAgentState, type AgentState } from '../agent-s
 import type { AgentStoreDirectory } from '../store-directory'
 import type { AgentSlug } from '../types'
 
+export interface InMemoryAgentStateOptions {
+  syncAwaiting?: (slug: AgentSlug) => void
+  /** Which sessions count as running; none by default, so every card is agent-scoped. */
+  isSessionActive?: (slug: AgentSlug, sessionId: string) => boolean
+}
+
 export interface InMemoryAgentStateDirectory extends AgentStoreDirectory<AgentState> {
   /** The states built so far, by slug. */
   readonly states: Map<AgentSlug, AgentState>
@@ -37,7 +43,7 @@ export interface InMemoryAgentStateDirectory extends AgentStoreDirectory<AgentSt
 }
 
 export function createInMemoryAgentState(
-  options: { syncAwaiting?: (slug: AgentSlug) => void } = {},
+  options: InMemoryAgentStateOptions = {},
 ): InMemoryAgentStateDirectory {
   const states = new Map<AgentSlug, AgentState>()
   const get = (slug: AgentSlug): AgentState => {
@@ -46,6 +52,7 @@ export function createInMemoryAgentState(
       state = createAgentState(slug, {
         transitions: userInputRequestManager,
         syncAwaiting: () => options.syncAwaiting?.(slug),
+        isSessionActive: (sessionId) => options.isSessionActive?.(slug, sessionId) ?? false,
       })
       states.set(slug, state)
     }
@@ -86,7 +93,7 @@ export function createInMemoryAgentState(
  * real ones do.
  */
 export function attachInMemoryAgentState(
-  options: { syncAwaiting?: (slug: AgentSlug) => void } = {},
+  options: InMemoryAgentStateOptions = {},
 ): InMemoryAgentStateDirectory {
   const agents = createInMemoryAgentState(options)
   userInputRequestManager.attachAgents?.(agents.pick((state) => state.inputRequests))

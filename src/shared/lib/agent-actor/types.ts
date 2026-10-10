@@ -66,7 +66,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -346,7 +346,7 @@ export interface SessionOps {
   markProvisionalActive(sessionId: string): () => void
   /** `messagePersister.markSessionIdle` */
   markIdle(sessionId: string): void
-  /** `messagePersister.markSessionInterrupted` */
+  /** `messagePersister.markSessionInterrupted`, then dismisses the calls parked on the session's own re-auth cards. */
   markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): Promise<void>
   /** `messagePersister.getTurnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
   turnGeneration(sessionId: string): number
@@ -513,7 +513,7 @@ export interface ReviewOps {
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
   submit(id: string, decision: 'allow' | 'deny'): boolean
   /** `AgentReviews.denyAll` */
-  denyAll(): void
+  denyAll(sessionId?: string): void
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): void
   /** `AgentReviews.resolveMatchingByLabel` */
@@ -521,7 +521,7 @@ export interface ReviewOps {
   /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
   /** `AgentReviews.request` — the review is this agent's. */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, signal?: AbortSignal): Promise<'allow' | 'deny'>
+  request(details: ReviewRequest, signal?: AbortSignal): Promise<'allow' | 'deny'>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     targetAgentSlug: string,

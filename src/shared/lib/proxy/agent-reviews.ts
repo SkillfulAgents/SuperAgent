@@ -27,7 +27,10 @@ export type ReviewDecision = 'allow' | 'deny'
 export type XAgentOperation = 'list' | 'read' | 'invoke' | 'create'
 
 /** What one agent's review needs to know; the agent itself is the store's. */
-export type ReviewRequest = Omit<ReviewDetails, 'agentSlug'>
+export type ReviewRequest = Omit<ReviewDetails, 'agentSlug'> & {
+  /** The session the proxied call came from, when the request named one. */
+  callerSessionId?: string
+}
 
 export function isReviewEntry(r: PendingUserInputRequest): r is ReviewRegistryEntry {
   return r.kind === 'proxy_review' || r.kind === 'x_agent_review'
@@ -90,6 +93,8 @@ export class AgentReviews {
     private readonly inputs: AgentInputRequests,
     /** Recompute the agent's sessions' awaiting state after a review opens or settles. */
     private readonly syncAwaiting: () => void,
+    /** The session a card is scoped to, or undefined to scope it to the agent. See `createAgentState`. */
+    private readonly cardSession: (callerSessionId: string | undefined) => string | undefined,
   ) {}
 
   private shadowSettlerCheck(context: string): void {
@@ -100,8 +105,10 @@ export class AgentReviews {
     })
   }
 
+  // Agent- and session-scoped alike: "allow all", deny-all and shutdown must
+  // reach a review wherever its card is shown.
   private entries(): ReviewRegistryEntry[] {
-    return this.inputs.getAgentScopedRequests().filter(isReviewEntry)
+    return this.inputs.getOpenRequestsForStore('review').filter(isReviewEntry)
   }
 
   // The single exit: settles the registry entry, the parked promise (if one
@@ -127,8 +134,10 @@ export class AgentReviews {
     this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', { type: 'resolve', decision })
   }
 
-  request(details: ReviewRequest, signal?: AbortSignal): Promise<ReviewDecision> {
+  request(request: ReviewRequest, signal?: AbortSignal): Promise<ReviewDecision> {
     const id = crypto.randomUUID()
+    const { callerSessionId, ...details } = request
+    const sessionId = this.cardSession(callerSessionId)
 
     return new Promise<ReviewDecision>((resolve, reject) => {
       const settleTimedOut = () => {
@@ -169,15 +178,16 @@ export class AgentReviews {
         details.endpointDescription,
       )
 
-      // Reviews are agent-scoped — no sessionId in the proxied call, so the
-      // envelope carries agentSlug only. The registry entry IS the pending
-      // review: it makes the agent's sessions read as awaiting, and its
-      // payload carries the full details plus the derived display text so
-      // every reader (unified wire, dashboard poll, sweeps) renders from it.
+      // Scoped to the session whose call it holds while that session runs;
+      // otherwise (x-agent reviews, calls that name no session) to the whole
+      // agent. The registry entry IS the pending review: it makes the
+      // session(s) it is scoped to read as awaiting, and its payload carries
+      // the full details plus the derived display text so every reader
+      // (unified wire, dashboard poll, sweeps) renders from it.
       const registered = this.inputs.register({
         id,
         kind: details.xAgent ? 'x_agent_review' : 'proxy_review',
-        scope: { agentSlug: this.slug },
+        scope: sessionId ? { agentSlug: this.slug, sessionId } : { agentSlug: this.slug },
         blocking: true,
         autoApproved: false,
         payload: { ...details, agentSlug: this.slug, displayText },
@@ -204,7 +214,7 @@ export class AgentReviews {
 
       // The OS notification fires from the registry 'created' transition
       // (persister dispatchRequestNotification) — one per review, attributed
-      // to the agent's first active session there.
+      // to its session, or to the agent's first active session there.
     })
   }
 
@@ -335,12 +345,24 @@ export class AgentReviews {
     )
   }
 
-  denyAll(): void {
+  /** With a session, only the reviews it shows: its own and the agent-wide ones. */
+  denyAll(sessionId?: string): void {
     for (const entry of this.entries()) {
+      const scoped = entry.scope.sessionId
+      if (sessionId && scoped !== undefined && scoped !== sessionId) continue
       this.settleReview(entry, 'declined', { type: 'resolve', decision: 'deny' })
     }
     this.shadowSettlerCheck('denyAllForAgent')
     this.syncAwaiting()
+  }
+
+  /** The session is gone: deny the calls parked on its own reviews, whose cards go with it. */
+  dropSession(sessionId: string): void {
+    const own = this.entries().filter((entry) => entry.scope.sessionId === sessionId)
+    for (const entry of own) {
+      this.settleReview(entry, 'cancelled', { type: 'resolve', decision: 'deny' })
+    }
+    if (own.length > 0) this.syncAwaiting()
   }
 
   /** Reject every parked review: the process is shutting down, or the agent is gone. */

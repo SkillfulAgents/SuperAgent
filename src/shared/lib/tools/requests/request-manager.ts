@@ -253,6 +253,11 @@ export class UserInputRequestManager implements UserInputTransitionSink {
     return this.agents.peek(agentSlug)?.isSessionAwaiting(sessionId) ?? false
   }
 
+  /** See `AgentInputRequests.hasParkedCall`. */
+  hasParkedCall(agentSlug: string, sessionId: string): boolean {
+    return this.agents.peek(agentSlug)?.hasParkedCall(sessionId) ?? false
+  }
+
   isAgentAwaiting(agentSlug: string): boolean {
     return this.agents.peek(agentSlug)?.isAwaiting() ?? false
   }
