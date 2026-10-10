@@ -26,4 +26,9 @@ describe('normalizeMath', () => {
     const text = 'Run `echo $5` first.\n\n```sh\nprice=$5\necho \\(x\\)\n```\n\nThen pay $5.'
     expect(normalizeMath(text)).toBe('Run `echo $5` first.\n\n```sh\nprice=$5\necho \\(x\\)\n```\n\nThen pay \\$5.')
   })
+
+  it('leaves a ``` block inside a ```` fence untouched', () => {
+    const text = '````markdown\n```bash\nsed \'s/\\(foo\\)/bar/\'\necho "$1"\n```\n````\n\nThen pay $5.'
+    expect(normalizeMath(text)).toBe(text.replace('pay $5', 'pay \\$5'))
+  })
 })
