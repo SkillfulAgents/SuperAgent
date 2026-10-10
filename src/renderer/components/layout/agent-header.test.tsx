@@ -112,7 +112,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
     sessionId: string
     sessionName: string
     agentSlug: string
-    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+    activity: { isActive: boolean; isAwaitingInput: boolean }
     children: ReactNode
   }) => (
     <span
@@ -120,7 +120,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
       data-session-id={sessionId}
       data-session-name={sessionName}
       data-agent-slug={agentSlug}
-      data-is-active={String(activity.isActive || activity.isStreaming)}
+      data-is-active={String(activity.isActive)}
     >
       {children}
     </span>
@@ -219,21 +219,6 @@ describe('AgentHeader breadcrumbs', () => {
       />,
     )
     expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'false')
-  })
-
-  it('disables Fork when the session is streaming even if isActive is false', () => {
-    mocks.sessionIsActive = false
-    const mutation = { mutate: vi.fn(), isPending: false }
-    render(
-      <AgentHeader
-        slug="test-agent"
-        isViewOnly={false}
-        isStreaming
-        startAgent={mutation as never}
-        stopAgent={mutation as never}
-      />,
-    )
-    expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'true')
   })
 
   it('inserts Called from Other Agents as the parent crumb for x-agent sessions', () => {

@@ -26,7 +26,6 @@ import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/
 interface AgentHeaderProps {
   slug: string
   isViewOnly: boolean
-  isStreaming?: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
 }
@@ -47,7 +46,7 @@ function BreadcrumbSeparator() {
  * active styling is route-derived (`data-status`) and survives a cold reload
  * with no hand-computed leaf flag.
  */
-export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent, stopAgent }: AgentHeaderProps) {
+export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
@@ -201,7 +200,6 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
               activity={{
                 isActive: !!session?.isActive,
                 isAwaitingInput: !!session?.isAwaitingInput,
-                isStreaming,
               }}
             >
               <span

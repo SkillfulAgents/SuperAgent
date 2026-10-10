@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionContextMenu } from './session-context-menu'
 
-const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
+const IDLE = { isActive: false, isAwaitingInput: false }
 
 const mockApiFetch = vi.fn()
 const mockDownloadBlob = vi.fn()
@@ -414,16 +414,6 @@ describe('Fork Session item', () => {
     expect(screen.queryByTestId('fork-session-trigger')).toBeNull()
   })
 
-  it('disables the submenu while the source is active', () => {
-    renderMenu({ isActive: true })
-    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
-  })
-
-  it('disables the submenu while the source is streaming', () => {
-    renderMenu({ isStreaming: true })
-    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
-  })
-
   it('keeps the menu open and spins the clicked row until the copy opens', async () => {
     let openCopy!: () => void
     mockFork.mockReturnValue(new Promise<void>((resolve) => { openCopy = resolve }))
@@ -441,18 +431,11 @@ describe('Fork Session item', () => {
     expect(within(screen.getByTestId('fork-session-item')).queryByRole('img', { name: 'done' })).toBeNull()
   })
 
-  it('disables both rows too when the source goes active with the submenu open', () => {
-    const { rerender } = renderMenu()
+  it('keeps the submenu and both rows enabled while the source is running', () => {
+    renderMenu({ isActive: true })
+    expect(screen.getByTestId('fork-session-trigger')).not.toHaveAttribute('data-disabled')
     expect(screen.getByTestId('fork-session-item')).not.toHaveAttribute('data-disabled')
-    rerender(
-      <SessionContextMenu sessionId="src-1" sessionName="Pricing" agentSlug="agent-a" activity={{ ...IDLE, isActive: true }}>
-        <div>row</div>
-      </SessionContextMenu>,
-    )
-    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
-    expect(screen.getByTestId('fork-summarize-session-item')).toHaveAttribute('data-disabled')
-    fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
-    expect(mockForkAndCompact).not.toHaveBeenCalled()
+    expect(screen.getByTestId('fork-summarize-session-item')).not.toHaveAttribute('data-disabled')
   })
 
   it.each([

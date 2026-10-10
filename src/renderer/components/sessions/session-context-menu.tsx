@@ -94,7 +94,6 @@ function MenuActionIcon({ icon: Icon, status }: { icon: LucideIcon; status: Menu
 export interface SessionMenuActivity {
   isActive: boolean
   isAwaitingInput: boolean
-  isStreaming: boolean
 }
 
 /**
@@ -139,10 +138,8 @@ export function SessionContextMenu({
   const canUse = canUseAgent(agentSlug)
   const forkSession = useForkSession()
   const forkAndCompact = useForkAndCompact()
-  // Unread dots are suppressed while working or awaiting. Fork is refused
-  // while the transcript is open (active or still streaming).
+  // Unread dots are suppressed while working or awaiting.
   const hideUnread = activity.isActive || activity.isAwaitingInput
-  const forkDisabled = activity.isActive || activity.isStreaming
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -269,26 +266,16 @@ export function SessionContextMenu({
           )}
           {canUse && (
             <ContextMenuSub>
-              {/* The item wrapper dims a disabled row; the sub-trigger wrapper does not. */}
-              <ContextMenuSubTrigger
-                disabled={forkDisabled}
-                className="data-[disabled]:opacity-50"
-                data-testid="fork-session-trigger"
-              >
+              <ContextMenuSubTrigger data-testid="fork-session-trigger">
                 <Split className="h-4 w-4 mr-2" />
                 Fork Session
               </ContextMenuSubTrigger>
               <ContextMenuSubContent className="rounded-xl p-2" data-testid="fork-session-menu">
-                {/* Also on the rows: the source can go active while the submenu is open. */}
-                <ContextMenuItem data-testid="fork-session-item" disabled={forkDisabled} onSelect={fork.onSelect}>
+                <ContextMenuItem data-testid="fork-session-item" onSelect={fork.onSelect}>
                   <MenuActionIcon icon={Split} status={fork.status} />
                   Fork
                 </ContextMenuItem>
-                <ContextMenuItem
-                  data-testid="fork-summarize-session-item"
-                  disabled={forkDisabled}
-                  onSelect={forkAndSummarize.onSelect}
-                >
+                <ContextMenuItem data-testid="fork-summarize-session-item" onSelect={forkAndSummarize.onSelect}>
                   <MenuActionIcon icon={Minimize2} status={forkAndSummarize.status} />
                   Fork &amp; Summarize
                 </ContextMenuItem>

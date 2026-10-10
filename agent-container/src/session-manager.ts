@@ -98,14 +98,6 @@ function formatIdleThreshold(ms: number): string {
   return `${Math.round(ms / 60_000)}m`;
 }
 
-/** Thrown by forkSession when the source is mid-turn. The route maps it to 409. */
-export class SessionBusyError extends Error {
-  constructor(sessionId: string) {
-    super(`Session ${sessionId} is currently running`);
-    this.name = 'SessionBusyError';
-  }
-}
-
 /** Reaped or missing transcript. The fork route maps this to the same JSON 404 as an unknown source. */
 export function isSdkSessionNotFound(error: unknown): boolean {
   if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
@@ -867,16 +859,6 @@ export class SessionManager extends EventEmitter {
   async forkSession(sourceId: string): Promise<string | null> {
     const source = this.persistence.getSession(sourceId);
     if (!source) return null;
-
-    // A live process mid-turn is still appending to the transcript; refuse
-    // rather than copy a half-written turn. (The host checks its own view too;
-    // the residual window between this check and the SDK's read is accepted —
-    // the SDK drops a partial final line, so the fork is at worst one message
-    // short, never corrupt.)
-    const live = this.sessions.get(sourceId);
-    if (live && !live.settlement.isSettled()) {
-      throw new SessionBusyError(sourceId);
-    }
 
     // CLAUDE_CONFIG_DIR=/workspace/.claude + dir '/workspace' resolves to the
     // same projects dir the source lives in; the fork lands beside it.

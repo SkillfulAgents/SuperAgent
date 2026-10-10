@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
+import { SessionManager, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
 import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
@@ -240,9 +240,6 @@ app.post('/sessions/:id/fork', async (c) => {
     }
     return c.json({ id }, 201);
   } catch (error: any) {
-    if (error instanceof SessionBusyError) {
-      return c.json({ error: error.message, code: 'session_busy' }, 409);
-    }
     if (isSdkSessionNotFound(error)) {
       return c.json({ error: 'Session not found' }, 404);
     }

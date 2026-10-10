@@ -228,7 +228,6 @@ function SessionSubItem({
         activity={{
           isActive: !!session.isActive,
           isAwaitingInput: !!session.isAwaitingInput,
-          isStreaming,
         }}
       >
         <SidebarMenuSubButton
