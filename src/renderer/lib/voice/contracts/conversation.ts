@@ -1,5 +1,5 @@
 import type { VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
-import type { SessionExecution } from '@shared/lib/container/session-execution-schema'
+import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 
 export type VoiceModePhase = 'listening' | 'thinking' | 'speaking'
 export type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
@@ -16,7 +16,7 @@ export interface VoiceAgentSnapshot {
   error: string | null
   /** Foreground activity alone controls interruption and chained playback. */
   background?: boolean
-  execution?: SessionExecution | null
+  turnOutcome?: SessionTurnOutcome | null
 }
 export interface VoiceAgentState {
   active: boolean

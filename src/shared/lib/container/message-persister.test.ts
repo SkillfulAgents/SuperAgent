@@ -356,96 +356,55 @@ describe('MessagePersister', () => {
     vi.clearAllMocks()
   })
 
-  describe('recoverable execution outcomes', () => {
-    const snapshot = () => messagePersister.getSessionExecution(AGENT_SLUG, SESSION_ID)
+  describe('replayable turn outcomes', () => {
+    const snapshot = () => messagePersister.getSessionTurnOutcome(AGENT_SLUG, SESSION_ID)
     const emit = (content: Record<string, unknown>) => mockClient._sendMessage(content)
     const result = () => emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
     const idle = () => emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
     const text = (value: string) => emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: value }] } })
 
-    it('retains the outcome and response across transport reattachment and repeated reads', async () => {
+    it('retains streamed text when no complete assistant frame was delivered', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emit({ type: 'stream_event', event: { type: 'message_start' } })
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Invoice 42 was sent.' } } })
+      result()
+      expect(snapshot()).toMatchObject({ status: 'completed', responseText: 'Invoice 42 was sent.' })
+    })
+
+    it('records the existing idle decision and retains its text across reattachment', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
       text('Invoice 42 was sent.')
       result()
-      expect(snapshot()?.phase).toBe('finishing')
+      expect(snapshot()).toBeNull()
       idle()
       const completed = snapshot()
-      expect(completed).toMatchObject({ phase: 'completed', responseText: 'Invoice 42 was sent.', backgroundTaskCount: 0 })
+      expect(completed).toMatchObject({ status: 'completed', responseText: 'Invoice 42 was sent.' })
       await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
       expect(snapshot()).toEqual(completed)
       idle()
       expect(snapshot()).toEqual(completed)
     })
 
-    it('retains cancellation instead of relabeling an interrupted turn as completed', async () => {
+    it('records cancellation without changing the activity of surviving background work', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       text('Partial work.')
-      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID)
-      expect(snapshot()).toMatchObject({ phase: 'cancelled', responseText: 'Partial work.' })
-      expect(sseEvents.findLast(e => e.type === 'session_idle').execution.phase).toBe('cancelled')
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-task', task_type: 'local_bash' }] })
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      expect(snapshot()).toMatchObject({ status: 'cancelled', responseText: 'Partial work.' })
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(sseEvents.findLast(e => e.type === 'session_waiting_background').turnOutcome.status).toBe('cancelled')
     })
 
-    it('gives late foreground output its own outcome even without a new active event', () => {
-      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
-      emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
-      text('First result.')
-      result()
-      idle()
-      const first = snapshot()?.turnId
-      emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'late-answer' } } })
-      emit({ type: 'assistant', message: { id: 'late-answer', role: 'assistant', content: [{ type: 'text', text: 'A late result.' }] } })
-      expect(snapshot()?.phase).toBe('running')
-      result()
-      idle()
-      expect(snapshot()).toMatchObject({ phase: 'completed', responseText: 'A late result.' })
-      expect(snapshot()?.turnId).not.toBe(first)
-    })
-
-    it('does not mistake initialization on an idle resume for foreground work', () => {
-      emit({ type: 'system', subtype: 'init' })
-      expect(snapshot()?.phase).toBe('idle')
-    })
-
-    it('retains the latest partial side effect ahead of an error, even before its assistant frame', () => {
+    it('retains the latest partial side effect on an error before its assistant frame', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       text('Preparing the invoice.')
       emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'partial' } } })
       emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Invoice 42 was sent.' } } })
       emit({ type: 'result', subtype: 'error_during_execution', errors: ['Receipt upload failed.'] })
-      expect(snapshot()).toMatchObject({ phase: 'failed', responseText: 'Invoice 42 was sent.' })
+      expect(snapshot()).toMatchObject({ status: 'failed', responseText: 'Invoice 42 was sent.' })
       idle()
-      expect(snapshot()?.phase).toBe('failed')
-    })
-
-    it.each([false, true])('bounds a missing background wake without finalizing a real wake (wake: %s)', async (wake) => {
-      vi.useFakeTimers()
-      try {
-        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
-        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-task', task_type: 'local_bash' }] })
-        result()
-        idle()
-        const turnId = snapshot()?.turnId
-        expect(snapshot()?.phase).toBe('waiting_background')
-        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
-        expect(snapshot()).toMatchObject({ phase: 'waiting_background', backgroundTaskCount: 0 })
-        await vi.advanceTimersByTimeAsync(100)
-        if (wake) {
-          // Newer SDKs can wake with model output and no running state event.
-          emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'wake' } } })
-          text('Research complete.')
-        }
-        await vi.advanceTimersByTimeAsync(30_000)
-        expect(snapshot()?.phase).toBe(wake ? 'running' : 'completed')
-        expect(snapshot()?.turnId).toBe(turnId)
-        if (wake) {
-          result()
-          idle()
-          expect(snapshot()).toMatchObject({ phase: 'completed', responseText: 'Research complete.' })
-        }
-      } finally {
-        vi.useRealTimers()
-      }
+      expect(snapshot()?.status).toBe('failed')
     })
   })
 

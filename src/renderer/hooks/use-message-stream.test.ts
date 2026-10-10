@@ -85,57 +85,45 @@ describe('useMessageStream', () => {
     const { useMessageStream } = await getHookModule()
     const { result, unmount } = renderHook(() => useMessageStream('recovery', 'agent-1'), { wrapper: createWrapper() })
     const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
-    const execution = { epoch: 'host', revision: 1, turnId: 'turn-1', phase: 'waiting_background', backgroundTaskCount: 1, responseText: 'Researching.', error: null }
-    send({ type: 'connected', isActive: true, execution, backgroundTasks: [{ taskId: 'task', startedAt: 1 }], isWaitingBackground: true })
+    send({ type: 'connected', isActive: true, backgroundTasks: [{ taskId: 'task', startedAt: 1 }], isWaitingBackground: true })
     expect(result.current.isWaitingBackground).toBe(true)
     // The turn finishes while the renderer is disconnected; no session_idle.
-    send({ type, isActive: false, execution: { ...execution, revision: 4, phase: 'completed', backgroundTaskCount: 0, responseText: 'Invoice 42 was sent.' }, backgroundTasks: [] })
-    expect(result.current.execution?.phase).toBe('completed')
+    const turnOutcome = { id: 'done', status: 'completed', responseText: 'Invoice 42 was sent.', error: null }
+    send({ type, isActive: false, turnOutcome, backgroundTasks: [] })
+    expect(result.current.turnOutcome).toEqual(turnOutcome)
     expect(result.current.streamingMessage).toBe('Invoice 42 was sent.')
     expect(result.current.isActive).toBe(false)
     expect(result.current.isWaitingBackground).toBe(false)
     expect(result.current.backgroundTasks).toEqual([])
-    // Metadata from an older async connection snapshot must not roll back state.
-    send({ type: 'connected', isActive: true, execution, backgroundTasks: [{ taskId: 'task', startedAt: 1 }] })
-    expect(result.current.execution?.phase).toBe('completed')
     unmount()
   })
 
-  it('waits for the host outcome after the last task and invalidates completion on fresh output', async () => {
+  it('keeps background work visible after a cancelled foreground turn, including reconnect', async () => {
     const { useMessageStream } = await getHookModule()
-    const { result, unmount } = renderHook(() => useMessageStream('background-wake', 'agent-1'), { wrapper: createWrapper() })
+    const { result, unmount } = renderHook(() => useMessageStream('cancel-background', 'agent-1'), { wrapper: createWrapper() })
     const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
-    const execution = { epoch: 'host', revision: 1, turnId: 'turn-1', phase: 'waiting_background', backgroundTaskCount: 1, responseText: '', error: null }
-    send({ type: 'connected', isActive: true, execution })
-    send({ type: 'background_task_completed', taskId: 'researcher', backgroundTasks: [], execution: { ...execution, revision: 2, backgroundTaskCount: 0 } })
-    expect(result.current.execution?.phase).toBe('waiting_background')
-    // A parent wake may start with output, with no new session_active.
-    send({ type: 'stream_start', execution: { ...execution, revision: 3, phase: 'running', backgroundTaskCount: 0 } })
-    send({ type: 'stream_delta', text: 'The answer is 42.' })
-    send({ type: 'stream_end' })
-    expect(result.current.execution?.phase).toBe('running')
-    send({ type: 'session_idle', execution: { ...execution, revision: 4, phase: 'completed', backgroundTaskCount: 0, responseText: 'The answer is 42.' } })
-    expect(result.current.execution?.phase).toBe('completed')
-    send({ type: 'stream_start' })
-    send({ type: 'stream_delta', text: 'One more finding.' })
-    send({ type: 'stream_end' })
-    expect(result.current.execution?.phase).toBe('running')
+    const backgroundTasks = [{ taskId: 'task', startedAt: 1 }]
+    const turnOutcome = { id: 'stopped', status: 'cancelled', responseText: 'Partial work.', error: null }
+    send({ type: 'connected', isActive: true, backgroundTasks })
+    send({ type: 'session_waiting_background', interrupted: true, backgroundTasks, turnOutcome })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    send({ type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks, turnOutcome })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.backgroundTasks).toEqual(backgroundTasks)
     unmount()
   })
 
-  it('clears an obsolete error on recovery and drops activity when a restarted host has no receipt', async () => {
+  it('does not overwrite fresh output with an older outcome on a heartbeat', async () => {
     const { useMessageStream } = await getHookModule()
-    const { result, unmount } = renderHook(() => useMessageStream('restart', 'agent-1'), { wrapper: createWrapper() })
+    const { result, unmount } = renderHook(() => useMessageStream('running', 'agent-1'), { wrapper: createWrapper() })
     const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
-    const execution = { epoch: 'host', revision: 1, turnId: 'turn-1', phase: 'failed', backgroundTaskCount: 0, responseText: '', error: 'Old failure.' }
-    send({ type: 'session_error', error: 'Old failure.', execution })
-    send({ type: 'ping', isActive: false, execution: { ...execution, revision: 3, turnId: 'turn-2', phase: 'completed', responseText: 'Recovered.', error: null }, backgroundTasks: [] })
-    expect(result.current.error).toBeNull()
-    expect(result.current.streamingMessage).toBe('Recovered.')
-    send({ type: 'session_active', execution: { ...execution, revision: 4, turnId: 'turn-3', phase: 'running', error: null } })
-    send({ type: 'connected', isActive: false, execution: null, backgroundTasks: [] })
-    expect(result.current.execution).toBeNull()
-    expect(result.current.isActive).toBe(false)
+    send({ type: 'session_active' })
+    send({ type: 'stream_delta', text: 'New work.' })
+    send({ type: 'ping', isActive: true, turnOutcome: { id: 'old', status: 'completed', responseText: 'Old result.', error: null } })
+    expect(result.current.streamingMessage).toBe('New work.')
+    expect(result.current.isActive).toBe(true)
     unmount()
   })
 

@@ -1,4 +1,3 @@
-import { executionEnded } from '@shared/lib/container/session-execution-schema'
 import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult, VoiceTurnPolicy } from '../contracts/conversation'
 
 export const VOICE_TURN_START_TIMEOUT_MS = 15_000
@@ -20,8 +19,7 @@ interface CoordinatorDependencies {
 }
 
 function outcomeKey(snapshot: VoiceAgentSnapshot): string | null {
-  const execution = snapshot.execution
-  return execution && executionEnded(execution) ? `${execution.turnId}:${execution.phase}` : null
+  return snapshot.turnOutcome?.id ?? null
 }
 
 /** One owner for ordering agent commands, acknowledging turns, and filtering stale replies. */
@@ -42,7 +40,6 @@ export class VoiceAgentCoordinator {
   private fedText = ''
   private fedComplete = false
   private terminalKey: string | null = null
-  private turnId: string | null = null
   private segment = 0
   private commands = 0
   private queue: Promise<VoiceCommandResult> | null = null
@@ -60,7 +57,6 @@ export class VoiceAgentCoordinator {
     this.policy = { ...DEFAULT_TURN_POLICY, ...policy }
     this.latest = dependencies.snapshot()
     this.followingTurn = this.latest.active || !!this.latest.background
-    this.turnId = this.latest.execution?.turnId ?? null
     this.terminalKey = outcomeKey(this.latest)
     this.previousStart = this.latest.startedAt
     this.staleText = this.latest.text
@@ -68,12 +64,13 @@ export class VoiceAgentCoordinator {
   }
 
   start(expectTurn: boolean) {
-    if (expectTurn && this.latest.execution && executionEnded(this.latest.execution)) {
+    const finishedHandoff = expectTurn && !this.latest.active && !this.latest.background && !!this.latest.turnOutcome
+    if (finishedHandoff) {
       this.terminalKey = null
       this.staleText = null
     }
     this.followingTurn ||= expectTurn
-    this.awaiting = expectTurn && !this.latest.active && !(this.latest.execution && executionEnded(this.latest.execution))
+    this.awaiting = expectTurn && !this.latest.active && !finishedHandoff
     this.update(this.latest)
     this.armWait()
   }
@@ -208,15 +205,11 @@ export class VoiceAgentCoordinator {
     // Pausing speech does not pause backend execution or acknowledgment.
     this.acknowledge(snapshot)
     if (this.paused) { this.publishState(); return }
-    const newTurn = snapshot.execution?.turnId
-      ? snapshot.execution.turnId !== this.turnId
-      : snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
+    const newTurn = snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
     if (newTurn) {
       this.previousStart = snapshot.startedAt
-      this.turnId = snapshot.execution?.turnId ?? null
       this.toolsUsed = false
       if (this.fedText) this.staleText = this.fedText
-      if (snapshot.execution && executionEnded(snapshot.execution)) this.staleText = null
       this.fedText = ''
       this.fedComplete = false
       this.segment++
@@ -249,18 +242,19 @@ export class VoiceAgentCoordinator {
     // Publish the final text before the idle state: adapters may finish their
     // playback stream as soon as they observe an idle agent.
     if (!this.awaiting) {
-      const terminalKey = outcomeKey(snapshot)
-      if (terminalKey && terminalKey === this.terminalKey) {
-        this.publishState()
-        return
-      }
+      const outcome = snapshot.turnOutcome
+      const freshOutcome = outcome && outcome.id !== this.terminalKey
+        && (outcome.status !== 'completed' || (!snapshot.active && !snapshot.background))
+      if (freshOutcome) this.staleText = null
       this.feedReply(snapshot, !snapshot.active)
-      const execution = snapshot.execution
-      if (execution?.turnId && terminalKey) {
-        this.terminalKey = terminalKey
-        if (execution.phase === 'completed' || execution.phase === 'cancelled') {
-          this.dependencies.onEvent({ type: 'turn-ended', turnId: execution.turnId, outcome: execution.phase })
+      if (freshOutcome) {
+        this.terminalKey = outcome.id
+        if (outcome.status === 'completed' || outcome.status === 'cancelled') {
+          this.dependencies.onEvent({ type: 'turn-ended', turnId: outcome.id, outcome: outcome.status })
         }
+      } else if (outcome) {
+        // Recovery can include an earlier turn's outcome while new work runs.
+        this.terminalKey = outcome.id
       }
     }
     this.publishState()
@@ -286,11 +280,9 @@ export class VoiceAgentCoordinator {
     const freshText = !!snapshot.text && snapshot.text !== this.staleText
     if (snapshot.active || freshText) this.clearWarning()
     if (!this.awaiting) return
-    const newTurn = snapshot.execution?.turnId
-      ? snapshot.execution.turnId !== this.turnId
-      : snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
+    const newTurn = snapshot.startedAt !== null && snapshot.startedAt !== this.previousStart
     const terminal = outcomeKey(snapshot)
-    if (snapshot.error || freshText || (terminal && terminal !== this.terminalKey) || (newTurn && snapshot.execution) || (snapshot.active && (this.sawIdle || newTurn))) {
+    if (snapshot.error || freshText || (terminal && terminal !== this.terminalKey) || (snapshot.active && (this.sawIdle || newTurn))) {
       this.awaiting = false
       this.pendingAccepted = false
       this.resumeWait = false
@@ -327,7 +319,7 @@ export class VoiceAgentCoordinator {
     // for a bounded, silent wait rather than handing it to the person at once.
     // A reply that arrived during the pause means the turn is over.
     const replyArrived = !!snapshot.text && snapshot.text !== this.staleText && snapshot.text !== this.fedText
-    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error && !(snapshot.execution && executionEnded(snapshot.execution))) {
+    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error && outcomeKey(snapshot) === this.terminalKey) {
       this.awaiting = true
       this.resumeWait = true
       this.sawIdle = true

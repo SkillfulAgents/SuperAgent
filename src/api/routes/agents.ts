@@ -3213,7 +3213,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         data: JSON.stringify({
           type: 'connected',
           isActive: actor.sessions.isActive(sessionId),
-          execution: actor.sessions.execution(sessionId),
+          turnOutcome: actor.sessions.turnOutcome(sessionId),
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           // Always the array, even empty: an absent list reads as "unchanged" to
@@ -3244,9 +3244,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           await stream.writeSSE({
             data: JSON.stringify({
               type: 'ping', isActive: currentIsActive,
-              execution: actor.sessions.execution(sessionId),
-              backgroundTasks: actor.sessions.backgroundTasks(sessionId),
-              isWaitingBackground: actor.sessions.isWaitingBackground(sessionId),
+              turnOutcome: actor.sessions.turnOutcome(sessionId),
             }),
             event: 'message',
           })

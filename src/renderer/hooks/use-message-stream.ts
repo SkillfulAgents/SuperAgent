@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import { sessionExecutionSchema, executionEnded, type SessionExecution } from '@shared/lib/container/session-execution-schema'
+import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
@@ -57,7 +57,7 @@ export interface PeerUserMessage {
 
 interface StreamState {
   isActive: boolean // True from user message until query result
-  execution: SessionExecution | null // Retained host verdict; independent of streaming/activity
+  turnOutcome: SessionTurnOutcome | null // Last backend outcome; delivery metadata only
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
@@ -110,7 +110,7 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 // Global state to track streaming per session
 const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
-  execution: null,
+  turnOutcome: null,
   isStreaming: false,
   streamingMessage: null,
   streamingToolUses: [],
@@ -453,13 +453,6 @@ function getOrCreateEventSource(
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
 
-      const parsedExecution = sessionExecutionSchema.safeParse(data.execution)
-      const incomingExecution = parsedExecution.success ? parsedExecution.data : null
-      // Initial connection metadata can finish loading after newer live frames.
-      // Never let that older snapshot put a running turn back into a terminal state.
-      if (incomingExecution && current?.execution?.epoch === incomingExecution.epoch
-        && incomingExecution.revision < current.execution.revision) return
-
       if (data.type === 'connected') {
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
@@ -478,7 +471,7 @@ function getOrCreateEventSource(
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUses: [],
@@ -561,7 +554,6 @@ function getOrCreateEventSource(
         streamStates.set(sessionId, {
           ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
-          execution: current?.execution ?? null,
           // Message-scoped: a new message clears the last error, ends whatever
           // typing indicator it belongs to, and resumes work that was parked on
           // background tasks.
@@ -597,7 +589,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -658,7 +650,6 @@ function getOrCreateEventSource(
               activeSubagents: current.activeSubagents.filter(s => !!s.agentId && backgroundAgentIds.has(s.agentId)),
               backgroundTasks,
               isWaitingBackground: true,
-              execution: current?.execution ?? null,
             })
             invalidateMessagesThrottled(queryClient, sessionId)
           } else {
@@ -666,7 +657,6 @@ function getOrCreateEventSource(
               ...current,
               backgroundTasks: serverTaskList(data) ?? current.backgroundTasks,
               isWaitingBackground: true,
-              execution: current?.execution ?? null,
             })
           }
         }
@@ -677,7 +667,7 @@ function getOrCreateEventSource(
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -749,7 +739,6 @@ function getOrCreateEventSource(
           const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
             ...current,
-            execution: current?.execution ?? null,
             backgroundTasks: serverTaskList(data) ?? (index === -1
               ? [...current.backgroundTasks, task]
               : current.backgroundTasks.map((t, i) => (i === index ? task : t))),
@@ -857,7 +846,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUses: [],
@@ -883,7 +872,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -925,7 +914,7 @@ function getOrCreateEventSource(
           : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: updatedTools,
@@ -967,7 +956,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
-          execution: current?.execution ?? null,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -1405,7 +1394,6 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             isActive: false,
-            execution: current?.execution ?? null,
             isStreaming: false,
             streamingMessage: current.streamingMessage,
             streamingToolUses: [],
@@ -1422,31 +1410,19 @@ function getOrCreateEventSource(
       }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
 
-      // One projection for live delivery, reconnect and heartbeat recovery.
-      // Text boundaries never manufacture a successful outcome.
+      // Replay only the outcome and its text. Working indicators continue to
+      // use the existing session_active/session_idle/background-task handlers.
       const next = streamStates.get(sessionId)
-      if (next) {
+      const parsedOutcome = sessionTurnOutcomeSchema.safeParse(data.turnOutcome)
+      if (next && parsedOutcome.success) {
+        const outcome = parsedOutcome.data
         const recovery = data.type === 'connected' || data.type === 'ping'
-        const output = !data.initialization && ['stream_start', 'stream_delta', 'tool_use_start', 'tool_use_streaming'].includes(data.type)
-        const execution = recovery && data.execution === null ? null : incomingExecution ?? (output && next.execution && executionEnded(next.execution)
-          ? { ...next.execution, phase: 'running' as const }
-          : next.execution)
-        if (execution) {
-          const terminal = executionEnded(execution)
-          streamStates.set(sessionId, {
-            ...next, execution,
-            isActive: ['running', 'finishing', 'waiting_background'].includes(execution.phase),
-            isWaitingBackground: execution.phase === 'waiting_background',
-            ...(terminal && { isStreaming: false, streamingToolUses: [], activeStartTime: null }),
-            ...((incomingExecution && (terminal || recovery)) && { streamingMessage: execution.responseText }),
-            ...(incomingExecution && { error: execution.error }),
-            ...(recovery && Array.isArray(data.backgroundTasks) && { backgroundTasks: data.backgroundTasks }),
-          })
-        } else if (next.execution) {
-          // A restarted host may have no retained verdict. Drop its obsolete
-          // activity; lack of a receipt is not evidence of successful completion.
-          streamStates.set(sessionId, { ...next, execution: null })
-        }
+        streamStates.set(sessionId, {
+          ...next, turnOutcome: outcome,
+          ...((!recovery || !next.isActive) && { streamingMessage: outcome.responseText, error: outcome.error }),
+        })
+      } else if (next && data.turnOutcome === null) {
+        streamStates.set(sessionId, { ...next, turnOutcome: null })
       }
 
       // Notify all listeners

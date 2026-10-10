@@ -1,4 +1,4 @@
-import type { SessionExecution } from '@shared/lib/container/session-execution-schema'
+import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { VoiceAgentSnapshot } from '../contracts/conversation'
 
 interface AgentStream {
@@ -8,18 +8,15 @@ interface AgentStream {
   activeStartTime: number | null
   streamingToolUses: readonly unknown[]
   error: string | null
-  execution?: SessionExecution | null
+  turnOutcome?: SessionTurnOutcome | null
 }
 
 export function toAgentSnapshot(stream: AgentStream): VoiceAgentSnapshot {
-  const execution = stream.execution ?? null
   return {
-    active: execution ? execution.phase === 'running' : stream.isActive && !stream.isWaitingBackground,
-    background: execution
-      ? execution.phase === 'waiting_background' || execution.phase === 'finishing'
-      : stream.isWaitingBackground === true,
+    active: stream.isActive && !stream.isWaitingBackground,
+    background: stream.isWaitingBackground === true,
     text: stream.streamingMessage ?? '', startedAt: stream.activeStartTime ?? null,
     toolsRunning: (stream.streamingToolUses?.length ?? 0) > 0,
-    error: stream.error ?? null, execution,
+    error: stream.error ?? null, turnOutcome: stream.turnOutcome ?? null,
   }
 }

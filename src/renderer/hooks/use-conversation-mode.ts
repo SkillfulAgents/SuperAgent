@@ -163,7 +163,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
 
   useEffect(() => {
     coordinator.current?.update(toAgentSnapshot(latest.current.stream))
-  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error, stream.execution, stream.isWaitingBackground])
+  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error, stream.turnOutcome, stream.isWaitingBackground])
 
   const pressMic = useCallback(() => adapter.current?.pressMic(), [])
   const getAnalyser = useCallback(() => adapter.current?.analyser ?? null, [])
