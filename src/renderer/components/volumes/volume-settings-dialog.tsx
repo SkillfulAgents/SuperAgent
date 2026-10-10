@@ -1,14 +1,15 @@
 import { useState } from 'react'
-import { FolderOpen, Loader2 } from 'lucide-react'
+import { ChevronRight, Loader2 } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
 import type { VolumeSettingsInput } from '@renderer/hooks/use-volume-definitions'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
+import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
+import { volumeDetailsSchema, type VolumeDetails } from './volume-details-schema'
+import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
+import { volumeSetupRegistry } from './volume-setup-registry'
+import type { VolumeSetupDefinition } from './volume-setup'
 
 interface VolumeSettingsDialogProps {
   volume?: VolumeDefinitionSummary
@@ -18,84 +19,76 @@ interface VolumeSettingsDialogProps {
 }
 
 export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, onClose }: VolumeSettingsDialogProps) {
-  const { isAuthMode, isAdmin } = useUser()
-  const [name, setName] = useState(volume?.name ?? '')
-  const [folder, setFolder] = useState(volume?.hostPath ?? '')
-  const [visibility, setVisibility] = useState<'private' | 'public'>(volume ? volume.userId === null ? 'public' : 'private' : isAuthMode ? 'private' : 'public')
+  const { isAuthMode } = useUser()
+  const [details, setDetails] = useState<VolumeDetails>({
+    name: volume?.name ?? '',
+    visibility: volume ? volume.userId === null ? 'public' : 'private' : isAuthMode ? 'private' : 'public',
+  })
+  const [selected, setSelected] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
+  const [starting, setStarting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
-  const canBrowse = canUseHostFeatures()
-  const inUse = (volume?.attachmentCount ?? 0) > 0
 
-  const selectFolder = (selected: string) => {
-    setFolder(selected)
-    if (!name) setName(selected.split(/[/\\]/).filter(Boolean).at(-1) ?? '')
+  const selectSource = async (definition: VolumeSetupDefinition) => {
+    if (!definition.isAvailable() || starting) return
     setError(null)
-  }
-
-  const chooseFolder = async () => {
-    if (!canBrowse) return
+    setStarting(definition.type)
     try {
-      const selected = await window.electronAPI?.openDirectory()
-      if (!selected) return
-      selectFolder(selected)
+      const config = await definition.begin?.()
+      if (config !== null) setSelected({ definition, config })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not open the folder picker')
-    }
+      setError(err instanceof Error ? err.message : 'Could not select this source')
+    } finally { setStarting(null) }
   }
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
+  const save = async (values: VolumeDetails, config?: unknown) => {
+    if (isSaving) return
     setError(null)
+    const parsedDetails = volumeDetailsSchema.safeParse(values)
+    if (!parsedDetails.success) { setError(parsedDetails.error.issues[0].message); return }
     setIsSaving(true)
     try {
-      await onSave({ name, path: volume ? undefined : folder, visibility })
+      const source = selected ? volumeConfigSchema.parse({ type: selected.definition.type, config: selected.definition.configSchema.parse(config) }) : undefined
+      await onSave({ ...parsedDetails.data, ...(source ? { source } : {}) })
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save volume')
-    } finally {
-      setIsSaving(false)
-    }
+    } finally { setIsSaving(false) }
   }
 
-  return (
-    <Dialog open onOpenChange={open => { if (!open && !isSaving) onClose() }}>
-      <DialogContent className="sm:max-w-lg" data-testid="volume-settings-dialog">
-        <DialogHeader>
-          <DialogTitle>{volume ? 'Volume settings' : 'New Volume'}</DialogTitle>
-          <DialogDescription>{volume ? 'Manage this saved volume. Existing agents keep their current mount paths.' : attachToAgent ? 'Create a saved volume and attach it to this agent with read/write access.' : 'Create a saved volume to make available to your agents. Attached agents get read/write access.'}</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="volume-name">Name</Label>
-            <Input id="volume-name" value={name} onChange={event => setName(event.target.value)} maxLength={255} required />
-          </div>
-          <div className="space-y-2">
-            <p className="text-sm font-medium leading-none">Folder</p>
-            {!volume && <Button id="volume-folder" type="button" variant="outline" className="w-full justify-start" onClick={() => { void chooseFolder() }} disabled={!canBrowse || isSaving}>
-              <FolderOpen className="h-4 w-4" />{folder ? 'Change folder' : 'Select folder'}
-            </Button>}
-            {folder && <p className="break-all font-mono text-xs text-muted-foreground" data-testid="selected-volume-folder">{folder}</p>}
-          </div>
-          {isAuthMode && <div className="space-y-2">
-            <Label htmlFor="volume-access">Who can attach this volume?</Label>
-            {isAdmin ? (
-              <Select value={visibility} onValueChange={value => setVisibility(value as 'public' | 'private')} disabled={inUse}>
-                <SelectTrigger id="volume-access"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="private">Only me</SelectItem><SelectItem value="public">Everyone</SelectItem></SelectContent>
-              </Select>
-            ) : <p className="text-sm">Only me</p>}
-            {inUse && isAdmin && <p className="text-xs text-muted-foreground">Detach from all agents before changing access.</p>}
-          </div>}
+  const Setup = selected?.definition.Setup
+  return <Dialog open onOpenChange={open => { if (!open && !isSaving && !starting) onClose() }}>
+    <DialogContent className="sm:max-w-lg" data-testid="volume-settings-dialog">
+      {volume ? <>
+        <DialogHeader><DialogTitle>Volume settings</DialogTitle><DialogDescription>Manage this saved volume. Existing agents keep their current mount paths.</DialogDescription></DialogHeader>
+        <form onSubmit={event => { event.preventDefault(); void save(details) }} className="space-y-4">
+          <VolumeDetailsFields value={details} onChange={value => { setDetails(value); setError(null) }} disabled={isSaving} inUse={volume.attachmentCount > 0}>
+            <div className="space-y-2"><p className="text-sm font-medium">Folder</p><p className="break-all font-mono text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
+          </VolumeDetailsFields>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={isSaving}>Cancel</Button>
-            <Button type="submit" disabled={!name.trim() || (!volume && !folder) || isSaving}>
-              {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}{volume ? 'Save changes' : attachToAgent ? 'Create and attach' : 'Create volume'}
-            </Button>
-          </DialogFooter>
+          <VolumeSetupFooter onCancel={onClose} isSaving={isSaving} disabled={!details.name.trim()} submitLabel="Save changes" />
         </form>
-      </DialogContent>
-    </Dialog>
-  )
+      </> : Setup ? <Setup initialConfig={selected?.config} initialDetails={details} onSubmit={(config, values) => save(values, config)}
+        onBack={() => { setSelected(null); setError(null) }} onCancel={onClose} isSaving={isSaving} error={error} clearError={() => setError(null)} attachToAgent={attachToAgent} /> : <>
+        <DialogHeader className="text-left">
+          <DialogTitle>New Volume</DialogTitle>
+          <DialogDescription>Choose where your files live.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3" aria-label="Volume sources">
+          {Object.values(volumeSetupRegistry).map(definition => {
+            const available = definition.isAvailable()
+            return <button key={definition.type} type="button" aria-label={definition.label} data-testid={`volume-source-${definition.type}`}
+              className="flex w-full items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!available || !!starting} onClick={() => { void selectSource(definition) }}>
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-muted"><definition.Logo className="h-7 w-7" /></div>
+              <div className="min-w-0 flex-1"><p className="text-sm font-medium">{definition.label}</p><p className="mt-1 text-sm text-muted-foreground">{available ? definition.description : definition.unavailableReason}</p></div>
+              {starting === definition.type ? <Loader2 aria-hidden className="h-4 w-4 shrink-0 animate-spin" /> : <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />}
+            </button>
+          })}
+        </div>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        <DialogFooter><Button type="button" variant="outline" onClick={onClose} disabled={!!starting}>Cancel</Button></DialogFooter>
+      </>}
+    </DialogContent>
+  </Dialog>
 }

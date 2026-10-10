@@ -109,7 +109,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                         <Folder className="h-4 w-4 shrink-0" />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate">{volume.name}</span>
-                          {volume.hostPath && <span className="block truncate text-xs text-muted-foreground">{volume.hostPath}</span>}
+                          {(volume.sourceLabel ?? volume.hostPath) && <span className="block truncate text-xs text-muted-foreground">{volume.sourceLabel ?? volume.hostPath}</span>}
                         </span>
                         {attached && <span className="text-xs text-muted-foreground">Mounted</span>}
                       </DropdownMenuItem>
@@ -160,6 +160,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowPro
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
   const { hostPath } = mount
+  const sourceLabel = mount.sourceLabel ?? hostPath
   const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
@@ -190,9 +191,9 @@ function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowPro
           <span className="text-xs font-medium truncate">{mount.name}</span>
           <VolumeStatusBadge health={mount.health} />
         </div>
-        {hostPath && (
-          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={hostPath}>
-            {hostPath}
+        {sourceLabel && (
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={sourceLabel}>
+            {sourceLabel}
           </div>
         )}
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">

@@ -8,17 +8,13 @@ import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@
 import { prepareVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
 
 export type VolumeViewer = { userId: string | null; admin: boolean }
 export type VolumeRow = typeof volumeDefinitions.$inferSelect
 
-export class VolumeError extends Error {
-  constructor(message: string, readonly status: 400 | 403 | 404 | 409) {
-    super(message)
-    this.name = 'VolumeError'
-  }
-}
+export { VolumeError } from '@shared/lib/volumes/volume-error'
 
 export function selectableVolumes(viewer: VolumeViewer) {
   return or(isNull(volumeDefinitions.userId), ...(viewer.userId ? [eq(volumeDefinitions.userId, viewer.userId)] : []))
@@ -60,6 +56,7 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   try {
     prepared = await prepareVolume(input.type, input.config, viewer)
   } catch (error) {
+    if (error instanceof VolumeError) throw error
     throw new VolumeError(error instanceof Error ? error.message : 'Invalid volume configuration', 400)
   }
   const config = volumeConfigSchema.parse(prepared).config

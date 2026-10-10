@@ -51,7 +51,7 @@ export function VolumesTab() {
                   <span className="truncate text-sm font-medium">{volume.name}</span>
                   <VolumeStatusBadge health={volume.health} />
                 </div>
-                {volume.hostPath && <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={volume.hostPath}>{volume.hostPath}</p>}
+                {(volume.sourceLabel ?? volume.hostPath) && <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</p>}
                 <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
                   <span className="inline-flex items-center gap-1">{volume.userId === null ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.userId === null ? 'Public' : 'Private'}</span>
                   <span>{volume.attachmentCount === 0 ? 'Not attached' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
@@ -76,7 +76,7 @@ export function VolumesTab() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete saved volume?</AlertDialogTitle>
-            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved volumes. The folder and its files will stay on disk.</AlertDialogDescription>
+            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved volumes. The source folder and its files will remain unchanged.</AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>
