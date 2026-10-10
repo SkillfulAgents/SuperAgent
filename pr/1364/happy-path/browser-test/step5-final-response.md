@@ -1,0 +1,144 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications 1 unread" [ref=e476] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+              - generic "1 unread" [ref=e477]
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20261010-201944-btps Open QA-20261010-201944-btps Collapse Browser Page Title Check" [ref=e478] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20261010-201944-btps" [ref=e52]:
+                    - /url: /agents/qa-20261010-201944-btps-u3t4f9e19x
+                    - generic [ref=e53]: QA-20261010-201944-btps
+                  - link "Open QA-20261010-201944-btps" [ref=e54]:
+                    - /url: /agents/qa-20261010-201944-btps-u3t4f9e19x
+                    - img "idle" [ref=e479]:
+                      - img [ref=e480]
+                  - button "Collapse" [expanded] [ref=e362]:
+                    - img [ref=e363]
+                - list [ref=e366]:
+                  - listitem [ref=e367]:
+                    - link "Browser Page Title Check" [ref=e489]:
+                      - /url: /agents/u3t4f9e19x/sessions/c9324f0e-8c13-4c29-831b-6cc16cb5cac6
+                      - generic [ref=e370]: Browser Page Title Check
+              - button "QA-20261010-201943-1h8w Open QA-20261010-201943-1h8w Expand" [ref=e490] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20261010-201943-1h8w" [ref=e67]:
+                    - /url: /agents/qa-20261010-201943-1h8w-w8uog79z5f
+                    - generic [ref=e68]: QA-20261010-201943-1h8w
+                  - link "Open QA-20261010-201943-1h8w" [ref=e69]:
+                    - /url: /agents/qa-20261010-201943-1h8w-w8uog79z5f
+                    - img "unread notifications" [ref=e491]
+                  - button "Expand" [ref=e493]:
+                    - img [ref=e494]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.38" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.38
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - link "QA-20261010-201944-btps" [ref=e377]:
+              - /url: /agents/qa-20261010-201944-btps-u3t4f9e19x
+            - text: /Browser Page Title Check
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img [ref=e496]
+              - generic [ref=e186]: idle
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e384]:
+          - region "Messages" [ref=e386]:
+            - log [ref=e388]:
+              - time [ref=e390]: Today at 8:20 PM
+              - paragraph [ref=e395]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e396] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - button "Expand completed turn work" [ref=e506] [cursor=pointer]:
+                - generic [ref=e507]:
+                  - generic [ref=e508]: Worked for 9s
+                  - generic [ref=e509]: ·
+                - generic [ref=e510]:
+                  - generic [ref=e511]: 3 tool calls
+                  - generic [ref=e512]: ·
+                - generic [ref=e513]:
+                  - generic [ref=e514]: 152,080 tokens
+                  - img [ref=e515]
+              - paragraph [ref=e521]:
+                - text: The page title is
+                - strong [ref=e522]: "\"Example Domain\""
+                - text: . The page loaded normally at
+                - link "https://example.com/" [ref=e523] [cursor=pointer]:
+                  - /url: https://example.com/
+                - text: ", and I closed the browser afterward."
+          - generic [ref=e408]:
+            - generic [ref=e412]:
+              - textbox "Type a message..." [ref=e524]:
+                - text: Type a message...
+                - paragraph [ref=e416]
+              - generic [ref=e417]:
+                - generic [ref=e418]:
+                  - button "Add files" [ref=e419] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e420] [cursor=pointer]':
+                    - generic [ref=e421]:
+                      - text: Opus 5.5
+                      - generic [ref=e422]: · Medium
+                    - img
+                - generic [ref=e423]:
+                  - button "Set up voice input" [ref=e424] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e428]:
+              - generic [ref=e470]:
+                - generic [ref=e471]: Context Usage
+                - img [ref=e473]
+              - generic [ref=e429]:
+                - generic [ref=e430]: ↵
+                - generic [ref=e431]: Send
+                - generic [ref=e432]: ·
+                - generic [ref=e433]: ⇧↵
+                - generic [ref=e434]: New line
+  - region "Notifications alt+T"
