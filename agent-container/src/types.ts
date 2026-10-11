@@ -98,6 +98,8 @@ export interface CreateSessionRequest {
   speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
   globalInstructions?: string; // Org-wide guidance set in host Settings, rendered into every agent's prompt
+  idleCompaction?: boolean; // Host setting; false stops idle /compact (absent = on)
+  autoSleepTimeoutMinutes?: number; // Host container auto-sleep; idle /compact lands before it (0 = never sleeps)
   // What the host expects the NEXT session to ask for (agent default model/
   // effort/speed with the global fallback applied), as opposed to this
   // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
@@ -125,4 +127,6 @@ export interface SendMessageRequest {
   isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
   globalInstructions?: string; // Current org-wide guidance; a change triggers interrupt+restart (it lives in the prompt)
+  idleCompaction?: boolean; // Current host setting; false stops idle /compact
+  autoSleepTimeoutMinutes?: number; // Current host container auto-sleep (0 = never sleeps)
 }

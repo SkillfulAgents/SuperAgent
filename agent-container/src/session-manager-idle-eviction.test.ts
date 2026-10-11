@@ -831,3 +831,186 @@ describe('SessionManager idle eviction', () => {
     }
   })
 })
+
+describe('SessionManager idle compaction', () => {
+  let manager: SessionManager
+  let workDir: string
+
+  beforeEach(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-manager-compact-test-'))
+    spawnedProcesses.length = 0
+    persistedSessions.clear()
+    manager = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 60 * 60_000,
+      automatedIdleEvictionMs: 0,
+      idleCompactAfterMs: IDLE_MS,
+      idleCompactMinTokens: 200_000,
+    })
+  })
+
+  afterEach(async () => {
+    await manager.stopAll()
+    fs.rmSync(workDir, { recursive: true, force: true })
+  })
+
+  async function idleSessionWithContext(
+    contextTokens: number,
+    metadata?: Record<string, unknown>
+  ): Promise<{ id: string; proc: MockClaudeProcess }> {
+    const session = await manager.createSession({ initialMessage: 'Summarize the quarterly report', metadata })
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+    proc.emit('message', {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { usage: { input_tokens: 10, cache_creation_input_tokens: 2_000, cache_read_input_tokens: contextTokens - 2_010 } },
+    })
+    emitSettled(proc)
+    return { id: session.id, proc }
+  }
+
+  it('sends /compact once to a large idle interactive session and leaves it running', async () => {
+    const { proc } = await idleSessionWithContext(250_000)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+    await manager.evictIdleSessions()
+
+    expect(proc.sentContents.filter((c) => c === '/compact')).toHaveLength(1)
+    expect(proc.stopCalls).toBe(0)
+  })
+
+  it('skips sessions below the token threshold', async () => {
+    const { proc } = await idleSessionWithContext(150_000)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+
+    expect(proc.sentContents).not.toContain('/compact')
+  })
+
+  it('skips automated sessions and evicts them as before', async () => {
+    const { proc } = await idleSessionWithContext(250_000, { isAutomated: true })
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+
+    expect(proc.sentContents).not.toContain('/compact')
+    expect(proc.stopCalls).toBe(1)
+  })
+
+  it('subagent usage does not count toward the main context size', async () => {
+    const { proc } = await idleSessionWithContext(50_000)
+    proc.emit('message', {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_subagent',
+      message: { usage: { input_tokens: 300_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } },
+    })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+
+    expect(proc.sentContents).not.toContain('/compact')
+  })
+
+  it('skips sessions created with idle compaction turned off', async () => {
+    const session = await manager.createSession({ initialMessage: 'Summarize the quarterly report', idleCompaction: false })
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+    proc.emit('message', {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 250_000 } },
+    })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+
+    expect(manager.hasActiveSession(session.id)).toBe(true)
+    expect(proc.sentContents).not.toContain('/compact')
+  })
+
+  it('follows the setting sent with the latest message', async () => {
+    const { id, proc } = await idleSessionWithContext(250_000)
+    await manager.sendMessage(id, 'Add a chart for revenue', undefined, { idleCompaction: false })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+
+    expect(proc.sentContents).not.toContain('/compact')
+  })
+
+  it('compacts one sweep before a container auto-sleep shorter than the default delay', async () => {
+    const shortSleep = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 60 * 60_000,
+      evictionPollMs: 10,
+    })
+    try {
+      // 300ms auto-sleep, so compaction is due at 290ms instead of 4 minutes.
+      await shortSleep.createSession({ initialMessage: 'Summarize the quarterly report', autoSleepTimeoutMinutes: 0.005 })
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      proc.emit('message', {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 250_000 } },
+      })
+      emitSettled(proc)
+
+      await shortSleep.evictIdleSessions()
+      expect(proc.sentContents).not.toContain('/compact')
+
+      await new Promise((r) => setTimeout(r, 320))
+      await shortSleep.evictIdleSessions()
+      expect(proc.sentContents).toContain('/compact')
+    } finally {
+      await shortSleep.stopAll()
+    }
+  })
+
+  it('compacts instead of evicting when eviction is shorter than the default delay', async () => {
+    const shortEviction = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 100,
+      evictionPollMs: 10,
+    })
+    try {
+      await shortEviction.createSession({ initialMessage: 'Summarize the quarterly report' })
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      proc.emit('message', {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 250_000 } },
+      })
+      emitSettled(proc)
+      await new Promise((r) => setTimeout(r, 120))
+
+      await shortEviction.evictIdleSessions()
+
+      expect(proc.sentContents).toContain('/compact')
+      expect(proc.stopCalls).toBe(0)
+    } finally {
+      await shortEviction.stopAll()
+    }
+  })
+
+  it('compacts again after the user sends another message', async () => {
+    const { id, proc } = await idleSessionWithContext(250_000)
+    await pastThreshold()
+    await manager.evictIdleSessions()
+
+    await manager.sendMessage(id, 'Add a chart for revenue')
+    proc.emit('message', {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 240_000 } },
+    })
+    emitSettled(proc)
+    await pastThreshold()
+    await manager.evictIdleSessions()
+
+    expect(proc.sentContents.filter((c) => c === '/compact')).toHaveLength(2)
+  })
+})

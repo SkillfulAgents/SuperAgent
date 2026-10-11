@@ -1323,6 +1323,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           speed: options.speed,
           capabilityPolicies,
           globalInstructions,
+          idleCompaction: getSettings().idleCompaction !== false,
+          autoSleepTimeoutMinutes: getSettings().app?.autoSleepTimeoutMinutes ?? 30,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
             llmRuntime: warmRuntime,
             llmProviderId: warmRuntime.llmProviderId,
@@ -1514,6 +1516,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(isAutomated !== undefined ? { isAutomated } : {}),
             capabilityPolicies,
           globalInstructions,
+            idleCompaction: getSettings().idleCompaction !== false,
+            autoSleepTimeoutMinutes: getSettings().app?.autoSleepTimeoutMinutes ?? 30,
           }),
           signal: controller.signal,
         }

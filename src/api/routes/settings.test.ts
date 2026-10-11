@@ -391,11 +391,22 @@ describe('settings route', () => {
       ['shareAnalytics', { shareAnalytics: 'yes' }],
       ['shareErrorReports', { shareErrorReports: 1 }],
       ['enableToolSearch', { enableToolSearch: 'enabled' }],
+      ['idleCompaction', { idleCompaction: 'off' }],
     ])('rejects a non-boolean %s', async (_name, request) => {
       const res = await putSettings(request)
 
       expect(res.status).toBe(400)
       expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('saves idleCompaction and keeps it across unrelated updates', async () => {
+      const res = await putSettings({ idleCompaction: false })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].idleCompaction).toBe(false)
+
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), idleCompaction: false })
+      await putSettings({ shareAnalytics: false })
+      expect(mockUpdateSettings.mock.calls[1][0].idleCompaction).toBe(false)
     })
 
     it.each([

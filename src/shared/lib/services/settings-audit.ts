@@ -30,6 +30,7 @@ const AUDITED_KEYS: (keyof AppSettings)[] = [
   'analyticsTargets',
   'shareErrorReports',
   'enableToolSearch',
+  'idleCompaction',
   'agentCapabilities',
   'globalInstructions',
 ]

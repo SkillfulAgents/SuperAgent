@@ -87,6 +87,7 @@ function renderWithSettings(options?: {
       },
       hasRunningAgents: false,
       enableToolSearch: true,
+      idleCompaction: true,
     },
   })
   return render(providerId === 'platform' ? null : <CatalogEditor
