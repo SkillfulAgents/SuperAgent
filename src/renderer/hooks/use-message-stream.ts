@@ -336,6 +336,26 @@ function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string,
   })
 }
 
+// subagent_updated fires when the container relays a subagent's frame; the CLI
+// writes that frame to the subagent transcript a few hundred ms later, so the
+// refetch it triggers can read the file just before the write. Measured live
+// (SDK 0.3.296): a resumed run's first tool call landed ~0.6s after its
+// update, and a foreground command then sends no frame for its whole run, so
+// the block showed the previous run's content until the run ended. One more
+// refetch after the updates go quiet picks the write up.
+export const SUBAGENT_TRAILING_REFETCH_MS = 1500
+const trailingSubagentRefetch = new Map<string, ReturnType<typeof setTimeout>>()
+
+function refreshSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  invalidateSubagentMessages(queryClient, sessionId, agentId)
+  const key = `${sessionId}\u0000${agentId ?? ''}`
+  clearTimeout(trailingSubagentRefetch.get(key))
+  trailingSubagentRefetch.set(key, setTimeout(() => {
+    trailingSubagentRefetch.delete(key)
+    invalidateSubagentMessages(queryClient, sessionId, agentId)
+  }, SUBAGENT_TRAILING_REFETCH_MS))
+}
+
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
@@ -735,6 +755,7 @@ function getOrCreateEventSource(
             isSubagent: data.isSubagent,
             taskType: data.taskType,
             description: data.description,
+            subagentType: data.subagentType,
           }
           const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
@@ -1236,9 +1257,18 @@ function getOrCreateEventSource(
             usage: existing?.usage ?? null,
             lastToolName: existing?.lastToolName ?? null,
           }
+          // A new run under a call that already finished (CLI 2.1.296+ re-runs
+          // a subagent under its launching call to hand it the result of its
+          // own background work) is running again until its next completion.
+          let completedSubagents = current.completedSubagents
+          if (data.parentToolId && completedSubagents?.has(data.parentToolId)) {
+            completedSubagents = new Set(completedSubagents)
+            completedSubagents.delete(data.parentToolId)
+          }
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
+            completedSubagents,
           })
         }
       }
@@ -1263,7 +1293,7 @@ function getOrCreateEventSource(
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          invalidateSubagentMessages(queryClient, sessionId, updated.agentId)
+          refreshSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
@@ -1295,7 +1325,7 @@ function getOrCreateEventSource(
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          invalidateSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
+          refreshSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
           invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
@@ -1369,7 +1399,7 @@ function getOrCreateEventSource(
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const updated: SubagentInfo = {
             parentToolId: data.parentToolId,
-            agentId: existing?.agentId ?? null,
+            agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: data.summary ?? existing?.progressSummary ?? null,

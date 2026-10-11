@@ -1150,6 +1150,22 @@ describe('MessagePersister', () => {
       expect(messagesUpdated).toHaveLength(0)
     })
 
+    it("learns the subagent's agentId from the frame's agent_id (SDK 0.3.292+)", () => {
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'tool-agent-id',
+        agent_id: 'a1b2c3d4e5f6a7b8c',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Sidechain text' }] },
+      })
+
+      const withAgentId = sseEvents.filter(
+        (e) => e.type === 'subagent_updated' && e.parentToolId === 'tool-agent-id' && e.agentId
+      )
+      expect(withAgentId.length).toBeGreaterThanOrEqual(1)
+      expect(withAgentId.every((e) => e.agentId === 'a1b2c3d4e5f6a7b8c')).toBe(true)
+    })
+
     it('does not filter messages without parent_tool_use_id', () => {
       mockClient._sendMessage({
         type: 'assistant',
