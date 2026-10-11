@@ -1005,6 +1005,58 @@ describe('SessionManager idle compaction', () => {
     }
   })
 
+  it('counts the compaction delay from the request start, not the end of a long reply', async () => {
+    const longReply = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 60 * 60_000,
+      idleCompactAfterMs: 100,
+    })
+    try {
+      // The request starts here; the reply then streams for 150ms.
+      await longReply.createSession({ initialMessage: 'Write the full quarterly report' })
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      await new Promise((r) => setTimeout(r, 150))
+      proc.emit('message', {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 250_000 } },
+      })
+      emitSettled(proc)
+
+      await longReply.evictIdleSessions()
+
+      expect(proc.sentContents).toContain('/compact')
+    } finally {
+      await longReply.stopAll()
+    }
+  })
+
+  it('a tool result restarts the compaction delay', async () => {
+    const toolTurn = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 60 * 60_000,
+      idleCompactAfterMs: 100,
+    })
+    try {
+      await toolTurn.createSession({ initialMessage: 'Check the sales folder' })
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      await new Promise((r) => setTimeout(r, 150))
+      proc.emit('message', { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [] } })
+      proc.emit('message', {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 250_000 } },
+      })
+      emitSettled(proc)
+
+      await toolTurn.evictIdleSessions()
+
+      expect(proc.sentContents).not.toContain('/compact')
+    } finally {
+      await toolTurn.stopAll()
+    }
+  })
+
   it('compacts again after the user sends another message', async () => {
     const { id, proc } = await idleSessionWithContext(250_000)
     await pastThreshold()

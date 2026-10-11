@@ -43,6 +43,8 @@ interface SessionData {
   undeliveredTurnTimer?: ReturnType<typeof setTimeout>;
   // Prompt size of the last main-thread request, from its usage.
   contextTokens?: number;
+  // When the last main-thread request started; the prompt cache TTL runs from here.
+  lastRequestAt?: number;
   // Set when an idle /compact is sent; cleared by the next real message.
   idleCompacted?: boolean;
   // Host settings from the latest request; undefined = on / no auto-sleep.
@@ -448,6 +450,7 @@ export class SessionManager extends EventEmitter {
       }),
       eviction: null,
       idleCompaction: request.idleCompaction,
+      lastRequestAt: Date.now(),
       autoSleepMs: autoSleepMs(request.autoSleepTimeoutMinutes),
       // Seeded, not derived from query-start: this path starts the process
       // before SessionData exists (see the await process.start() above), so the
@@ -988,7 +991,10 @@ export class SessionManager extends EventEmitter {
     // busy, or it becomes unevictable until the next real turn.
     const expectsResponse = options?.shouldQuery !== false;
     sessionData.settlement.noteOutboundMessage({ expectsResponse });
-    if (expectsResponse) sessionData.idleCompacted = false;
+    if (expectsResponse) {
+      sessionData.idleCompacted = false;
+      sessionData.lastRequestAt = Date.now();
+    }
     if (options?.idleCompaction !== undefined) sessionData.idleCompaction = options.idleCompaction;
     if (options?.autoSleepTimeoutMinutes !== undefined) sessionData.autoSleepMs = autoSleepMs(options.autoSleepTimeoutMinutes);
 
@@ -1123,6 +1129,10 @@ export class SessionManager extends EventEmitter {
     const wasBusy = sessionData.settlement.getState().runtime === 'busy';
     sessionData.settlement.handleMessage(message);
 
+    // A main-thread tool result starts the next model request.
+    if (message.type === 'user' && message.parent_tool_use_id === null) {
+      sessionData.lastRequestAt = Date.now();
+    }
     if (message.type === 'assistant' && message.parent_tool_use_id === null) {
       const usage = message.message.usage;
       sessionData.contextTokens =
@@ -1193,16 +1203,18 @@ export class SessionManager extends EventEmitter {
     if (data.idleCompaction === false) return false;
     if (data.session.metadata?.isAutomated || data.idleCompacted) return false;
     if ((data.contextTokens ?? 0) < this.idleCompactMinTokens) return false;
-    const idleMs = now - data.session.lastActivity.getTime();
-    return idleMs >= this.idleCompactDueMs(data) && idleMs < PROMPT_CACHE_TTL_MS;
+    const requestAt = data.lastRequestAt ?? data.session.lastActivity.getTime();
+    return now >= this.idleCompactDueAt(data, requestAt) && now - requestAt < PROMPT_CACHE_TTL_MS;
   }
 
-  // Land at least one sweep before the process eviction or container auto-sleep,
-  // whichever is first; the compaction turn then restarts both idle clocks.
-  private idleCompactDueMs(data: SessionData): number {
+  // The cache TTL counts from the request start, so a long reply eats into it.
+  // Eviction and auto-sleep count from the turn end; land one sweep before them.
+  // The compaction turn then restarts both idle clocks.
+  private idleCompactDueAt(data: SessionData, requestAt: number): number {
+    const idleSince = data.session.lastActivity.getTime();
     const stops = [this.idleEvictionMs, data.autoSleepMs ?? -1].filter((ms) => ms >= 0);
-    const beforeStop = Math.min(...stops) - this.evictionPollMs;
-    return Math.max(0, Math.min(this.idleCompactAfterMs, beforeStop));
+    const beforeStop = idleSince + Math.min(...stops) - this.evictionPollMs;
+    return Math.min(requestAt + this.idleCompactAfterMs, beforeStop);
   }
 
   // Stop the claude subprocess of sessions idle past their class threshold.
