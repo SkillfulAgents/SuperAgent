@@ -979,6 +979,15 @@ describe('SessionManager idle compaction', () => {
     try {
       await shortEviction.createSession({ initialMessage: 'Summarize the quarterly report' })
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      // Like the real CLI, /compact starts a turn; the 10ms background sweep
+      // would otherwise evict a session that only looks idle.
+      const send = proc.sendMessage.bind(proc)
+      proc.sendMessage = async (content?: string) => {
+        await send(content)
+        if (content === '/compact') {
+          proc.emit('message', { type: 'system', subtype: 'session_state_changed', state: 'running' })
+        }
+      }
       proc.emit('message', {
         type: 'assistant',
         parent_tool_use_id: null,
