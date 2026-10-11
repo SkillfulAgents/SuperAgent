@@ -1073,7 +1073,7 @@ describe('settings route', () => {
       expect(saved.models).toEqual({
         summarizerModel: 'haiku',
         agentModel: 'grok',
-        browserModel: 'sonnet',
+        browserModel: 'haiku',
         dashboardBuilderModel: 'opus',
       })
     })

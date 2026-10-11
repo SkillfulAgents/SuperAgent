@@ -247,7 +247,7 @@ describe('loadSettings', () => {
 
       expect(result.models?.agentModel).toBe('claude-opus-4-7')
       expect(result.models?.summarizerModel).toBe('haiku') // default
-      expect(result.models?.browserModel).toBe('sonnet') // default
+      expect(result.models?.browserModel).toBe('haiku') // default
     })
 
     it('migrates legacy concrete model defaults to bare family aliases', () => {
@@ -1208,7 +1208,7 @@ describe('getEffectiveModels', () => {
     expect(models).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1247,7 +1247,7 @@ describe('getEffectiveModels', () => {
 
     expect(models.agentModel).toBe('custom-agent')
     expect(models.summarizerModel).toBe('haiku')
-    expect(models.browserModel).toBe('sonnet')
+    expect(models.browserModel).toBe('haiku')
   })
 
   it('falls back to defaults when model values are empty strings', () => {
@@ -1266,7 +1266,7 @@ describe('getEffectiveModels', () => {
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('haiku')
     expect(models.agentModel).toBe('opus')
-    expect(models.browserModel).toBe('sonnet')
+    expect(models.browserModel).toBe('haiku')
   })
 
   it('handles models being undefined in settings', () => {
@@ -1277,7 +1277,7 @@ describe('getEffectiveModels', () => {
     expect(models).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1289,7 +1289,7 @@ describe('getEffectiveModels', () => {
     expect(getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'grok',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1303,7 +1303,7 @@ describe('getEffectiveModels', () => {
     expect(getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1438,7 +1438,7 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
