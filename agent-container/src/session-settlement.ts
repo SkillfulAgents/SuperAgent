@@ -28,6 +28,9 @@ const backgroundTaskSchema = z.object({
   // SDK >= 0.3.284: housekeeping tasks and live-update watchers, which "hosts
   // should exclude from activity indicators". Still live work for settlement.
   ambient: z.boolean().optional().catch(undefined),
+  // SDK >= 0.3.293: a subagent task's type, so a row can be named without
+  // pairing the entry with its task_started.
+  subagent_type: z.string().optional().catch(undefined),
 });
 
 const backgroundTasksChangedSchema = z.object({
@@ -36,7 +39,7 @@ const backgroundTasksChangedSchema = z.object({
 
 export interface BackgroundTasksSnapshot {
   taskIds: Set<string>;
-  tasks: Array<{ task_id: string; task_type?: string; description?: string; ambient?: boolean }>;
+  tasks: Array<{ task_id: string; task_type?: string; description?: string; ambient?: boolean; subagent_type?: string }>;
 }
 
 /**

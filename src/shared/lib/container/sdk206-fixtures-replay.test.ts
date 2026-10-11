@@ -600,6 +600,37 @@ describe('sdk 0.3.296 capture replays', () => {
     expect(sseEvents.filter((e) => e['type'] === 'background_task_completed' && e['taskId'] === taskId)).toHaveLength(1)
   })
 
+  it("carries the snapshot's subagent_type onto the background subagent's row", async () => {
+    const { sseEvents } = await replayTracked('sdk296-bg-subagent-no-idle')
+    const rows = sseEvents
+      .filter((e) => e['type'] === 'background_task_started' || e['type'] === 'background_task_updated')
+      .filter((e) => e['isSubagent'] === true)
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.at(-1)!['subagentType']).toBe('general-purpose')
+  })
+
+  it('streams a SendMessage-resumed run into its own entry, not the finished first run', async () => {
+    // The resumed run's frames still name the ORIGINAL Agent call in
+    // parent_tool_use_id; its task_started names the SendMessage call. The
+    // frames' agent_id routes them to the live run.
+    const { streamEntries, sseEvents } = await replayTracked('sdk296-sendmessage-resumed-subagent')
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const starts = contents.filter((c) => c['subtype'] === 'task_started' && c['task_type'] === 'local_agent')
+    expect(starts).toHaveLength(2)
+    const [launchToolId, resumeToolId] = starts.map((c) => c['tool_use_id'] as string)
+    expect(resumeToolId).not.toBe(launchToolId)
+
+    const resumeStart = sseEvents.findIndex((e) => e['type'] === 'subagent_started' && e['parentToolId'] === resumeToolId)
+    const resumeEnd = sseEvents.findIndex((e) => e['type'] === 'subagent_completed' && e['parentToolId'] === resumeToolId)
+    expect(resumeStart).toBeGreaterThan(0)
+    expect(resumeEnd).toBeGreaterThan(resumeStart)
+    const during = sseEvents
+      .slice(resumeStart + 1, resumeEnd)
+      .filter((e) => e['type'] === 'subagent_stream_delta' || e['type'] === 'subagent_updated')
+    expect(during.length).toBeGreaterThan(0)
+    expect(during.map((e) => e['parentToolId'])).toEqual(during.map(() => resumeToolId))
+  })
+
   it("a subagent's background Bash keeps the session waiting after the subagent itself completes", async () => {
     const { streamEntries, timeline, sseEvents } = await replayTracked('sdk296-bg-subagent-nested-bg-bash')
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
