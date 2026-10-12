@@ -27,7 +27,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 vi.mock('@shared/lib/platform-attribution/container-token', () => ({ getPlatformContainerToken: async () => undefined }))
 
-import { addMount, listVolumes } from '@shared/lib/services/mount-service'
+import { addMount, listVolumes, setMountReadOnly } from '@shared/lib/services/mount-service'
 import { DockerContainerClient } from '@shared/lib/container/docker-container-client'
 import volumes from '../../../api/routes/volumes'
 
@@ -103,5 +103,28 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     expect(await sh('cat /mounts/notes/a.txt')).toBe('hello')
     await sh('echo new > /mounts/notes/b.txt')
     await waitFor(() => fs.existsSync(path.join(notes, 'b.txt')) && fs.readFileSync(path.join(notes, 'b.txt'), 'utf8') === 'new\n', 5_000)
+  }, 180_000)
+
+  it('mounts a read-only volume that reads, and refuses writes through the mount and straight to the host', async () => {
+    const docs = path.join(tmpDir, 'docs')
+    fs.mkdirSync(docs)
+    fs.writeFileSync(path.join(docs, 'a.txt'), 'hello')
+    const { id } = await addMount('agent-a', 'local', { path: docs }, { userId: null, admin: true })
+    await setMountReadOnly('agent-a', id, true)
+
+    await client().stop()
+    const { port } = server.address() as AddressInfo
+    const hostApiUrl = `http://host.docker.internal:${port}/api`
+    const started = await client().start({
+      envVars: { SUPERAGENT_HOST_API_URL: hostApiUrl, PROXY_TOKEN: 'test-token' },
+      volumes: (await listVolumes('agent-a')).volumes,
+    })
+    expect(await client().health(started.port ?? undefined)).toMatchObject({ status: 'ok' })
+
+    const sh = (script: string) => docker('exec', '--user', 'claude', 'superagent-agent-a', 'bash', '-c', script)
+    expect(await sh('cat /mounts/docs/a.txt')).toBe('hello')
+    expect(await sh('(echo x > /mounts/docs/b.txt) 2>&1 || true')).toContain('Read-only file system')
+    expect(await sh(`curl -s -o /dev/null -w '%{http_code}' -X PUT --data x -H 'Authorization: Bearer test-token' ${hostApiUrl}/volumes/${id}/b.txt`)).toBe('403')
+    expect(fs.readdirSync(docs)).toEqual(['a.txt'])
   }, 180_000)
 })

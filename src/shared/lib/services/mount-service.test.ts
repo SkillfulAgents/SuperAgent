@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, volumeSummary } from './mount-service'
+import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
@@ -39,7 +39,7 @@ describe('SQLite mount attachments', () => {
     expect(await getMounts('test-agent')).toEqual([])
     const hostPath = folder('myapp')
     const mount = await add(hostPath)
-    expect(mount).toEqual({ id: expect.any(String), volumeId: expect.any(String), name: 'myapp', type: 'local', config: { path: hostPath } })
+    expect(mount).toEqual({ id: expect.any(String), volumeId: expect.any(String), name: 'myapp', type: 'local', config: { path: hostPath }, readOnly: false })
     expect(mount.volumeId).not.toBe(mount.id)
     expect(await getMounts('test-agent')).toEqual([mount])
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
@@ -62,7 +62,7 @@ describe('SQLite mount attachments', () => {
     expect(b.id).not.toBe(a.id)
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
     const volume = await resolveVolume('agent-b', b.id)
-    expect((await volume!.list('')).map(entry => entry.name)).toEqual(['a.txt'])
+    expect((await volume!.ops.list('')).map(entry => entry.name)).toEqual(['a.txt'])
     expect(await resolveVolume('agent-b', a.id)).toBeNull()
     expect(await resolveVolume('test-agent', a.volumeId)).toBeNull()
     expect(await resolveVolume('test-agent', 'unknown')).toBeNull()
@@ -77,6 +77,19 @@ describe('SQLite mount attachments', () => {
     expect(await getMounts('test-agent')).toEqual([original])
     expect((await attachMount('agent-b', original.volumeId, viewer)).name).toBe('renamed')
     expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: original.id, name: 'notes', cacheMode: 'local' }])
+  })
+  it('sets read only on one attachment, and every reader of it agrees', async () => {
+    const mount = await add(folder('team'))
+    await attachMount('agent-b', mount.volumeId, viewer)
+    expect(mount.readOnly).toBe(false)
+    expect(await setMountReadOnly('test-agent', mount.id, true)).toBe(true)
+    expect(await setMountReadOnly('agent-b', mount.id, true)).toBe(false)
+    expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: mount.id, name: 'team', cacheMode: 'local', readOnly: true }])
+    expect((await getMountsWithHealth('test-agent'))[0].readOnly).toBe(true)
+    expect((await resolveVolume('test-agent', mount.id))?.readOnly).toBe(true)
+    expect((await getMountsWithHealth('agent-b'))[0].readOnly).toBe(false)
+    expect(await setMountReadOnly('test-agent', mount.id, false)).toBe(true)
+    expect((await listVolumes('test-agent')).volumes[0]).not.toHaveProperty('readOnly')
   })
   it('detaches only the specified mount and preserves sources and files', async () => {
     const a = await add(folder('keep'))

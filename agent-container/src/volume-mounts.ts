@@ -29,7 +29,7 @@ function controlSocket(volumeId: string): string {
   return `/tmp/rclone-${volumeId}.sock`;
 }
 
-export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, ignoreSize = false, dirCacheSeconds?: number, cacheDir = `/workspace/.volume-cache/${volumeId}`): string[] {
+export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl: string, cacheMode: ContainerMount['cacheMode'] = 'local', caseInsensitive = false, ignoreSize = false, dirCacheSeconds?: number, cacheDir = `/workspace/.volume-cache/${volumeId}`, readOnly = false): string[] {
   return [
     // mount's bazil FUSE adapter caches newly created entries for a minute,
     // regardless of --attr-timeout. After a directory rename/refresh those
@@ -58,6 +58,8 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
     // the upload. rclone would call that corruption and delete the file it just wrote. The host checks Drive's
     // stored size for plain uploads instead.
     ...(ignoreSize ? ['--ignore-size'] : []),
+    // Refuses writes at the mount, so a write fails at once instead of looking saved until the host refuses its upload.
+    ...(readOnly ? ['--read-only'] : []),
     // Reopening a file within the handle-caching window after its cached copy went stale reads zeros instead of
     // downloading the new contents.
     '--vfs-handle-caching', '0',
@@ -96,7 +98,7 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
 }
 
 async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
-  const { volumeId, name, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds } = volume;
+  const { volumeId, name, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds, readOnly } = volume;
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -107,7 +109,7 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
     const unmountedDev = (await fs.promises.stat(mountPath)).dev;
     const hostApiUrl = process.env.SUPERAGENT_HOST_API_URL ?? '';
     const token = process.env.PROXY_TOKEN ?? '';
-    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, hostApiUrl, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds, cache), {
+    const child = spawn('rclone', rcloneMountArgs(volumeId, mountPath, hostApiUrl, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds, cache, readOnly), {
       env: { ...process.env, RCLONE_WEBDAV_BEARER_TOKEN: token },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
@@ -235,8 +237,8 @@ export async function unmountVolumes(deadline: number): Promise<void> {
   if (!result.drained) console.error('[volumes] Unfinished uploads preserved in the workspace:', result);
 }
 
-export function mountedVolumePaths(): string[] {
-  return mounted.map((m) => path.join(MOUNTS_DIR, m.name));
+export function mountedVolumes(): { path: string; readOnly: boolean }[] {
+  return mounted.map((m) => ({ path: path.join(MOUNTS_DIR, m.name), readOnly: m.readOnly ?? false }));
 }
 
 export function mountedVolumeIds(): string[] {

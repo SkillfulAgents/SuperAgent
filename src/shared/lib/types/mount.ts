@@ -30,10 +30,12 @@ export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
 /** An agent's attachment, whose id and name are independent of the definition. */
 export interface MountedVolume extends StoredVolume {
   volumeId: string
+  readOnly: boolean
 }
 
 export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
   volumeId: string
+  readOnly: boolean
 }
 
 /** Source latency determines the container cache policy, independently of its provider. */
@@ -51,6 +53,8 @@ export interface ContainerVolume {
   ignoreSize?: boolean
   /** How long rclone trusts a folder listing. Older hosts omit it, and the cache policy's default applies. */
   dirCacheSeconds?: number
+  /** Older hosts omit this, and the volume mounts read and write. */
+  readOnly?: boolean
 }
 
 /** Why a volume is not in the container. */

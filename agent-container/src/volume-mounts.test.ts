@@ -11,6 +11,13 @@ describe('parseVolumes', () => {
     expect(parseVolumes(raw)).toEqual([{ volumeId: 'v_17', name: 'team brain', cacheMode: 'local' }])
   })
 
+  it('carries read only, and reads a missing flag as read and write', () => {
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs', readOnly: true }]))).toEqual([
+      { volumeId: 'v1', name: 'docs', cacheMode: 'local', readOnly: true },
+    ])
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs' }]))[0].readOnly).toBeUndefined()
+  })
+
   it('accepts a remote cache policy and rejects unknown modes', () => {
     expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'cloud', cacheMode: 'remote' }]))).toEqual([
       { volumeId: 'v1', name: 'cloud', cacheMode: 'remote' },
@@ -30,6 +37,11 @@ describe('parseVolumes', () => {
 })
 
 describe('rcloneMountArgs', () => {
+  it('mounts read only only when asked', () => {
+    expect(rcloneMountArgs('v', '/mounts/docs', 'http://host/api')).not.toContain('--read-only')
+    expect(rcloneMountArgs('v', '/mounts/docs', 'http://host/api', 'remote', false, false, undefined, '/cache', true)).toContain('--read-only')
+  })
+
   it("points rclone at the volume's address under the host API, and the driver settings", () => {
     const args = rcloneMountArgs('v_17', '/mounts/docs', 'http://host.docker.internal:47891/api')
     expect(args).toEqual([

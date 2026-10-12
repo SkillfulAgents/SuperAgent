@@ -18,7 +18,7 @@ import { S3VolumeClient } from './s3-client'
 import { validateS3Volume } from './s3-validation'
 
 let volume: S3MountableVolume
-vi.mock('@shared/lib/services/mount-service', () => ({ resolveVolume: async (agent: string, id: string) => agent === 's3-test' && id === 's3-test' ? volume : null }))
+vi.mock('@shared/lib/services/mount-service', () => ({ resolveVolume: async (agent: string, id: string) => agent === 's3-test' && id === 's3-test' ? { ops: volume, readOnly: false } : null }))
 vi.mock('../../../api/middleware/auth', () => ({ IsAgent: (): MiddlewareHandler => async (c, next) => {
   if (c.req.header('Authorization') !== 'Bearer s3-live-test') return c.body(null, 401)
   c.set('agentSlug' as never, 's3-test' as never); return next()

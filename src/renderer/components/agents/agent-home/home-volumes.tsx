@@ -20,6 +20,8 @@ import {
   FolderOpen,
   Copy,
   Trash2,
+  Lock,
+  Check,
   Plus,
   Loader2,
   RefreshCw,
@@ -55,7 +57,9 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               mount={mount}
               agentSlug={agentSlug}
               onRemove={() => volumes.handleRemove(mount.id)}
+              onSetReadOnly={(readOnly) => volumes.handleSetReadOnly(mount.id, readOnly)}
               isRemovingMount={volumes.isRemovingMount}
+              isUpdatingMount={volumes.isUpdatingMount}
               canRemove={volumes.canModifyMounts}
             />
           ))}
@@ -152,11 +156,13 @@ interface VolumeRowProps {
   agentSlug: string
   mount: MountSummaryWithHealth
   onRemove: () => void
+  onSetReadOnly: (readOnly: boolean) => void
   isRemovingMount: boolean
+  isUpdatingMount: boolean
   canRemove: boolean
 }
 
-function VolumeRow({ mount, agentSlug, onRemove, isRemovingMount, canRemove }: VolumeRowProps) {
+function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount, isUpdatingMount, canRemove }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const fileManagerLabel = getFileManagerLabel()
@@ -194,6 +200,12 @@ function VolumeRow({ mount, agentSlug, onRemove, isRemovingMount, canRemove }: V
           <VolumeIcon type={mount.type} className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <span className="text-xs font-medium truncate">{mount.name}</span>
           <VolumeStatusBadge health={mount.health} />
+          {mount.readOnly && (
+            <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
+              <Lock className="h-2.5 w-2.5" />
+              Read only
+            </span>
+          )}
         </div>
         {sourceLabel && (
           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={sourceLabel}>
@@ -244,6 +256,23 @@ function VolumeRow({ mount, agentSlug, onRemove, isRemovingMount, canRemove }: V
                 >
                   <Copy className="h-3.5 w-3.5" />
                   Copy path
+                </button>
+              )}
+              {canRemove && (
+                <button
+                  role="switch"
+                  aria-checked={mount.readOnly}
+                  disabled={isUpdatingMount}
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSetReadOnly(!mount.readOnly)
+                    setMenuOpen(false)
+                  }}
+                >
+                  <Lock className="h-3.5 w-3.5" />
+                  Read only
+                  {mount.readOnly && <Check className="ml-auto h-3.5 w-3.5" />}
                 </button>
               )}
               {canRemove && <button

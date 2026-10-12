@@ -551,6 +551,7 @@ export const agentVolumes = sqliteTable('agent_volumes', {
   agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
   volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
+  readOnly: integer('read_only', { mode: 'boolean' }).notNull().default(false),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, table => ({
   pk: primaryKey({ columns: [table.agentSlug, table.id] }),

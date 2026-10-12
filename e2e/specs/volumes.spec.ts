@@ -43,6 +43,16 @@ test('reuses a saved volume, edits its definition, and detaches without deleting
     expect(firstMounts).toMatchObject([{ id: original.id, name: original.name, volumeId }])
 
     await page.getByRole('button', { name: 'Mount actions' }).click()
+    await page.getByRole('switch', { name: 'Read only' }).click()
+    await expect(page.getByTestId('agent-home-layout').getByText('Read only', { exact: true })).toBeVisible()
+    expect(await (await request.get(`/api/agents/${second.slug}/mounts`)).json()).toMatchObject([{ readOnly: true }])
+    await page.getByRole('button', { name: 'Mount actions' }).click()
+    await expect(page.getByRole('switch', { name: 'Read only' })).toHaveAttribute('aria-checked', 'true')
+    await page.getByRole('switch', { name: 'Read only' }).click()
+    await expect(page.getByTestId('agent-home-layout').getByText('Read only', { exact: true })).not.toBeVisible()
+    expect(await (await request.get(`/api/agents/${second.slug}/mounts`)).json()).toMatchObject([{ readOnly: false }])
+
+    await page.getByRole('button', { name: 'Mount actions' }).click()
     await page.getByRole('button', { name: 'Remove Mount', exact: true }).click()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Remove Mount', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Mount actions' })).not.toBeVisible()

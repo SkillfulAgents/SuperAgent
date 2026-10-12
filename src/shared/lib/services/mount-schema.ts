@@ -33,6 +33,8 @@ export const addMountSchema = z.union([
   createVolumeSchema.extend({ restart: z.boolean().optional() }),
 ])
 
+export const updateMountSchema = z.object({ readOnly: z.boolean() }).strict()
+
 /** Preserve future source types during import without interpreting their config. */
 export const legacyVolumeRowSchema = z.union([
   z.object({ id: z.string().min(1), name: z.string(), type: z.string(), config: z.json() }),

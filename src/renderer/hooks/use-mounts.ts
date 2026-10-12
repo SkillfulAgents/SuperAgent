@@ -80,6 +80,25 @@ export function useRemoveMount() {
   })
 }
 
+export function useSetMountReadOnly() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (data: { agentSlug: string; mountId: string; readOnly: boolean }) => {
+      const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts/${data.mountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ readOnly: data.readOnly }),
+      })
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to update mount'))
+    },
+    onSuccess: () => {
+      // Bare prefix - see useAddMount.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+    },
+  })
+}
+
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
   const mounts = Array.isArray(mountsData) ? mountsData : []
@@ -92,6 +111,7 @@ export function useVolumesManager(agentSlug: string) {
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
   const removeMount = useRemoveMount()
+  const setMountReadOnly = useSetMountReadOnly()
   const [pendingRestart, setPendingRestart] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
@@ -138,6 +158,17 @@ export function useVolumesManager(agentSlug: string) {
     }
   }
 
+  const handleSetReadOnly = async (mountId: string, readOnly: boolean) => {
+    if (!canModifyMounts) return
+    try {
+      setOperationError(null)
+      await setMountReadOnly.mutateAsync({ agentSlug, mountId, readOnly })
+      if (isAgentRunning) setPendingRestart(true)
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Failed to update mount')
+    }
+  }
+
   const handleRestart = async () => {
     setIsRestarting(true)
     setRestartError(null)
@@ -170,11 +201,13 @@ export function useVolumesManager(agentSlug: string) {
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
+    isUpdatingMount: setMountReadOnly.isPending,
     // Dropbox creation and saved volumes work on every target. Local folders keep the OS picker.
     canAddMount: canModifyMounts,
     handleCreateMount,
     handleAttach,
     handleRemove,
+    handleSetReadOnly,
     handleRestart,
   }
 }

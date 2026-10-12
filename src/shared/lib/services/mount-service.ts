@@ -29,7 +29,7 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
     .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
   return rows.flatMap(({ volume, mount }) => {
     const stored = storedDefinition(volume)
-    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id }] : []
+    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id, readOnly: mount.readOnly }] : []
   })
 }
 
@@ -70,6 +70,13 @@ export async function attachMount(slug: string, volumeId: string, viewer: Volume
   return mount
 }
 
+/** False when the agent has no such mount. Like attach and remove, the mount takes the change on the next start. */
+export async function setMountReadOnly(slug: string, mountId: string, readOnly: boolean): Promise<boolean> {
+  const result = await db.update(agentVolumes).set({ readOnly })
+    .where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+  return changesOf(result) > 0
+}
+
 export async function removeMount(slug: string, mountId: string): Promise<void> {
   await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
 }
@@ -77,7 +84,9 @@ export async function removeMount(slug: string, mountId: string): Promise<void> 
 /** The attachment is the grant; knowing a shared definition's id grants no access. */
 export async function resolveVolume(slug: string, mountId: string) {
   const row = (await getMounts(slug)).find(m => m.id === mountId)
-  return row ? instantiateVolume(row, slug) : null
+  if (!row) return null
+  const ops = instantiateVolume(row, slug)
+  return ops && { ops, readOnly: row.readOnly }
 }
 
 async function judgeVolumes(slug: string) {
@@ -93,7 +102,8 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
       return [{ volumeId: row.id, name: row.name, cacheMode: driver?.cacheMode ?? 'local',
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
         ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
-        ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}) }]
+        ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}),
+        ...(row.readOnly ? { readOnly: true } : {}) }]
     }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
@@ -101,6 +111,6 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
   return (await judgeVolumes(slug)).map(({ row, reason }) => ({
-    ...volumeSummary(row), volumeId: row.volumeId, health: reason === null ? 'ok' : 'missing',
+    ...volumeSummary(row), volumeId: row.volumeId, readOnly: row.readOnly, health: reason === null ? 'ok' : 'missing',
   }))
 }

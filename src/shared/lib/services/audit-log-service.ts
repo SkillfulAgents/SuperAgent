@@ -15,7 +15,7 @@ export const AUDIT_EVENT_MAP = {
   skill:            ['created', 'updated', 'deleted', 'exported'],
   secret:           ['created', 'updated', 'deleted', 'revealed'],
   file:             ['uploaded'],
-  mount:            ['created', 'deleted'],
+  mount:            ['created', 'updated', 'deleted'],
   volume:           ['created', 'updated', 'deleted'],
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
