@@ -1,9 +1,14 @@
 import { z } from 'zod'
+import type { RelayAcceptResult, RelayEvent } from '../webhook-relay/types'
 
 /**
- * How an integration receives provider events:
+ * How an integration can receive provider events:
  * - direct: the provider's own connection (a socket, a stream, polling)
  * - relay: webhooks the host's webhook relay receives and hands over
+ *
+ * Which one a connection uses is decided each time it connects: the relay if
+ * the host has one and the installation's webhooks are set up, direct
+ * otherwise. Nothing stores the choice.
  */
 export const INTEGRATION_TRANSPORTS = ['direct', 'relay'] as const
 export type IntegrationTransport = (typeof INTEGRATION_TRANSPORTS)[number]
@@ -17,19 +22,17 @@ export const integrationRelayBindingSchema = z.object({
 export type IntegrationRelayBinding = z.infer<typeof integrationRelayBindingSchema>
 
 /**
- * Transport fields in an integration's stored config. Providers that support
- * the relay spread this into their config schema; a row written before
- * transports existed reads as `direct`.
+ * The relay field in an integration's stored config: present once its
+ * webhooks are set up. Providers that support the relay spread this into
+ * their config schema; a row without it has no webhooks.
  */
-export const integrationTransportConfigShape = {
-  transport: z.enum(INTEGRATION_TRANSPORTS).default('direct'),
+export const integrationRelayConfigShape = {
   relay: integrationRelayBindingSchema.optional(),
 }
-const integrationTransportConfigSchema = z.object(integrationTransportConfigShape).loose()
-export type IntegrationTransportConfig = { transport: IntegrationTransport; relay?: IntegrationRelayBinding }
+const integrationRelayConfigSchema = z.object(integrationRelayConfigShape).loose()
 
-/** Reads the transport fields of any provider's config, whatever else it holds. */
-export function readIntegrationTransport(config: string | Record<string, unknown>): IntegrationTransportConfig {
+/** The relay endpoint in any provider's config, whatever else it holds. */
+export function readIntegrationRelay(config: string | Record<string, unknown>): IntegrationRelayBinding | undefined {
   let raw: unknown = config
   if (typeof config === 'string') {
     try {
@@ -38,8 +41,7 @@ export function readIntegrationTransport(config: string | Record<string, unknown
       throw new Error('Integration config is not valid JSON')
     }
   }
-  const { transport, relay } = integrationTransportConfigSchema.parse(raw)
-  return { transport, ...(relay ? { relay } : {}) }
+  return integrationRelayConfigSchema.parse(raw).relay
 }
 
 /** The transports a provider supports; `direct` unless it says otherwise. */
@@ -52,7 +54,18 @@ export function requiresRelay(transports: readonly IntegrationTransport[]): bool
   return !transports.includes('direct')
 }
 
-/** The relay when the provider supports it and the host has one; direct otherwise. */
-export function defaultTransport(transports: readonly IntegrationTransport[], relayAvailable: boolean): IntegrationTransport {
-  return transports.includes('relay') && (relayAvailable || requiresRelay(transports)) ? 'relay' : 'direct'
+export type IntegrationRelayAccept = (
+  events: readonly RelayEvent[],
+) => Promise<RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>>
+
+export interface IntegrationRelayAttachment {
+  /** This connection stops receiving; nothing is claimed until one attaches again. */
+  detach(): void
+  isAttached(): boolean
+}
+
+/** The host's relay, as handed to one connection of one integration. */
+export interface IntegrationRelayHost {
+  /** Starts receiving the events that arrive at this endpoint. */
+  attach(binding: IntegrationRelayBinding, accept: IntegrationRelayAccept): IntegrationRelayAttachment
 }

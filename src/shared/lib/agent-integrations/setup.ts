@@ -4,7 +4,7 @@ import { agentIntegrationRegistry } from './registry'
 import { IntegrationSetupError, type IntegrationSetupContext } from './setup-types'
 import { captureException } from '../error-reporting'
 import { disableIntegrationRelay, provisionIntegrationRelay } from './relay-transport'
-import { readIntegrationTransport, requiresRelay, supportedTransports } from './transport'
+import { requiresRelay, supportedTransports } from './transport'
 import type { IntegrationStatus } from './types'
 
 export function getIntegrationSetup(provider: string) {
@@ -26,17 +26,16 @@ export interface PreparedIntegrationSetup {
 export async function prepareIntegrationSetup(provider: string, input: unknown, context: IntegrationSetupContext, fromAgent = false): Promise<PreparedIntegrationSetup> {
   const setup = getIntegrationSetup(provider)
   if (fromAgent && !setup.allowAgentCreation) throw new IntegrationSetupError('This account must be set up by its owner in the agent integration page.', 403)
-  const prepared = await setup.prepare(input, context)
+  const { relay: wantsRelay, ...prepared } = await setup.prepare(input, context)
   const definition = agentIntegrationRegistry.getDefinition(provider)!
   const transports = supportedTransports(definition)
-  const { transport } = readIntegrationTransport({ transport: requiresRelay(transports) ? 'relay' : 'direct', ...prepared.config })
-  if (!transports.includes(transport)) throw new IntegrationSetupError(`${definition.name} can't receive events over the ${transport === 'relay' ? 'webhook relay' : 'direct connection'}`)
-  if (transport !== 'relay') return { ...prepared, release: async () => {} }
+  if (wantsRelay && !transports.includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
+  if (!wantsRelay && !requiresRelay(transports)) return { ...prepared, release: async () => {} }
   // The URL exists before the installation, so provider setup can hand it out.
   const relay = await provisionIntegrationRelay(`${definition.name} integration for ${context.agentSlug}`, context.userId)
   return {
     ...prepared,
-    config: { ...prepared.config, transport, relay },
+    config: { ...prepared.config, relay },
     release: async () => {
       try {
         await disableIntegrationRelay(relay)

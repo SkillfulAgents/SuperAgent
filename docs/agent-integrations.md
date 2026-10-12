@@ -158,27 +158,36 @@ A provider receives events over its own connection (`direct`) or as webhooks
 through the host's webhook relay (`relay`). Its definition lists the transports
 it supports; `['direct']` when omitted. A provider without `direct` requires the
 relay, so the setup UI hides it while `useWebhookRelay()` reports the relay
-unavailable. The setup endpoint publishes the provider's transports alongside its
-links, and `defaultTransport()` prefers the relay when the provider supports it
-and the relay is available.
+unavailable, and the setup endpoint publishes the provider's transports
+alongside its links.
 
-The stored config carries `transport` (Zod default `direct`, so rows written
-before transports existed are unchanged) and, in relay mode, `relay: { endpointId,
-url, scope }`. When a new installation's config asks for the relay, setup mints
-the endpoint first, under the creator's platform member (as agent-minted webhook
-endpoints are), so provider setup can hand out its URL. If the installation is
-then not created, the endpoint is disabled; deleting the installation disables it
-too.
+Which transport a connection uses is decided each time it connects, and never
+stored. The manager hands the connector the relay in `host.relay` when the host
+has one available at that moment, and nothing otherwise. A connector whose
+webhooks are set up uses the relay when it's offered and connects directly when
+it isn't; one whose webhooks aren't set up always connects directly, so
+installations from before the relay keep working unchanged. A relay that comes
+or goes while a connection runs changes nothing until its next connect (boot,
+pause/resume, a settings change, or a health rebuild). Relay addresses are
+treated as fixed: switching relay implementations breaks set-up webhooks, as it
+does agent-minted webhook triggers.
 
-In relay mode a connector attaches to `integrationRelays` instead of opening a
-socket, and detaches on disconnect. Each integration keeps one relay registration
-across reconnects: nothing is claimed while no connection is attached, and events
-already claimed are offered to the next connection as soon as it attaches.
-`isConnected()` means valid credentials and an attached registration, so the
-delivery queue keeps running even while the relay itself is down. Relayed events
-go through the same `emitEvent` handoff as direct input; `relayAcceptResult()`
-maps its result to what the relay acknowledges (`rejected` becomes `discard`;
-`retry` is never acknowledged).
+"Webhooks are set up" is the stored config's `relay: { endpointId, url, scope }`,
+plus whatever the provider needs on its side (for Linear, the signing secret).
+When provider setup returns `relay: true`, setup mints the endpoint before the
+installation exists, under the creator's platform member (as agent-minted
+webhook endpoints are), so provider setup can hand out its URL; a relay-only
+provider always gets one. If the installation is then not created, the endpoint
+is disabled; deleting the installation disables it too.
+
+`host.relay.attach()` goes through `integrationRelays`, which keeps one relay
+registration per integration across reconnects: nothing is claimed while no
+connection is attached, and events already claimed are offered to the next
+connection as soon as it attaches. A relay connection is connected while it is
+attached, so the delivery queue keeps running even while the relay itself is
+down. Relayed events go through the same `emitEvent` handoff as direct input;
+`relayAcceptResult()` maps its result to what the relay acknowledges (`rejected`
+becomes `discard`; `retry` is never acknowledged).
 
 ## Task managers
 

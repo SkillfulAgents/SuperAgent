@@ -14,7 +14,8 @@ import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../s
 import { requireIntegrationReconnect } from './lifecycle'
 import { deliveryStore } from './delivery-store'
 import { MessageNotAcceptedError } from '../container/message-dispatch-error'
-import { IntegrationRelays, relayAcceptResult, type IntegrationRelayAttachment } from './relay-transport'
+import { IntegrationRelays, relayAcceptResult } from './relay-transport'
+import type { IntegrationRelayAttachment } from './transport'
 import { createFakeWebhookRelay, type FakeWebhookRelay } from '../webhook-relay/testing/fake-webhook-relay'
 import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
@@ -58,14 +59,18 @@ class Tasks extends TaskManagerAgentIntegration {
 /** A provider in relay mode: the relay's events go through the same handoff as direct input. */
 class RelayTasks extends Tasks {
   private attachment?: IntegrationRelayAttachment
-  constructor(row: AgentIntegrationRecord, private readonly relays: IntegrationRelays) { super(row) }
+  /** Which path the last connect took. */
+  path?: 'relay' | 'direct'
   async connect() {
     this.connected = true
-    this.attachment = this.relays.attach(this.installation.id, relayBinding, async events => new Map(await Promise.all(events.map(async event =>
+    // Uses the relay when the host offers one; otherwise its own (here, imaginary) socket.
+    const relay = this.host.relay
+    this.path = relay ? 'relay' : 'direct'
+    this.attachment = relay?.attach(relayBinding, async events => new Map(await Promise.all(events.map(async event =>
       [event.id, relayAcceptResult(await this.input(event.id))] as const))))
   }
-  async disconnect() { this.connected = false; this.attachment?.detach() }
-  isConnected() { return this.connected && this.relays.isAttached(this.installation.id) }
+  async disconnect() { this.connected = false; this.attachment?.detach(); this.attachment = undefined }
+  isConnected() { return this.connected && (this.attachment?.isAttached() ?? true) }
 }
 const relayBinding = { endpointId: 'whep_tasks', url: 'https://relay.test/v1/hooks/whep_tasks', scope: 'sub_owner' }
 const relayEvent = (id: string) => ({ id, endpointId: 'whep_tasks', type: 'CUSTOM_WEBHOOK', payload: {}, createdAt: '' })
@@ -82,11 +87,15 @@ async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 's
 }
 async function startRelay(relay: FakeWebhookRelay) {
   await database.insert(chatIntegrations).values({
-    id: 'integration', provider: 'linear', agentSlug: 'agent', config: JSON.stringify({ transport: 'relay', relay: relayBinding }),
+    id: 'integration', provider: 'linear', agentSlug: 'agent', config: JSON.stringify({ relay: relayBinding }),
     requireApproval: false, createdAt: new Date(), updatedAt: new Date(),
   }).run()
-  adapter = new RelayTasks((await getAgentIntegration('integration'))!, new IntegrationRelays(() => relay))
-  manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: { ...adapter.definition, transports: ['relay'] }, policy: adapter, create: async () => adapter }]))
+  adapter = new RelayTasks((await getAgentIntegration('integration'))!)
+  const relays = new IntegrationRelays(() => relay)
+  manager = new AgentIntegrationManager(
+    new AgentIntegrationRegistry([{ definition: { ...adapter.definition, transports: ['direct', 'relay'] }, policy: adapter, create: async () => adapter }]),
+    id => relays.hostFor(id),
+  )
   await manager.start()
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
@@ -125,6 +134,16 @@ describe('relay transport', () => {
     expect(await relay.deliver('integration:integration', [relayEvent('whe_2')])).toEqual(new Map([['whe_2', 'accepted']]))
     await vi.waitFor(async () => expect((await rows()).filter(row => row.state === 'delivered')).toHaveLength(2))
     expect(relay.log.filter(entry => entry.op === 'register')).toHaveLength(1)
+  })
+
+  it('connects directly when the host has no relay as it connects', async () => {
+    const relay = createFakeWebhookRelay()
+    relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
+    await startRelay(relay)
+
+    expect((adapter as RelayTasks).path).toBe('direct')
+    expect(relay.consumers.size).toBe(0)
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
   })
 })
 

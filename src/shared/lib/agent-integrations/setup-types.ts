@@ -13,7 +13,8 @@ export interface IntegrationProviderSetup {
   describe?(context: IntegrationSetupContext, name?: string): IntegrationSetupMetadata | Promise<IntegrationSetupMetadata>
   /** Agent-side setup is opt-in; owner-managed accounts require the user UI. */
   allowAgentCreation?: boolean
-  prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus }>
+  /** `relay: true` sets up webhooks: the host mints the endpoint before the installation exists. */
+  prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus; relay?: boolean }>
   testCredentials?(input: unknown): Promise<Record<string, unknown>>
   authorize?: {
     inputSchema: z.ZodType

@@ -12,7 +12,14 @@ import {
 } from '../webhook-relay'
 import { WebhookEndpointsApiError } from '../webhook-relay/platform-endpoints-client'
 import { IntegrationSetupError } from './setup-types'
-import { integrationRelayBindingSchema, readIntegrationTransport, type IntegrationRelayBinding } from './transport'
+import {
+  integrationRelayBindingSchema,
+  readIntegrationRelay,
+  type IntegrationRelayAccept,
+  type IntegrationRelayAttachment,
+  type IntegrationRelayBinding,
+  type IntegrationRelayHost,
+} from './transport'
 import type { AgentIntegrationRecord, IntegrationInputResult } from './types'
 
 /**
@@ -53,7 +60,7 @@ export async function releaseIntegrationTransport(record: AgentIntegrationRecord
   integrationRelays.remove(record.id)
   let relay: IntegrationRelayBinding | undefined
   try {
-    relay = readIntegrationTransport(record.config).relay
+    relay = readIntegrationRelay(record.config)
   } catch {
     return
   }
@@ -72,15 +79,6 @@ export async function releaseIntegrationTransport(record: AgentIntegrationRecord
 /** Every result but `retry` acknowledges the event to the relay. */
 export function relayAcceptResult(result: IntegrationInputResult): RelayAcceptResult {
   return result === 'rejected' ? 'discard' : result
-}
-
-export type IntegrationRelayAccept = (
-  events: readonly RelayEvent[],
-) => Promise<RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>>
-
-export interface IntegrationRelayAttachment {
-  /** This connection stops receiving; nothing is claimed until one attaches again. */
-  detach(): void
 }
 
 interface Registration {
@@ -118,13 +116,24 @@ export class IntegrationRelays {
       registration = created
     }
     const attached = registration
+    const current = () => this.registrations.get(integrationId) === attached && attached.accept === accept
     return {
       detach: () => {
-        if (this.registrations.get(integrationId) !== attached || attached.accept !== accept) return
+        if (!current()) return
         attached.accept = null
         attached.handle.update({ endpointIds: [] })
       },
+      isAttached: current,
     }
+  }
+
+  /**
+   * The relay to hand one connection of this integration: present while the
+   * host's relay is available as the connection starts, null otherwise.
+   */
+  hostFor(integrationId: string): IntegrationRelayHost | null {
+    if (!this.relay().snapshot().available) return null
+    return { attach: (binding, accept) => this.attach(integrationId, binding, accept) }
   }
 
   isAttached(integrationId: string): boolean {

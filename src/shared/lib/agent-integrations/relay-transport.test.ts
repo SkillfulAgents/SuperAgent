@@ -6,7 +6,7 @@ vi.mock('../services/webhook-trigger-service', () => ({ resolvePlatformMemberFor
 import { createFakeWebhookRelay, type FakeWebhookRelay } from '../webhook-relay/testing/fake-webhook-relay'
 import type { RelayEvent } from '../webhook-relay'
 import { IntegrationRelays, relayAcceptResult } from './relay-transport'
-import { defaultTransport, readIntegrationTransport, requiresRelay } from './transport'
+import { readIntegrationRelay, requiresRelay } from './transport'
 
 const binding = { endpointId: 'whep_one', url: 'https://relay.test/v1/hooks/whep_one', scope: 'sub_owner' }
 const event = (id: string): RelayEvent => ({ id, endpointId: 'whep_one', type: 'CUSTOM_WEBHOOK', payload: {}, createdAt: '' })
@@ -53,6 +53,19 @@ describe('IntegrationRelays', () => {
     expect(await relay.deliver('integration:int-1', [event('whe_1')])).toEqual(new Map([['whe_1', 'accepted']]))
   })
 
+  it('offers a connection the relay only while the host has one available', () => {
+    expect(relays.hostFor('int-1')).not.toBeNull()
+    relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
+    expect(relays.hostFor('int-1')).toBeNull()
+  })
+
+  it('reports a superseded attachment as detached', () => {
+    const first = relays.attach('int-1', binding, async () => 'accepted')
+    const second = relays.attach('int-1', binding, async () => 'accepted')
+    expect(first.isAttached()).toBe(false)
+    expect(second.isAttached()).toBe(true)
+  })
+
   it('discards what was claimed for a removed integration', async () => {
     relays.attach('int-1', binding, async () => 'retry')
     const [registration] = [...relay.consumers.values()]
@@ -65,16 +78,13 @@ describe('IntegrationRelays', () => {
 })
 
 describe('transport helpers', () => {
-  it('reads a row written before transports existed as direct', () => {
-    expect(readIntegrationTransport('{"botToken":"x"}')).toEqual({ transport: 'direct' })
-    expect(readIntegrationTransport({ transport: 'relay', relay: binding })).toEqual({ transport: 'relay', relay: binding })
+  it('reads the relay endpoint from any config, and none from a row without webhooks', () => {
+    expect(readIntegrationRelay('{"botToken":"x"}')).toBeUndefined()
+    expect(readIntegrationRelay({ relay: binding, other: 1 })).toEqual(binding)
+    expect(() => readIntegrationRelay('{not json')).toThrow('not valid JSON')
   })
 
-  it('defaults to the relay when the provider supports it and the host has one', () => {
-    expect(defaultTransport(['direct', 'relay'], true)).toBe('relay')
-    expect(defaultTransport(['direct', 'relay'], false)).toBe('direct')
-    expect(defaultTransport(['direct'], true)).toBe('direct')
-    expect(defaultTransport(['relay'], false)).toBe('relay')
+  it('knows which providers need the relay', () => {
     expect(requiresRelay(['relay'])).toBe(true)
     expect(requiresRelay(['direct', 'relay'])).toBe(false)
   })

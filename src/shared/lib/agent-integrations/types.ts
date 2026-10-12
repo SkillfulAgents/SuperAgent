@@ -1,4 +1,4 @@
-import type { IntegrationTransport } from './transport'
+import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
@@ -77,6 +77,12 @@ export interface IntegrationRoute {
 export interface IntegrationHost {
   /** Attach/recover the mapped runtime stream before returning live session activity. */
   session(externalId: string): Promise<IntegrationSessionContext | undefined>
+  /**
+   * The webhook relay, if the host had one when this connection started;
+   * absent otherwise. A provider that can use it (its webhooks are set up)
+   * should, and connect directly when it can't. Decided once per connection.
+   */
+  relay?: IntegrationRelayHost | null
 }
 
 export interface IntegrationSessionRecovery {

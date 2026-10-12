@@ -51,11 +51,16 @@ function register(provider: string, transports: readonly ('direct' | 'relay')[])
     create: async () => { throw new Error('not needed') },
     serialize: row => ({ ...row, config: undefined, settings: {}, hasCredentials: false }),
     configuration: { identityPaths: ['$.key'], uniqueKey: input => (input as { key?: string }).key ?? null, merge: stored => JSON.parse(stored) },
-    setup: { prepare: async input => ({ config: { ...(input as Record<string, unknown>) }, status: 'disconnected' as const }) },
+    // `webhooks: true` in the input asks for webhooks, as a provider's own setup would.
+    setup: { prepare: async input => {
+      const { webhooks, ...config } = input as Record<string, unknown>
+      return { config, status: 'disconnected' as const, relay: webhooks === true }
+    } },
   })
 }
 register('test-relay', ['direct', 'relay'])
 register('test-hooks', ['relay'])
+register('test-direct', ['direct'])
 const app = new Hono().route('/api/agent-integrations', router)
 const headers = { Authorization: 'user-token', 'Content-Type': 'application/json' }
 const create = (provider: string, config: Record<string, unknown>) =>
@@ -69,28 +74,27 @@ beforeEach(async () => {
 afterEach(async () => { await handle.close(); vi.unstubAllEnvs() })
 
 it('mints the relay endpoint under the creator\'s member and stores it with the installation', async () => {
-  const response = await create('test-relay', { transport: 'relay', key: 'a' })
+  const response = await create('test-relay', { webhooks: true, key: 'a' })
 
   expect(response.status).toBe(201)
   const row = await response.json()
   expect(relay.create).toHaveBeenCalledExactlyOnceWith('sub_owner', { name: 'Relay Test integration for agent' })
   expect(await storedConfig(row.id)).toMatchObject({
-    transport: 'relay',
     relay: { endpointId: 'whep_1', url: 'https://relay.test/v1/hooks/whep_1', scope: 'sub_owner' },
   })
 })
 
-it('mints nothing for a direct installation, and a relay-only provider needs no transport field', async () => {
+it('mints nothing without webhooks, and a relay-only provider always gets them', async () => {
   const direct = await (await create('test-relay', { key: 'a' })).json()
   expect(relay.create).not.toHaveBeenCalled()
   expect(await storedConfig(direct.id)).not.toHaveProperty('relay')
 
   const hooks = await (await create('test-hooks', { key: 'b' })).json()
-  expect(await storedConfig(hooks.id)).toMatchObject({ transport: 'relay', relay: { endpointId: 'whep_1' } })
+  expect(await storedConfig(hooks.id)).toMatchObject({ relay: { endpointId: 'whep_1' } })
 })
 
-it('refuses a transport the provider does not support, before minting anything', async () => {
-  const response = await create('test-hooks', { transport: 'direct', key: 'a' })
+it('refuses webhooks for a provider that cannot receive them, before minting anything', async () => {
+  const response = await create('test-direct', { webhooks: true, key: 'a' })
 
   expect(response.status).toBe(400)
   expect(relay.create).not.toHaveBeenCalled()
@@ -100,23 +104,23 @@ it('refuses a transport the provider does not support, before minting anything',
 it('explains a relay that is unavailable instead of failing the request', async () => {
   relay.create.mockRejectedValueOnce(new WebhookRelayUnavailableError('platform_disconnected'))
 
-  const response = await create('test-relay', { transport: 'relay', key: 'a' })
+  const response = await create('test-relay', { webhooks: true, key: 'a' })
 
   expect(response.status).toBe(400)
   expect(await response.json()).toEqual({ error: 'Webhooks are unavailable: the platform is not connected' })
 })
 
 it('disables the endpoint it minted when the installation is not created', async () => {
-  await create('test-relay', { transport: 'relay', key: 'same' })
+  await create('test-relay', { webhooks: true, key: 'same' })
 
-  const duplicate = await create('test-relay', { transport: 'relay', key: 'same' })
+  const duplicate = await create('test-relay', { webhooks: true, key: 'same' })
 
   expect(duplicate.status).toBe(409)
   expect(relay.disable).toHaveBeenCalledExactlyOnceWith('sub_owner', 'whep_2')
 })
 
 it('disables the endpoint when the installation is deleted', async () => {
-  const row = await (await create('test-relay', { transport: 'relay', key: 'a' })).json()
+  const row = await (await create('test-relay', { webhooks: true, key: 'a' })).json()
 
   const response = await app.request(`/api/agent-integrations/${row.id}`, { method: 'DELETE', headers })
 
