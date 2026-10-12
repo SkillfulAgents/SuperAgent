@@ -37,7 +37,7 @@ import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, Che
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { formatDistanceToNow } from 'date-fns'
+import { formatLastRun } from '@renderer/lib/last-run'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { toast } from 'sonner'
 
@@ -525,17 +525,17 @@ function AgentHealthCarousel({
  * unread), looping seamlessly via a duplicated run.
  */
 function TickerTitleMeta({
-  lastWorked,
+  lastRun,
   notifCount,
   notifState,
 }: {
-  lastWorked: string | null
+  lastRun: string
   notifCount: number
   notifState: SessionState
 }) {
   const run = (
     <span className="flex items-center gap-1.5 pr-8 text-muted-foreground">
-      <span>Last run {lastWorked ?? 'never'}</span>
+      <span>{lastRun}</span>
       <SessionStateDot state={notifState} />
       <span>
         {notifCount} new notification{notifCount !== 1 ? 's' : ''}
@@ -578,7 +578,7 @@ function AgentCard({
   health?: HomeCardHealthData
 }) {
   useRenderTracker('AgentCard')
-  const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
+  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Last run never'
 
   const isSmall = size === 'S'
 
@@ -606,9 +606,9 @@ function AgentCard({
     <div className="pointer-events-none absolute bottom-2 left-4 z-10 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
       <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
       {isSmall && notifState ? (
-        <TickerTitleMeta lastWorked={lastWorked} notifCount={notifSessions.length} notifState={notifState} />
+        <TickerTitleMeta lastRun={lastRun} notifCount={notifSessions.length} notifState={notifState} />
       ) : (
-        <div className="truncate text-xs text-muted-foreground">Last run {lastWorked ?? 'never'}</div>
+        <div className="truncate text-xs text-muted-foreground">{lastRun}</div>
       )}
     </div>
   )
