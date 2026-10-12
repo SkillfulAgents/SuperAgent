@@ -1282,8 +1282,12 @@ app.post('/browser/open', async (c) => {
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
-    // Clean up any leftover daemon state before starting
-    cleanupAgentBrowserDaemon();
+    // Clear leftover daemon state only before a net-new launch. While a browser
+    // is active the daemon owns the container's Chrome, so this cleanup (which
+    // pkills agent-browser and headless Chrome) relaunched Chrome on every
+    // navigation and dropped the live-view screencast. Failed opens still clean
+    // up in the retry below.
+    if (launched) cleanupAgentBrowserDaemon();
 
     let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
