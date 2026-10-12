@@ -17,12 +17,19 @@ export interface ProviderScopeMap {
   basePath: string;
   scopeMap: ScopeMapEntry[];
   allScopes: string[] | Record<string, string[]>;
+  /**
+   * Other providers whose scope map may classify a request this provider's
+   * token makes to the same host (e.g. a Gmail token reading a Drive file to
+   * attach it). Scopes matched this way are namespaced `<provider>:<scope>`.
+   */
+  scopeFallbacks?: string[];
 }
 
 export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "gmail": {
     provider: "gmail",
     apiHost: "gmail.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["gmail.addons.current.action.compose", "gmail.addons.current.message.action", "gmail.addons.current.message.metadata", "gmail.addons.current.message.readonly", "gmail.compose", "gmail.full", "gmail.insert", "gmail.labels", "gmail.metadata", "gmail.modify", "gmail.readonly", "gmail.send", "gmail.settings.basic", "gmail.settings.sharing"],
     scopeMap: [
@@ -221,6 +228,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "googlesheets": {
     provider: "googlesheets",
     apiHost: "sheets.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["drive", "drive.file", "drive.readonly", "spreadsheets", "spreadsheets.readonly"],
     scopeMap: [
@@ -246,6 +254,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "googledocs": {
     provider: "googledocs",
     apiHost: "docs.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["documents", "documents.readonly", "drive", "drive.file", "drive.readonly"],
     scopeMap: [
@@ -257,6 +266,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "googleslides": {
     provider: "googleslides",
     apiHost: "slides.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["drive", "drive.file", "drive.readonly", "presentations", "presentations.readonly"],
     scopeMap: [

@@ -173,6 +173,16 @@ describe('resolveApiPolicy', () => {
     // gmail.full → block, gmail.readonly → allow (wildcard), most permissive = allow
     expect(result.decision).toBe('allow')
   })
+  it("a policy on a toolkit's own scope does not cover the same name borrowed from a fallback", async () => {
+    setupPolicies([{ scope: 'drive.readonly', decision: 'allow' }])
+    const result = await resolveApiPolicy(
+      'acc-1',
+      makeMatchResult(true, ['googledrive:drive.readonly']),
+      'user-1'
+    )
+    expect(result.decision).toBe('review')
+    expect(result.resolvedFrom).toBe('global_default')
+  })
 })
 
 describe('resolveMcpPolicy', () => {

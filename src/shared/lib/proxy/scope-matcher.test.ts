@@ -275,3 +275,57 @@ describe('isValidApiScope', () => {
     expect(isValidApiScope('gmail', 123 as unknown as string)).toBe(false)
   })
 })
+
+describe('scope fallbacks', () => {
+  const DRIVE_FILE = '/drive/v3/files/1bEkZcF74h0aByyTJRAGE8cxGwQrMOCWLsv3R7M6ANXE'
+  const GOOGLEAPIS = 'www.googleapis.com'
+
+  it('classifies a Drive file read made with a Gmail token as namespaced Drive scopes', () => {
+    const result = matchScopes('gmail', 'GET', DRIVE_FILE, GOOGLEAPIS)
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toContain('googledrive:drive.readonly')
+    expect(result.scopes.every((s) => s.startsWith('googledrive:'))).toBe(true)
+    expect(Object.keys(result.descriptions).every((s) => s.startsWith('googledrive:'))).toBe(true)
+    expect(result.endpointDescription).toBeTruthy()
+  })
+
+  it.each(['googledocs', 'googlesheets', 'googleslides'])('%s falls back to Drive for exports', (toolkit) => {
+    const result = matchScopes(toolkit, 'GET', '/drive/v3/files/abc/export', GOOGLEAPIS)
+    expect(result.scopes).toContain('googledrive:drive.readonly')
+  })
+
+  it('does not fall back when the request host is not the fallback provider host', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'gmail.googleapis.com').matched).toBe(false)
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'evil.example.com').matched).toBe(false)
+  })
+
+  it('does not fall back without a target host', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE).matched).toBe(false)
+  })
+
+  it('does not fall back for a toolkit that declares no fallbacks, even on a shared host', () => {
+    expect(matchScopes('googlecalendar', 'GET', DRIVE_FILE, GOOGLEAPIS).matched).toBe(false)
+  })
+
+  it("prefers the toolkit's own map over a fallback", () => {
+    const result = matchScopes('gmail', 'GET', '/gmail/v1/users/me/messages', GOOGLEAPIS)
+    expect(result.scopes).toContain('gmail.readonly')
+    expect(result.scopes.some((s) => s.includes(':'))).toBe(false)
+  })
+
+  it('a borrowed scope carries no risk label, so label defaults ("*read") never cover it', () => {
+    expect(getScopeLabel('gmail', 'googledrive:drive.readonly')).toBeUndefined()
+  })
+
+  it('accepts a borrowed scope key only through a declared fallback', () => {
+    expect(isValidApiScope('gmail', 'googledrive:drive.readonly')).toBe(true)
+    expect(isValidApiScope('googlecalendar', 'googledrive:drive.readonly')).toBe(false)
+    expect(isValidApiScope('gmail', 'googledrive:gmail.send')).toBe(false)
+    expect(isValidApiScope('gmail', 'googledrive:not-a-scope')).toBe(false)
+    expect(isValidApiScope('gmail', 'drive.readonly')).toBe(false)
+  })
+
+  it('keeps native scopes that contain ":" valid', () => {
+    expect(isValidApiScope('slack', 'chat:write')).toBe(true)
+  })
+})

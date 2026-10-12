@@ -33,6 +33,12 @@ export function isValidApiScope(toolkit: string | undefined, scope: unknown): bo
   if (typeof scope !== 'string' || scope.length === 0) return false
   if (scope === ACCOUNT_DEFAULT_SCOPE || isLabelDefaultKey(scope)) return true
   if (!toolkit) return false
+  const borrowed = parseBorrowedScope(toolkit, scope)
+  if (borrowed) return declaresScope(borrowed.provider, borrowed.scope)
+  return declaresScope(toolkit, scope)
+}
+
+function declaresScope(toolkit: string, scope: string): boolean {
   const provider = SCOPE_MAPS[toolkit]
   if (!provider) return false
   const all = Array.isArray(provider.allScopes)
@@ -42,23 +48,69 @@ export function isValidApiScope(toolkit: string | undefined, scope: unknown): bo
 }
 
 /**
+ * Split a `<provider>:<scope>` key borrowed through `toolkit`'s scopeFallbacks.
+ * Returns null for the toolkit's own scopes, including native scopes that
+ * contain ':' (e.g. Slack's `chat:write`), since their prefix is not a fallback.
+ */
+export function parseBorrowedScope(
+  toolkit: string,
+  scope: string
+): { provider: string; scope: string } | null {
+  const sep = scope.indexOf(':')
+  if (sep <= 0) return null
+  const provider = scope.slice(0, sep)
+  if (!SCOPE_MAPS[toolkit]?.scopeFallbacks?.includes(provider)) return null
+  return { provider, scope: scope.slice(sep + 1) }
+}
+
+/**
  * Match a request against scope maps to determine which scopes apply.
  * Pure function — no DB or side effects.
+ *
+ * When the toolkit's own map has no entry, each provider in its
+ * `scopeFallbacks` is tried, but only if that provider's `apiHost` is the
+ * request's `targetHost`. Borrowed scopes are returned as `<provider>:<scope>`
+ * so a policy on the toolkit's own scope of the same name never covers them.
  */
 export function matchScopes(
   toolkit: string,
   method: string,
-  targetPath: string
+  targetPath: string,
+  targetHost?: string
 ): ScopeMatchResult {
   const empty: ScopeMatchResult = { matched: false, scopes: [], descriptions: {}, endpointDescription: undefined }
 
+  const own = matchProvider(toolkit, method, targetPath)
+  if (own) return own
+  if (!targetHost) return empty
+
+  for (const fallback of SCOPE_MAPS[toolkit]?.scopeFallbacks ?? []) {
+    if (SCOPE_MAPS[fallback]?.apiHost !== targetHost) continue
+    const borrowed = matchProvider(fallback, method, targetPath)
+    if (!borrowed) continue
+    const scopes = borrowed.scopes.map((s) => `${fallback}:${s}`)
+    const descriptions: Record<string, string> = {}
+    for (const s of borrowed.scopes) {
+      if (borrowed.descriptions[s]) descriptions[`${fallback}:${s}`] = borrowed.descriptions[s]
+    }
+    return { ...borrowed, scopes, descriptions }
+  }
+
+  return empty
+}
+
+function matchProvider(
+  toolkit: string,
+  method: string,
+  targetPath: string
+): ScopeMatchResult | null {
   const provider = SCOPE_MAPS[toolkit]
-  if (!provider) return empty
+  if (!provider) return null
 
   // Normalize
   const normalizedMethod = method.toUpperCase()
   let normalizedPath = targetPath
-  if (!normalizedPath || normalizedPath.trim() === '') return empty
+  if (!normalizedPath || normalizedPath.trim() === '') return null
   if (!normalizedPath.startsWith('/')) normalizedPath = '/' + normalizedPath
 
   // Filter by method. An entry with method "*" is method-agnostic and matches
@@ -80,7 +132,7 @@ export function matchScopes(
     }
   }
 
-  if (matches.length === 0) return empty
+  if (matches.length === 0) return null
 
   // Keep the most specific matches (lowest wildcard score)
   const minWildcardScore = Math.min(...matches.map((m) => m.wildcardScore))
