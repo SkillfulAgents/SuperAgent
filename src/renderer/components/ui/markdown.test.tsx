@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { DialogContext } from '@renderer/context/dialog-context'
 import { Markdown } from './markdown'
 
 describe('Markdown', () => {
@@ -12,6 +13,29 @@ describe('Markdown', () => {
     expect(link).toHaveAttribute('href', 'https://example.com/docs')
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('opens a settings tab link in the app', () => {
+    const openSettings = vi.fn()
+    render(
+      <DialogContext.Provider value={{ openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }}>
+        <Markdown>{'Browser use is off. [Open Browser settings](/settings/browser)'}</Markdown>
+      </DialogContext.Provider>,
+    )
+    const link = screen.getByRole('link', { name: 'Open Browser settings' })
+    expect(link).not.toHaveAttribute('target')
+    fireEvent.click(link)
+    expect(openSettings).toHaveBeenCalledWith('browser')
+  })
+
+  it('keeps an unknown settings tab as an external link', () => {
+    const openSettings = vi.fn()
+    render(
+      <DialogContext.Provider value={{ openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }}>
+        <Markdown>{'[Open](/settings/not-a-tab)'}</Markdown>
+      </DialogContext.Provider>,
+    )
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
   })
 
   it('applies the shared plugins: GFM autolinks with fullwidth trail handling', () => {
