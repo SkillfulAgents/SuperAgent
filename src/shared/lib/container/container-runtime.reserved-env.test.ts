@@ -254,7 +254,6 @@ describe('ContainerRuntime webhook relay env', () => {
     mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
     mockGetAppPort.mockReturnValue(3000)
-    mockGetMountsWithHealth.mockReturnValue([])
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
     mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
