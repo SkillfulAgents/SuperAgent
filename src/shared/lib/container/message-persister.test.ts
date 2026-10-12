@@ -902,6 +902,48 @@ describe('MessagePersister', () => {
       )
     })
 
+    it('does not notify when the container idle-compacts, but notifies the next real turn', () => {
+      const finishTurn = (text: string) => {
+        mockClient._sendMessage({
+          type: 'assistant',
+          uuid: `answer-${text}`,
+          message: { id: `msg-${text}`, content: [{ type: 'text', text }] },
+        })
+        mockClient._sendMessage({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      }
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      finishTurn('Here is the report.')
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+
+      mockClient._sendMessage({ type: 'system', subtype: 'idle_compact' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      finishTurn('Here is the summary.')
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    })
+
     it('does not notify for a modern success-subtype error result', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({

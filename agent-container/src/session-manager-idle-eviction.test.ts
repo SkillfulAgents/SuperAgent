@@ -870,7 +870,11 @@ describe('SessionManager idle compaction', () => {
   }
 
   it('sends /compact once to a large idle interactive session and leaves it running', async () => {
-    const { proc } = await idleSessionWithContext(250_000)
+    const { id, proc } = await idleSessionWithContext(250_000)
+    const received: Array<{ subtype?: unknown; sentSoFar: number }> = []
+    manager.subscribe(id, (msg) =>
+      received.push({ subtype: (msg as { subtype?: unknown }).subtype, sentSoFar: proc.sentContents.length })
+    )
     await pastThreshold()
 
     await manager.evictIdleSessions()
@@ -878,6 +882,9 @@ describe('SessionManager idle compaction', () => {
 
     expect(proc.sentContents.filter((c) => c === '/compact')).toHaveLength(1)
     expect(proc.stopCalls).toBe(0)
+    // The host hears about the compaction before the /compact turn starts.
+    const notice = received.find((m) => m.subtype === 'idle_compact')
+    expect(notice?.sentSoFar).toBe(proc.sentContents.indexOf('/compact'))
   })
 
   it('skips sessions below the token threshold', async () => {

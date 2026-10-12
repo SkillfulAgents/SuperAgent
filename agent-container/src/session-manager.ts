@@ -1231,6 +1231,8 @@ export class SessionManager extends EventEmitter {
       if (this.shouldCompactIdle(data, now)) {
         data.idleCompacted = true;
         console.log(`[Session ${sessionId}] Compacting idle session (${data.contextTokens} tokens) before its prompt cache expires`);
+        // Tell the host before the turn starts: nobody asked for it, so it must not end in a "finished" notification.
+        this.broadcast(sessionId, { type: 'system', subtype: 'idle_compact' });
         data.process.sendMessage('/compact').catch((error) => {
           console.error(`[Session ${sessionId}] Idle compaction failed:`, error);
         });
