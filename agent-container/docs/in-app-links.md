@@ -23,8 +23,8 @@ Rules:
 
 Quote control names exactly as written below, so the user can find them.
 These are the main controls, not every field; some appear only after an
-earlier choice (for example, Browserbase fields appear only when Browserbase is
-the browser host).
+earlier choice (for example, "Headless Mode" appears only when Google Chrome is the
+browser host).
 
 | Tab ID | Settings label | Main controls |
 |---|---|---|
@@ -40,7 +40,7 @@ the browser host).
 | `usage` | Usage | "Usage period", spend and token charts, "Breakdown" |
 | `skillsets` | Skillsets | Add, refresh, or remove skillset repositories; "Repository token (optional)" (admin) |
 | `web` | Web Search | "Web provider" (Gamut / Native / Exa / Parallel), "Exa API Key" (admin) |
-| `browser` | Browser Use | "Browser host" (container built-in, Chrome profile, or Browserbase), "Headless Mode", "Max Browser Tabs", "Browser Agent Model"; Browserbase: "API Key", "Project ID", "Enable Proxies", "Advanced Stealth Mode", "Operating System" (admin) |
+| `browser` | Browser Use | "Browser Agent Model", "Max Browser Tabs", Password Managers, "Browser host" (Container (built-in) / Google Chrome / Browserbase / Platform); under Google Chrome: "Chrome Profile", "Headless Mode"; under Browserbase or Platform: "Advanced Stealth Mode", "Enable Proxies", "Operating System" (admin) |
 | `computer-use` | Computer Use | "Persistent Permissions" (admin, local app only) |
 | `capabilities` | Subagents | "Launch policies" for Task-tool subagents and Workflow multi-agent runs (admin) |
 | `account-provider` | Account Provider | "Provider" (Composio / Nango), "Nango Secret Key" (admin) |
