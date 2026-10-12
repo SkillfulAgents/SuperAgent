@@ -485,7 +485,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
           const stored = await send()
           if (signal?.aborted && target.kind === 'create') {
             // rclone cancelled this upload while Drive committed it (the file was renamed mid-upload) and sends it
-            // again under the new name. Its cleanup delete raced the commit, so the copy made here is a stray.
+            // again under the new name. It sends no cleanup for a cancelled upload, so this trashes the stray made here.
             if (!sameVersion(stored, await this.file(stored.id))) throw changedDuringUpload()
             const trashed = await this.request({ method: 'PATCH', path: `drive/v3/files/${stored.id}`, json: { trashed: true } })
             await trashed.body?.cancel()

@@ -157,6 +157,27 @@ export function volumeContract(label: string, create: () => VolumeContractFixtur
       expect(f.bytes('file')).toEqual(bytes('committed'))
     })
 
+    it('deletes a file after uploads the client cancelled and replaced', async () => {
+      f.put('file', bytes('before'))
+      const cancel = async (overlap?: () => Promise<void>) => {
+        const signal = new AbortController()
+        const writing = f.volume().write('file', new ReadableStream<Uint8Array>(), signal.signal).catch(error => error)
+        await new Promise(resolve => setImmediate(resolve))
+        await overlap?.()
+        signal.abort()
+        await writing
+      }
+      await cancel()
+      await cancel(() => f.volume().write('file', body('final'), new AbortController().signal))
+      await f.volume().delete('file')
+      expect(f.exists('file')).toBe(false)
+      f.put('file', bytes('again'))
+      await cancel(() => cancel())
+      await expect(f.volume().delete('file')).rejects.toMatchObject({ status: 409 })
+      await f.volume().delete('file')
+      expect(f.exists('file')).toBe(false)
+    })
+
     it('allows mutations while another upload is waiting for its body', async () => {
       let controller!: ReadableStreamDefaultController<Uint8Array>
       const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c } })
