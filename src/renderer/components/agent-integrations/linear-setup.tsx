@@ -9,7 +9,8 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
-import { isPublicLinearIntegration } from '@shared/lib/task-manager-integrations/linear/public'
+import { isPublicLinearIntegration, type PublicLinearIntegration } from '@shared/lib/task-manager-integrations/linear/public'
+import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { ToggleRow } from './integration-settings-controls'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 
@@ -18,6 +19,7 @@ function ExternalButton({ href, children }: { href: string; children: React.Reac
     if (window.electronAPI) { event.preventDefault(); void window.electronAPI.openExternal(href) }
   }}>{children}<ExternalLink className="h-3.5 w-3.5" /></a>
 }
+
 
 /** OAuth changes the connection step, while the setup frame remains shared. */
 export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onClose: () => void }) {
@@ -33,6 +35,7 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
   const linear = integration && isPublicLinearIntegration(integration) ? integration.linear : undefined
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
+  const [webhookSecret, setWebhookSecret] = useState('')
   const [credentialsSaved, setCredentialsSaved] = useState(false)
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -41,6 +44,15 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
   const completed = useRef(false)
   const queryClient = useQueryClient()
   const pending = linear?.authorizationState === 'pending' && credentialsSaved
+  // Webhooks are offered (and on by default) while the host has a relay:
+  // events that happen while the agent is offline are still delivered. The
+  // choice is fixed once the account exists.
+  const { data: relay } = useWebhookRelay()
+  const webhooksOffered = (setup.data?.transports ?? []).includes('relay') && !!relay?.available
+  const [webhooksChosen, setWebhooksChosen] = useState(true)
+  // The account, once loaded, says; until then the choice made here does.
+  const viaRelay = linear ? !!linear.webhook : webhooksOffered && webhooksChosen
+  const creationUrl = viaRelay ? linear?.setup.creationUrl : setup.data?.creationUrl
 
   useEffect(() => {
     if (linear?.authorizationState === 'reconnect_needed') closeLogin()
@@ -50,6 +62,16 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
     closeLogin()
     onClose()
   }, [linear?.authorizationState, linear?.authorized, integrationId, closeLogin, onClose, agentSlug, queryClient])
+
+  // The app's webhook URL must exist before the app, so relay setup creates the account first.
+  const prepareWebhook = async () => {
+    setBusy(true); setError(null)
+    try {
+      const row = await create.mutateAsync({ agentSlug, provider: 'linear', name: displayName, config: { webhooks: true } })
+      setIntegrationId(row.id)
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not create the webhook URL') }
+    finally { setBusy(false) }
+  }
 
   const connect = async () => {
     if (connecting.current) return
@@ -64,8 +86,8 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
           id = row.id
           setIntegrationId(id)
         }
-        const result = await authorization.mutateAsync({ id, agentSlug, config: credentialsSaved ? {} : { clientId, clientSecret } })
-        setClientSecret(''); setCredentialsSaved(true); setAuthUrl(result.url)
+        const result = await authorization.mutateAsync({ id, agentSlug, config: credentialsSaved ? {} : { clientId, clientSecret, ...(viaRelay ? { webhookSecret } : {}) } })
+        setClientSecret(''); setWebhookSecret(''); setCredentialsSaved(true); setAuthUrl(result.url)
         return result.url
       })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not connect integration') }
@@ -78,11 +100,15 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
       <ol className="list-decimal list-outside ml-5 space-y-2.5 text-sm font-normal text-foreground">
         <li>Choose a name for this agent, then create its own private app in Linear.
           <div className="mt-3">
-            {setup.data?.creationUrl ? <ExternalButton href={setup.data.creationUrl}>Create app in Linear</ExternalButton> : <span className="text-xs text-muted-foreground">Loading app setup…</span>}
+            {viaRelay && !integrationId
+              ? <Button size="sm" variant="outline" disabled={busy || !displayName || !setup.data} onClick={() => void prepareWebhook()}>Get webhook URL</Button>
+              : creationUrl ? <ExternalButton href={creationUrl}>Create app in Linear</ExternalButton> : <span className="text-xs text-muted-foreground">Loading app setup…</span>}
           </div>
         </li>
-        <li>Add an avatar, keep the app private, and leave webhooks off. The callback URL is prefilled.</li>
-        <li>Copy the app’s Client ID and Client secret into this form.</li>
+        {viaRelay
+          ? <li>Add an avatar and keep the app private. The callback and this agent’s webhook URL are prefilled: keep webhooks on, with inbox notifications, comments and issues.</li>
+          : <li>Add an avatar, keep the app private, and leave webhooks off. The callback URL is prefilled.</li>}
+        <li>{viaRelay ? 'Copy the app’s Client ID, Client secret and webhook Signing secret into this form.' : 'Copy the app’s Client ID and Client secret into this form.'}</li>
         <li>Click Connect, then authorize the agent in Linear. Choose the workspace and teams it can access.</li>
       </ol>
       <p className="text-xs text-muted-foreground">This agent will have its own identity. Mention it in comments or delegate issues to it to start work.</p>
@@ -102,14 +128,19 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
       {credentialsSaved && <Button size="sm" variant="ghost" className="mr-auto" disabled={busy} onClick={() => {
         closeLogin(); setCredentialsSaved(false); setAuthUrl(null); setError(null)
       }}>Edit credentials</Button>}
-      <Button size="sm" disabled={busy || !displayName || !setup.data || (!credentialsSaved && (!clientId.trim() || !clientSecret.trim()))} onClick={() => void connect()}>
+      <Button size="sm" disabled={busy || !displayName || !setup.data || (viaRelay && !integrationId) || (!credentialsSaved && (!clientId.trim() || !clientSecret.trim() || (viaRelay && !webhookSecret.trim())))} onClick={() => void connect()}>
         {busy ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Connecting...</> : pending ? 'Start again' : 'Connect'}
       </Button>
     </>}
   >
+    {webhooksOffered && !integrationId && <label className="flex items-start gap-2 text-sm cursor-pointer">
+      <input type="checkbox" className="mt-1" checked={webhooksChosen} disabled={busy} onChange={event => setWebhooksChosen(event.target.checked)} />
+      <span>Set up webhooks (recommended)<span className="block text-xs text-muted-foreground">Events that happen while this agent is offline are delivered when it’s back. Without them it uses a live connection and misses those.</span></span>
+    </label>}
     <IntegrationSetupField id="setup-integration-name" label="Integration name" value={name ?? agent?.name ?? agentSlug} onChange={event => setName(event.target.value)} maxLength={80} disabled={busy || !!integrationId} />
     <IntegrationSetupField id="linear-client-id" label="Client ID" value={clientId} onChange={event => setClientId(event.target.value)} autoComplete="off" disabled={busy || credentialsSaved} />
     <IntegrationSetupField id="linear-client-secret" label="Client secret" type="password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} autoComplete="new-password" placeholder={credentialsSaved ? 'Saved securely' : undefined} disabled={busy || credentialsSaved} />
+    {viaRelay && <IntegrationSetupField id="linear-webhook-secret" label="Webhook signing secret" type="password" value={webhookSecret} onChange={event => setWebhookSecret(event.target.value)} autoComplete="new-password" placeholder={credentialsSaved ? 'Saved securely' : undefined} disabled={busy || credentialsSaved} />}
   </IntegrationSetupLayout>
 }
 
@@ -117,6 +148,7 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
 export function LinearConnectionSettings({ integration }: { integration: PublicAgentIntegration }) {
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
+  const [webhookSecret, setWebhookSecret] = useState('')
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [editCredentials, setEditCredentials] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -128,13 +160,15 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
   if (!isPublicLinearIntegration(integration)) return null
   const linear = integration.linear
   const needsCredentials = !linear.canReconnect || editCredentials
+  // A relay installation can't authorize without it (e.g. setup stopped after the webhook URL).
+  const needsWebhookSecret = needsCredentials && !!linear.webhook && !linear.webhook.secretSaved
   const pending = linear.authorizationState === 'pending'
   const authorize = async (useSaved = false) => {
     setBusy(true); setError(null); setAuthUrl(null)
     try {
       await openLogin(async () => {
-        const result = await authorization.mutateAsync({ id: integration.id, agentSlug: integration.agentSlug, config: useSaved ? {} : { clientId, clientSecret } })
-        setClientSecret(''); setEditCredentials(false); setAuthUrl(result.url)
+        const result = await authorization.mutateAsync({ id: integration.id, agentSlug: integration.agentSlug, config: useSaved ? {} : { clientId, clientSecret, ...(needsWebhookSecret ? { webhookSecret } : {}) } })
+        setClientSecret(''); setWebhookSecret(''); setEditCredentials(false); setAuthUrl(result.url)
         return result.url
       })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not authorize integration') }
@@ -146,13 +180,14 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
       {linear.authorizationMessage && <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">{linear.authorizationMessage}</p>}
       {needsCredentials && <>
         <div className="space-y-2"><p className="text-sm font-medium">1. Create your agent’s app</p>
-          <p className="text-xs text-muted-foreground">Use the prefilled form, add an avatar, keep the app private, and leave webhooks off. To reconnect, use the existing app.</p>
+          <p className="text-xs text-muted-foreground">Use the prefilled form, add an avatar, keep the app private, and {linear.webhook ? 'keep webhooks on' : 'leave webhooks off'}. To reconnect, use the existing app.</p>
           <ExternalButton href={linear.setup.creationUrl}>Create app in Linear</ExternalButton>
           <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Callback URL</summary><p className="mt-2 break-all">{linear.setup.redirectUri}</p></details>
         </div>
         <div className="space-y-3"><p className="text-sm font-medium">2. Copy the app credentials</p>
           <div className="space-y-1"><Label htmlFor="linear-client-id">Client ID</Label><Input id="linear-client-id" autoComplete="off" value={clientId} onChange={event => { setClientId(event.target.value); setAuthUrl(null) }} /></div>
           <div className="space-y-1"><Label htmlFor="linear-client-secret">Client secret</Label><Input id="linear-client-secret" type="password" autoComplete="new-password" value={clientSecret} onChange={event => { setClientSecret(event.target.value); setAuthUrl(null) }} /></div>
+          {needsWebhookSecret && <div className="space-y-1"><Label htmlFor="linear-reconnect-webhook-secret">Webhook signing secret</Label><Input id="linear-reconnect-webhook-secret" type="password" autoComplete="new-password" value={webhookSecret} onChange={event => { setWebhookSecret(event.target.value); setAuthUrl(null) }} /></div>}
         </div>
       </>}
       <div className="space-y-2">
@@ -163,7 +198,7 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
           <p className="text-xs text-muted-foreground">Waiting for authorization. This page updates automatically.</p>
         </>}
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={needsCredentials ? 'default' : 'outline'} disabled={busy || (needsCredentials && (!clientId.trim() || !clientSecret.trim()))} onClick={() => void authorize(!needsCredentials)}>
+          <Button size="sm" variant={needsCredentials ? 'default' : 'outline'} disabled={busy || (needsCredentials && (!clientId.trim() || !clientSecret.trim() || (needsWebhookSecret && !webhookSecret.trim())))} onClick={() => void authorize(!needsCredentials)}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}{needsCredentials ? 'Continue to authorization' : pending ? 'Start again' : 'Reconnect account'}
           </Button>
           {linear.canReconnect && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditCredentials(!editCredentials); setAuthUrl(null); setError(null) }}>{editCredentials ? 'Cancel' : 'Edit app credentials'}</Button>}
@@ -177,9 +212,70 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
 export function LinearIntegrationSettings({ integration }: { integration: PublicAgentIntegration }) {
   const update = useUpdateAgentIntegration()
   if (!isPublicLinearIntegration(integration)) return null
-  return <DetailCard label="Integration Settings"><ToggleRow
-    label="Run on status changes" helperText="Start work when an involved issue changes status."
-    checked={integration.settings.runOnStatusChange} disabled={update.isPending}
-    onCheckedChange={runOnStatusChange => update.mutate({ id: integration.id, settings: { runOnStatusChange } })}
-  /></DetailCard>
+  return <>
+    <DetailCard label="Integration Settings"><ToggleRow
+      label="Run on status changes" helperText="Start work when an involved issue changes status."
+      checked={integration.settings.runOnStatusChange} disabled={update.isPending}
+      onCheckedChange={runOnStatusChange => update.mutate({ id: integration.id, settings: { runOnStatusChange } })}
+    /></DetailCard>
+    <LinearDeliverySettings integration={integration} />
+  </>
+}
+
+/** What Linear's app settings call each webhook resource type. */
+const LINEAR_EVENT_LABELS: Record<string, string> = { AppUserNotification: 'Inbox notifications', Comment: 'Comments', Issue: 'Issues' }
+
+/** Why this integration won't use its webhooks when it next connects, or null if it will. */
+function webhookFallbackReason(webhook: NonNullable<PublicLinearIntegration['linear']['webhook']>, relayAvailable: boolean): string | null {
+  if (!webhook.secretSaved) return 'the signing secret hasn’t been pasted'
+  if (webhook.secretRejected) return 'Linear’s deliveries don’t match the saved signing secret'
+  if (!relayAvailable) return 'the webhook relay is unavailable'
+  return null
+}
+
+/**
+ * Which path brings Linear's events in. It is chosen each time the integration
+ * connects: webhooks when they're set up and usable, the live connection
+ * otherwise. Setting webhooks up or removing them is explicit, since the
+ * Linear app's settings change with them.
+ */
+function LinearDeliverySettings({ integration }: { integration: PublicLinearIntegration }) {
+  const update = useUpdateAgentIntegration()
+  const { data: relay } = useWebhookRelay()
+  const [secret, setSecret] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const { webhook } = integration.linear
+  const fallback = webhook ? webhookFallbackReason(webhook, !!relay?.available) : null
+  const save = (settings: Record<string, unknown>) => {
+    setError(null)
+    update.mutate({ id: integration.id, settings }, {
+      onSuccess: () => setSecret(''),
+      onError: failure => setError(failure.message),
+    })
+  }
+  return <DetailCard label="Event Delivery">
+    <div className="space-y-3">
+      <p className="text-sm" data-testid="linear-delivery-path">{!webhook
+        ? 'Over a live connection. Events that happen while it’s disconnected are missed.'
+        : fallback
+          ? `Over a live connection for now: ${fallback}. It uses webhooks again the next time it connects once that’s resolved.`
+          : 'Through webhooks. Events that happen while this agent is offline are delivered when it’s back.'}</p>
+      {webhook && <>
+        <div className="space-y-1 text-xs">
+          <p className="text-muted-foreground">In this agent’s Linear app, turn webhooks on with this URL and these events: {webhook.resourceTypes.map(type => LINEAR_EVENT_LABELS[type] ?? type).join(', ')}.</p>
+          <p className="break-all select-all font-mono" data-testid="linear-webhook-url">{webhook.url}</p>
+        </div>
+        <div className="flex items-end gap-2">
+          <div className="flex-1 space-y-1">
+            <Label htmlFor="linear-webhook-secret-update">Webhook signing secret</Label>
+            <Input id="linear-webhook-secret-update" type="password" autoComplete="new-password" value={secret} placeholder={webhook.secretSaved ? 'Saved securely' : undefined} onChange={event => setSecret(event.target.value)} />
+          </div>
+          <Button size="sm" disabled={update.isPending || !secret.trim()} onClick={() => save({ webhookSecret: secret.trim() })}>Save</Button>
+        </div>
+        <Button size="sm" variant="ghost" disabled={update.isPending} onClick={() => save({ webhooks: false })}>Remove webhooks</Button>
+      </>}
+      {!webhook && relay?.available && <Button size="sm" variant="outline" disabled={update.isPending} onClick={() => save({ webhooks: true })}>Set up webhooks</Button>}
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+    </div>
+  </DetailCard>
 }

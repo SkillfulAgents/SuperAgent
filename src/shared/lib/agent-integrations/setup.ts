@@ -3,7 +3,7 @@ import { resolvePublicAppBaseUrl } from './app-link'
 import { agentIntegrationRegistry } from './registry'
 import { IntegrationSetupError, type IntegrationSetupContext } from './setup-types'
 import { captureException } from '../error-reporting'
-import { disableIntegrationRelay, provisionIntegrationRelay } from './relay-transport'
+import { disableIntegrationRelay, integrationRelayName, provisionIntegrationRelay } from './relay-transport'
 import { requiresRelay, supportedTransports } from './transport'
 import type { IntegrationStatus } from './types'
 
@@ -32,7 +32,7 @@ export async function prepareIntegrationSetup(provider: string, input: unknown, 
   if (wantsRelay && !transports.includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
   if (!wantsRelay && !requiresRelay(transports)) return { ...prepared, release: async () => {} }
   // The URL exists before the installation, so provider setup can hand it out.
-  const relay = await provisionIntegrationRelay(`${definition.name} integration for ${context.agentSlug}`, context.userId)
+  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, context.agentSlug), context.userId)
   return {
     ...prepared,
     config: { ...prepared.config, relay },

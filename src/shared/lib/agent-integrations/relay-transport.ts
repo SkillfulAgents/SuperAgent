@@ -15,12 +15,13 @@ import { IntegrationSetupError } from './setup-types'
 import {
   integrationRelayBindingSchema,
   readIntegrationRelay,
+  supportedTransports,
   type IntegrationRelayAccept,
   type IntegrationRelayAttachment,
   type IntegrationRelayBinding,
   type IntegrationRelayHost,
 } from './transport'
-import type { AgentIntegrationRecord, IntegrationInputResult } from './types'
+import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationInputResult } from './types'
 
 /**
  * The scope an integration's endpoint is minted and claimed under: its
@@ -29,6 +30,11 @@ import type { AgentIntegrationRecord, IntegrationInputResult } from './types'
 export async function integrationRelayScope(userId?: string): Promise<string> {
   const resolved = userId ? await resolvePlatformMemberForCandidates([userId]) : null
   return resolved?.memberId ?? getStoredPlatformMemberId() ?? LOCAL_RELAY_SCOPE
+}
+
+/** The endpoint's name on the platform, which lists it alongside agent-minted ones. */
+export function integrationRelayName(providerName: string, agentSlug: string): string {
+  return `${providerName} integration for ${agentSlug}`
 }
 
 /** Mints the public URL an integration's webhooks will arrive at. */
@@ -74,6 +80,42 @@ export async function releaseIntegrationTransport(record: AgentIntegrationRecord
       extra: { integrationId: record.id, provider: record.provider, endpointId: relay.endpointId },
     })
   }
+}
+
+/**
+ * Sets up webhooks for an existing installation: mints its endpoint, then
+ * `write` stores it. The endpoint is disabled again if the write fails.
+ * Returns false if they are already set up.
+ */
+export async function setUpIntegrationWebhooks(
+  record: AgentIntegrationRecord,
+  definition: Pick<AgentIntegrationDefinition, 'name' | 'transports'>,
+  write: (relay: IntegrationRelayBinding) => Promise<void>,
+): Promise<boolean> {
+  if (readIntegrationRelay(record.config)) return false
+  if (!supportedTransports(definition).includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
+  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined)
+  try {
+    await write(relay)
+  } catch (error) {
+    await disableIntegrationRelay(relay).catch((cleanup: unknown) => {
+      captureException(cleanup, { tags: { component: 'agent-integration', operation: 'release-relay-endpoint' }, extra: { integrationId: record.id } })
+    })
+    throw error
+  }
+  return true
+}
+
+/**
+ * Removes an installation's webhooks: `write` forgets the endpoint, then it is
+ * disabled. Deliveries already claimed for it are dropped. Returns false if
+ * there were none.
+ */
+export async function removeIntegrationWebhooks(record: AgentIntegrationRecord, write: () => Promise<void>): Promise<boolean> {
+  if (!readIntegrationRelay(record.config)) return false
+  await write()
+  await releaseIntegrationTransport(record)
+  return true
 }
 
 /** Every result but `retry` acknowledges the event to the relay. */
