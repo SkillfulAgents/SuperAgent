@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { matchScopes, isValidApiScope } from './scope-matcher'
-import { getScopeLabel } from './scope-metadata'
+import { getScopeDescription, getScopeLabel } from './scope-metadata'
 
 describe('matchScopes', () => {
   it('exact match: gmail GET /gmail/v1/users/me/messages returns correct scopes', () => {
@@ -313,8 +313,16 @@ describe('scope fallbacks', () => {
     expect(result.scopes.some((s) => s.includes(':'))).toBe(false)
   })
 
-  it('a borrowed scope carries no risk label, so label defaults ("*read") never cover it', () => {
-    expect(getScopeLabel('gmail', 'googledrive:drive.readonly')).toBeUndefined()
+  it("a borrowed scope inherits the fallback provider's risk label and description", () => {
+    expect(getScopeLabel('gmail', 'googledrive:drive.readonly')).toBe('read')
+    expect(getScopeLabel('gmail', 'googledrive:drive.file')).toBe('write')
+    expect(getScopeDescription('gmail', 'googledrive:drive.readonly')).toBe(
+      getScopeDescription('googledrive', 'drive.readonly'),
+    )
+  })
+
+  it('a borrowed key outside the declared fallbacks has no label', () => {
+    expect(getScopeLabel('googlecalendar', 'googledrive:drive.file')).toBeUndefined()
   })
 
   it('accepts a borrowed scope key only through a declared fallback', () => {

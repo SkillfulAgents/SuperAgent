@@ -5155,3 +5155,19 @@ export function getScopeMap(provider: string): ProviderScopeMap | undefined {
 export function getProviderSlugs(): string[] {
   return Object.keys(SCOPE_MAPS);
 }
+
+/**
+ * Split a `<provider>:<scope>` key borrowed through `toolkit`'s scopeFallbacks.
+ * Returns null for the toolkit's own scopes, including native scopes that
+ * contain ':' (e.g. Slack's `chat:write`), since their prefix is not a fallback.
+ */
+export function parseBorrowedScope(
+  toolkit: string,
+  scope: string
+): { provider: string; scope: string } | null {
+  const sep = scope.indexOf(':');
+  if (sep <= 0) return null;
+  const provider = scope.slice(0, sep);
+  if (!SCOPE_MAPS[toolkit]?.scopeFallbacks?.includes(provider)) return null;
+  return { provider, scope: scope.slice(sep + 1) };
+}

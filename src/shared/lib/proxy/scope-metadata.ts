@@ -11,6 +11,8 @@
  * grouping), and the policy resolver (label-default tier).
  */
 
+import { parseBorrowedScope } from './scope-maps'
+
 export type ScopeLabel = 'read' | 'write' | 'destructive'
 
 export interface ScopeMeta {
@@ -1019,10 +1021,17 @@ export const SCOPE_METADATA: Record<string, Record<string, ScopeMeta>> = {
   },
 }
 
+function metadataFor(provider: string, scope: string) {
+  const borrowed = parseBorrowedScope(provider, scope)
+  return borrowed
+    ? SCOPE_METADATA[borrowed.provider]?.[borrowed.scope]
+    : SCOPE_METADATA[provider]?.[scope]
+}
+
 export function getScopeDescription(provider: string, scope: string): string | undefined {
-  return SCOPE_METADATA[provider]?.[scope]?.description
+  return metadataFor(provider, scope)?.description
 }
 
 export function getScopeLabel(provider: string, scope: string): ScopeLabel | undefined {
-  return SCOPE_METADATA[provider]?.[scope]?.label
+  return metadataFor(provider, scope)?.label
 }

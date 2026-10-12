@@ -1,4 +1,4 @@
-import { SCOPE_MAPS, type ScopeMapEntry } from './scope-maps'
+import { SCOPE_MAPS, parseBorrowedScope, type ScopeMapEntry } from './scope-maps'
 import { getScopeDescription } from './scope-metadata'
 import { ACCOUNT_DEFAULT_SCOPE, isLabelDefaultKey } from './policy-sentinels'
 
@@ -48,29 +48,14 @@ function declaresScope(toolkit: string, scope: string): boolean {
 }
 
 /**
- * Split a `<provider>:<scope>` key borrowed through `toolkit`'s scopeFallbacks.
- * Returns null for the toolkit's own scopes, including native scopes that
- * contain ':' (e.g. Slack's `chat:write`), since their prefix is not a fallback.
- */
-export function parseBorrowedScope(
-  toolkit: string,
-  scope: string
-): { provider: string; scope: string } | null {
-  const sep = scope.indexOf(':')
-  if (sep <= 0) return null
-  const provider = scope.slice(0, sep)
-  if (!SCOPE_MAPS[toolkit]?.scopeFallbacks?.includes(provider)) return null
-  return { provider, scope: scope.slice(sep + 1) }
-}
-
-/**
  * Match a request against scope maps to determine which scopes apply.
  * Pure function — no DB or side effects.
  *
  * When the toolkit's own map has no entry, each provider in its
  * `scopeFallbacks` is tried, but only if that provider's `apiHost` is the
  * request's `targetHost`. Borrowed scopes are returned as `<provider>:<scope>`
- * so a policy on the toolkit's own scope of the same name never covers them.
+ * so a policy on the toolkit's own scope of the same name never covers them;
+ * their risk label is the fallback provider's (see getScopeLabel).
  */
 export function matchScopes(
   toolkit: string,

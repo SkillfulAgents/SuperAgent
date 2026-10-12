@@ -325,6 +325,22 @@ describe('resolveApiPolicy — label-default tier', () => {
     expect(r.decision).toBe('allow')
   })
 
+  it("a borrowed scope resolves through the account's label default for its inherited label", async () => {
+    setupPolicies([{ scope: '*write', decision: 'allow' }])
+    mockGetScopeLabel.mockImplementation((_t: string, s: string) =>
+      s === 'googledrive:drive.file' ? 'write' : undefined,
+    )
+    const result = await resolveApiPolicy(
+      'acc-1',
+      { matched: true, scopes: ['googledrive:drive.file'], descriptions: {} },
+      'user-1',
+      'gmail',
+    )
+    expect(mockGetScopeLabel).toHaveBeenCalledWith('gmail', 'googledrive:drive.file')
+    expect(result.decision).toBe('allow')
+    expect(result.resolvedFrom).toBe('account_label_default')
+  })
+
   it('without a toolkit the label tier is skipped (legacy callers)', async () => {
     labelMap({ 'gmail.readonly': 'read' })
     setupPolicies([
