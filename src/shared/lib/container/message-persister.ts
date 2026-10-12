@@ -2543,6 +2543,13 @@ class MessagePersister {
             content.task_type === 'local_agent' &&
             !!agentId &&
             state.completedSubagentIds.has(agentId)
+          // A cold/reattached host may never have seen the launch ack or the
+          // previous run. The runtime can identify background work without
+          // that history, including an automatic rerun under the same call.
+          const isBackgroundSubagent = content.task_type === 'local_agent' && (
+            content.is_backgrounded === true ||
+            (!!agentId && state.activeBackgroundTasks.get(agentId)?.isSubagent === true)
+          )
           // A subagent's own inner Bash can surface in the parent stream as an
           // unparented task_started{task_type:'local_bash'} — it is not a
           // subagent, and creating an entry for it renders a phantom subagent
@@ -2551,6 +2558,7 @@ class MessagePersister {
             const existing = state.activeSubagents.get(toolUseId)
             if (existing) {
               if (agentId) existing.agentId = agentId
+              if (isBackgroundSubagent) existing.isBackground = true
               if (isResumedSubagent) existing.isResumed = true
               // A new run under the SAME launching call (CLI 2.1.296+: a
               // subagent whose own background Bash finishes after the
@@ -2565,7 +2573,7 @@ class MessagePersister {
                 currentText: '',
                 currentToolUse: null,
                 currentToolInput: '',
-                isBackground: false,
+                isBackground: isBackgroundSubagent,
                 isResumed: isResumedSubagent,
               })
             }
@@ -2576,7 +2584,7 @@ class MessagePersister {
             if (typeof content.description === 'string') {
               trackedSubagent.description = content.description
             }
-            if (isResumedSubagent && agentId) {
+            if ((isBackgroundSubagent || isResumedSubagent) && agentId) {
               this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId)
             }
             this.broadcastToSSE(agentSlug, sessionId, {
@@ -2818,6 +2826,11 @@ class MessagePersister {
                 // a flip back to activity may arrive as an absent field.
                 ambient: task.ambient === true,
               })
+              if (task.task_type === 'local_agent') {
+                for (const sub of state.activeSubagents.values()) {
+                  if (sub.agentId === task.task_id) sub.isBackground = true
+                }
+              }
             }
           }
         } else if (content.subtype === 'memory_recall') {
@@ -3371,6 +3384,12 @@ class MessagePersister {
         parentToolId,
         agentId: sub.agentId,
       })
+    }
+    // Reattaching mid-run replays the background snapshot, not task_started
+    // or the original async launch ack. Recover the lifecycle flag when a
+    // sidechain frame identifies that already-running agent.
+    if (sub.agentId && state.activeBackgroundTasks.get(sub.agentId)?.isSubagent) {
+      sub.isBackground = true
     }
 
     // Route stream events to the subagent stream handler for real-time streaming

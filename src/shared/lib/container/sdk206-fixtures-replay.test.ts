@@ -38,6 +38,8 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
+  getModelCatalogSettings: () => ({}),
+  getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }),
   VALID_SCRIPT_TYPES: { darwin: ['applescript', 'shell'], linux: ['shell'], win32: ['powershell'] },
 }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
@@ -568,6 +570,85 @@ const SDK296_FIXTURES = [
 describe('sdk 0.3.296 capture replays', () => {
   afterEach(() => {
     vi.clearAllMocks()
+  })
+
+  it.each([
+    { host: 'reattached', phase: 'child-only' },
+    { host: 'cold', phase: 'child-only' },
+    { host: 'reattached', phase: 'rerun' },
+    { host: 'cold', phase: 'rerun' },
+  ] as const)('completes the automatic rerun with a $host host attached during $phase work', async ({ host, phase }) => {
+    const { meta, streamEntries } = await loadFixture('sdk296-bg-subagent-nested-bg-bash')
+    const contents = streamEntries.map(entry => entry.message.content as Record<string, unknown>)
+    const child = contents.find(c => c['subtype'] === 'task_started' && typeof c['parent_task_id'] === 'string')!
+    const agentId = child['parent_task_id'] as string
+    const childId = child['task_id'] as string
+    const starts = contents.flatMap((c, index) =>
+      c['subtype'] === 'task_started' && c['task_id'] === agentId ? [index] : []
+    )
+    expect(starts).toHaveLength(2)
+    const parentToolId = contents[starts[1]]['tool_use_id'] as string
+    const childOnlyIndex = contents.findIndex(c =>
+      c['subtype'] === 'background_tasks_changed' &&
+      Array.isArray(c['tasks']) && c['tasks'].length === 1 && c['tasks'][0].task_id === childId
+    )
+    expect(childOnlyIndex).toBeGreaterThan(starts[0])
+    const attachIndex = phase === 'child-only' ? childOnlyIndex : starts[1]
+    const snapshotIndex = contents.findLastIndex((c, index) =>
+      index <= attachIndex && c['subtype'] === 'background_tasks_changed'
+    )
+    expect(snapshotIndex).toBeGreaterThanOrEqual(0)
+
+    vi.resetModules()
+    const { messagePersister } = await import('./message-persister')
+    messagePersister.attachSessionStores(createInMemorySessionStore)
+    const { client, send } = createReplayClient()
+    const events: Array<Record<string, unknown>> = []
+    const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, data => {
+      events.push(data as Record<string, unknown>)
+    })
+    const deliver = async (message: StreamMessage) => {
+      send(message)
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+    try {
+      messagePersister.markSessionActive(meta.agentSlug, meta.sessionId)
+      if (host === 'reattached') {
+        await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+        for (const entry of streamEntries.slice(0, attachIndex + 1)) await deliver(entry.message)
+      }
+      await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+      // The real container handshake sends current background membership,
+      // not the old Agent launch, async ack, or task_started frames.
+      await deliver({
+        type: 'system',
+        content: { type: 'system', subtype: 'capabilities', session_state_events: true },
+        sessionId: meta.sessionId,
+        timestamp: new Date(),
+      })
+      await deliver(streamEntries[snapshotIndex].message)
+      events.length = 0
+
+      const endIndex = contents.findIndex((c, index) =>
+        index > starts[1] && c['subtype'] === 'task_notification' && c['task_id'] === agentId
+      )
+      expect(endIndex).toBeGreaterThan(attachIndex)
+      for (const entry of streamEntries.slice(attachIndex + 1, endIndex + 1)) await deliver(entry.message)
+
+      // Assert before the lead wakes/settles: session_idle must not be what
+      // finally makes a finished subagent disappear. The two terminal SDK
+      // signals must still produce exactly one completion for this run.
+      expect(events.filter(e => e['type'] === 'session_idle')).toHaveLength(0)
+      expect(events.filter(e => e['type'] === 'subagent_completed')).toEqual([
+        expect.objectContaining({ parentToolId, agentId }),
+      ])
+      expect(messagePersister.getActiveSubagents(meta.agentSlug, meta.sessionId)).toContainEqual(
+        expect.objectContaining({ parentToolId, agentId, status: 'completed' })
+      )
+    } finally {
+      cleanup()
+      messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
+    }
   })
 
   it.each(SDK296_FIXTURES)('%s: background contract holds and the session finalizes once', async (name) => {

@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { SubAgentBlock } from './subagent-block'
 import { createToolCall, createAssistantMessage } from '@renderer/test/factories'
 import type { ApiToolCall } from '@shared/lib/types/api'
+import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 
 // Mock useSubagentMessages
 let mockSubMessages: any[] = []
@@ -169,6 +170,60 @@ describe('SubAgentBlock', () => {
 
     expect(screen.getByText('running')).toBeInTheDocument()
     expect(screen.getByText('Sub-agent is working...')).toBeInTheDocument()
+  })
+
+  it('reopens the original block for a resumed run and shows its live output before the transcript catches up', () => {
+    const tc = createToolCall({
+      id: 'agent-tool',
+      name: 'Agent',
+      input: { subagent_type: 'general-purpose', description: 'Check the changes' },
+      result: 'Initial check finished',
+      subagent: { agentId: 'agent-1', status: 'completed' },
+    })
+    mockSubMessages = [createAssistantMessage({ content: { text: 'Initial check finished' } })]
+    const { rerender } = render(
+      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted />
+    )
+    expect(screen.queryByText('Initial check finished')).not.toBeInTheDocument()
+
+    // MessageItem selects this later run by agentId. SendMessage has a new
+    // tool id, while the original Agent block and its persisted result stay.
+    const resumed: SubagentInfo = {
+      parentToolId: 'send-tool',
+      agentId: 'agent-1',
+      streamingMessage: 'Checking the follow-up now',
+      streamingToolUse: { id: 'resumed-bash', name: 'Bash', partialInput: '{"command":"sleep 25"}' },
+      progressSummary: null,
+      subagentType: 'general-purpose',
+      description: 'Check the changes',
+      usage: { duration_ms: 5000, total_tokens: 1500, tool_uses: 2 },
+      lastToolName: 'Bash',
+    }
+    const resumedBlock = (
+      <SubAgentBlock
+        toolCall={tc} sessionId="s-1" agentSlug="agent-1"
+        isSessionActive isCompleted={false} activeSubagent={resumed}
+      />
+    )
+    rerender(resumedBlock)
+
+    expect(screen.getByText('running')).toBeInTheDocument()
+    expect(screen.getByText('Checking the follow-up now')).toBeInTheDocument()
+    expect(screen.getByTestId('sub-streaming-tool')).toHaveTextContent('Bash')
+    expect(screen.getByText(/5s · 1.5k tokens · 2 tool calls/)).toBeInTheDocument()
+
+    // A later JSONL refetch must replace, rather than duplicate, the stream.
+    mockSubMessages = [...mockSubMessages, createAssistantMessage({
+      content: { text: 'Checking the follow-up now' },
+      toolCalls: [createToolCall({ id: 'resumed-bash', name: 'Bash', result: undefined })],
+    })]
+    rerender(<SubAgentBlock
+      toolCall={tc} sessionId="s-1" agentSlug="agent-1"
+      isSessionActive isCompleted={false} activeSubagent={{ ...resumed }}
+    />)
+    expect(screen.getAllByText('Checking the follow-up now')).toHaveLength(1)
+    expect(screen.queryByTestId('sub-streaming-tool')).not.toBeInTheDocument()
+    expect(screen.getByTestId('sub-tool-Bash')).toBeInTheDocument()
   })
 
   it('renders subagent messages when expanded', async () => {
