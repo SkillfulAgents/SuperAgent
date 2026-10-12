@@ -4,8 +4,8 @@ import { z } from 'zod'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 
-const { browse } = vi.hoisted(() => ({ browse: vi.fn() }))
-vi.mock('@shared/lib/volumes/volume-factory', () => ({ browseVolumeFolders: browse }))
+const { browse, validate } = vi.hoisted(() => ({ browse: vi.fn(), validate: vi.fn() }))
+vi.mock('@shared/lib/volumes/volume-factory', () => ({ browseVolumeFolders: browse, validateVolumeSource: validate }))
 vi.mock('../middleware/auth', () => ({
   Authenticated: (): MiddlewareHandler => async (c, next) => {
     const id = c.req.header('Test-User')
@@ -56,5 +56,22 @@ describe('volume type setup API', () => {
     const unavailable = await request()
     expect(unavailable.status).toBe(503)
     expect(await unavailable.json()).toEqual({ error: 'The volume source is temporarily unavailable. Please try again.' })
+  })
+})
+
+
+describe('source connection validation', () => {
+  it('authenticates and dispatches credentials in the POST body, never the URL', async () => {
+    const url = '/api/volume-types/s3/validate'
+    expect((await app.request(url, { method: 'POST' })).status).toBe(401)
+    expect(validate).not.toHaveBeenCalled()
+    const result = { valid: false, checks: [{ label: 'Read objects', status: 'failed', message: 'No read permission' }], warnings: [] }
+    validate.mockResolvedValue(result)
+    const input = { bucket: 'example', credentials: { accessKeyId: 'key', secretAccessKey: 'secret' } }
+    const response = await app.request(url, { method: 'POST', headers: { 'Test-User': 'alice', 'Content-Type': 'application/json' }, body: JSON.stringify(input) })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(result)
+    expect(validate).toHaveBeenCalledWith('s3', input, { userId: 'alice', admin: false })
+    expect(JSON.stringify(result)).not.toContain('secret')
   })
 })

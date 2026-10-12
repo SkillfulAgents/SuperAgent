@@ -1,4 +1,8 @@
 import { z } from 'zod'
+import { S3MountableVolume } from './s3-mountable-volume'
+import { s3VolumeConfigSchema, s3StoredConfigSchema } from './s3-schema'
+import { prepareS3Volume, validateS3Volume } from './s3-validation'
+import type { VolumeValidation } from './volume-validation-schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeType } from '@shared/lib/types/mount'
 import { LocalMountableVolume, localVolumeConfigSchema, prepareLocalVolume } from './local-mountable-volume'
 import { DropboxMountableVolume, prepareDropboxVolume } from './dropbox-mountable-volume'
@@ -20,6 +24,7 @@ interface VolumeTypeEntry {
   instantiate(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null
   prepare(config: unknown, creator?: { userId: string | null }): Promise<{ name: string; config: unknown }>
   browseFolders?: VolumeFolderBrowser
+  validate?: (config: unknown, viewer: VolumeSetupViewer) => Promise<VolumeValidation>
 }
 
 // Each type's functions are bound to its schema, so they receive the config that schema produced.
@@ -46,6 +51,14 @@ function volumeType<C>(
 }
 
 const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
+  s3: {
+    ...volumeType(s3VolumeConfigSchema, (row, config, agentSlug) => new S3MountableVolume(row.id, row.name, config, agentSlug), prepareS3Volume),
+    instantiate(row, agentSlug) {
+      const parsed = s3StoredConfigSchema.safeParse(row.config)
+      return parsed.success ? new S3MountableVolume(row.id, row.name, parsed.data, agentSlug) : null
+    },
+    validate: validateS3Volume,
+  },
   dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume, DropboxMountableVolume.browseFolders),
   googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume, GoogleDriveMountableVolume.browseFolders),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
@@ -73,4 +86,12 @@ export async function browseVolumeFolders(type: string, query: unknown, viewer: 
   const browse = volumeTypes[type].browseFolders
   if (!browse) throw new VolumeError('This volume source does not support folder browsing', 400)
   return browse(query, viewer)
+}
+
+/** Validation before saving remains source-owned, just like setup folder browsing. */
+export async function validateVolumeSource(type: string, config: unknown, viewer: VolumeSetupViewer): Promise<VolumeValidation> {
+  if (!isVolumeType(type)) throw new VolumeError(`Unknown volume type: ${type}`, 404)
+  const validate = volumeTypes[type].validate
+  if (!validate) throw new VolumeError('This source does not support a connection check', 400)
+  return validate(config, viewer)
 }
