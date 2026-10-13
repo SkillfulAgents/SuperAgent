@@ -2,6 +2,8 @@ import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/s
 import { NonRetryableError, withRetry } from '../utils/retry'
 import type { DecisionProviderId, DecisionRequest, DecisionResult } from './types'
 
+const DECISION_TIMEOUT_MS = 10_000
+
 export abstract class BaseDecisionProvider {
   abstract readonly id: DecisionProviderId
   abstract readonly name: string
@@ -47,17 +49,27 @@ export abstract class BaseDecisionProvider {
     if (!apiKey) throw new Error(`No API key configured for ${this.name}.`)
     const url = this.endpointUrl(model)
     const body = JSON.stringify(this.encode(request, model))
+    // A decision is meant to be fast: give up after DECISION_TIMEOUT_MS, retry a failed call only once.
     const response = await withRetry(async () => {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body,
-      })
+      let res: Response
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body,
+          signal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+        })
+      } catch (error) {
+        if (error instanceof Error && error.name === 'TimeoutError') {
+          throw new NonRetryableError(`${this.name} decision request timed out after ${DECISION_TIMEOUT_MS / 1000}s`)
+        }
+        throw error
+      }
       if (res.ok) return res
       const message = `${this.name} decision request failed (${res.status}): ${(await res.text()).slice(0, 500)}`
       if (res.status >= 400 && res.status < 500 && res.status !== 429) throw new NonRetryableError(message, res.status)
       throw new Error(message)
-    })
+    }, 2, 500)
     const result = this.decode(await response.json())
     const missing = Object.keys(request.questions).filter(name => !(name in result))
     if (missing.length > 0) throw new Error(`${this.name} decision response is missing answers for: ${missing.join(', ')}`)

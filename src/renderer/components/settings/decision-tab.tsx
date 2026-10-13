@@ -3,9 +3,9 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import type { DecisionProviderId } from '@shared/lib/decision/types'
+import { DEFAULT_DECISION_PROVIDER, type DecisionProviderId } from '@shared/lib/decision/types'
 import { ProviderApiKeyInput } from './provider-api-key-input'
-import { ProviderCard } from './web-tab'
+import { ProviderCard } from './provider-card'
 
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
@@ -73,14 +73,15 @@ export function DecisionTab() {
   const updateSettings = useUpdateSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const isPlatformConnected = platformAuth?.connected ?? false
-  const selected = settings?.decision?.provider
+  const isDefault = !settings?.decision?.provider
+  const selected = settings?.decision?.provider ?? DEFAULT_DECISION_PROVIDER
 
   return (
     <div className="space-y-6">
       <div className="space-y-2">
         <h3 className={SECTION_HEADING}>Decision Model</h3>
         <p className="text-[11px] text-muted-foreground px-1">
-          A fast model that answers yes/no, pick-one and score questions with probabilities.
+          A fast model that answers yes/no, pick-one and score questions with probabilities. If you don&apos;t pick one, Gamut is used.
         </p>
         <div role="radiogroup" aria-label="Decision provider" className="space-y-3 pt-1">
           {DECISION_PROVIDER_OPTIONS.map((provider) => {
@@ -92,6 +93,11 @@ export function DecisionTab() {
                 id={provider.value}
                 testIdPrefix="decision-provider-card"
                 name={provider.label}
+                nameSuffix={
+                  isDefault && selected === provider.value ? (
+                    <span className="text-xs text-muted-foreground">(default)</span>
+                  ) : undefined
+                }
                 description={provider.note}
                 selected={selected === provider.value}
                 disabled={gated || isLoading}

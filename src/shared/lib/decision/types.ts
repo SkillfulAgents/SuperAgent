@@ -8,6 +8,7 @@ import { z } from 'zod'
 
 export const DECISION_PROVIDERS = ['platform', 'openai', 'typesafe', 'cloudflare'] as const
 export type DecisionProviderId = (typeof DECISION_PROVIDERS)[number]
+export const DEFAULT_DECISION_PROVIDER: DecisionProviderId = 'platform'
 
 export const decisionSettingsSchema = z.object({ provider: z.enum(DECISION_PROVIDERS) }).partial()
 export type DecisionSettings = z.infer<typeof decisionSettingsSchema>
@@ -32,3 +33,8 @@ export type DecisionAnswer =
   | { type: 'refused' }
 
 export type DecisionResult = Record<string, DecisionAnswer>
+
+/** A level the provider left out has probability 0, not a hole in the array. */
+export function fillLevelGaps(probabilities: number[]): number[] {
+  return Array.from(probabilities, p => p ?? 0)
+}

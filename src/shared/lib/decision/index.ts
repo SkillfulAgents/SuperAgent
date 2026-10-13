@@ -4,9 +4,9 @@ import { CloudflareDecisionProvider } from './cloudflare-provider'
 import { OpenaiDecisionProvider } from './openai-provider'
 import { PlatformDecisionProvider } from './platform-provider'
 import { TypesafeDecisionProvider } from './typesafe-provider'
-import type { DecisionProviderId, DecisionRequest, DecisionResult } from './types'
+import { DEFAULT_DECISION_PROVIDER, type DecisionProviderId, type DecisionRequest, type DecisionResult } from './types'
 
-export { DECISION_PROVIDERS } from './types'
+export { DECISION_PROVIDERS, DEFAULT_DECISION_PROVIDER } from './types'
 export type { DecisionAnswer, DecisionProviderId, DecisionQuestion, DecisionRequest, DecisionResult, DecisionSettings } from './types'
 
 const providers = {
@@ -22,9 +22,7 @@ export function getDecisionProvider(id: DecisionProviderId): BaseDecisionProvide
 
 /** The selected decision provider when it has a key, else null so callers use their own fallback. */
 export function getConfiguredDecisionProvider(): BaseDecisionProvider | null {
-  const id = getSettings().decision?.provider
-  if (!id) return null
-  const provider = providers[id]
+  const provider = providers[getSettings().decision?.provider ?? DEFAULT_DECISION_PROVIDER]
   return provider.getApiKeyStatus().isConfigured ? provider : null
 }
 

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { BaseDecisionProvider } from './decision-provider'
-import type { DecisionAnswer, DecisionProviderId, DecisionRequest, DecisionResult } from './types'
+import { fillLevelGaps, type DecisionAnswer, type DecisionProviderId, type DecisionRequest, type DecisionResult } from './types'
 
 const probability = z.number().min(0).max(1)
 
@@ -85,7 +85,7 @@ export class OpenaiDecisionProvider extends BaseDecisionProvider {
           case 'score': {
             const probabilities: number[] = []
             for (const p of answer.probabilities) probabilities[p.value] = p.probability
-            return [answer.name, { type: 'score', score: answer.score, confidence: answer.confidence, probabilities }]
+            return [answer.name, { type: 'score', score: answer.score, confidence: answer.confidence, probabilities: fillLevelGaps(probabilities) }]
           }
           case 'refusal':
             return [answer.name, { type: 'refused' }]

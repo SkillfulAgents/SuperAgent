@@ -6,7 +6,7 @@ import { OpenaiDecisionProvider } from './openai-provider'
 /** OpenAI Decisions through the platform proxy: same request, platform token instead of a BYOK key. */
 export class PlatformDecisionProvider extends OpenaiDecisionProvider {
   override readonly id = 'platform' as const
-  override readonly name = 'Platform'
+  override readonly name = 'Gamut'
 
   override getApiKeyStatus(): ApiKeyStatus {
     return getPlatformAccessToken() ? { isConfigured: true, source: 'settings' } : { isConfigured: false, source: 'none' }

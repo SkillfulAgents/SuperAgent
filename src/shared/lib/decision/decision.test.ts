@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const settings = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
 vi.mock('../config/settings', () => ({ getSettings: () => settings.current }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: () => 'platform-token' }))
+const platformToken = vi.hoisted(() => ({ current: 'platform-token' as string | null }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: () => platformToken.current }))
 vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformProxyBaseUrl: () => 'https://proxy.example.test' }))
 
 import { decide, getDecisionProvider, type DecisionRequest } from './index'
@@ -53,11 +54,13 @@ function respond(status: number, body: unknown) {
 
 beforeEach(() => {
   calls.length = 0
+  platformToken.current = 'platform-token'
   settings.current = { apiKeys: { typesafeApiKey: 'ts-key', cloudflareApiToken: 'cf-token', cloudflareAccountId: 'acct-1', openaiApiKey: 'oai-key' } }
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('TypeSafe', () => {
@@ -89,10 +92,21 @@ describe('Cloudflare', () => {
     expect(result).toEqual(normalized)
   })
 
-  it('is not configured without an account ID', () => {
+  it('shows a saved token as saved, and asks for the account ID when called', async () => {
     settings.current = { apiKeys: { cloudflareApiToken: 'cf-token' } }
+    const cloudflare = getDecisionProvider('cloudflare')
 
-    expect(getDecisionProvider('cloudflare').getApiKeyStatus().isConfigured).toBe(false)
+    expect(cloudflare.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+    await expect(cloudflare.decide(request)).rejects.toThrow('Enter your Cloudflare account ID first.')
+    expect(await cloudflare.validateKey('cf-token')).toEqual({ valid: false, error: 'Enter your Cloudflare account ID first.' })
+  })
+
+  it('fills a skipped score level with 0', async () => {
+    respond(200, { result: { answers: { urgency: { type: 'score', score: 2, confidence: 0.9, probabilities: { 0: 0.1, 2: 0.9 } } } } })
+
+    const result = await getDecisionProvider('cloudflare').decide({ ...request, questions: { urgency: request.questions.urgency } })
+
+    expect(result.urgency).toEqual({ type: 'score', score: 2, confidence: 0.9, probabilities: [0.1, 0, 0.9] })
   })
 })
 
@@ -191,7 +205,17 @@ describe('decide', () => {
     ])
   })
 
-  it('throws when no decision model is selected', async () => {
+  it('uses Gamut when no provider is picked', async () => {
+    respond(200, { answers: [{ type: 'predicate', name: 'is_bug', probability: 0.9 }] })
+
+    await decide({ ...request, questions: { is_bug: request.questions.is_bug } })
+
+    expect(calls.map(call => call.url)).toEqual(['https://proxy.example.test/v1/openai/decisions'])
+  })
+
+  it('throws when no provider is picked and the user is not signed in to Gamut', async () => {
+    platformToken.current = null
+
     await expect(decide(request)).rejects.toThrow('No decision model configured.')
   })
 
@@ -199,6 +223,19 @@ describe('decide', () => {
     respond(200, { answers: { is_bug: { type: 'noul', noul: 0.4 } } })
 
     await expect(getDecisionProvider('typesafe').decide(request)).rejects.toThrow('missing answers for: team, urgency')
+  })
+
+  it('gives up on a hung request after the timeout without retrying', async () => {
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => AbortSignal.abort(new DOMException('The operation timed out.', 'TimeoutError')))
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_, reject) => {
+      const signal = init.signal!
+      if (signal.aborted) reject(signal.reason)
+      signal.addEventListener('abort', () => reject(signal.reason))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getDecisionProvider('typesafe').decide(request)).rejects.toThrow('TypeSafe decision request timed out after 10s')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('does not retry a rejected request', async () => {

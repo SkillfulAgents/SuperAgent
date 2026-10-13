@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { getSettings, type ApiKeyStatus } from '../config/settings'
+import { getSettings } from '../config/settings'
 import { BaseDecisionProvider } from './decision-provider'
 import { decodeSystemOne, encodeSystemOne } from './systemone'
 import type { DecisionRequest, DecisionResult } from './types'
@@ -18,13 +18,9 @@ export class CloudflareDecisionProvider extends BaseDecisionProvider {
     return getSettings().apiKeys?.cloudflareAccountId || process.env.CLOUDFLARE_ACCOUNT_ID
   }
 
-  override getApiKeyStatus(): ApiKeyStatus {
-    return this.accountId() ? super.getApiKeyStatus() : { isConfigured: false, source: 'none' }
-  }
-
   private accountUrl(): string {
     const accountId = this.accountId()
-    if (!accountId) throw new Error('No Cloudflare account ID configured.')
+    if (!accountId) throw new Error('Enter your Cloudflare account ID first.')
     return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}`
   }
 

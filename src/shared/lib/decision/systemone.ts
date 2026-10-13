@@ -1,7 +1,7 @@
 /** The System One wire format, spoken by TypeSafe Jev and Cloudflare Clef. */
 
 import { z } from 'zod'
-import type { DecisionAnswer, DecisionRequest, DecisionResult } from './types'
+import { fillLevelGaps, type DecisionAnswer, type DecisionRequest, type DecisionResult } from './types'
 
 const probability = z.number().min(0).max(1)
 
@@ -51,7 +51,7 @@ export function decodeSystemOne(body: unknown): DecisionResult {
         case 'score': {
           const probabilities: number[] = []
           for (const [level, p] of Object.entries(answer.probabilities)) probabilities[Number(level)] = p
-          return [name, { type: 'score', score: answer.score, confidence: answer.confidence, probabilities }]
+          return [name, { type: 'score', score: answer.score, confidence: answer.confidence, probabilities: fillLevelGaps(probabilities) }]
         }
       }
     }),
