@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified browser-use feature: agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and returned response",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded Gamut application homepage showing agent list and sidebar",
+    "Found \"QA-20261013-192928-0ebg\" agent in sidebar and clicked it — Successfully opened the agent page with title \"QA-20261013-192928-0ebg · Gamut\"",
+    "Clicked on message input field and typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully typed in textbox and visible in input field",
+    "Clicked \"Send message\" button — Message sent successfully, agent status changed to \"working\", page URL changed to session page with title \"Browser Page Title Check — QA-20261013-192928-0ebg\"",
+    "Waited for response (max 120 seconds, well under 3-minute limit) — Response received within approximately 10-15 seconds, indicated by agent returning to \"idle\" status",
+    "Verified response content — Response clearly states: \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally, and I've closed the browser.\" Screenshot captured showing successful completion"
+  ],
+  "bugs": [],
+  "durationMs": 70964,
+  "sessionId": "ebe9de20-1acf-40cd-bdfc-2944b14f98dc",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 8499,
+    "cacheCreationTokens": 69583,
+    "cacheReadTokens": 870861,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.21688
+  }
+}
