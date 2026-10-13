@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import type { AvatarOrb } from './avatar-orbs'
+import type { OrbAppearance } from './avatar-orbs'
 import { shapePath, type OrbShape } from './orb-shapes'
 import type { OrbState } from './orb-states'
 import { useOrbAnimation } from './use-orb-animation'
@@ -31,7 +31,7 @@ export function OrbAvatar({
   followPointer = false,
   className,
 }: {
-  orb: AvatarOrb
+  orb: OrbAppearance
   shape: OrbShape
   diameter: number
   /** Resting gaze direction, degrees (0 = right). */

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ChevronRight, Folder, FolderPlus, Pencil, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, Folder, MoreHorizontal, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import {
   defaultDropAnimation,
@@ -15,33 +15,78 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu'
 import { SidebarMenuButton } from '@renderer/components/ui/sidebar'
+import { OrbAvatar } from '@renderer/components/agents/agent-avatar/orb-avatar'
+import { GHOST_ORB } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { orbShape } from '@renderer/components/agents/agent-avatar/orb-shapes'
+import { AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import {
   containerIdForFolder,
   sortableIdForFolder,
   type AgentFolder,
 } from '@renderer/lib/agent-folders'
 
+/** The ghost avatar in an empty section: the dome (the palette's "Arch"). */
+const GHOST_SHAPE = orbShape('arch')
+
+/**
+ * A section-level row of the left nav — a folder header, or "Add section"
+ * under the last one: small muted label text with no hover or press fill.
+ */
+export const SECTION_ROW_CLASS =
+  'h-8 gap-1 text-xs font-normal text-sidebar-foreground/50 hover:bg-transparent hover:text-sidebar-foreground/50 active:bg-transparent active:text-sidebar-foreground/50'
+/** The icon in a section-level row: a folder's chevron, Add section's +. */
+export const SECTION_ICON_CLASS = 'h-3.5 w-3.5 text-muted-foreground'
+
+/**
+ * A section header's buttons: its ⋯ menu and its + (a new agent filed into
+ * the section). Their hover fill is a step darker than an agent row's (the
+ * Electron vibrancy rows use 6% black, 10% white in dark), so they read as
+ * buttons on the row rather than the row.
+ */
+const HEADER_ACTION_CLASS =
+  'absolute top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/80 transition-opacity hover:bg-black/10 hover:text-sidebar-foreground dark:hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
+
+/** The ✓ and ✕ beside the name input: plain icons with the header buttons' fill. */
+const NAME_ACTION_CLASS =
+  'shrink-0 rounded p-0.5 text-sidebar-foreground/60 outline-none hover:bg-black/10 hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring dark:hover:bg-white/15'
+
 /**
  * Inline rename for a folder. Mirrors the dashboard rename in `app-sidebar.tsx`
- * — commit on Enter or blur, abandon on Escape — but writes to user settings
- * through the caller rather than hitting an API of its own.
+ * — commit on Enter, blur or ✓, abandon on Escape or ✕ — but writes to user
+ * settings through the caller rather than hitting an API of its own.
+ *
+ * A just-added section opens EMPTY with a placeholder, so the caret blinks at
+ * the start instead of sitting on a selected "New Section"; leaving it empty
+ * keeps that default name. Renaming an existing section starts from its name
+ * with the caret at the end.
  */
 function FolderNameInput({
   currentName,
+  startEmpty = false,
   onCommit,
   onDone,
 }: {
   currentName: string
+  startEmpty?: boolean
   onCommit: (name: string) => void
   onDone: () => void
 }) {
-  const [value, setValue] = useState(currentName)
+  const [value, setValue] = useState(startEmpty ? '' : currentName)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const settledRef = React.useRef(false)
 
   React.useEffect(() => {
-    inputRef.current?.select()
+    const input = inputRef.current
+    if (!input) return
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
   }, [])
 
   const submit = () => {
@@ -58,24 +103,98 @@ function FolderNameInput({
     onDone()
   }
 
+  // Pressing ✓ or ✕ must not blur the input first: the blur would commit
+  // before ✕ could cancel. Holding focus through the press leaves the click
+  // as the only thing that settles the edit.
+  const keepFocus = (e: React.MouseEvent | React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const cancelOnEscape = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation()
+      cancel()
+    }
+  }
+
   return (
-    <input
-      ref={inputRef}
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        e.stopPropagation()
-        if (e.key === 'Enter') submit()
-        if (e.key === 'Escape') cancel()
+    <div
+      role="group"
+      aria-label="Edit section name"
+      className="flex min-w-0 flex-1 items-center gap-1"
+      onBlur={(event) => {
+        // Moving between the input, Save and Cancel is still editing.
+        if (!event.currentTarget.contains(event.relatedTarget)) submit()
       }}
-      onBlur={submit}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      autoFocus
-      aria-label="Folder name"
-      data-testid="folder-name-input"
-      className="w-full bg-background border border-input rounded px-1 py-0 text-[13px] outline-none focus:ring-1 focus:ring-ring"
-    />
+    >
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          e.stopPropagation()
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit()
+          if (e.key === 'Escape') cancel()
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        placeholder="Section name"
+        aria-label="Section name"
+        data-testid="folder-name-input"
+        className="h-6 min-w-0 flex-1 rounded border border-black/10 bg-transparent px-1.5 text-xs text-sidebar-foreground outline-none placeholder:text-sidebar-foreground/35 focus:border-black/20 dark:border-white/15 dark:focus:border-white/25"
+      />
+      <button
+        type="button"
+        onMouseDown={keepFocus}
+        onPointerDown={keepFocus}
+        onKeyDown={cancelOnEscape}
+        onClick={submit}
+        aria-label="Save section name"
+        title="Save"
+        data-testid="folder-name-save"
+        className={NAME_ACTION_CLASS}
+      >
+        <Check className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onMouseDown={keepFocus}
+        onPointerDown={keepFocus}
+        onKeyDown={cancelOnEscape}
+        onClick={cancel}
+        aria-label="Cancel rename"
+        title="Cancel"
+        data-testid="folder-name-cancel"
+        className={NAME_ACTION_CLASS}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
+/** Keep the right-click menu and the visible menu button's actions identical. */
+function FolderMenuItems({ Item, onRename, onDelete }: {
+  Item: typeof ContextMenuItem
+  onRename: () => void
+  onDelete: () => void
+}) {
+  return (
+    <>
+      <Item onClick={onRename} data-testid="rename-folder-item">
+        <Pencil className="h-4 w-4 mr-2" />
+        Rename Section
+      </Item>
+      <Item
+        className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+        onClick={onDelete}
+        data-testid="delete-folder-item"
+      >
+        <Trash2 className="h-4 w-4 mr-2" />
+        Delete Section
+      </Item>
+    </>
   )
 }
 
@@ -89,7 +208,6 @@ function FolderNameInput({
 const FolderHeader = React.memo(function FolderHeader({
   folder,
   isRoot,
-  agentCount,
   isCollapsed,
   isDropTarget,
   onToggle,
@@ -98,7 +216,6 @@ const FolderHeader = React.memo(function FolderHeader({
 }: {
   folder: AgentFolder
   isRoot: boolean
-  agentCount: number
   isCollapsed: boolean
   isDropTarget: boolean
   onToggle: () => void
@@ -106,35 +223,42 @@ const FolderHeader = React.memo(function FolderHeader({
   onDelete: () => void
 }) {
   // Styled like a section label rather than as a row of the list: small muted
-  // text, no icon. The member count sits at the right only while the folder is
-  // collapsed — the rows themselves say how many there are once it is open —
-  // and yields to the expand/collapse chevron on hover. The slot keeps its
-  // size either way so the chevron lands in the same spot.
+  // text, no icon, no count. The expand/collapse chevron follows the label,
+  // shown only while the header row is hovered or focused — the row being the
+  // header plus any button overlaid on it, which all carry data-header-zone
+  // (see the block) — or while an agent is dragged over it. It is wrapped so
+  // the menu button's direct-child svg sizing doesn't reach it.
+  // The right edge stays clear for the header actions, which overlay it: the
+  // + alone on Your Agents (pr-8), ⋯ and + on every other section (pr-14).
+  // As a label it has no hover or press fill — the menu button's own are
+  // cancelled — except as a drop target, where the fill must survive the
+  // pointer being over it. It also opts out of `data-sidebar="menu-button"`:
+  // the Electron vibrancy rules in globals.css give every menu button an
+  // !important hover fill that the classes here cannot override.
   const header = (
         <SidebarMenuButton
+          data-sidebar="folder-header"
           onClick={onToggle}
           aria-expanded={!isCollapsed}
           className={cn(
-            'group/folder-header h-8 justify-between text-xs font-normal text-sidebar-foreground/50 hover:text-sidebar-foreground/70',
-            isDropTarget && 'bg-sidebar-accent ring-1 ring-sidebar-ring text-sidebar-foreground'
+            SECTION_ROW_CLASS,
+            isRoot ? 'pr-8' : 'pr-14',
+            isDropTarget &&
+              'bg-sidebar-accent text-sidebar-foreground ring-1 ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-foreground'
           )}
           data-testid={`agent-folder-${folder.id}`}
         >
           <span className="truncate">{folder.name}</span>
-          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            {isCollapsed && (
-              <span
-                className="text-[11px] tabular-nums text-muted-foreground/70 group-hover/folder-header:hidden"
-                data-testid={`agent-folder-count-${folder.id}`}
-              >
-                {agentCount}
-              </span>
-            )}
+          <span className="flex shrink-0 items-center">
             <ChevronRight
               aria-hidden
               data-testid={`agent-folder-chevron-${folder.id}`}
               className={cn(
-                'hidden h-3.5 w-3.5 text-muted-foreground group-hover/folder-header:block transition-transform',
+                SECTION_ICON_CLASS,
+                'transition-[opacity,transform]',
+                isDropTarget
+                  ? 'opacity-100'
+                  : 'opacity-0 group-has-[[data-header-zone]:hover]/folder-block:opacity-100 group-has-[[data-header-zone]:focus-visible]/folder-block:opacity-100 group-has-[[data-header-zone]_:focus-visible]/folder-block:opacity-100',
                 !isCollapsed && 'rotate-90'
               )}
             />
@@ -147,21 +271,10 @@ const FolderHeader = React.memo(function FolderHeader({
   if (isRoot) return header
 
   return (
-    <ContextMenu>
+    <ContextMenu modal={false}>
       <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={onStartRename} data-testid="rename-folder-item">
-          <Pencil className="h-4 w-4 mr-2" />
-          Rename Folder
-        </ContextMenuItem>
-        <ContextMenuItem
-          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-          onClick={onDelete}
-          data-testid="delete-folder-item"
-        >
-          <Trash2 className="h-4 w-4 mr-2" />
-          Delete Folder
-        </ContextMenuItem>
+        <FolderMenuItems Item={ContextMenuItem} onRename={onStartRename} onDelete={onDelete} />
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -189,11 +302,11 @@ export function AgentFolderBlock({
   onRename,
   onRenameEnd,
   onDelete,
-  onCreateFolder,
+  onCreateAgent,
   children,
 }: {
   folder: AgentFolder
-  /** The default "Your Agents" folder: no rename/delete, hosts the + button. */
+  /** The default "Your Agents" folder: no rename/delete. */
   isRoot?: boolean
   agentCount: number
   isCollapsed: boolean
@@ -207,12 +320,18 @@ export function AgentFolderBlock({
   onRename: (name: string) => void
   onRenameEnd?: () => void
   onDelete: () => void
-  /** Rendered as a hover + on the default folder's header row. */
-  onCreateFolder?: () => void
+  /** Rendered as a + on the header row: a new agent filed into this folder. */
+  onCreateAgent?: () => void
   children: React.ReactNode
 }) {
   const [isRenaming, setIsRenaming] = useState(initialRenaming ?? false)
-  const startRename = React.useCallback(() => setIsRenaming(true), [])
+  // Only the just-added section's first edit starts empty (see FolderNameInput).
+  const [renameStartsEmpty, setRenameStartsEmpty] = useState(initialRenaming ?? false)
+  const startRename = React.useCallback(() => {
+    setRenameStartsEmpty(false)
+    setIsRenaming(true)
+  }, [])
+
   const {
     attributes,
     listeners,
@@ -255,7 +374,10 @@ export function AgentFolderBlock({
   const isAgentTarget = (isOver || isBodyOver) && activeDragType === 'agent'
 
   return (
-    <li ref={setNodeRef} style={style} className="group/folder-block relative list-none">
+    // mt-2: air above each section header. A margin, not padding, so the
+    // header's absolutely placed buttons (top-4 = the header's centre) and the
+    // insert line keep their offsets from the block's top edge.
+    <li ref={setNodeRef} style={style} className="group/folder-block relative mt-2 list-none">
       {insertEdge && !isDragging && (
         // A folder over a folder is a reorder, not a nest — folders do not
         // nest — so it gets an insert line rather than the fill an agent drop
@@ -278,9 +400,10 @@ export function AgentFolderBlock({
         // The input REPLACES the header rather than sitting inside it: a form
         // control nested in a <button> is invalid markup, and clicking it would
         // land on the button and toggle the folder shut mid-edit.
-        <div className="flex h-8 items-center rounded-md px-2">
+        <div className="flex h-8 items-center gap-1 rounded-md px-2">
           <FolderNameInput
             currentName={folder.name}
+            startEmpty={renameStartsEmpty}
             onCommit={onRename}
             onDone={() => {
               setIsRenaming(false)
@@ -289,11 +412,10 @@ export function AgentFolderBlock({
           />
         </div>
       ) : (
-        <div ref={setActivatorNodeRef} {...handleAttributes} {...listeners} className="relative">
+        <div ref={setActivatorNodeRef} {...handleAttributes} {...listeners} className="relative" data-header-zone>
           <FolderHeader
             folder={folder}
             isRoot={isRoot}
-            agentCount={agentCount}
             isCollapsed={isCollapsed}
             isDropTarget={isAgentTarget}
             onToggle={onToggle}
@@ -303,16 +425,49 @@ export function AgentFolderBlock({
         </div>
       )}
 
-      {isRoot && onCreateFolder && !isRenaming && (
+      {/* Keep the menu non-modal inside the mobile drawer. A modal menu sets
+          body pointer-events:none, so the touch that opened it lands on the
+          drawer's pointer-events:auto backdrop and closes the sidebar. */}
+      {!isRoot && !isRenaming && (
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              // WebKit emits mousedown after the touch opens the menu. Keep
+              // its default focus change from dismissing this non-modal menu.
+              onMouseDown={(event) => event.preventDefault()}
+              aria-label={`Actions for ${folder.name}`}
+              data-header-zone
+              title="Rename or delete"
+              data-testid={`section-menu-${folder.id}`}
+              className={cn(
+                HEADER_ACTION_CLASS,
+                'right-8 text-sidebar-foreground/40 opacity-0 focus-visible:opacity-100 group-hover/folder-block:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100'
+              )}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            onEscapeKeyDown={(event) => event.stopPropagation()}
+          >
+            <FolderMenuItems Item={DropdownMenuItem} onRename={startRename} onDelete={onDelete} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
+      {onCreateAgent && !isRenaming && (
         <button
           type="button"
-          onClick={onCreateFolder}
-          aria-label="New folder"
-          title="New folder"
-          data-testid="new-folder-button"
-          className="absolute right-8 top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/50 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/folder-block:opacity-100"
+          onClick={onCreateAgent}
+          aria-label={`New agent in ${folder.name}`}
+          data-header-zone
+          title={`New agent in ${folder.name}`}
+          data-testid={`new-agent-in-folder-${folder.id}`}
+          className={cn(HEADER_ACTION_CLASS, 'right-[7px]')}
         >
-          <FolderPlus className="h-3.5 w-3.5" />
+          <Plus className="h-3.5 w-3.5" />
         </button>
       )}
 
@@ -338,15 +493,43 @@ export function AgentFolderBlock({
           <ul className="flex w-full min-w-0 flex-col gap-2">{children}</ul>
           {agentCount === 0 && (
             // An empty folder has no rows to aim at, so it needs a body with
-            // real height or it cannot be dropped into at all.
+            // real height or it cannot be dropped into at all. A grey ghost
+            // orb sits in an agent row's avatar slot (40px row, slot at left
+            // 4px), so the empty state lines up with the rows that will replace
+            // it; beside it, two quiet lines in the section label's type. The
+            // body around it carries the fill while an agent is dragged over,
+            // and the ghost and text firm up with it.
             <div
-              className={cn(
-                'mx-1 my-0.5 rounded-md border border-dashed border-sidebar-border px-2 py-1.5 text-[11px] text-muted-foreground/70',
-                isBodyOver && 'border-sidebar-ring text-sidebar-foreground'
-              )}
+              className="relative flex h-10 min-w-0 flex-col justify-center pl-[42px] pr-2"
               data-testid={`agent-folder-empty-${folder.id}`}
             >
-              Drag agents here
+              <span
+                aria-hidden
+                className={cn(
+                  'pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center transition-opacity',
+                  isBodyOver ? 'opacity-80' : 'opacity-45'
+                )}
+                data-testid={`section-ghost-${folder.id}`}
+              >
+                <OrbAvatar
+                  orb={GHOST_ORB}
+                  shape={GHOST_SHAPE}
+                  diameter={AGENT_AVATAR_SIZE}
+                  restingPhi={-90}
+                  followPointer={SIDEBAR_FOLLOW_REGION}
+                />
+              </span>
+              {/* What is going on, then the two ways to fix it: the drag, and
+                  the header's + just above. */}
+              <span
+                className={cn(
+                  'flex flex-col text-xs leading-snug transition-colors',
+                  isBodyOver ? 'text-sidebar-foreground/70' : 'text-sidebar-foreground/50'
+                )}
+              >
+                <span>No agents in here yet</span>
+                <span>Drag in or click + to add</span>
+              </span>
             </div>
           )}
         </div>

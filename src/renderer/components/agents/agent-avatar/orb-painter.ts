@@ -1,5 +1,5 @@
 import type { RefObject } from 'react'
-import type { AvatarOrb } from './avatar-orbs'
+import type { OrbAppearance } from './avatar-orbs'
 import { shapePath, shapePose, type OrbShape } from './orb-shapes'
 import { sameFrame, type OrbFrame } from './orb-states'
 
@@ -23,7 +23,7 @@ type AnimatedStyle = 'transform' | 'opacity' | 'filter' | 'display' | 'width' | 
  * Owns only animated styles. Recreated when appearance changes, so geometry
  * and style caches cannot survive a change of shape, size, or colourway.
  */
-export function createOrbPainter(layers: OrbLayers, shape: OrbShape, diameter: number, orb: AvatarOrb) {
+export function createOrbPainter(layers: OrbLayers, shape: OrbShape, diameter: number, orb: OrbAppearance) {
   const dotPaths = new Map<number, string>()
   const styles = new WeakMap<HTMLSpanElement, Map<AnimatedStyle, string>>()
   let previous: OrbFrame | null = null
