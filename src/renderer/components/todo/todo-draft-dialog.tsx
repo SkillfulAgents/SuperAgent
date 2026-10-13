@@ -27,6 +27,7 @@ import {
   useSetTodoStatus,
   useStartTodo,
   useStartingTodoIds,
+  useSuggestTodoAgent,
   useUpdateTodo,
   type TodoView,
 } from '@renderer/hooks/use-todos'
@@ -185,6 +186,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const deleteTodo = useDeleteTodo()
   const setTodoStatus = useSetTodoStatus()
   const startTodo = useStartTodo()
+  const suggestTodoAgent = useSuggestTodoAgent()
+  const [suggesting, setSuggesting] = useState(false)
+  const [suggestedSlug, setSuggestedSlug] = useState<string | null>(null)
   // A draft opened from the board is never mid-start (its card doesn't open
   // then), but its start may begin elsewhere while this is open.
   const alreadyStarting = useStartingTodoIds().has(initial?.id ?? '')
@@ -406,15 +410,15 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     },
   }
 
-  // What waits for the agent: dropped or pasted items, or (from the paperclip) the attach menu.
-  const [askAgent, setAskAgent] = useState<{ held: DataTransferResult | null } | null>(null)
+  // What waits for the agent: dropped or pasted items, the attach menu (from the paperclip), or Start.
+  const [askAgent, setAskAgent] = useState<{ held: DataTransferResult | null; toStart?: boolean } | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   // Attach once the picked agent has rendered, so the uploads go to it.
   useEffect(() => {
     if (!askAgent || !fields.agentSlug) return
     setAskAgent(null)
     if (askAgent.held) files.addItems(askAgent.held)
-    else setAttachMenuOpen(true)
+    else if (!askAgent.toStart) setAttachMenuOpen(true)
   // `files.addItems` is stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askAgent, fields.agentSlug])
@@ -430,7 +434,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const agent = fields.agentSlug ? bySlug.get(fields.agentSlug) : undefined
   const hasAgent = !!agent || fields.newAgent
   const written = !!(fields.title.trim() || fields.description.trim() || files.attachments.length)
-  const canStart = hasAgent && !alreadyStarting && written && !finishing && !saveBlocked
+  const ready = !alreadyStarting && written && !finishing && !saveBlocked
+  const canStart = hasAgent && ready
+  const canSuggest = !hasAgent && ready && !suggesting
 
   // Model, effort and speed follow the chosen agent's defaults, as in the
   // composer, until the person picks; a pick is kept with the draft.
@@ -473,6 +479,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       trigger={
         agent ? (
           <Button variant="outline" size="sm" className="h-[34px] gap-1.5 text-xs" data-testid="todo-assign-agent">
+            {suggestedSlug === fields.agentSlug && <span className="text-muted-foreground">Suggested:</span>}
             <span className="max-w-[12rem] truncate">{agent.name}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </Button>
@@ -511,7 +518,24 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     return ok
   }
 
+  // No agent yet: show the one the decision model picks, and start only when
+  // Start is pressed again. Without a suggestion, the person picks.
+  const suggestAgent = async () => {
+    setSuggesting(true)
+    const { title, description } = fieldsRef.current
+    const slug = await suggestTodoAgent.mutateAsync({ title: title.trim(), description }).catch(() => null)
+    setSuggesting(false)
+    if (closingRef.current || fieldsRef.current.agentSlug || fieldsRef.current.newAgent) return
+    if (slug && bySlug.has(slug)) {
+      setSuggestedSlug(slug)
+      change({ agentSlug: slug, newAgent: false })
+    } else {
+      setAskAgent({ held: null, toStart: true })
+    }
+  }
+
   const start = async () => {
+    if (canSuggest) return suggestAgent()
     if (!canStart || closingRef.current) return
     closingRef.current = true
     await finishDictation()
@@ -651,8 +675,10 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       <Dialog open={askAgent !== null && !fields.agentSlug} onOpenChange={(open) => { if (!open) setAskAgent(null) }}>
         <DialogContent className="max-w-sm" data-testid="todo-pick-agent-to-attach">
           <DialogHeader>
-            <DialogTitle className="font-medium">{PICK_AGENT_TO_ATTACH}</DialogTitle>
-            <DialogDescription>Files are uploaded to that agent&apos;s workspace.</DialogDescription>
+            <DialogTitle className="font-medium">{askAgent?.toStart ? 'Pick an agent to start' : PICK_AGENT_TO_ATTACH}</DialogTitle>
+            <DialogDescription>
+              {askAgent?.toStart ? 'No agent could be suggested for this todo.' : <>Files are uploaded to that agent&apos;s workspace.</>}
+            </DialogDescription>
           </DialogHeader>
           {/* The draft's own picker, shown in place. No New Agent row: a new agent has no workspace yet. */}
           <AgentDropdown value={null} onValueChange={(slug) => change({ agentSlug: slug, newAgent: false })} inline testId="todo-attach-agent" />
@@ -806,14 +832,14 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
           >
             {finishing && uploadsPending ? 'Finishing uploads…' : saveError && !saveBlocked ? 'Retry save' : 'Save draft'}
           </Button>
-          <ShortcutTooltip label={hasAgent ? 'Start' : 'Pick an agent to start'} keys={hasAgent ? [MOD, 'Enter'] : undefined}>
+          <ShortcutTooltip label={hasAgent ? 'Start' : 'Suggest an agent'} keys={[MOD, 'Enter']}>
             {/* A span keeps the tooltip working while the button is disabled. */}
             <span>
               <Button
                 size="icon"
                 className="h-8 w-8"
                 onClick={() => void start()}
-                disabled={!canStart}
+                disabled={!canStart && !canSuggest}
                 aria-label="Start"
                 aria-keyshortcuts="Meta+Enter"
                 data-testid="todo-draft-start"

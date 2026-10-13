@@ -12,6 +12,8 @@ const state = vi.hoisted(() => ({
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
   wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
   workspace: new Map<string, Map<string, { kind: 'file' | 'directory'; bytes?: Uint8Array }>>(),
+  decisionConfigured: true,
+  decisionRequests: [] as unknown[],
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -35,6 +37,14 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: async (slug: string) => state.agents.has(slug),
+  listAgents: async () => [...state.agents].map((slug) => ({ slug, name: slug.toUpperCase(), description: `Does ${slug} work` })),
+}))
+vi.mock('@shared/lib/decision', () => ({
+  getConfiguredDecisionProvider: () => (state.decisionConfigured ? {} : null),
+  decide: async (request: { questions: { agent: { options: Record<string, string> } } }) => {
+    state.decisionRequests.push(request)
+    return { agent: { type: 'choice', choice: 'agent-b', confidence: 0.9, probabilities: {} } }
+  },
 }))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingWakesByAgent: async (slug: string) => state.wakes.filter((w) => w.agentSlug === slug),
@@ -59,6 +69,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
         isKnown: async (id: string) => state.sessions.has(`${slug}/${id}`),
         isActive: (id: string) => state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
         isAwaitingInput: (id: string) => state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
+        summary: async () => ({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
       },
       inputs: { snapshot: (id: string) => state.requests.get(`${slug}/${id}`) ?? [] },
       files: {
@@ -110,6 +121,8 @@ beforeEach(async () => {
   state.requests = new Map()
   state.wakes = []
   state.workspace = new Map()
+  state.decisionConfigured = true
+  state.decisionRequests = []
 })
 
 afterEach(async () => {
@@ -192,6 +205,29 @@ describe('drafts', () => {
     const draft = await createDraft()
     expect((await call(`/${draft.id}`, 'DELETE')).status).toBe(204)
     expect((await (await call('')).json()).todos).toEqual([])
+  })
+})
+
+describe('suggesting an agent', () => {
+  const offered = () => Object.keys((state.decisionRequests[0] as { questions: { agent: { options: object } } }).questions.agent.options)
+
+  it('offers only the agents the person can see', async () => {
+    const res = await call('/suggest-agent', 'POST', { title: 'Reply to the Acme invoice email' })
+    expect(await res.json()).toEqual({ suggestion: { agentSlug: 'agent-b' } })
+    expect(offered()).toEqual(['agent-a', 'agent-b'])
+
+    state.decisionRequests = []
+    const bobs = await call('/suggest-agent', 'POST', { title: 'Reply to the Acme invoice email' }, 'bob')
+    expect(offered()).toEqual(['agent-a'])
+    // agent-b was not offered to bob, so the model's pick of it is dropped.
+    expect(await bobs.json()).toEqual({ suggestion: null })
+  })
+
+  it('suggests nothing without a decision model, and refuses an empty todo', async () => {
+    state.decisionConfigured = false
+    expect(await (await call('/suggest-agent', 'POST', { title: 'Reply to the Acme invoice email' })).json()).toEqual({ suggestion: null })
+    expect(state.decisionRequests).toEqual([])
+    expect((await call('/suggest-agent', 'POST', { title: ' ', description: '' })).status).toBe(400)
   })
 })
 
