@@ -1412,14 +1412,14 @@ describe('AppSidebar — agent folders', () => {
     expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
     const patch = patchWith({ agentFolders: [] })
     expect(patch.agentFolders).toHaveLength(1)
-    expect(patch.agentFolders[0].name).toBe('New Folder')
+    expect(patch.agentFolders[0].name).toBe('New Section')
     expect(patch.agentFolders[0].id).toBeTruthy()
   })
 
   it('does not reuse an existing folder name when adding another', async () => {
     const settings = {
       agentOrder: [],
-      agentFolders: [{ id: 'f1', name: 'New Folder' }],
+      agentFolders: [{ id: 'f1', name: 'New Section' }],
     }
     mockUserSettings.mockReturnValue(settings)
     renderWithProviders(<AppSidebar />)
@@ -1427,21 +1427,21 @@ describe('AppSidebar — agent folders', () => {
     await userEvent.click(screen.getByTestId('new-folder-button'))
 
     const patch = patchWith(settings)
-    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+    expect(patch.agentFolders[1].name).toBe('New Section 2')
   })
 
   it('names a created folder against the folder list at mutation run time', async () => {
     // A create queued behind an in-flight write resolves after it settles: if
-    // that write added "New Folder", this one must come out "New Folder 2" —
+    // that write added "New Section", this one must come out "New Section 2" —
     // and must carry the other write's folder rather than reverting it.
     renderWithProviders(<AppSidebar />)
 
     await userEvent.click(screen.getByTestId('new-folder-button'))
 
-    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Folder' }] })
+    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Section' }] })
     expect(patch.agentFolders).toHaveLength(2)
-    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Folder' })
-    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Section' })
+    expect(patch.agentFolders[1].name).toBe('New Section 2')
   })
 
   it('renders a folder with no recorded place at the end of the list', () => {
