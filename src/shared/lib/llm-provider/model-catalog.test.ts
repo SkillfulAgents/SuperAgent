@@ -61,7 +61,7 @@ describe('getProviderCatalog', () => {
       ['openai', 'gpt-6.1-sol'],
       ['xai', 'grok-4.7'],
       ['kimi', 'kimi-k3'],
-      ['meta', 'muse-spark-1.3'],
+      ['meta', 'muse-wonder-1.0'],
       ['zai', 'glm-5.3-flash'],
       ['deepseek', 'deepseek-v4.1-flash'],
     ])
@@ -141,6 +141,7 @@ describe('getProviderCatalog', () => {
     ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.5', ['low', 'medium', 'high']],
+    ['muse-wonder-1.0', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.2', ['low', 'medium', 'high', 'xhigh']],
     ['muse-spark-1.3-contributor', ['low', 'medium', 'high', 'xhigh']],

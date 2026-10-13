@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { TodoView } from '@shared/lib/todos/todo-schema'
+import { HttpError } from '@renderer/lib/http-error'
 
 const state = vi.hoisted(() => ({
   todos: [] as TodoView[],
@@ -10,6 +11,7 @@ const state = vi.hoisted(() => ({
   setStatus: vi.fn(),
   move: vi.fn(),
   update: vi.fn(),
+  create: vi.fn(),
   start: vi.fn(),
   rename: vi.fn(),
   starting: new Set<string>(),
@@ -27,9 +29,9 @@ vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
   useStartingTodoIds: () => state.starting,
   useStartTodo: () => ({ mutate: state.start }),
-  useSetTodoStatus: () => ({ mutate: state.setStatus }),
+  useSetTodoStatus: () => ({ mutate: state.setStatus, mutateAsync: state.setStatus }),
   useMoveTodo: () => ({ mutate: state.move }),
-  useCreateTodo: () => ({ mutateAsync: vi.fn() }),
+  useCreateTodo: () => ({ mutateAsync: state.create }),
   useUpdateTodo: () => ({ mutateAsync: state.update }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
   useRenameTodo: () => ({ mutateAsync: state.rename, isPending: false }),
@@ -56,6 +58,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     updatedAt: Date.now(),
     startedAt: null,
     completedAt: null,
+    attachments: [],
     ask: null,
     pendingWakeAt: null,
     ...partial,
@@ -68,6 +71,7 @@ beforeEach(() => {
   state.setStatus.mockReset()
   state.move.mockReset()
   state.update.mockReset()
+  state.create.mockReset()
   state.start.mockReset()
   state.rename.mockReset().mockResolvedValue(undefined)
   state.starting = new Set()
@@ -197,6 +201,52 @@ describe('TodoBoard', () => {
     expect(screen.getByTestId('todo-draft-dialog')).toBeInTheDocument()
     expect(screen.getByTestId('todo-draft-title')).toHaveValue('Task a')
     expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it.each([403, 404, 409])('does not retry a rejected draft save on Close or unmount after HTTP %i', async (status) => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.update.mockRejectedValue(new HttpError(status, 'The draft is no longer editable'))
+    const { unmount } = renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Unsaved edit' } })
+    await screen.findByTestId('todo-draft-save-error')
+    expect(screen.getByTestId('todo-draft-save')).toBeDisabled()
+    expect(state.update).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('todo-draft-close'))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
+    unmount()
+    expect(state.update).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([new HttpError(503, 'Temporarily unavailable'), new TypeError('Failed to fetch')])('keeps edits for a retry after $message', async (error) => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.update.mockRejectedValueOnce(error).mockResolvedValue(undefined)
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    await act(async () => {})
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Keep this edit' } })
+    fireEvent.click(screen.getByTestId('todo-draft-close'))
+    expect(await screen.findByTestId('todo-draft-save-error')).toHaveTextContent(error.message)
+    expect(screen.getByTestId('todo-draft-title')).toHaveValue('Keep this edit')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry save' }))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
+    expect(state.update).toHaveBeenCalledTimes(2)
+    expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Keep this edit' }))
+  })
+
+  it('allows correcting an invalid draft without retrying the rejected input', async () => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.update.mockRejectedValueOnce(new HttpError(422, 'Invalid todo')).mockResolvedValue(undefined)
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Invalid input' } })
+    await screen.findByTestId('todo-draft-save-error')
+    expect(state.update).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'Corrected input' } })
+    fireEvent.click(screen.getByTestId('todo-draft-save'))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
+    expect(state.update).toHaveBeenCalledTimes(2)
+    expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Corrected input' }))
   })
 
   it('marks work done and archives what is done', () => {

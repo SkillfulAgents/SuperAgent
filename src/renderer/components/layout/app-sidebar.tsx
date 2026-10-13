@@ -647,7 +647,8 @@ const AgentMenuItemInner = React.forwardRef<
                   />
                   <ChevronRight
                     className={cn(
-                      'absolute h-3.5 w-3.5 text-sidebar-foreground opacity-0 transition-[opacity,transform] group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
+                      'absolute h-3.5 w-3.5 text-sidebar-foreground transition-[opacity,transform]',
+                      agent.avatar && 'opacity-0 group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
                       isOpen && !isDragActive && 'rotate-90'
                     )}
                   />
@@ -1594,7 +1595,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="overflow-visible">
+        <SidebarContent className="gap-0 overflow-visible">
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1629,7 +1630,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5 py-2 pt-0">
+              <SidebarMenu className="gap-0.5 pt-2 pb-0">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild

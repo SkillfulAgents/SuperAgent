@@ -12,7 +12,7 @@ interface UseAttachmentsOptions {
   onAttachmentsAdded?: (added: Attachment[]) => void
 }
 
-export type UploadPatch = { upload?: UploadState; error?: string }
+export type UploadPatch = { upload?: UploadState; error?: string; errorRetryable?: boolean }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
   const [attachments, setAttachments] = useState<Attachment[]>(() => options?.initialAttachments ?? [])

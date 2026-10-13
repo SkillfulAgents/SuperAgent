@@ -27,7 +27,8 @@ export interface ApiAgent {
   /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
   displaySlug: string
   name: string
-  avatar: AgentAvatar
+  /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
+  avatar?: AgentAvatar | null
   description?: string
   instructions?: string // Only included in single-agent response
   createdAt: Date

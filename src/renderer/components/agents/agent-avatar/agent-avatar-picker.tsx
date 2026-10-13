@@ -14,6 +14,12 @@ import { ORB_SHAPES } from './orb-shapes'
 // Picker options, px across.
 const OPTION_SIZE = 37
 
+interface AgentAvatarPickerProps {
+  agent: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
+  state?: AvatarMotionState
+  size?: number
+}
+
 /**
  * The agent's avatar as a button that opens a picker: a shape row and the
  * colours, chosen independently — picking a shape keeps the colour and vice
@@ -21,16 +27,20 @@ const OPTION_SIZE = 37
  * kept when the picker closes, by clicking out or Escape. While it's open
  * every option follows the cursor; hovering one previews its working motion.
  */
-export function AgentAvatarPicker({
+export function AgentAvatarPicker(props: AgentAvatarPickerProps) {
+  // The metadata also signals that the server supports avatar editing. Keep
+  // the stateful picker unmounted until it is available, including after a refetch.
+  const saved = props.agent.avatar
+  if (!saved) return null
+  return <AvatarPicker {...props} saved={saved} />
+}
+
+function AvatarPicker({
   agent,
+  saved,
   state,
   size,
-}: {
-  agent: Pick<ApiAgent, 'slug' | 'name' | 'avatar'>
-  state?: AvatarMotionState
-  size?: number
-}) {
-  const saved = agent.avatar
+}: AgentAvatarPickerProps & { saved: AgentAvatar }) {
   const update = useUpdateAgentAvatar()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState<AgentAvatar>(saved)

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
 import { Check, ChevronDown, Plus, Search } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -66,7 +66,13 @@ export interface AgentDropdownProps {
   onSelectNew?: () => void
   /** "New Agent" is the current choice. */
   newSelected?: boolean
+  /** Shows the search and list in place, with no trigger or popover, for a dialog that only asks for an agent. */
+  inline?: boolean
 }
+
+// Inline, the popover's parts become a plain bordered box around the same list.
+const InlineRoot = ({ children }: ComponentProps<typeof Popover>) => <>{children}</>
+const InlineContent = ({ children }: ComponentProps<typeof PopoverContent>) => <div className="overflow-hidden rounded-md border">{children}</div>
 
 /**
  * Pick an agent: a searchable list in the sidebar's order, with its folders
@@ -85,6 +91,7 @@ export function AgentDropdown({
   testId = 'agent-dropdown',
   onSelectNew,
   newSelected = false,
+  inline = false,
 }: AgentDropdownProps) {
   const { data: allAgents } = useAgents()
   const { data: settings } = useUserSettings()
@@ -138,9 +145,11 @@ export function AgentDropdown({
   }
 
   let index = -1
+  const Root = inline ? InlineRoot : Popover
+  const Content = inline ? InlineContent : PopoverContent
   return (
-    <Popover open={open} onOpenChange={(o) => (o ? setOpen(true) : close())} modal>
-      <PopoverTrigger asChild disabled={disabled}>
+    <Root open={open} onOpenChange={(o) => (o ? setOpen(true) : close())} modal>
+      {!inline && <PopoverTrigger asChild disabled={disabled}>
         {trigger ?? (
           <Button
             variant="outline"
@@ -153,8 +162,8 @@ export function AgentDropdown({
             <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
           </Button>
         )}
-      </PopoverTrigger>
-      <PopoverContent align={align} className="w-64 overflow-hidden p-0" onWheel={(e) => e.stopPropagation()}>
+      </PopoverTrigger>}
+      <Content align={align} className="w-64 overflow-hidden p-0" onWheel={(e) => e.stopPropagation()}>
         <div className="flex items-center border-b px-3">
           <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
           <input
@@ -175,7 +184,7 @@ export function AgentDropdown({
         <div ref={listRef} id={listId} role="listbox" aria-label="Agents" className="max-h-72 overflow-y-auto overscroll-contain p-1">
           {options.length === 0 && !onSelectNew && (
             <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-              {agents.length === 0 ? 'No agents yet.' : 'No agents found.'}
+              {allAgents === undefined ? 'Loading agents…' : agents.length === 0 ? 'No agents yet.' : 'No agents found.'}
             </div>
           )}
           {sections.map(({ folder, agents: inSection }) => (
@@ -239,7 +248,7 @@ export function AgentDropdown({
             </div>
           )}
         </div>
-      </PopoverContent>
-    </Popover>
+      </Content>
+    </Root>
   )
 }

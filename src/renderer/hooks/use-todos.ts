@@ -1,5 +1,6 @@
 import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import { HttpError } from '@renderer/lib/http-error'
 import { handleMutationError } from '@renderer/lib/query-client'
 import type {
   AddSessionTodoInput,
@@ -8,10 +9,13 @@ import type {
   TodoView,
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
-import { todoPrompt } from '@shared/lib/todos/todo-schema'
+import { todoPrompt, type TodoAttachment } from '@shared/lib/todos/todo-schema'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
+import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { useExperiment } from './use-experiment'
+import { useAddMount, useRemoveMount } from './use-mounts'
 import { useCreateSession } from './use-sessions'
 
 export type { TodoView }
@@ -22,7 +26,7 @@ export { TODOS_QUERY_KEY }
 
 async function readError(res: Response, fallback: string): Promise<Error> {
   const body = await res.json().catch(() => null) as { error?: string } | null
-  return new Error(body?.error || fallback)
+  return new HttpError(res.status, body?.error || fallback)
 }
 
 async function send<T>(path: string, method: string, body: unknown, fallback: string): Promise<T> {
@@ -162,6 +166,11 @@ export function useDeleteTodo() {
 
 const START_TODO_MUTATION_KEY = ['start-todo'] as const
 
+function pointedPaths(list: readonly TodoAttachment[]): string[] {
+  return list.flatMap((att) => (att.kind === 'mount' ? [] : [att.path]))
+}
+
+
 /** Errors useCreateSession already toasted, so a failed start doesn't say it twice. */
 const reportedBySessionCreation = new WeakSet<Error>()
 
@@ -214,6 +223,8 @@ export function useStartTodo() {
   const createSession = useCreateSession()
   const createAgentForPrompt = useCreateAgentForPrompt()
   const { track } = useAnalyticsTracking()
+  const addMount = useAddMount()
+  const removeMount = useRemoveMount()
   return useMutation({
     mutationKey: START_TODO_MUTATION_KEY,
     mutationFn: async (todo: StartableTodo) => {
@@ -228,18 +239,30 @@ export function useStartTodo() {
       const { claim, todo: claimed } = await send<{ claim: string; todo: TodoView }>(
         `/api/todos/${todo.id}/claim`, 'POST', {}, 'Could not start the todo',
       )
+      const slug = claimed.agentSlug ?? agentSlug
+      const list = claimed.attachments ?? []
+      const bound: { mountId: string; containerPath: string; hostPath: string }[] = []
       let sessionId: string
       try {
-        sessionId = (await createSession.mutateAsync({
-          agentSlug: claimed.agentSlug ?? agentSlug,
-          message: todoPrompt(claimed),
-          ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
-          ...(claimed.effort ? { effort: claimed.effort } : {}),
-          ...(claimed.speed ? { speed: claimed.speed } : {}),
-        })).id
+        for (const att of list) {
+          if (att.kind !== 'mount') continue
+          const result = await addMount.mutateAsync({ agentSlug: slug, hostPath: att.hostPath, restart: true })
+          bound.push({ mountId: result.id, containerPath: mountPathOf(result.name), hostPath: att.hostPath })
+        }
+        try {
+          sessionId = (await createSession.mutateAsync({
+            agentSlug: slug,
+            message: appendAttachedFiles(appendMountedFolders(todoPrompt(claimed), bound), pointedPaths(list)),
+            ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
+            ...(claimed.effort ? { effort: claimed.effort } : {}),
+            ...(claimed.speed ? { speed: claimed.speed } : {}),
+          })).id
+        } catch (error) {
+          if (error instanceof Error) reportedBySessionCreation.add(error)
+          throw error
+        }
       } catch (error) {
-        if (error instanceof Error) reportedBySessionCreation.add(error)
-        // Nothing started: let the draft be started again.
+        await Promise.all(bound.map((mount) => removeMount.mutateAsync({ agentSlug: slug, mountId: mount.mountId, restart: true }).catch(() => {})))
         void apiFetch(`/api/todos/${todo.id}/release`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

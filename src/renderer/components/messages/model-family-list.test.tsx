@@ -43,6 +43,7 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('sonnet')).toBe('Sonnet')
     expect(familyDisplayName('gpt')).toBe('GPT')
     expect(familyDisplayName('glm')).toBe('GLM')
+    expect(familyDisplayName('muse-wonder')).toBe('Muse Wonder')
     expect(familyDisplayName('muse')).toBe('Muse Spark')
     expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
   })

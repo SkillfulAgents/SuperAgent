@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { captureRendererException } from '@renderer/lib/error-reporting'
+import { HttpError } from '@renderer/lib/http-error'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -418,7 +419,7 @@ export function useUploadFolder() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath: data.sourcePath }),
       })
-      if (!res.ok) throw new Error('Failed to upload folder')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to upload folder')
       return res.json() as Promise<{ path: string; folderName: string }>
     },
   })
