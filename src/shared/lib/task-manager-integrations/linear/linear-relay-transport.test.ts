@@ -82,7 +82,7 @@ beforeEach(async () => {
   linear = {
     viewer: () => Response.json({ data: { viewer: { id: 'app', name: 'Agent', displayName: 'Agent', app: true, avatarUrl: null, organization: { id: 'workspace', name: 'Test' } } } }),
     'notification(id:$id)': () => Response.json({ data: { notification } }),
-    'issue(id:$id)': () => Response.json({ data: { issue: { ...issue, delegate: null, newest: { nodes: [withdrawal] }, oldest: { nodes: [withdrawal] } } } }),
+    'issue(id:$id)': () => Response.json({ data: { issue: { ...issue, delegate: null, history: { nodes: [withdrawal], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
     reactionCreate: () => Response.json({ data: { reactionCreate: { success: true } } }),
   }
   vi.stubGlobal('fetch', vi.fn(async (_url: string, options: { body: string }) => {
@@ -171,6 +171,24 @@ describe('Linear over the webhook relay', () => {
     expect(await deliver(first)).toEqual(new Map([[first.id, 'discard']]))
     await deliver(update())
     expect(events).toEqual([{ type: 'cancel', externalId: 'issue' }])
+  })
+
+  it('does not let a withdrawal redelivered after the issue was handed back stop the newer work', async () => {
+    await connect()
+    const update = () => delivery({ type: 'Issue', action: 'update', data: { id: 'issue', delegateId: null }, updatedFrom: { delegateId: 'app', updatedAt: at } })
+    await deliver(update())
+    expect(events).toEqual([{ type: 'cancel', externalId: 'issue' }])
+
+    // Reconnect (a fresh connector remembers no stops), then the issue is delegated again.
+    await integration.disconnect()
+    integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
+    integration.onEvent(async event => { events.push(event) })
+    await connect()
+    linear['issue(id:$id)'] = () => Response.json({ data: { issue: { ...issue, history: { nodes: [withdrawal], pageInfo: { hasNextPage: false, endCursor: null } } } } })
+
+    const redelivered = update()
+    expect(await deliver(redelivered)).toEqual(new Map([[redelivered.id, 'discard']]))
+    expect(events).toHaveLength(1)
   })
 
   it('retries while Linear cannot be read, and discards what no longer exists', async () => {

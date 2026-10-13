@@ -82,11 +82,47 @@ export function checkLinearWebhook(event: RelayEvent, secret: string): LinearWeb
 
 const NOTIFICATION_QUERY = `query($id:String!){notification(id:$id){id type createdAt updatedAt user{id} actor{id app} ...on IssueNotification{issue{${ISSUE_FIELDS}} comment{${COMMENT_FIELDS}}}}}`
 const COMMENT_QUERY = `query($id:String!){comment(id:$id){${COMMENT_FIELDS} issue{${ISSUE_FIELDS}}}}`
-// Either end of the history, whichever order the API returns it in.
-const ISSUE_HISTORY_QUERY = `query($id:String!){issue(id:$id){${ISSUE_FIELDS} newest:history(first:25){nodes{${HISTORY_FIELDS}}} oldest:history(last:25){nodes{${HISTORY_FIELDS}}}}}`
+const HISTORY_PAGE = 50
+/** Enough to reach a change from well before a long offline stretch on a busy issue. */
+const MAX_HISTORY_PAGES = 10
+const HISTORY_FORWARD_QUERY = `query($id:String!,$after:String){issue(id:$id){${ISSUE_FIELDS} history(first:${HISTORY_PAGE},after:$after){nodes{${HISTORY_FIELDS}} pageInfo{hasNextPage endCursor}}}}`
+const HISTORY_BACKWARD_QUERY = `query($id:String!,$before:String){issue(id:$id){${ISSUE_FIELDS} history(last:${HISTORY_PAGE},before:$before){nodes{${HISTORY_FIELDS}} pageInfo{hasPreviousPage startCursor}}}}`
 
-const historyNodes = z.object({ nodes: z.array(directHistorySchema) })
-const issueHistoryResult = z.object({ issue: directIssueSchema.extend({ newest: historyNodes, oldest: historyNodes }) })
+const forwardHistoryResult = z.object({ issue: directIssueSchema.extend({ history: z.object({
+  nodes: z.array(directHistorySchema), pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
+}) }) })
+const backwardHistoryResult = z.object({ issue: directIssueSchema.extend({ history: z.object({
+  nodes: z.array(directHistorySchema), pageInfo: z.object({ hasPreviousPage: z.boolean(), startCursor: z.string().nullable() }),
+}) }) })
+
+/**
+ * The issue as it is now, and its history back to just before `since`. Pages
+ * from the newest end, whichever order the API lists history in, so a change
+ * from before a long offline stretch is still found on a busy issue.
+ */
+async function issueHistorySince(client: LinearClient, issueId: string, since: number) {
+  const reachedSince = (nodes: readonly DirectHistory[]) => nodes.some((entry) => Date.parse(entry.createdAt) < since)
+  const first = await client.request(HISTORY_FORWARD_QUERY, { id: issueId }, forwardHistoryResult)
+  const { history, ...current } = first.issue
+  const entries = [...history.nodes]
+  const newestFirst = history.nodes.length < 2 || Date.parse(history.nodes[0].createdAt) >= Date.parse(history.nodes.at(-1)!.createdAt)
+  if (newestFirst) {
+    let page = history
+    for (let pages = 1; page.pageInfo.hasNextPage && !reachedSince(page.nodes) && pages < MAX_HISTORY_PAGES; pages++) {
+      page = (await client.request(HISTORY_FORWARD_QUERY, { id: issueId, after: page.pageInfo.endCursor }, forwardHistoryResult)).issue.history
+      entries.push(...page.nodes)
+    }
+  } else if (history.pageInfo.hasNextPage) {
+    // Oldest first: walk back from the end instead.
+    let page = (await client.request(HISTORY_BACKWARD_QUERY, { id: issueId }, backwardHistoryResult)).issue.history
+    entries.push(...page.nodes)
+    for (let pages = 2; page.pageInfo.hasPreviousPage && !reachedSince(page.nodes) && pages < MAX_HISTORY_PAGES; pages++) {
+      page = (await client.request(HISTORY_BACKWARD_QUERY, { id: issueId, before: page.pageInfo.startCursor }, backwardHistoryResult)).issue.history
+      entries.push(...page.nodes)
+    }
+  }
+  return { current, entries }
+}
 
 /**
  * The subscription events a verified webhook stands for: none for anything
@@ -128,10 +164,9 @@ export async function linearWebhookEvents(
     // The same test the live transport applies once it has the event.
     const concernsApp = isTracked(issue.data.data.id) || issue.data.data.delegateId === appUserId || updatedFrom.delegateId === appUserId
     if (!concernsApp) return []
-    const { issue: data } = await client.request(ISSUE_HISTORY_QUERY, { id: issue.data.data.id }, issueHistoryResult)
-    const { newest, oldest, ...current } = data
     const changedAt = Date.parse(issue.data.createdAt)
-    const nearby = [...newest.nodes, ...oldest.nodes].filter((entry) => Math.abs(Date.parse(entry.createdAt) - changedAt) <= HISTORY_MATCH_WINDOW_MS)
+    const { current, entries: history } = await issueHistorySince(client, issue.data.data.id, changedAt - HISTORY_MATCH_WINDOW_MS)
+    const nearby = history.filter((entry) => Math.abs(Date.parse(entry.createdAt) - changedAt) <= HISTORY_MATCH_WINDOW_MS)
     // The entry recording exactly this change (same values before and after),
     // nearest in time: a neighbouring change of the same kind, like a
     // delegation withdrawn a moment before this one, must not be replayed.
@@ -145,6 +180,9 @@ export async function linearWebhookEvents(
       const closest = nearby.filter(matches).sort((a, b) => Math.abs(Date.parse(a.createdAt) - changedAt) - Math.abs(Date.parse(b.createdAt) - changedAt))[0]
       if (closest) entries.set(closest.id, closest)
     }
+    // Nothing the live transport would have acted on, or history Linear no
+    // longer lists: say so rather than drop it silently.
+    if (entries.size === 0) console.warn(`[Linear] No history entry matches the ${issue.data.action} webhook for issue ${issue.data.data.id}`)
     return [...entries.values()]
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
       .map((entry) => ({ type: 'issueHistoryCreated' as const, data: { ...entry, issue: current } }))

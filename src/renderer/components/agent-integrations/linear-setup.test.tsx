@@ -33,6 +33,7 @@ let client: QueryClient
 let current: PublicLinearIntegration
 let relayAvailable: boolean
 let transports: string[]
+let runningTransport: 'direct' | 'relay' | null
 let rejectAuthorization: boolean
 let authorizationCount: number
 const onClose = vi.fn()
@@ -47,8 +48,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   current = integration('setup_required'); rejectAuthorization = false; authorizationCount = 0
-  relayAvailable = false; transports = ['direct', 'relay']
+  relayAvailable = false; transports = ['direct', 'relay']; runningTransport = null
   mocks.request.mockImplementation(async (url: string, options?: { body?: string }) => {
+    if (url.endsWith('/status')) return Response.json({ status: 'active', connected: runningTransport !== null, transport: runningTransport, provider: 'linear' })
     if (url === '/api/webhook-relay') return Response.json({ available: relayAvailable, unavailableReason: relayAvailable ? null : 'platform_disconnected', transport: 'idle', lastClaimAt: null })
     if (url.includes('/providers/linear/setup?')) return Response.json({ ...integration('setup_required').linear.setup, transports })
     if (url === '/api/agent-integrations/agents/a') {
@@ -195,12 +197,14 @@ describe('Linear over the webhook relay', () => {
     expect(screen.queryByLabelText('Webhook signing secret')).toBeNull()
   })
 
-  it('shows the webhook URL, says why it uses the live connection without a secret, and saves one', async () => {
+  it('shows the webhook URL, says why the next connection would use the live one without a secret, and saves one', async () => {
     relayAvailable = true
+    runningTransport = 'direct'
     render(<LinearIntegrationSettings integration={relayIntegration('connected')} />, { wrapper })
     expect(screen.getByTestId('linear-webhook-url')).toHaveTextContent('https://relay.test/v1/hooks/whep_1')
     expect(screen.getByText(/Inbox notifications, Comments, Issues/)).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('signing secret hasn’t been pasted'))
+    await waitFor(() => expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('Over a live connection'))
+    expect(screen.getByTestId('linear-delivery-reason')).toHaveTextContent('signing secret hasn’t been pasted')
 
     fireEvent.change(screen.getByLabelText('Webhook signing secret'), { target: { value: ' lin_wh_secret ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -226,16 +230,21 @@ describe('Linear over the webhook relay', () => {
     })
   })
 
-  it('reports webhooks in use while the relay is available, and the live connection while it is not', async () => {
-    relayAvailable = true
-    const { unmount } = render(<LinearIntegrationSettings integration={relayIntegration('connected', true)} />, { wrapper })
-    await waitFor(() => expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('Through webhooks'))
-    unmount()
-
+  it('reports the path the running connection uses, not the one the relay would now give', async () => {
+    // Webhooks were in use when it connected; the relay has gone since.
+    runningTransport = 'relay'
     relayAvailable = false
-    client.clear()
     render(<LinearIntegrationSettings integration={relayIntegration('connected', true)} />, { wrapper })
-    await waitFor(() => expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('the webhook relay is unavailable'))
+    await waitFor(() => expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('Through webhooks'))
+    await waitFor(() => expect(screen.getByTestId('linear-delivery-next')).toHaveTextContent('the webhook relay is unavailable'))
+  })
+
+  it('says webhooks are ready for the next connection when it is still on the live one', async () => {
+    runningTransport = 'direct'
+    relayAvailable = true
+    render(<LinearIntegrationSettings integration={relayIntegration('connected', true)} />, { wrapper })
+    await waitFor(() => expect(screen.getByTestId('linear-delivery-next')).toHaveTextContent('switches to them the next time it connects'))
+    expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('Over a live connection')
   })
 })
 
@@ -254,10 +263,11 @@ describe('Linear relay reconnection', () => {
     expect(JSON.parse(authorize[1].body)).toEqual({ clientId: 'client-id', clientSecret: 'client-secret', webhookSecret: 'lin_wh_secret' })
   })
 
-  it('says when deliveries do not match the saved secret', () => {
+  it('says when deliveries do not match the saved secret', async () => {
     const rejected = relayIntegration('connected', true)
     rejected.linear.webhook = { ...rejected.linear.webhook!, secretRejected: true }
+    runningTransport = 'relay'
     render(<LinearIntegrationSettings integration={rejected} />, { wrapper })
-    expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('don’t match the saved signing secret')
+    await waitFor(() => expect(screen.getByTestId('linear-delivery-next')).toHaveTextContent('don’t match the saved signing secret'))
   })
 })

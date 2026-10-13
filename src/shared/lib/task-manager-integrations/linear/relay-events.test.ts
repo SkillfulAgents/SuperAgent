@@ -67,6 +67,8 @@ function client(responses: Record<string, unknown>) {
   return { request, client: { request } as unknown as LinearClient }
 }
 const body = (value: object) => value as LinearWebhookBody
+/** All of an issue's history in one page, newest first. */
+const onePage = (...nodes: object[]) => ({ history: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } })
 
 describe('linearWebhookEvents', () => {
   it('reads an app notification back as the subscription event direct mode receives', async () => {
@@ -99,7 +101,7 @@ describe('linearWebhookEvents', () => {
     const earlier = history('h-old', -60_000, { fromDelegate: { id: 'app' } })
     const other = history('h-other', 200, { fromDelegate: { id: 'someone' } })
     const status = history('h-status', 500, { fromState: { id: 'todo' }, toState: { id: 'done', name: 'Done', type: 'completed' } })
-    const { client: linear } = client({ issue: { ...issue, newest: { nodes: [status, delegation, other, title] }, oldest: { nodes: [earlier, title, delegation] } } })
+    const { client: linear } = client({ issue: { ...issue, ...onePage(status, delegation, title, other, earlier) } })
     const update = { type: 'Issue', action: 'update', createdAt: new Date(at).toISOString(), webhookTimestamp: at, data: { id: 'issue' } }
 
     const events = await linearWebhookEvents(linear, body({ ...update, updatedFrom: { delegateId: 'app', updatedAt: 'x' } }), 'app', () => false)
@@ -109,7 +111,7 @@ describe('linearWebhookEvents', () => {
 
   it('reads issue changes only for issues the app is working on or was delegated', async () => {
     const status = history('h-status', 0, { fromState: { id: 'todo' }, toState: { id: 'done', name: 'Done', type: 'completed' } })
-    const { client: linear, request } = client({ issue: { ...issue, newest: { nodes: [status] }, oldest: { nodes: [] } } })
+    const { client: linear, request } = client({ issue: { ...issue, ...onePage(status) } })
     const update = { type: 'Issue', action: 'update', createdAt: new Date(at).toISOString(), webhookTimestamp: at, updatedFrom: { stateId: 'todo' } }
 
     expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: 'someone', stateId: 'done' } }), 'app', () => false)).toEqual([])
@@ -123,7 +125,7 @@ describe('linearWebhookEvents', () => {
     // webhook must only report the second change, not stop the task again.
     const withdrawn = history('h-withdrawn', 0, { fromDelegate: { id: 'app' }, toDelegate: null })
     const delegated = history('h-delegated', 5_000, { fromDelegate: null, toDelegate: { id: 'app' } })
-    const { client: linear } = client({ issue: { ...issue, newest: { nodes: [delegated, withdrawn] }, oldest: { nodes: [withdrawn, delegated] } } })
+    const { client: linear } = client({ issue: { ...issue, ...onePage(delegated, withdrawn) } })
     const redelegation = { type: 'Issue', action: 'update', createdAt: new Date(at + 5_000).toISOString(), webhookTimestamp: at, data: { id: 'issue', delegateId: 'app' }, updatedFrom: { delegateId: null } }
 
     const events = await linearWebhookEvents(linear, body(redelegation), 'app', () => false)
@@ -138,5 +140,41 @@ describe('linearWebhookEvents', () => {
     expect(await linearWebhookEvents(linear, body({ ...update, updatedFrom: { title: 'Old', updatedAt: 'x' } }), 'app', () => true)).toEqual([])
     expect(await linearWebhookEvents(linear, body({ type: 'Reaction', action: 'create', createdAt: '', webhookTimestamp: at }), 'app', () => true)).toEqual([])
     expect(request).not.toHaveBeenCalled()
+  })
+})
+
+describe('issue history paging', () => {
+  // 120 later changes buried the one the webhook reports, as after a long offline stretch.
+  const buried = history('h-buried', 0, { fromDelegate: { id: 'app' }, toDelegate: null })
+  const later = Array.from({ length: 120 }, (_, i) => history(`h-later-${i}`, 60_000 + i * 1_000, {}))
+  const withdrawal = { type: 'Issue', action: 'update', createdAt: new Date(at).toISOString(), webhookTimestamp: at, data: { id: 'issue', delegateId: null }, updatedFrom: { delegateId: 'app' } }
+  function pagedClient(newestFirst: boolean) {
+    const all = newestFirst ? [...later].reverse().concat(buried) : [buried, ...later]
+    const request = vi.fn(async (query: string, variables: { after?: string; before?: string }, schema: z.ZodType) => {
+      const backward = query.includes('last:')
+      let nodes: object[]
+      let pageInfo: object
+      if (!backward) {
+        const start = variables.after ? Number(variables.after) : 0
+        nodes = all.slice(start, start + 50)
+        pageInfo = { hasNextPage: start + 50 < all.length, endCursor: String(start + 50) }
+      } else {
+        const end = variables.before ? Number(variables.before) : all.length
+        nodes = all.slice(Math.max(0, end - 50), end)
+        pageInfo = { hasPreviousPage: end - 50 > 0, startCursor: String(Math.max(0, end - 50)) }
+      }
+      return schema.parse({ issue: { ...issue, history: { nodes, pageInfo } } })
+    })
+    return { request, client: { request } as unknown as LinearClient }
+  }
+
+  it.each([true, false])('reaches a change buried under later ones (newest first: %s)', async (newestFirst) => {
+    const { client: linear, request } = pagedClient(newestFirst)
+
+    const events = await linearWebhookEvents(linear, body(withdrawal), 'app', () => true)
+
+    expect(events.map((event) => event.type === 'issueHistoryCreated' && event.data.id)).toEqual(['h-buried'])
+    // Only as far back as the change, not the whole history.
+    expect(request.mock.calls.length).toBeLessThanOrEqual(4)
   })
 })

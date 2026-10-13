@@ -24,6 +24,15 @@ const SECRET_MISMATCH = 'Linear webhook signatures do not match the saved signin
 /** Stops already carried out, so a redelivered or overlapping webhook never repeats one. */
 const MAX_REMEMBERED_STOPS = 500
 
+/**
+ * Whether the issue, as last read, still calls for stopping work: no longer
+ * delegated to the app, archived, or canceled. A stop the issue's newer state
+ * contradicts is stale.
+ */
+function stopStillApplies(issue: { delegate: { id: string } | null; archivedAt: string | null; state: { type: string } }, appUserId: string): boolean {
+  return issue.delegate?.id !== appUserId || !!issue.archivedAt || issue.state.type === 'canceled'
+}
+
 export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   readonly provider = 'linear'
   readonly definition = linearDefinition
@@ -51,6 +60,10 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     // Relay: events wait on the platform while the relay is down, so being
     // attached is enough to keep delivering what was already accepted.
     return this.relayAttachment ? this.relayAttachment.isAttached() : !!this.subscriptions?.isReady()
+  }
+  activeTransport() {
+    if (!this.connected) return null
+    return this.relayAttachment ? 'relay' as const : 'direct' as const
   }
   async connect(): Promise<void> {
     const generation = ++this.generation
@@ -102,15 +115,16 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     await this.processing
   }
   /** One event at a time, in arrival order, whichever transport it came from. */
-  private receive(event: DirectSubscriptionEvent, generation: number, version: string | undefined, appUserId: string): Promise<ReceiveOutcome> {
-    const outcome = this.processing.then(() => this.process(event, generation, version, appUserId)).catch((error): ReceiveOutcome => {
+  private receive(event: DirectSubscriptionEvent, generation: number, version: string | undefined, appUserId: string, relayed = false): Promise<ReceiveOutcome> {
+    const outcome = this.processing.then(() => this.process(event, generation, version, appUserId, relayed)).catch((error): ReceiveOutcome => {
       if (this.connected && generation === this.generation) this.report(error, 'event')
       return 'retry'
     })
     this.processing = outcome.then(() => {})
     return outcome
   }
-  private async process(event: DirectSubscriptionEvent, generation: number, version: string | undefined, appUserId: string): Promise<ReceiveOutcome> {
+  /** `relayed`: read back from a webhook, which can be redelivered long after the fact. */
+  private async process(event: DirectSubscriptionEvent, generation: number, version: string | undefined, appUserId: string, relayed: boolean): Promise<ReceiveOutcome> {
     // A replaced connection's events belong to its successor.
     if (!this.connected || generation !== this.generation) return 'retry'
     const config = await getLinearConfig(this.installation.id)
@@ -122,7 +136,9 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       if (!this.participation?.get(issue.id) && issue.delegate?.id !== appUserId && event.data.fromDelegate?.id !== appUserId) return 'ignored'
       const action = historyAction(event.data, issue, appUserId, config.runOnStatusChange)
       if (action.type === 'stop') {
-        if (!this.rememberStop(event.data.id)) return 'ignored'
+        // A withdrawal redelivered after the issue was handed back (or a
+        // cancel after it was reopened) must not stop the newer work.
+        if ((relayed && !stopStillApplies(issue, appUserId)) || !this.rememberStop(event.data.id)) return 'ignored'
         await this.stopTask(action.taskId)
         return 'ignored'
       }
@@ -189,7 +205,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     }
     let result: RelayAcceptResult = 'discard'
     for (const item of direct) {
-      const outcome = await this.receive(item, generation, version, appUserId)
+      const outcome = await this.receive(item, generation, version, appUserId, true)
       // Redelivering the whole webhook is safe: accepted input deduplicates.
       if (outcome === 'retry') return 'retry'
       if (outcome === 'accepted' || (outcome === 'duplicate' && result !== 'accepted')) result = outcome

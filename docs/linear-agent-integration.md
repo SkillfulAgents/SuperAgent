@@ -74,15 +74,20 @@ IDs (`assignment:`, `mention:`, `comment:`, `history:`), so switching transports
 never runs a request twice. Issue webhooks only matter for delegation, status and
 archival changes; the matching history entry records exactly that change (the same
 values before and after) and is the closest one within ten seconds, so a neighbouring
-change of the same kind is never replayed, and a stop is carried out once however
-often its webhook arrives. Anything that isn't input is acknowledged and dropped.
+change of the same kind is never replayed. History is paged from the newest end back
+to the change (up to 500 entries), so a change from before a long offline stretch is
+still found; one that isn't is logged. A stop is carried out once per connection, and
+a redelivered stop only when the issue, as read back, still calls for it (no longer
+delegated to the app, archived, or canceled), so an old withdrawal can't stop newer
+work. Anything that isn't input is acknowledged and dropped.
 Access errors (the entity was deleted or unshared) drop the delivery; other read
 failures leave it with the relay, which offers it again with backoff, and the rest of
 that batch waits for the retry instead of timing out in turn. Retried deliveries can
 arrive after later ones; each is read back in its current state.
 
-**Event Delivery** in an installation's settings shows which path it uses and, when
-it falls back to the socket, why. Setting webhooks up there mints the endpoint and
+**Event Delivery** in an installation's settings shows the path the running
+connection uses (reported by the connection itself) and, when the next connection
+would use another one, which and why. Setting webhooks up there mints the endpoint and
 shows the URL, event types and a field for the signing secret to configure in the
 Linear app; removing them disables the endpoint and forgets the secret, and drops
 deliveries the relay had already claimed. Either reconnects the integration. Relay

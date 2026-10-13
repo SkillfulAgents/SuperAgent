@@ -8,7 +8,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 const runtime = vi.hoisted(() => ({ add: vi.fn(async (_id: string) => {}), remove: vi.fn(async (_id: string) => {}), pause: vi.fn(async (_id: string) => {}) }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: {
-  addIntegration: runtime.add, removeIntegration: runtime.remove, pauseIntegration: runtime.pause, resumeIntegration: vi.fn(), integrationCreated: vi.fn(), isIntegrationConnected: () => false,
+  addIntegration: runtime.add, removeIntegration: runtime.remove, pauseIntegration: runtime.pause, resumeIntegration: vi.fn(), integrationCreated: vi.fn(), isIntegrationConnected: () => false, integrationTransport: () => null,
 } }))
 vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: () => 'owner',
@@ -158,4 +158,19 @@ it('keeps a saved settings change when the reconnect it needs fails, and reports
 
   expect(response.status).toBe(200)
   expect(await getAgentIntegration(row.id)).toMatchObject({ status: 'error', errorMessage: 'Linear is not authorized' })
+})
+
+it('leaves a pause that landed while the reconnect was pending', async () => {
+  const row = await (await create('test-relay', { key: 'a' })).json()
+  await updateAgentIntegrationStatus(row.id, 'active')
+  let failConnect!: (error: Error) => void
+  runtime.add.mockImplementationOnce(() => new Promise((_resolve, reject) => { failConnect = reject }))
+
+  const request = app.request(`/api/agent-integrations/${row.id}`, { method: 'PATCH', headers, body: JSON.stringify({ settings: { webhooks: true } }) })
+  await vi.waitFor(() => expect(runtime.add).toHaveBeenCalled())
+  await updateAgentIntegrationStatus(row.id, 'paused')
+  failConnect(new Error('Old connect failed'))
+
+  expect((await request).status).toBe(200)
+  expect((await getAgentIntegration(row.id))!.status).toBe('paused')
 })

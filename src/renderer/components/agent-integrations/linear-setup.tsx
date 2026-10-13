@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { useAgent } from '@renderer/hooks/use-agents'
-import { agentIntegrationKeys, useAgentIntegration, useAgentIntegrationSetup, useAuthorizeAgentIntegration, useCreateAgentIntegration, useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import { agentIntegrationKeys, useAgentIntegration, useAgentIntegrationSetup, useAgentIntegrationStatus, useAuthorizeAgentIntegration, useCreateAgentIntegration, useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -244,8 +244,12 @@ function LinearDeliverySettings({ integration }: { integration: PublicLinearInte
   const { data: relay } = useWebhookRelay()
   const [secret, setSecret] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const { data: connection } = useAgentIntegrationStatus(integration.id)
   const { webhook } = integration.linear
   const fallback = webhook ? webhookFallbackReason(webhook, !!relay?.available) : null
+  // What runs now is the connection's own report; the next connect may differ.
+  const running = connection?.transport ?? null
+  const next = webhook && !fallback ? 'relay' : 'direct'
   const save = (settings: Record<string, unknown>) => {
     setError(null)
     update.mutate({ id: integration.id, settings }, {
@@ -255,11 +259,17 @@ function LinearDeliverySettings({ integration }: { integration: PublicLinearInte
   }
   return <DetailCard label="Event Delivery">
     <div className="space-y-3">
-      <p className="text-sm" data-testid="linear-delivery-path">{!webhook
-        ? 'Over a live connection. Events that happen while it’s disconnected are missed.'
-        : fallback
-          ? `Over a live connection for now: ${fallback}. It uses webhooks again the next time it connects once that’s resolved.`
-          : 'Through webhooks. Events that happen while this agent is offline are delivered when it’s back.'}</p>
+      <p className="text-sm" data-testid="linear-delivery-path">{running === 'relay'
+        ? 'Through webhooks. Events that happen while this agent is offline are delivered when it’s back.'
+        : running === 'direct'
+          ? 'Over a live connection. Events that happen while it’s disconnected are missed.'
+          : `Not connected. It will use ${next === 'relay' ? 'webhooks' : 'a live connection'} when it connects.`}</p>
+      {running && running !== next && <p role="status" className="text-xs text-muted-foreground" data-testid="linear-delivery-next">
+        {next === 'relay'
+          ? 'Webhooks are ready; it switches to them the next time it connects.'
+          : `It switches to a live connection the next time it connects: ${fallback ?? 'webhooks aren’t set up'}.`}
+      </p>}
+      {running !== 'relay' && next === 'direct' && fallback && <p role="status" className="text-xs text-muted-foreground" data-testid="linear-delivery-reason">Not using webhooks: {fallback}.</p>}
       {webhook && <>
         <div className="space-y-1 text-xs">
           <p className="text-muted-foreground">In this agent’s Linear app, turn webhooks on with this URL and these events: {webhook.resourceTypes.map(type => LINEAR_EVENT_LABELS[type] ?? type).join(', ')}.</p>

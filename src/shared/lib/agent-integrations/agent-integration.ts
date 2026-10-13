@@ -5,6 +5,7 @@ import type {
   IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy,
   IntegrationTool, PreparedIntegrationInput, IntegrationHost, IntegrationSessionRecovery,
 } from './types'
+import type { IntegrationTransport } from './transport'
 
 /** Application-facing lifecycle, input, and output contract for every integration. */
 export abstract class AgentIntegration {
@@ -27,6 +28,8 @@ export abstract class AgentIntegration {
   abstract connect(): Promise<void>
   abstract disconnect(): Promise<void>
   abstract isConnected(): boolean
+  /** The path this connection runs on, for providers that support the relay; null otherwise. */
+  activeTransport(): IntegrationTransport | null { return null }
   abstract resolveRoute(event: IntegrationInputEvent): IntegrationRoute
   abstract authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean>
   abstract isAllowed(context: IntegrationSessionContext): Promise<boolean>

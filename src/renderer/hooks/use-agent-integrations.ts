@@ -93,6 +93,8 @@ export function useAgentIntegrationStatus(id: string | null) {
   return useQuery<{
     status: string
     connected: boolean
+    /** The path the running connection uses; null without one, or for providers that don't say. */
+    transport?: 'direct' | 'relay' | null
     provider: string
   }>({
     queryKey: agentIntegrationKeys.status(id),

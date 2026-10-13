@@ -324,7 +324,8 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
           // The change is saved either way; a connection it can't make yet
           // (e.g. a secret still to paste) is what the row's status reports.
           captureException(err, { tags: { ...SENTRY_TAGS, operation: 'update-integration-connect' }, extra: { integrationId: id } })
-          await updateAgentIntegrationStatus(id, 'error', err instanceof Error ? err.message : String(err))
+          // A pause that landed while this connect was pending wins.
+          await updateAgentIntegrationStatus(id, 'error', err instanceof Error ? err.message : String(err), { unlessPaused: true })
         }
       }
     }
@@ -444,6 +445,8 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
     return c.json({
       status: publicIntegrationStatus(integration),
       connected,
+      // What the running connection uses, not what the next one would.
+      transport: agentIntegrationManager.integrationTransport(integration.id),
       provider: integration.provider,
     })
   } catch (error) {
