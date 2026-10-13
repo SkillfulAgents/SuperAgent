@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ChevronRight, Folder, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Folder, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import {
   defaultDropAnimation,
@@ -23,25 +23,22 @@ import {
 } from '@renderer/lib/agent-folders'
 
 /**
- * A section-level row of the left nav (a folder header): small muted label
- * text with no hover or press fill.
+ * A section-level row of the left nav — a folder header, or "Add section"
+ * under the last one: small muted label text with no hover or press fill.
  */
 export const SECTION_ROW_CLASS =
   'h-8 gap-1 text-xs font-normal text-sidebar-foreground/50 hover:bg-transparent hover:text-sidebar-foreground/50 active:bg-transparent active:text-sidebar-foreground/50'
-/** The icon in a section-level row: a folder's chevron. */
+/** The icon in a section-level row: a folder's chevron, Add section's +. */
 export const SECTION_ICON_CLASS = 'h-3.5 w-3.5 text-muted-foreground'
 
 /**
- * A section header's buttons: its + (a new agent filed into the section) and
- * Your Agents' new-section button. Their hover fill is a step darker than an
- * agent row's (the Electron vibrancy rows use 6% black, 10% white in dark), so
- * they read as buttons on the row rather than the row.
+ * A section header's + (a new agent filed into the section). Its hover fill
+ * is a step darker than an agent row's (the Electron vibrancy rows use 6%
+ * black, 10% white in dark), so it reads as a button on the row rather than
+ * the row.
  */
 const HEADER_ACTION_CLASS =
   'absolute top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/80 transition-opacity hover:bg-black/10 hover:text-sidebar-foreground dark:hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
-/** Revealed on hover of the block rather than always shown. */
-const HEADER_ACTION_HOVER_CLASS =
-  'opacity-0 focus-visible:opacity-100 group-hover/folder-block:opacity-100'
 
 /**
  * Inline rename for a folder. Mirrors the dashboard rename in `app-sidebar.tsx`
@@ -214,12 +211,11 @@ export function AgentFolderBlock({
   onRename,
   onRenameEnd,
   onDelete,
-  onCreateFolder,
   onCreateAgent,
   children,
 }: {
   folder: AgentFolder
-  /** The default "Your Agents" folder: no rename/delete, hosts the + button. */
+  /** The default "Your Agents" folder: no rename/delete. */
   isRoot?: boolean
   agentCount: number
   isCollapsed: boolean
@@ -233,8 +229,6 @@ export function AgentFolderBlock({
   onRename: (name: string) => void
   onRenameEnd?: () => void
   onDelete: () => void
-  /** Rendered as a hover folder-plus on the default folder's header row. */
-  onCreateFolder?: () => void
   /** Rendered as a + on the header row: a new agent filed into this folder. */
   onCreateAgent?: () => void
   children: React.ReactNode
@@ -334,13 +328,13 @@ export function AgentFolderBlock({
       )}
 
       {/*
-        Header buttons overlay the row as SIBLINGS of the drag activator: a
-        button cannot nest inside the header <button>, and pressing one must
-        not begin the folder's drag. The + takes the header's right edge,
-        centred on the column the agent rows' status icons sit in (16px in),
-        and is always shown — it is the folder's own "New Agent". On Your
-        Agents the new-section button sits one slot left of it, still a hover
-        reveal. Both give way to the rename input.
+        The + overlays the row as a SIBLING of the drag activator: a button
+        cannot nest inside the header <button>, and pressing it must not begin
+        the folder's drag. It takes the header's right edge, centred on the
+        column the agent rows' status icons sit in (16px in), is always shown
+        — it is the folder's own "New Agent" — and gives way to the rename
+        input. New sections are made from "Add section" at the end of the
+        list, not from a header.
       */}
       {onCreateAgent && !isRenaming && (
         <button
@@ -353,24 +347,6 @@ export function AgentFolderBlock({
           className={cn(HEADER_ACTION_CLASS, 'right-[7px]')}
         >
           <Plus className="h-3.5 w-3.5" />
-        </button>
-      )}
-
-      {isRoot && onCreateFolder && !isRenaming && (
-        <button
-          type="button"
-          onClick={onCreateFolder}
-          aria-label="New section"
-          data-header-zone
-          title="New section"
-          data-testid="new-folder-button"
-          className={cn(
-            HEADER_ACTION_CLASS,
-            HEADER_ACTION_HOVER_CLASS,
-            onCreateAgent ? 'right-8' : 'right-[7px]'
-          )}
-        >
-          <FolderPlus className="h-3.5 w-3.5" />
         </button>
       )}
 

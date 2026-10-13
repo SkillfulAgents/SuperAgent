@@ -415,7 +415,6 @@ describe('AgentFolderBlock — the default folder', () => {
       onRename: vi.fn(),
       onRenameEnd: vi.fn(),
       onDelete: vi.fn(),
-      onCreateFolder: vi.fn(),
       children: <li data-testid="member-row">member</li>,
       ...overrides,
     } satisfies React.ComponentProps<typeof AgentFolderBlock>
@@ -435,41 +434,18 @@ describe('AgentFolderBlock — the default folder', () => {
     expect(screen.queryByTestId('delete-folder-item')).not.toBeInTheDocument()
   })
 
-  it('hosts the new-folder button', async () => {
-    const props = renderRoot()
-    await userEvent.click(screen.getByTestId('new-folder-button'))
-    expect(props.onCreateFolder).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps the new-folder button outside the header button', () => {
-    // A button cannot nest inside a button, and pressing + must not begin the
-    // folder's drag — so it overlays as a sibling of the drag activator.
-    renderRoot()
-    const plus = screen.getByTestId('new-folder-button')
-    expect(plus.closest('button')).toBe(plus)
-    expect(screen.getByTestId('agent-folder-root').contains(plus)).toBe(false)
-  })
-
-  it('does not render the new-folder button on ordinary folders', () => {
-    renderBlock()
+  it('has no new-section button: sections are made from Add section', () => {
+    renderRoot({ onCreateAgent: vi.fn() })
     expect(screen.queryByTestId('new-folder-button')).not.toBeInTheDocument()
   })
 
-  it('hosts the new-agent button too, right of the new-section one', async () => {
+  it('hosts the new-agent button like any folder', async () => {
     const props = renderRoot({ onCreateAgent: vi.fn() })
     const plus = screen.getByTestId('new-agent-in-folder-root')
     await userEvent.click(plus)
     expect(props.onCreateAgent).toHaveBeenCalledTimes(1)
-    expect(props.onCreateFolder).not.toHaveBeenCalled()
-    // Both overlay the header's right edge: + in the rows' status-icon
-    // column, the new-section button one slot in.
+    // Overlays the header's right edge, in the rows' status-icon column.
     expect(plus.className).toContain('right-[7px]')
-    expect(screen.getByTestId('new-folder-button').className).toContain('right-8')
-  })
-
-  it('gives the new-section button the edge slot when there is no new-agent button', () => {
-    renderRoot()
-    expect(screen.getByTestId('new-folder-button').className).toContain('right-[7px]')
   })
 
   it('still collapses like any folder', async () => {

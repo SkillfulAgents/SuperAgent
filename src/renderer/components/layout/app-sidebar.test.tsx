@@ -1442,10 +1442,15 @@ describe('AppSidebar — agent folders', () => {
     return typeof arg === 'function' ? arg(settings) : arg
   }
 
-  it('adds a uniquely-named folder from the default folder’s header', async () => {
+  /** Make a folder the way users do: "Add section" at the end of the list. */
+  async function addSection() {
+    await userEvent.click(screen.getByTestId('add-section-button'))
+  }
+
+  it('adds a uniquely-named folder from Add section', async () => {
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
     const patch = patchWith({ agentFolders: [] })
@@ -1462,7 +1467,7 @@ describe('AppSidebar — agent folders', () => {
     mockUserSettings.mockReturnValue(settings)
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     const patch = patchWith(settings)
     expect(patch.agentFolders[1].name).toBe('New Section 2')
@@ -1474,7 +1479,7 @@ describe('AppSidebar — agent folders', () => {
     // and must carry the other write's folder rather than reverting it.
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Section' }] })
     expect(patch.agentFolders).toHaveLength(2)
@@ -1495,30 +1500,55 @@ describe('AppSidebar — agent folders', () => {
     expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
   })
 
-  it('places a created folder directly above the default folder', async () => {
+  it('places a created folder last, right above Add section', async () => {
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     // Untouched install: no stored places yet, so root's marker is written
-    // too — without one it would default ahead of the new folder (place -1).
+    // too — without one it would default ahead of everything (place -1).
     const fresh = patchWith({ agentFolders: [] })
-    expect(fresh.agentListOrder).toEqual([
-      `agent-folder::${fresh.agentFolders[0].id}`,
-      ROOT,
-    ])
+    expect(fresh.agentListOrder).toEqual([ROOT, `agent-folder::${fresh.agentFolders[0].id}`])
 
-    // A root the user moved off the top stays put; the new folder splices in
-    // just above it and other folders keep their places.
+    // Arranged sections keep their places; the new one goes after them all.
     const arranged = patchWith({
       agentFolders: [FOLDERS[0]],
-      agentListOrder: ['agent-folder::f1', ROOT],
+      agentListOrder: [ROOT, 'agent-folder::f1'],
     })
     expect(arranged.agentListOrder).toEqual([
+      ROOT,
       'agent-folder::f1',
       `agent-folder::${arranged.agentFolders[1].id}`,
-      ROOT,
     ])
+  })
+
+  it('puts Add section at the end of the agent list, not in the footer', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const button = screen.getByTestId('add-section-button')
+    expect(button).toHaveTextContent('Add section')
+    // Styled as a section row (the headers' text), but as a plain action it
+    // keeps a hover fill — which the section headers deliberately lack.
+    for (const cls of ['text-xs', 'font-normal', 'text-sidebar-foreground/50', 'hover:bg-sidebar-accent']) {
+      expect(button.className).toContain(cls)
+    }
+    expect(button.className).not.toContain('hover:bg-transparent')
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    // After every section and agent row in the list…
+    const rows = document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    expect(follows(rows[rows.length - 1], button)).toBe(true)
+    // …and still ahead of the footer's Settings.
+    expect(follows(button, screen.getByTestId('settings-button'))).toBe(true)
+    // The same space above it as above each section header, so the gaps
+    // down the list stay uniform.
+    expect(button.closest('li')?.className).toContain('mt-2')
+    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-2')
   })
 
   it('still renders folders when the user has no agents at all', () => {
