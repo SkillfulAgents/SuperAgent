@@ -1,3 +1,4 @@
+import { GitHubSetupForm, GitHubConnectionSettings } from './github-setup'
 import { EmailIntegrationMessage } from './messages/email-message'
 import { EmailIntegrationSetupForm } from './email-integration-setup-form'
 import { EmailSettingsCard } from './email-settings-card'
@@ -43,6 +44,7 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
     <ChatIntegrationSettingsCard {...props} />
     <IMessageDeliveryCard integration={props.integration} />
   </>),
+  { slug: 'github', label: 'GitHub', managementAccess: 'owner', iconClassName: 'dark:invert', Setup: GitHubSetupForm, ConnectionSettings: GitHubConnectionSettings },
   { slug: 'linear', label: 'Linear', managementAccess: 'owner', iconClassName: 'dark:invert', Setup: LinearSetupForm, ConnectionSettings: LinearConnectionSettings, Settings: LinearIntegrationSettings, Message: LinearIntegrationMessage },
   { slug: 'recall', label: 'Meetings', managementAccess: 'owner', Setup: RecallSetupForm, ConnectionSettings: MeetingPanel, Settings: MeetingSettingsCard },
 

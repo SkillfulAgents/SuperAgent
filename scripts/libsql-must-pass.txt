@@ -67,3 +67,7 @@ src/shared/lib/chat-integrations/imessage-webhooks.test.ts
 src/shared/lib/chat-integrations/telegram-webhooks.test.ts
 src/shared/lib/chat-integrations/slack-webhooks.test.ts
 src/api/routes/slack-webhook-setup.test.ts
+src/shared/lib/task-manager-integrations/github/setup.test.ts
+src/shared/lib/task-manager-integrations/github/client.test.ts
+src/shared/lib/task-manager-integrations/github/github-agent-integration.test.ts
+src/shared/lib/task-manager-integrations/github/mcp.test.ts

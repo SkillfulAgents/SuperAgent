@@ -25,8 +25,10 @@ export interface IntegrationProviderSetup {
     /** Validate and persist the attempt before returning its URL. A failure must leave the account usable. */
     run(record: AgentIntegrationRecord, input: unknown, context: IntegrationSetupContext): Promise<{ url: string }>
   }
+  /** Browser form handoff for providers whose setup starts with a POST. Validate expiring state before returning fields. */
+  launch?(state: string): Promise<{ url: string; fields: Record<string, string> }>
   /** Validate and consume expiring state, then persist credentials. The host resumes the returned installation. */
-  callback?(input: { state: string; code?: string; error?: string }): Promise<{ integrationId?: string; cancelled?: boolean }>
+  callback?(input: { state: string; code?: string; error?: string; parameters?: Record<string, string> }): Promise<{ integrationId?: string; cancelled?: boolean; redirectUrl?: string }>
 }
 /** Provider credential errors are not app-session 401s. 403 is for setup access policy. */
 export class IntegrationSetupError extends Error {
