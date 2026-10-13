@@ -23,6 +23,10 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ container: { containerRunner: 'apple-container' } }),
 }))
+const getRecentPowerEvents = vi.fn((): unknown[] => [])
+vi.mock('@shared/lib/power-events', () => ({
+  getRecentPowerEvents: () => getRecentPowerEvents(),
+}))
 
 import agentBootstrap from './agent-bootstrap'
 import { setBootstrapEnv, clearBootstrapEnv, resetBootstrapEnvStoreForTests } from '@shared/lib/container/agent-bootstrap-env-store'
@@ -46,6 +50,7 @@ beforeEach(() => {
   isSessionActive.mockReset().mockReturnValue(false)
   isSubscribed.mockReset().mockReturnValue(false)
   getStreamSocketInfo.mockReset().mockReturnValue(null)
+  getRecentPowerEvents.mockReset().mockReturnValue([])
   resetBootstrapEnvStoreForTests()
 })
 
@@ -228,6 +233,11 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
       tcpBytesWritten: 318,
     }
     getStreamSocketInfo.mockReturnValue(hostSocket)
+    const powerEvents = [
+      { type: 'suspend', at: '2026-09-29T16:50:00.000Z' },
+      { type: 'resume', at: '2026-09-29T16:59:58.000Z' },
+    ]
+    getRecentPowerEvents.mockReturnValue(powerEvents)
 
     const res = await post('/agent-1/events/undelivered-turn', report, { Authorization: 'Bearer synth_x' })
 
@@ -255,6 +265,7 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
         idleMsBeforeClose: 120_000,
         socketError: 'ECONNRESET',
         hostSocket,
+        powerEvents,
       },
     })
   })

@@ -133,6 +133,7 @@ import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { recordPowerEvent } from '@shared/lib/power-events'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
 app.name = 'SuperAgent'
@@ -1543,6 +1544,9 @@ async function startApp() {
   }
 
   void afterBindInitialize()
+
+  powerMonitor.on('suspend', () => recordPowerEvent('suspend'))
+  powerMonitor.on('resume', () => recordPowerEvent('resume'))
 
   // Reconnect agent integrations after system sleep
   powerMonitor.on('resume', () => {
