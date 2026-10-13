@@ -81,13 +81,16 @@ describe('useStaleSession', () => {
 
   it('moves the live composer into a new conversation and navigates home', () => {
     const { result } = renderStale()
-    act(() => result.current.stale.registerSnapshot(() => ({
-      text: 'Continue as a new task',
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-      speed: 'normal',
-    })))
+    act(() => {
+      result.current.store.set('session:session-1:attachments', ['source attachment'])
+      result.current.stale.registerSnapshot(() => ({
+        text: 'Continue as a new task',
+        attachments: [],
+        model: 'sonnet',
+        effort: 'high',
+        speed: 'normal',
+      }))
+    })
     act(() => result.current.stale.startFresh())
 
     expect(result.current.store.get('agent:abc123def4')).toBe('Continue as a new task')
@@ -98,6 +101,7 @@ describe('useStaleSession', () => {
       speed: 'normal',
     })
     expect(result.current.store.get('session:session-1')).toBeUndefined()
+    expect(result.current.store.get('session:session-1:attachments')).toBeUndefined()
     expect(navigate).toHaveBeenCalledWith({
       to: '/agents/$slug',
       params: { slug: 'friendly-agent-abc123def4' },

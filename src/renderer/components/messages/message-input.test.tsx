@@ -1555,6 +1555,34 @@ describe('MessageInput', () => {
       })
     })
 
+    it('restores uploaded files after switching sessions', async () => {
+      const user = userEvent.setup()
+      const file = new File(['draft attachment'], 'draft.txt', { type: 'text/plain' })
+      const { container, rerender } = renderWithProviders(
+        <MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />
+      )
+
+      await user.type(screen.getByTestId('message-input'), 'draft for A')
+      const fileInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')
+      expect(fileInput).not.toBeNull()
+      await user.upload(fileInput!, file)
+      await waitFor(() => {
+        expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+      })
+
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" />)
+      expect(screen.getByTestId('message-input').textContent).toBe('')
+      expect(screen.queryByTestId('attachment-preview')).not.toBeInTheDocument()
+
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />)
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input').textContent).toBe('draft for A')
+        expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-name', 'draft.txt')
+        expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+      })
+      expect(mockUploadFile.mutateAsync).toHaveBeenCalledTimes(1)
+    })
+
     it('clears the stored draft after sending', async () => {
       const user = userEvent.setup()
       const { rerender } = renderWithProviders(

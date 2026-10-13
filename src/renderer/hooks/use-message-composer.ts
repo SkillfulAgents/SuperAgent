@@ -47,7 +47,9 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   const [draft, setDraft] = useDraft<string>(draftKey)
   const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
+  const attachmentDraftKey = draftKey ? `${draftKey}:attachments` : undefined
   const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
+  const [draftAttachments, setDraftAttachments] = useDraft<Attachment[]>(attachmentDraftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
@@ -162,11 +164,20 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   } = useAttachments({
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
+    restoredAttachments: draftAttachments,
     onAttachmentsAdded: (added) => {
       for (const a of added) if (a.type !== 'mount') queueRef.current?.enqueue(a)
     },
   })
   attachmentsRef.current = attachments
+  useEffect(() => {
+    const persisted = attachments.map((attachment) => (
+      attachment.type === 'file' && attachment.preview
+        ? { ...attachment, preview: undefined }
+        : attachment
+    ))
+    setDraftAttachments(persisted.length > 0 ? persisted : undefined)
+  }, [attachments, setDraftAttachments])
   usePendingAttachmentDrop(draftKey, addItems)
 
   const queue = useUploadQueue({
@@ -181,7 +192,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   queueRef.current = queue
 
   const removeAttachment = queue.remove
-  const clearAttachments = queue.clear
+  const clearQueuedAttachments = queue.clear
+  const clearAttachments = useCallback(() => {
+    setDraftAttachments(undefined)
+    clearQueuedAttachments()
+  }, [clearQueuedAttachments, setDraftAttachments])
   const retryAttachment = queue.retry
 
   useEffect(() => {

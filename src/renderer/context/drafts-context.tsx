@@ -29,8 +29,8 @@ export interface SessionDraftSnapshot {
 /**
  * Fork Session: capture the source's unsent text and secured secrets at click
  * time (the fork's id does not exist yet), then seed the fork's slots once it
- * does. A copy, not a move — the source keeps its own draft. Attachments live in
- * component state, not here, so they do not carry.
+ * does. A copy, not a move — the source keeps its own draft. Attachments are
+ * stored separately and intentionally do not carry into the fork.
  */
 export function snapshotSessionDraft(store: Pick<DraftsStore, 'get'>, sessionId: string): SessionDraftSnapshot {
   return {

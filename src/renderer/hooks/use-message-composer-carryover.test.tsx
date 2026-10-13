@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement, StrictMode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { DraftsProvider } from '@renderer/context/drafts-context'
+import { DraftsProvider, useDraftsStore } from '@renderer/context/drafts-context'
 import { useMessageComposer } from './use-message-composer'
 
 vi.mock('@renderer/hooks/use-mounts', () => ({
@@ -58,5 +58,36 @@ describe('useMessageComposer carryover (real queue)', () => {
       const chip = result.current.attachments[0]
       expect(chip && chip.type === 'file' && chip.upload).toMatchObject({ status: 'done', path: '/workspace/a.txt' })
     })
+  })
+
+  it('clears persisted attachments when submit navigation unmounts the composer', async () => {
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/a.txt' })
+    let draftsStore!: ReturnType<typeof useDraftsStore>
+    let unmountComposer = () => {}
+    const onSubmit = vi.fn(async () => { unmountComposer() })
+    const { result, unmount } = renderHook(() => {
+      draftsStore = useDraftsStore()
+      return useMessageComposer({
+        agentSlug: 'agent-a',
+        uploadFile,
+        uploadFolder: vi.fn(),
+        onSubmit,
+        keepMessageUntilComplete: true,
+        draftKey: 'agent:agent-a',
+        initialAttachments: [{ type: 'file', id: 'c', file: new File(['x'], 'a.txt') }],
+      })
+    }, { wrapper: createWrapper() })
+    unmountComposer = unmount
+
+    await waitFor(() => {
+      expect(draftsStore.get('agent:agent-a:attachments')).toHaveLength(1)
+      const chip = result.current.attachments[0]
+      expect(chip && chip.type !== 'mount' && chip.upload).toMatchObject({ status: 'done' })
+    })
+    const submitMessage = result.current.submitMessage
+    await act(async () => { await submitMessage('') })
+
+    expect(onSubmit).toHaveBeenCalledOnce()
+    expect(draftsStore.get('agent:agent-a:attachments')).toBeUndefined()
   })
 })

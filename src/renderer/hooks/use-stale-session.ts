@@ -83,6 +83,7 @@ export function useStaleSession({
     if (draftText !== undefined) draftsStore.set(`agent:${agentSlug}`, draftText)
     draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
     draftsStore.set(`session:${sessionId}`, undefined)
+    draftsStore.set(`session:${sessionId}:attachments`, undefined)
     void navigate({ to: '/agents/$slug', params: { slug: routeAgentSlug ?? agentSlug } })
   }, [agentSlug, draftsStore, navigate, routeAgentSlug, sessionId])
 
