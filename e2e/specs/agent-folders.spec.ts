@@ -243,11 +243,11 @@ async function removeCreatedFolders(request: APIRequestContext) {
   expect(update.ok()).toBeTruthy()
 }
 
-/** Create a folder from the + on the "Your Agents" folder header. */
+/** Create a folder the way users do: "Add section" at the end of the list. */
 async function createFolder(page: Page, name: string): Promise<Locator> {
   createdFolderNames.add(name)
-  await page.getByTestId('new-folder-button').click()
-  // The freshly created row mounts straight into rename mode.
+  await page.getByTestId('add-section-button').click()
+  // The freshly added section mounts straight into rename mode.
   const input = page.getByTestId('folder-name-input')
   await expect(input).toBeVisible()
   await input.fill(name)
@@ -620,11 +620,11 @@ test.describe('agent folders in the left nav', () => {
       throw new Error('drag never engaged')
     }
 
-    // A freshly created folder mounts directly above the default folder — in
-    // view next to the + that made it, not below the scroll fold.
+    // A freshly added section goes last — right above the "Add section"
+    // button that made it.
     {
       const order = await folders()
-      expect(order.indexOf(edgesId)).toBe(order.indexOf('agent-folder-root') - 1)
+      expect(order.indexOf(edgesId)).toBe(order.length - 1)
     }
 
     // ── The natural "make it first" gesture: drop in the space ABOVE the

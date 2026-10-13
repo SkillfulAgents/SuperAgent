@@ -113,7 +113,13 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
-import { AgentDragOverlayRow, AgentFolderBlock, agentDropAnimation } from './agent-folder-block'
+import {
+  AgentDragOverlayRow,
+  AgentFolderBlock,
+  SECTION_ICON_CLASS,
+  SECTION_ROW_CLASS,
+  agentDropAnimation,
+} from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import {
   containerIdForFolder,
@@ -1393,26 +1399,21 @@ export function AppSidebar() {
   // click time would revert whatever folder write was still in flight.
   const handleCreateFolder = useCallback(() => {
     const id = newFolderId()
-    // The + lives on the default folder's header, so the new folder goes
-    // directly ABOVE that folder — in view next to the button that made it,
-    // where the row's rename input mounts. Ranking it last put it below the
-    // scroll fold on a long list, which read as the button doing nothing.
+    // Created from "Add section" at the end of the list, so the new one goes
+    // last — right above the button, where its rename input opens.
     setPendingRenameFolderId(id)
     updateSettings.mutate((current) => {
       const folders = sanitizeFolders(current?.agentFolders)
       const marker = sortableIdForFolder(id)
-      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
       const order = (current?.agentListOrder ?? []).filter((key) => key !== marker)
-      const rootIndex = order.indexOf(rootMarker)
+      // An untouched install has no stored places yet; write the default
+      // folder's too, or it would keep defaulting ahead of everything (-1)
+      // regardless of where it was shown.
+      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
+      const withRoot = order.includes(rootMarker) ? order : [rootMarker, ...order]
       return {
         agentFolders: [...folders, { id, name: uniqueFolderName(folders) }],
-        // Splice in just above the default folder wherever the user keeps it;
-        // an untouched install has no stored places yet, so root's marker is
-        // written too — without one it would default ahead (place -1).
-        agentListOrder:
-          rootIndex >= 0
-            ? [...order.slice(0, rootIndex), marker, ...order.slice(rootIndex)]
-            : [marker, rootMarker, ...order],
+        agentListOrder: [...withRoot, marker],
       }
     })
   }, [updateSettings])
@@ -1726,7 +1727,6 @@ export function AppSidebar() {
                             onRename={(name) => handleRenameFolder(section.folder.id, name)}
                             onRenameEnd={() => setPendingRenameFolderId(null)}
                             onDelete={() => handleDeleteFolder(section.folder.id)}
-                            onCreateFolder={section.isRoot ? handleCreateFolder : undefined}
                             onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
                           >
                             <SortableContext
@@ -1751,6 +1751,30 @@ export function AppSidebar() {
                     </DndContext>
                   </SidebarDragProvider>
                 )}
+                {/*
+                  Always the last thing in the list, under the sections it
+                  adds to, and styled as one of them: a section header's text
+                  and chevron-sized icon, spaced like one (mt-2, as on each
+                  section's block) so the gaps down the list stay uniform.
+                  Unlike a header it is a plain action, so it keeps the menu
+                  button's hover fill (the Electron vibrancy rules supply the
+                  translucent one there) and its text and + darken on hover.
+                */}
+                <SidebarMenuItem className="mt-2">
+                  <SidebarMenuButton
+                    onClick={handleCreateFolder}
+                    className={cn(
+                      SECTION_ROW_CLASS,
+                      'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
+                    )}
+                    data-testid="add-section-button"
+                  >
+                    <span className="flex shrink-0 items-center">
+                      <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                    </span>
+                    <span>Add section</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

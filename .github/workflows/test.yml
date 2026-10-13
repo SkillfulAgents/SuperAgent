@@ -216,6 +216,7 @@ jobs:
       # re-solving mid-gesture (the previous shared-server arrangement was the
       # suite's top flake source).
       - name: Run graph E2E suite
+        id: graph_e2e
         if: ${{ success() || steps.wizard_e2e.outcome == 'failure' || steps.web_e2e.outcome == 'failure' }}
         env:
           PORT: '3000'
@@ -223,6 +224,19 @@ jobs:
           PLAYWRIGHT_OUTPUT_DIR: test-results/graph
           PLAYWRIGHT_HTML_REPORT: playwright-report/graph
         run: npm run test:e2e:graph
+
+      # Section drag targets must stay still while the pointer crosses them.
+      # Other specs creating agents used to move those targets mid-gesture.
+      - name: Run sidebar E2E suite
+        if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.web_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure') }}
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/sidebar
+          PLAYWRIGHT_OUTPUT_DIR: test-results/sidebar
+          PLAYWRIGHT_HTML_REPORT: playwright-report/sidebar
+        run: |
+          set -o pipefail
+          npm run test:e2e:sidebar 2>&1 | tee /tmp/sidebar-e2e-results.txt
 
       - name: Upload Playwright artifacts
         if: always()
