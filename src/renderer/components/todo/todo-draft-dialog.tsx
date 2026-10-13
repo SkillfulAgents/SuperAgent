@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AttachmentPreview, attachmentStatus, type Attachment, type FileAttachment, type FolderAttachment } from '@renderer/components/messages/attachment-preview'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { uploadFileChunked } from '@renderer/lib/upload'
+import { HttpError, isRetryableRequestError } from '@renderer/lib/http-error'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { filesFromClipboard, folderChoice, getItemsFromDataTransfer, type DataTransferResult, type FolderGroup } from '@renderer/lib/file-utils'
 import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
@@ -213,6 +214,16 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   // The chips are the attachment list; this reads it when a save's turn comes.
   const savedAttachmentsRef = useRef<TodoAttachment[]>(initial?.attachments ?? [])
   const keptRef = useRef<() => TodoAttachment[]>(() => [])
+  const [saveError, setSaveError] = useState<Error | null>(null)
+  // Queued saves and the unmount flush must not repeat a rejected request.
+  const saveErrorRef = useRef<Error | null>(null)
+  const saveBlocked = saveError !== null && !isRetryableRequestError(saveError)
+  const canCorrectSave = (error: Error | null) => error instanceof HttpError && (error.status === 400 || error.status === 422)
+  const clearCorrectableError = () => {
+    if (!canCorrectSave(saveErrorRef.current)) return
+    saveErrorRef.current = null
+    setSaveError(null)
+  }
 
   /** Brings the server up to date with the form. Resolves with the draft's id, or null when there is nothing to keep. */
   const save = useCallback((): Promise<string | null> => {
@@ -221,6 +232,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       timerRef.current = null
     }
     const saveNow = async (): Promise<string | null> => {
+      if (saveErrorRef.current && !isRetryableRequestError(saveErrorRef.current)) throw saveErrorRef.current
       // Read the form when this save's turn comes, not when it was queued.
       const current = fieldsRef.current
       const attachments = keptRef.current()
@@ -250,7 +262,16 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       savedAttachmentsRef.current = attachments
       return id
     }
-    const run = savingRef.current.then(saveNow, saveNow)
+    const run = savingRef.current.then(saveNow, saveNow).then((id) => {
+      saveErrorRef.current = null
+      setSaveError(null)
+      return id
+    }, (error: unknown) => {
+      const failure = error instanceof Error ? error : new Error('Failed to save the draft')
+      saveErrorRef.current = failure
+      setSaveError(failure)
+      throw failure
+    })
     savingRef.current = run.catch(() => {})
     return run
   // The mutateAsync functions are stable; the mutation objects are not.
@@ -258,10 +279,15 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   }, [createTodo.mutateAsync, updateTodo.mutateAsync])
 
   const change = (patch: Partial<DraftFields>) => {
+    clearCorrectableError()
     // The ref moves now, not on the next render, so a save right after sees the change.
     fieldsRef.current = { ...fieldsRef.current, ...patch }
     setFields(fieldsRef.current)
     if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+    if (saveErrorRef.current && !isRetryableRequestError(saveErrorRef.current)) {
+      timerRef.current = null
+      return
+    }
     if (patch.agentSlug !== undefined) {
       timerRef.current = null
       // Refused (something is attached), the old agent is still the draft's.
@@ -353,7 +379,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   }
 
   const pasteFiles = (event: React.ClipboardEvent) => {
-    if (closingRef.current) return
+    if (closingRef.current || saveBlocked) return
     const pasted = filesFromClipboard(event.clipboardData)
     if (pasted.length === 0) return
     event.preventDefault()
@@ -373,7 +399,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     onDrop: (event: React.DragEvent) => {
       if (!event.dataTransfer.types.includes('Files')) return
       event.preventDefault()
-      if (closingRef.current) return
+      if (closingRef.current || saveBlocked) return
       void getItemsFromDataTransfer(event.dataTransfer).then((held) => {
         if (held.files.length || held.folders.length) setAskAgent({ held })
       })
@@ -404,7 +430,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const agent = fields.agentSlug ? bySlug.get(fields.agentSlug) : undefined
   const hasAgent = !!agent || fields.newAgent
   const written = !!(fields.title.trim() || fields.description.trim() || files.attachments.length)
-  const canStart = hasAgent && !alreadyStarting && written && !finishing
+  const canStart = hasAgent && !alreadyStarting && written && !finishing && !saveBlocked
 
   // Model, effort and speed follow the chosen agent's defaults, as in the
   // composer, until the person picks; a pick is kept with the draft.
@@ -442,7 +468,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       onValueChange={(slug) => change({ agentSlug: slug, newAgent: false })}
       onSelectNew={() => change({ agentSlug: null, newAgent: true })}
       newSelected={fields.newAgent}
-      disabled={alreadyStarting || agentLocked}
+      disabled={alreadyStarting || agentLocked || saveBlocked}
       testId="todo-agent"
       trigger={
         agent ? (
@@ -474,6 +500,17 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     }
   }
 
+  // The queue owns the failure state synchronously; rendered chips can lag its final job.
+  // Leaving a failed chip here keeps chat's existing error and retry controls available.
+  const finishUploads = async (retry = false) => {
+    const { ok } = await (retry ? queue.retryAndWait() : queue.waitIdle())
+    if (!ok) {
+      closingRef.current = false
+      setFinishing(false)
+    }
+    return ok
+  }
+
   const start = async () => {
     if (!canStart || closingRef.current) return
     closingRef.current = true
@@ -486,9 +523,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
         if (model) change({ model, llmProviderId: composerOptions.llmProviderId ?? null })
       }
       setFinishing(true)
-      const uploaded = await queue.retryAndWait()
+      if (!(await finishUploads(true))) return
       const id = await save()
-      if (!id || !uploaded.ok) {
+      if (!id) {
         closingRef.current = false
         setFinishing(false)
         return
@@ -531,22 +568,36 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const dropIfEmptyRef = useRef(dropIfEmpty)
   dropIfEmptyRef.current = dropIfEmpty
 
+  const closeWithoutSaving = () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+    timerRef.current = null
+    flushedRef.current = true
+    onClose()
+  }
+
   // Edits save as they are typed; this waits for uploads already moving, saves, and closes.
   // A new draft with nothing in it is deleted, as before.
   const saveAndClose = async () => {
+    if (saveErrorRef.current && !isRetryableRequestError(saveErrorRef.current)) {
+      closeWithoutSaving()
+      return
+    }
     await finishDictation()
     try {
       if (closingRef.current) return
       closingRef.current = true
       setFinishing(true)
-      await queue.waitIdle()
+      if (!(await finishUploads())) return
       const id = await save()
       dropIfEmpty(id)
       flushedRef.current = true
       onClose()
-    } catch {
+    } catch (error) {
       closingRef.current = false
       setFinishing(false)
+      // Closing is still possible if another window started, archived, or deleted the draft.
+      // The mutation already reported the rejection and refreshed the board.
+      if (!isRetryableRequestError(error)) closeWithoutSaving()
       failed()
     }
   }
@@ -558,7 +609,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       if (closingRef.current) return
       closingRef.current = true
       setFinishing(true)
-      await queue.waitIdle()
+      if (!(await finishUploads())) return
       const id = await save()
       if (id) await setTodoStatus.mutateAsync({ id, status: 'archived' })
       flushedRef.current = true
@@ -576,7 +627,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       onFileSelect={files.handleFileSelect}
       onFolderSelect={files.handleFolderSelect}
       onRecentFileAttach={(file) => files.addFiles([{ file }])}
-      disabled={alreadyStarting || finishing}
+      disabled={alreadyStarting || finishing || saveBlocked}
       buttonClassName={cn('h-[34px] w-[34px]', !fields.agentSlug && 'text-muted-foreground/50')}
       open={attachMenuOpen && !!fields.agentSlug}
       onOpenChange={(open) => {
@@ -590,7 +641,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     <div
       className={cn('relative flex min-h-0 flex-1 flex-col rounded-2xl', fields.agentSlug && files.isDragOver && 'ring-2 ring-primary')}
       onPaste={pasteFiles}
-      {...(finishing ? holdFileDrop : fields.agentSlug ? files.dragHandlers : holdFileDrop)}
+      {...(finishing || saveBlocked ? holdFileDrop : fields.agentSlug ? files.dragHandlers : holdFileDrop)}
     >
       <MountChoiceDialog
         open={pendingFolders.length > 0}
@@ -615,6 +666,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
         <DialogTitle asChild>
           <input
             value={fields.title}
+            readOnly={saveBlocked && !canCorrectSave(saveError)}
             onChange={(e) => change({ title: e.target.value })}
             onKeyDown={startOnModEnter}
             // Unnamed, the card shows a title taken from the description.
@@ -636,7 +688,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
                 className="h-7 w-7 text-muted-foreground"
                 aria-label="Archive draft"
                 onClick={() => void archive()}
-                disabled={alreadyStarting}
+                disabled={alreadyStarting || saveBlocked}
                 data-testid="todo-draft-archive"
               >
                 <Archive className="h-3.5 w-3.5" />
@@ -690,6 +742,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
         <div className="todo-draft-editor">
           <MarkdownComposerEditor
             value={fields.description}
+            disabled={saveBlocked && !canCorrectSave(saveError)}
             onChange={(description) => change({ description })}
             onKeyDown={startOnModEnter}
             placeholder="Describe what you want to get done. Paste links for context."
@@ -702,7 +755,20 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
 
       {files.attachments.length > 0 && (
         <div className="px-4 pb-1">
-          <AttachmentPreview attachments={files.attachments} onRemove={(id) => { if (!closingRef.current) queue.remove(id) }} onRetry={queue.retry} />
+          <AttachmentPreview attachments={files.attachments} onRemove={(id) => {
+            if (closingRef.current) return
+            clearCorrectableError()
+            queue.remove(id)
+          }} onRetry={queue.retry} />
+        </div>
+      )}
+
+      {saveError && (
+        <div role="alert" className="flex items-center justify-between gap-2 px-5 py-2 text-xs text-destructive" data-testid="todo-draft-save-error">
+          <span>{saveError.message}</span>
+          {saveBlocked && (
+            <Button variant="ghost" size="sm" className="shrink-0 text-xs" onClick={closeWithoutSaving}>Close without saving</Button>
+          )}
         </div>
       )}
 
@@ -735,10 +801,10 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
             size="sm"
             className="h-8"
             onClick={() => void saveAndClose()}
-            disabled={!written || alreadyStarting || finishing}
+            disabled={!written || alreadyStarting || finishing || saveBlocked}
             data-testid="todo-draft-save"
           >
-            {finishing && uploadsPending ? 'Finishing uploads…' : 'Save draft'}
+            {finishing && uploadsPending ? 'Finishing uploads…' : saveError && !saveBlocked ? 'Retry save' : 'Save draft'}
           </Button>
           <ShortcutTooltip label={hasAgent ? 'Start' : 'Pick an agent to start'} keys={hasAgent ? [MOD, 'Enter'] : undefined}>
             {/* A span keeps the tooltip working while the button is disabled. */}

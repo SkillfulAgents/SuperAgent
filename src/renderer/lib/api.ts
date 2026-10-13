@@ -2,6 +2,7 @@ import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
 import { addRendererBreadcrumb } from './error-reporting'
+import { HttpError } from './http-error'
 import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './workspace-unavailable'
 
 /**
@@ -159,12 +160,7 @@ export function stashRedirectTarget(path: string): void {
  * Thrown by `apiJson` on a non-2xx response, carrying the HTTP status so route
  * loaders can map it: 403/404 → `notFound()`, 5xx/network → `errorComponent`.
  */
-export class HttpError extends Error {
-  constructor(public status: number) {
-    super(`HTTP ${status}`)
-    this.name = 'HttpError'
-  }
-}
+export { HttpError } from './http-error'
 
 /**
  * Loader-only fetch: returns parsed JSON, throwing `HttpError` on a non-2xx

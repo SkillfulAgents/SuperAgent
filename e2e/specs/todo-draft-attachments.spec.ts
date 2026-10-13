@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import * as fs from 'fs'
@@ -21,6 +21,127 @@ test.describe('Todo draft attachments', () => {
 
   test.afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  async function openSavedDraft(page: Page, request: APIRequestContext) {
+    const title = `Attachment recovery ${Date.now()}`
+    const agentResponse = await request.post('/api/agents', { data: { name: title } })
+    expect(agentResponse.ok()).toBeTruthy()
+    const agent = await agentResponse.json()
+    const response = await request.post('/api/todos', { data: { title, description: '', agentSlug: agent.slug } })
+    expect(response.ok()).toBeTruthy()
+    const todo = await response.json()
+    await page.goto('/todo')
+    await page.getByTestId('todo-card').filter({ hasText: title }).click()
+    await expect(page.getByTestId('todo-draft-dialog')).toBeVisible()
+    return { id: todo.id as string, title }
+  }
+
+  for (const action of ['close', 'save', 'archive'] as const) {
+    test(`keeps chat's error chip when an upload fails during ${action}`, async ({ page, request }) => {
+      const todo = await openSavedDraft(page, request)
+      const dialog = page.getByTestId('todo-draft-dialog')
+      let release!: () => void
+      const held = new Promise<void>((resolve) => { release = resolve })
+      let uploads = 0
+      await page.route('**/upload-file', async (route) => {
+        uploads += 1
+        if (uploads > 1) return route.continue()
+        await held
+        await route.fulfill({ status: 503, json: { error: 'Temporary upload failure' } })
+      })
+      await dialog.locator('input[type="file"]:not([webkitdirectory])').setInputFiles({
+        name: 'report.txt', mimeType: 'text/plain', buffer: Buffer.from('quarterly numbers'),
+      })
+      const chip = dialog.getByTestId('attachment-preview').filter({ hasText: 'report.txt' })
+      await expect(chip).toBeVisible()
+      await dialog.getByTestId(`todo-draft-${action}`).click()
+      await expect(dialog.getByTestId('todo-draft-save')).toHaveText('Finishing uploads…')
+      release()
+      await expect(chip).toHaveAttribute('data-attachment-status', 'error')
+      await expect(chip.getByText('upload failed')).toBeVisible()
+      await expect(chip.getByTestId('attachment-retry')).toBeVisible()
+      await expect(dialog.getByTestId('todo-draft-save')).toBeEnabled()
+      expect(uploads).toBe(1)
+
+      if (action === 'archive') {
+        await chip.getByRole('button', { name: 'Remove report.txt' }).click()
+      } else {
+        await chip.getByTestId('attachment-retry').click()
+        await expect(chip).toHaveAttribute('data-attachment-status', 'done')
+      }
+      await dialog.getByTestId(`todo-draft-${action}`).click()
+      await expect(dialog).toBeHidden()
+      const { todos } = await (await request.get('/api/todos')).json()
+      const stored = todos.find((item: { id: string }) => item.id === todo.id)
+      expect(stored.status).toBe(action === 'archive' ? 'archived' : 'draft')
+      expect(stored.attachments).toHaveLength(action === 'archive' ? 0 : 1)
+    })
+  }
+
+  test('a rejected upload shows the shared error treatment without offering another identical request', async ({ page, request }) => {
+    await openSavedDraft(page, request)
+    const dialog = page.getByTestId('todo-draft-dialog')
+    let uploads = 0
+    await page.route('**/upload-file', async (route) => {
+      uploads += 1
+      await route.fulfill({ status: 413, json: { error: 'File is too large' } })
+    })
+    await dialog.locator('input[type="file"]:not([webkitdirectory])').setInputFiles({
+      name: 'large.txt', mimeType: 'text/plain', buffer: Buffer.from('large file'),
+    })
+    const chip = dialog.getByTestId('attachment-preview')
+    await expect(chip).toHaveAttribute('data-attachment-status', 'error')
+    await expect(chip.getByText('upload failed')).toBeVisible()
+    await expect(chip.getByTestId('attachment-retry')).toHaveCount(0)
+    await dialog.getByTestId('todo-draft-start').click()
+    await expect(dialog.getByTestId('todo-draft-start')).toBeEnabled()
+    expect(uploads).toBe(1)
+    await chip.getByRole('button', { name: 'Remove large.txt' }).click()
+    await dialog.getByTestId('todo-draft-close').click()
+    await expect(dialog).toBeHidden()
+  })
+
+  for (const dismiss of ['close', 'escape'] as const) {
+    test(`does not repeat an HTTP 409 save when dismissed with ${dismiss}`, async ({ page, request }) => {
+      const todo = await openSavedDraft(page, request)
+      const dialog = page.getByTestId('todo-draft-dialog')
+      const archived = await request.post(`/api/todos/${todo.id}/status`, { data: { status: 'archived' } })
+      expect(archived.ok()).toBeTruthy()
+      let patches = 0
+      await page.route(`**/api/todos/${todo.id}`, async (route) => {
+        if (route.request().method() === 'PATCH') patches += 1
+        await route.continue()
+      })
+      await dialog.getByTestId('todo-draft-title').fill('Unsaved edit after archive')
+      await expect(dialog.getByTestId('todo-draft-save-error')).toBeVisible()
+      await expect(dialog.getByTestId('todo-draft-save')).toBeDisabled()
+      if (dismiss === 'escape') await page.keyboard.press('Escape')
+      else await dialog.getByTestId('todo-draft-close').click()
+      await expect(dialog).toBeHidden()
+      expect(patches).toBe(1)
+    })
+  }
+
+  test('keeps unsaved edits after HTTP 503 and saves them on an explicit retry', async ({ page, request }) => {
+    const todo = await openSavedDraft(page, request)
+    const dialog = page.getByTestId('todo-draft-dialog')
+    let patches = 0
+    await page.route(`**/api/todos/${todo.id}`, async (route) => {
+      if (route.request().method() === 'PATCH' && ++patches === 1) {
+        return route.fulfill({ status: 503, json: { error: 'Temporarily unavailable' } })
+      }
+      await route.continue()
+    })
+    await dialog.getByTestId('todo-draft-title').fill('Keep my edited title')
+    await dialog.getByTestId('todo-draft-close').click()
+    await expect(dialog.getByTestId('todo-draft-save-error')).toHaveText('Temporarily unavailable')
+    await expect(dialog.getByTestId('todo-draft-title')).toHaveValue('Keep my edited title')
+    expect(patches).toBe(1)
+    await dialog.getByRole('button', { name: 'Retry save' }).click()
+    await expect(dialog).toBeHidden()
+    expect(patches).toBe(2)
+    await expect(page.getByTestId('todo-card').filter({ hasText: 'Keep my edited title' })).toBeVisible()
   })
 
   test('holds a file, reopens it, and sends it when the draft starts', async ({ page }) => {

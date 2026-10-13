@@ -22,6 +22,8 @@ export interface FileAttachment {
   preview?: string
   /** Set when uploading this attachment failed; renders the chip in an error state. */
   error?: string
+  /** A rejected request needs a different file or destination, rather than another attempt. */
+  errorRetryable?: boolean
   upload?: UploadState
 }
 
@@ -34,6 +36,7 @@ export interface FolderAttachment {
   totalSize: number
   /** Set when uploading this attachment failed; renders the chip in an error state. */
   error?: string
+  errorRetryable?: boolean
   upload?: UploadState
 }
 
@@ -93,7 +96,7 @@ function UploadMeta({ attachment, sizeText, onRetry }: { attachment: FileAttachm
       <span className="flex items-center gap-1 text-destructive">
         <AlertTriangle className="h-3 w-3 text-amber-500" />
         <span className="truncate max-w-[120px]" title={attachment.error}>upload failed</span>
-        {onRetry && (
+        {onRetry && attachment.errorRetryable !== false && (
           <button type="button" onClick={() => onRetry(attachment.id)} className="underline hover:text-foreground" data-testid="attachment-retry">
             retry
           </button>
@@ -133,7 +136,7 @@ function ImageUploadOverlay({ attachment, onRetry }: { attachment: FileAttachmen
   if (status === 'error') {
     // The whole square is the retry target: a second button beside the remove
     // control, inside 44px, would be too small to aim at.
-    if (!onRetry) {
+    if (!onRetry || attachment.errorRetryable === false) {
       return (
         <div className="absolute inset-0 flex items-center justify-center bg-destructive/40" title={attachment.error}>
           <AlertTriangle className="h-4 w-4 text-destructive-foreground" />

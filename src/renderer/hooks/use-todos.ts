@@ -1,5 +1,6 @@
 import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import { HttpError } from '@renderer/lib/http-error'
 import { handleMutationError } from '@renderer/lib/query-client'
 import type {
   AddSessionTodoInput,
@@ -25,7 +26,7 @@ export { TODOS_QUERY_KEY }
 
 async function readError(res: Response, fallback: string): Promise<Error> {
   const body = await res.json().catch(() => null) as { error?: string } | null
-  return new Error(body?.error || fallback)
+  return new HttpError(res.status, body?.error || fallback)
 }
 
 async function send<T>(path: string, method: string, body: unknown, fallback: string): Promise<T> {
