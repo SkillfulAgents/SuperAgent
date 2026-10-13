@@ -1462,6 +1462,15 @@ export function AppSidebar() {
     )
   }, [collapsedFolders, updateSettings])
 
+  // A folder's own +: the new agent is filed into it, and a collapsed folder
+  // opens so the new row is in view when the list refetches. Two settings
+  // writes (expand, then the filing inside the hook), serialized by scope.
+  const handleCreateAgentInFolder = useCallback((folderId: string) => {
+    if (isCreatingAgent) return
+    if ((collapsedFolders ?? []).includes(folderId)) handleToggleFolder(folderId)
+    void createUntitledAgent({ folderId })
+  }, [isCreatingAgent, collapsedFolders, handleToggleFolder, createUntitledAgent])
+
   const isOnline = useIsOnline()
 
   // Windows-only: firewall Block rules against our exe silently kill every
@@ -1718,6 +1727,7 @@ export function AppSidebar() {
                             onRenameEnd={() => setPendingRenameFolderId(null)}
                             onDelete={() => handleDeleteFolder(section.folder.id)}
                             onCreateFolder={section.isRoot ? handleCreateFolder : undefined}
+                            onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
                           >
                             <SortableContext
                               items={section.agents.map((a) => a.slug)}
