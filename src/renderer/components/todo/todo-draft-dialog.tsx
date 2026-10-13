@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
-import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Archive, ArrowUpRight, ChevronDown, Maximize2, Minimize2, Play, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { deriveTodoTitle, TODO_TITLE_MAX, type TodoAttachment } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
@@ -189,6 +190,11 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const suggestTodoAgent = useSuggestTodoAgent()
   const [suggesting, setSuggesting] = useState(false)
   const [suggestedSlug, setSuggestedSlug] = useState<string | null>(null)
+  const [descriptionEnd] = useState(() => {
+    const slot = document.createElement('span')
+    slot.contentEditable = 'false'
+    return slot
+  })
   // A draft opened from the board is never mid-start (its card doesn't open
   // then), but its start may begin elsewhere while this is open.
   const alreadyStarting = useStartingTodoIds().has(initial?.id ?? '')
@@ -434,9 +440,11 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const agent = fields.agentSlug ? bySlug.get(fields.agentSlug) : undefined
   const hasAgent = !!agent || fields.newAgent
   const written = !!(fields.title.trim() || fields.description.trim() || files.attachments.length)
-  const ready = !alreadyStarting && written && !finishing && !saveBlocked
-  const canStart = hasAgent && ready
-  const canSuggest = !hasAgent && ready && !suggesting
+  const canStart = hasAgent && !alreadyStarting && written && !finishing && !saveBlocked
+  // Auto sits at the end of the last line written: the description's, else the title's.
+  const canAuto = !hasAgent && !alreadyStarting && !finishing && !saveBlocked
+  const autoInDescription = canAuto && !!fields.description.trim()
+  const autoAfterTitle = canAuto && !autoInDescription && !!fields.title.trim()
 
   // Model, effort and speed follow the chosen agent's defaults, as in the
   // composer, until the person picks; a pick is kept with the draft.
@@ -518,9 +526,10 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     return ok
   }
 
-  // No agent yet: show the one the decision model picks, and start only when
-  // Start is pressed again. Without a suggestion, the person picks.
+  // Fills in the agent the decision model picks; the person starts it. Without
+  // a suggestion, the person picks.
   const suggestAgent = async () => {
+    if (suggesting) return
     setSuggesting(true)
     const { title, description } = fieldsRef.current
     const slug = await suggestTodoAgent.mutateAsync({ title: title.trim(), description }).catch(() => null)
@@ -534,8 +543,22 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     }
   }
 
+  const autoButton = (
+    <ShortcutTooltip label="Pick an agent for this todo">
+      <button
+        type="button"
+        onClick={() => void suggestAgent()}
+        disabled={suggesting}
+        className="ml-2 inline-flex items-center gap-0.5 align-middle text-xs font-normal tracking-normal text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-60"
+        data-testid="todo-auto-agent"
+      >
+        <ArrowUpRight className="h-3 w-3" />
+        {suggesting ? 'Picking…' : 'Auto'}
+      </button>
+    </ShortcutTooltip>
+  )
+
   const start = async () => {
-    if (canSuggest) return suggestAgent()
     if (!canStart || closingRef.current) return
     closingRef.current = true
     await finishDictation()
@@ -689,20 +712,29 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       </Dialog>
       {/* Title row: the title is the header; controls sit on its right. */}
       <div className="flex items-start gap-3 px-5 pt-5">
-        <DialogTitle asChild>
-          <input
-            value={fields.title}
-            readOnly={saveBlocked && !canCorrectSave(saveError)}
-            onChange={(e) => change({ title: e.target.value })}
-            onKeyDown={startOnModEnter}
-            // Unnamed, the card shows a title taken from the description.
-            placeholder={deriveTodoTitle(fields.description) || 'Task title'}
-            maxLength={TODO_TITLE_MAX}
-            aria-label="Task title"
-            className="min-w-0 flex-1 bg-transparent text-2xl font-medium leading-tight tracking-tight placeholder:text-muted-foreground/60 focus:outline-none"
-            data-testid="todo-draft-title"
-          />
-        </DialogTitle>
+        <div className="relative min-w-0 flex-1">
+          <DialogTitle asChild>
+            <input
+              value={fields.title}
+              readOnly={saveBlocked && !canCorrectSave(saveError)}
+              onChange={(e) => change({ title: e.target.value })}
+              onKeyDown={startOnModEnter}
+              // Unnamed, the card shows a title taken from the description.
+              placeholder={deriveTodoTitle(fields.description) || 'Task title'}
+              maxLength={TODO_TITLE_MAX}
+              aria-label="Task title"
+              className="w-full bg-transparent text-2xl font-medium leading-tight tracking-tight placeholder:text-muted-foreground/60 focus:outline-none"
+              data-testid="todo-draft-title"
+            />
+          </DialogTitle>
+          {autoAfterTitle && (
+            // The invisible copy of the title pushes Auto to just after the text.
+            <div className="pointer-events-none absolute inset-0 flex items-center overflow-hidden whitespace-pre text-2xl font-medium leading-tight tracking-tight">
+              <span className="invisible">{fields.title}</span>
+              <span className="pointer-events-auto">{autoButton}</span>
+            </div>
+          )}
+        </div>
         <DialogDescription className="sr-only">Write the task, pick an agent, and start it when it is ready.</DialogDescription>
 
         <div className="-mr-1.5 -mt-1 flex shrink-0 items-center gap-0.5">
@@ -775,7 +807,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
             minRows={expanded ? 12 : 3}
             className="mt-5 text-[15px] leading-7"
             dataTestId="todo-draft-editor"
+            endWidget={autoInDescription ? descriptionEnd : null}
           />
+          {autoInDescription && createPortal(autoButton, descriptionEnd)}
         </div>
       </div>
 
@@ -832,14 +866,14 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
           >
             {finishing && uploadsPending ? 'Finishing uploads…' : saveError && !saveBlocked ? 'Retry save' : 'Save draft'}
           </Button>
-          <ShortcutTooltip label={hasAgent ? 'Start' : 'Suggest an agent'} keys={[MOD, 'Enter']}>
+          <ShortcutTooltip label={hasAgent ? 'Start' : 'Pick an agent to start'} keys={hasAgent ? [MOD, 'Enter'] : undefined}>
             {/* A span keeps the tooltip working while the button is disabled. */}
             <span>
               <Button
                 size="icon"
                 className="h-8 w-8"
                 onClick={() => void start()}
-                disabled={!canStart && !canSuggest}
+                disabled={!canStart}
                 aria-label="Start"
                 aria-keyshortcuts="Meta+Enter"
                 data-testid="todo-draft-start"
