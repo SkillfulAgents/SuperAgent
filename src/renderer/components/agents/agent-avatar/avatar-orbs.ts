@@ -8,9 +8,11 @@
  * solid centre (`hold`, % of radius).
  */
 
+import type { AgentAvatarColor } from '@shared/lib/types/agent-avatar'
+
 export interface AvatarOrb {
   /** Unique key, used in stored avatar ids: never rename one. */
-  name: string
+  name: AgentAvatarColor
   /** Shown in the picker. */
   label: string
   core: string
@@ -28,7 +30,7 @@ function hexMix(from: string, to: string, t: number): string {
 }
 
 /** A colourway from just a core and a rim, by the design's face rule. */
-function colourway(name: string, label: string, core: string, rim: string, hold: number): AvatarOrb {
+function colourway(name: AgentAvatarColor, label: string, core: string, rim: string, hold: number): AvatarOrb {
   return { name, label, core, rim, faceA: hexMix(core, rim, 0.1), faceB: hexMix(rim, core, 0.05), hold }
 }
 
@@ -58,12 +60,12 @@ export const DEFAULT_ORBS: readonly AvatarOrb[] = [
 ]
 
 /** One palette colour's rim round another's core. */
-function pair(rimName: string, coreName: string): AvatarOrb {
+function pair(name: AgentAvatarColor, rimName: AgentAvatarColor, coreName: AgentAvatarColor): AvatarOrb {
   const find = (name: string) => DEFAULT_ORBS.find(orb => orb.name === name)!
   const rim = find(rimName)
   const core = find(coreName)
   return colourway(
-    `duo-${rim.label.toLowerCase()}-${core.label.toLowerCase()}`,
+    name,
     `${rim.label} / ${core.label}`,
     core.core,
     rim.rim,
@@ -78,14 +80,14 @@ function pair(rimName: string, coreName: string): AvatarOrb {
  * options only, never an agent's own look.
  */
 export const PAIRED_DUOS: readonly AvatarOrb[] = [
-  pair('tonal-red', 'tonal-amber'),
-  pair('tonal-green', 'tonal-amber'),
-  pair('tonal-forest', 'tonal-teal'),
-  pair('tonal-teal', 'tonal-blush'),
-  pair('tonal-blue', 'tonal-amber'),
-  pair('Cobalt', 'tonal-teal'),
-  pair('tonal-pink', 'tonal-blue'),
-  pair('tonal-brown', 'tonal-amber'),
+  pair('duo-red-amber', 'tonal-red', 'tonal-amber'),
+  pair('duo-green-amber', 'tonal-green', 'tonal-amber'),
+  pair('duo-forest-teal', 'tonal-forest', 'tonal-teal'),
+  pair('duo-teal-blush', 'tonal-teal', 'tonal-blush'),
+  pair('duo-blue-amber', 'tonal-blue', 'tonal-amber'),
+  pair('duo-cobalt-teal', 'Cobalt', 'tonal-teal'),
+  pair('duo-pink-blue', 'tonal-pink', 'tonal-blue'),
+  pair('duo-brown-amber', 'tonal-brown', 'tonal-amber'),
 ]
 
 /** Every colour on offer, as the picker shows them: the palette, then the duos as the last two rows. */

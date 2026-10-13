@@ -9,6 +9,7 @@ import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } fro
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
 import { AgentAvatarPicker } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
@@ -365,7 +366,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            <AgentAvatarPicker slug={agent.slug} agentName={agent.name} state={agentAvatarState(agent, sessionsData)} size={39} />
+            {isOwner
+              ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
+              : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
             <AgentContextMenu
               agent={agent}
               onRename={() => titleRef.current?.startEditing()}

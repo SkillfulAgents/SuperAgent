@@ -605,7 +605,7 @@ function AgentCard({
 
   const titleOverlay = (
     <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
-      <AgentAvatar slug={agent.slug} state={agentAvatarState(agent)} size={34} />
+      <AgentAvatar agent={agent} state={agentAvatarState(agent)} size={34} />
       <div className="min-w-0">
         <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
         {isSmall && notifState ? (

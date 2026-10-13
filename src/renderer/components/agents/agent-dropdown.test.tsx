@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ 
 import { AgentDropdown, agentDropdownSections } from './agent-dropdown'
 
 function agent(slug: string, name: string, createdAt = 0): ApiAgent {
-  return { slug, displaySlug: slug, name, createdAt: new Date(createdAt), status: 'stopped', containerPort: null }
+  return { avatar: { color: 'tonal-blue', shape: 'circle' } as const, slug, displaySlug: slug, name, createdAt: new Date(createdAt), status: 'stopped', containerPort: null }
 }
 
 const AGENTS = [agent('ops', 'Ops Agent'), agent('research', 'Research Agent'), agent('market', 'Marketing Agent')]

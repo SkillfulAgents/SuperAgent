@@ -16,6 +16,7 @@ import {
 // --- Mock data ---
 
 const testAgent: ApiAgent = {
+  avatar: { color: 'tonal-blue', shape: 'circle' } as const,
   slug: 'test-agent',
   displaySlug: 'test-agent',
   name: 'Test Agent',
@@ -41,6 +42,7 @@ vi.mock('@renderer/context/analytics-context', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
+  useUpdateAgentAvatar: () => ({ mutate: vi.fn(), isPending: false }),
   useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
   useAgents: () => ({ data: [testAgent] }),
   useRouteAgentId: () => 'test-agent',
@@ -597,6 +599,7 @@ describe('AgentHome', () => {
 
     expect(screen.getByTestId('view-only-banner')).toBeInTheDocument()
     expect(screen.queryByTestId('home-message-input')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-avatar-picker')).not.toBeInTheDocument()
   })
 
   it('shows agent name in view-only mode', () => {

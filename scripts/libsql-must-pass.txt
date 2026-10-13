@@ -3,6 +3,7 @@
 # createTestDatabase() from src/shared/lib/db/testing.
 src/shared/lib/db/batch.test.ts
 src/shared/lib/db/migrations/bundle.test.ts
+src/shared/lib/db/migrations/agent-avatars.test.ts
 src/shared/lib/db/data-migrations/index.test.ts
 src/shared/lib/db/data-migrations/0003-import-llm-connections.test.ts
 src/shared/lib/db/data-migrations/0002-global-model-pricing.test.ts

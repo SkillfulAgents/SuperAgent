@@ -13,6 +13,8 @@
 import { desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agents, type AgentRow } from '@shared/lib/db/schema'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import { randomAgentAvatar } from './agent-avatar'
 import {
   AGENT_ID_LENGTH,
   directoryExists,
@@ -53,6 +55,7 @@ function toRecord(row: AgentRow): AgentRecord {
   return {
     slug: row.slug,
     name: row.name,
+    avatar: agentAvatarSchema.parse({ color: row.avatarColor, shape: row.avatarShape }),
     ...(row.description === null ? {} : { description: row.description }),
     createdAt: row.createdAt,
     placement: { runtime: row.runtime, workspaceHandle: row.workspaceHandle },
@@ -101,9 +104,12 @@ export function createAgentCatalog(): AgentCatalog {
     exists: async (slug) => (await rowFor(slug)) !== undefined,
     mint,
     insert: async ({ slug, name, description, createdAt }) => {
+      const avatar = randomAgentAvatar()
       await db.insert(agents).values({
         slug,
         name,
+        avatarColor: avatar.color,
+        avatarShape: avatar.shape,
         description: description ?? null,
         createdAt,
         runtime: LOCAL_RUNTIME,
@@ -115,6 +121,11 @@ export function createAgentCatalog(): AgentCatalog {
       const values: Partial<AgentRow> = {}
       if (changes.name !== undefined) values.name = changes.name
       if (changes.description !== undefined) values.description = changes.description
+      if (changes.avatar !== undefined) {
+        const avatar = agentAvatarSchema.parse(changes.avatar)
+        values.avatarColor = avatar.color
+        values.avatarShape = avatar.shape
+      }
       if (Object.keys(values).length > 0) {
         await db.update(agents).set(values).where(eq(agents.slug, slug)).run()
       }
