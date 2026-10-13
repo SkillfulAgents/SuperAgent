@@ -407,6 +407,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgent: vi.fn(),
   getAgentRecord: vi.fn(),
   updateAgent: vi.fn(),
+  updateAgentAvatar: vi.fn(),
   deleteAgent: vi.fn(),
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
@@ -755,7 +756,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
@@ -1467,6 +1468,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
 
 describe('agent startup — POST /:id/start', () => {
   const runningAgent = {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'test-agent',
     displaySlug: 'test-agent',
     name: 'Test Agent',
@@ -6290,6 +6292,7 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
 
   it('returns x-agent and widget repair history for the resolved target agent', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([{
+      avatar: { color: 'tonal-blue', shape: 'circle' } as const,
       slug: 'target',
       displaySlug: 'target',
       name: 'Target',
@@ -6400,6 +6403,7 @@ describe('GET /api/agents (enriched summary)', () => {
   let app: ReturnType<typeof createApp>
 
   const baseAgent = {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'agent-1',
     displaySlug: 'agent-one-agent-1',
     name: 'Agent One',
@@ -10068,5 +10072,45 @@ describe('cross-agent session scoping', () => {
       expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
       expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: ATTACKER }), OWN_SESSION)
     })
+  })
+})
+
+describe('PUT /api/agents/:id/avatar', () => {
+  let app: ReturnType<typeof createApp>
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it.each(['duo-red-amber', 'tonal-cobalt'] as const)('saves a validated %s pair and announces the change to other clients', async color => {
+    const avatar = { color, shape: 'bloom' } as const
+    vi.mocked(updateAgentAvatar).mockResolvedValue(avatar)
+    const response = await app.request('/api/agents/test-agent/avatar', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(avatar),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(avatar)
+    expect(updateAgentAvatar).toHaveBeenCalledWith('test-agent', avatar)
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+  })
+
+  it.each([
+    null,
+    { color: null, shape: 'circle' },
+    { color: 'tonal-blue', shape: null },
+    { color: 'unknown', shape: 'circle' },
+    { color: 'Cobalt', shape: 'circle' },
+    { color: 'tonal-blue', shape: 'unknown' },
+    { color: 'tonal-blue' },
+    { color: 'tonal-blue', shape: 'circle', extra: true },
+  ])('rejects an invalid or incomplete avatar %j without writing', async avatar => {
+    const response = await app.request('/api/agents/test-agent/avatar', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(avatar),
+    })
+    expect(response.status).toBe(400)
+    expect(updateAgentAvatar).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
   })
 })

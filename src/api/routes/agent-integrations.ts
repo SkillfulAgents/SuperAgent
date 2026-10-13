@@ -33,6 +33,7 @@ import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/clean
 import { listAgentIntegrationsHandler } from './agent-integration-list'
 import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
 import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
+import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -150,7 +151,8 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
     const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
-    return c.json(integrationSetupMetadataSchema.parse(metadata))
+    const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
+    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
@@ -203,6 +205,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         createdByUserId,
       })
     } catch (err) {
+      await prepared.release()
       if (err instanceof DuplicateIntegrationIdentityError) {
         // User-facing conflict — capture at `warning` level so we can track frequency
         // but it doesn't page anyone as an error.
@@ -287,7 +290,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
 
     const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
     await assertConnectionSelectionAccess(llmProviderId, integration.llmProviderId)
-    await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
+    const settingsChange = await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
 
     // Step 1: Persist DB updates first (config, name, showToolCalls)
     const updates: Record<string, unknown> = {}
@@ -311,10 +314,20 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
       await agentIntegrationManager.pauseIntegration(id)
     } else if (status === 'active') {
       await agentIntegrationManager.resumeIntegration(id)
-    } else if (config !== undefined && status !== 'paused') {
+    } else if ((config !== undefined || settingsChange?.reconnect) && status !== 'paused') {
       // Config changed while active — reconnect to pick up new credentials
       await agentIntegrationManager.removeIntegration(id)
-      if (integration.status !== 'paused') await agentIntegrationManager.addIntegration(id)
+      if (integration.status !== 'paused') {
+        try {
+          await agentIntegrationManager.addIntegration(id)
+        } catch (err) {
+          // The change is saved either way; a connection it can't make yet
+          // (e.g. a secret still to paste) is what the row's status reports.
+          captureException(err, { tags: { ...SENTRY_TAGS, operation: 'update-integration-connect' }, extra: { integrationId: id } })
+          // A pause that landed while this connect was pending wins.
+          await updateAgentIntegrationStatus(id, 'error', err instanceof Error ? err.message : String(err), { unlessPaused: true })
+        }
+      }
     }
 
     const updated = await getAgentIntegration(id)
@@ -432,6 +445,8 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
     return c.json({
       status: publicIntegrationStatus(integration),
       connected,
+      // What the running connection uses, not what the next one would.
+      transport: agentIntegrationManager.integrationTransport(integration.id),
       provider: integration.provider,
     })
   } catch (error) {

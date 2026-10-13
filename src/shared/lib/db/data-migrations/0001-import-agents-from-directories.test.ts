@@ -59,6 +59,8 @@ describe('import-agents-from-directories', () => {
     expect(rows()).toEqual([{
       slug: 'imported',
       name: 'Imported Agent',
+      avatarColor: expect.any(String),
+      avatarShape: expect.any(String),
       description: 'Came from disk',
       createdAt: new Date('2026-01-24T01:30:50.090Z'),
       runtime: 'local',

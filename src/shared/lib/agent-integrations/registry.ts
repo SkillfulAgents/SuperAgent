@@ -15,7 +15,8 @@ export interface IntegrationProvider {
   /** Child tables, in deletion order, owned by this provider/family. */
   storage?(): readonly SQLiteTable[]
   serialize?(record: AgentIntegrationRecord): PublicAgentIntegration
-  updateSettings?(record: AgentIntegrationRecord, input: Record<string, unknown>): Promise<void>
+  /** Resolves `{ reconnect: true }` when the change needs a fresh connection (e.g. a new transport). */
+  updateSettings?(record: AgentIntegrationRecord, input: Record<string, unknown>): Promise<void | { reconnect?: boolean }>
   configuration?: {
     identityLabel?: string
     identityPaths: readonly string[]

@@ -211,7 +211,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // 3.5 Policy enforcement
   let policyResult
   try {
-    const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath)
+    const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost)
     const userId = account.userId ?? 'local'
     policyResult = await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
   } catch (policyError) {

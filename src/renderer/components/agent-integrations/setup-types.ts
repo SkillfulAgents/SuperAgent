@@ -10,6 +10,8 @@ export interface IntegrationSetupProps {
 /** Renderer-only provider definition; independent of host implementations. */
 export interface IntegrationSetupProvider {
   platformOnly?: boolean
+  /** Receives events only through the host's webhook relay, so it's hidden while the relay is unavailable. */
+  requiresRelay?: boolean
   slug: string
   label: string
   managementAccess?: 'user' | 'owner'
