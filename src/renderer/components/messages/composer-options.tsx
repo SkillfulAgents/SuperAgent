@@ -283,6 +283,8 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     persistPicks({ model: next.defaultModel, llmProviderId: id })
   }, [connections, persistPicks])
 
+  const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
+
   const markSubmitted = useCallback(
     (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }) => {
       const sent: ComposerOptionPicks = {}
@@ -301,13 +303,15 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
         speedDirtyRef.current = false
         sent.speed = undefined
       }
-      if (options.model !== undefined && options.model === model) {
+      // Compare with what was sent: a restored pick whose account is gone
+      // resolved to the inherited model, and that stale pick must not linger.
+      if (options.model !== undefined && options.model === displayedModel) {
         modelDirtyRef.current = false
         sent.model = undefined
       }
       if (Object.keys(sent).length > 0) persistPicks(sent)
     },
-    [effort, speed, model, effectiveLlmProviderId, persistPicks],
+    [effort, speed, displayedModel, effectiveLlmProviderId, persistPicks],
   )
 
   // ---- Default adoption ----
@@ -372,7 +376,6 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
 
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
-  const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),

@@ -803,8 +803,9 @@ describe('MessageInput', () => {
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
 
-    // Unpicked session values count too: Start Fresh carries the model in use.
+    // The session's model and the user's pick ride along; the adopted default speed does not.
     expect(getSnapshot()).toMatchObject({ model: 'sonnet', effort: 'low' })
+    expect(getSnapshot()).not.toHaveProperty('speed')
     unmount()
     expect(registerSnapshot).toHaveBeenLastCalledWith(null)
   })

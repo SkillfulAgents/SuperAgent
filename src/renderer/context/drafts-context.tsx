@@ -54,6 +54,7 @@ function normalizeOptions(options: ComposerOptionPicks | undefined): ComposerOpt
 // Object URLs are owned by the composer that created them and are revoked on
 // unmount, so a stored preview would be dead by the time anything reads it.
 function withoutPreviews(attachments: Attachment[]): Attachment[] {
+  if (!attachments.some((a) => a.type === 'file' && a.preview)) return attachments
   return attachments.map((a) => (a.type === 'file' && a.preview ? { ...a, preview: undefined } : a))
 }
 

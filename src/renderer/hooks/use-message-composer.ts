@@ -188,9 +188,13 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   useEffect(() => {
     // Unmount aborts the queue generation, so StrictMode's second setup must
-    // enqueue again. Skip done/error chips; later adds go through onAttachmentsAdded.
+    // enqueue again. Skip error chips and uploads this composer can send; later
+    // adds go through onAttachmentsAdded. A drafted chip finished under another
+    // slug (Start Fresh or a fork under the display slug) would be dropped at
+    // send, so it uploads again.
     for (const a of attachmentsRef.current) {
-      if (a.type === 'mount' || a.error || a.upload?.status === 'done') continue
+      if (a.type === 'mount' || a.error) continue
+      if (a.upload?.status === 'done' && a.upload.agentSlug === agentSlug) continue
       queue.enqueue(a)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
@@ -355,6 +359,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       clearAttachments()
     }
     setSecuredSecrets([])
+    updateDraft({ securedSecrets: undefined })
     return true
   }
 

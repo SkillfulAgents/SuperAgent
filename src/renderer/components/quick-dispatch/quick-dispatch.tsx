@@ -140,11 +140,13 @@ export function QuickDispatch() {
       async (content: string) => {
         if (!selectedSlug) return
         try {
+          const runtimeOptions = composerOptions.toRuntimeOptions()
           const session = await createSession.mutateAsync({
             agentSlug: selectedSlug,
             message: content,
-            ...composerOptions.toRuntimeOptions(),
+            ...runtimeOptions,
           })
+          composerOptions.markSubmitted(runtimeOptions)
           // Hand off to the main process: hide the launcher and raise the main
           // window on the brand-new session.
           window.electronAPI?.quickDispatchDispatched?.({

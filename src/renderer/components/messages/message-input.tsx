@@ -198,18 +198,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     enabled: warmStartEnabled && !isViewOnly,
   })
 
-  // The effective selection, not just unsent picks: Start Fresh carries the
-  // model the session is using into the new conversation.
-  const snapshotRef = useRef<ComposerOptionPicks>({})
-  snapshotRef.current = {
-    model: composerOptions.model,
-    llmProviderId: composerOptions.llmProviderId,
-    effort: composerOptions.effort,
-    speed: composerOptions.speed,
-  }
+  // Start Fresh carries the session's own and the user's explicit choices.
+  // Adopted defaults stay out so the new conversation resolves them afresh.
+  const snapshotRef = useRef<() => ComposerOptionPicks>(composerOptions.toRuntimeOptions)
+  snapshotRef.current = composerOptions.toRuntimeOptions
   useEffect(() => {
     if (!registerSnapshot) return
-    registerSnapshot(() => snapshotRef.current)
+    registerSnapshot(() => snapshotRef.current())
     return () => registerSnapshot(null)
   }, [registerSnapshot])
 

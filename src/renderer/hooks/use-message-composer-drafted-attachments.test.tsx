@@ -88,11 +88,32 @@ describe('useMessageComposer drafted attachments (real queue)', () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining('/workspace/a.txt'))
   })
 
-  it('clears drafted attachments when submit navigation unmounts the composer', async () => {
+  it('uploads again when a drafted file finished under another slug for the agent', async () => {
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/b.txt' })
+    const otherSlug: Attachment = { type: 'file', id: 'o', file: new File(['x'], 'b.txt'), upload: { status: 'done', path: '/workspace/b.txt', agentSlug: 'friendly-agent-a' } }
+    const onSubmit = vi.fn()
+    const { result } = renderHook(() => useSeededComposer({ attachments: [otherSlug] }, {
+      agentSlug: 'agent-a',
+      uploadFile,
+      uploadFolder: vi.fn(),
+      onSubmit,
+    }), { wrapper: createWrapper() })
+
+    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      const chip = result.current.composer.attachments[0]
+      expect(chip && chip.type === 'file' && chip.upload).toMatchObject({ status: 'done', agentSlug: 'agent-a' })
+    })
+    await act(async () => { await result.current.composer.submitMessage('see file') })
+    expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining('/workspace/b.txt'))
+  })
+
+  it('clears the drafted attachments and secrets when submit navigation unmounts the composer', async () => {
     const done: Attachment = { type: 'file', id: 'd', file: new File(['x'], 'a.txt'), upload: { status: 'done', path: '/workspace/a.txt', agentSlug: 'agent-a' } }
+    const secret = { id: 's', key: 'Token', envVar: 'TOKEN', displayText: '[Token]' }
     let unmountComposer = () => {}
     const onSubmit = vi.fn(async () => { unmountComposer() })
-    const { result, unmount } = renderHook(() => useSeededComposer({ attachments: [done] }, {
+    const { result, unmount } = renderHook(() => useSeededComposer({ attachments: [done], securedSecrets: [secret] }, {
       agentSlug: 'agent-a',
       uploadFile: vi.fn(),
       uploadFolder: vi.fn(),

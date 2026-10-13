@@ -14,8 +14,6 @@ const mockWriteText = vi.fn().mockResolvedValue(undefined)
 const {
   mockFork,
   mockForkAndCompact,
-  mockSnapshot,
-  mockSeed,
   mockSetQueryData,
   mockNavigate,
   mockStore,
@@ -25,11 +23,9 @@ const {
   return {
     mockFork: vi.fn(),
     mockForkAndCompact: vi.fn(),
-    mockSnapshot: vi.fn(() => ({ text: 'draft', securedSecrets: undefined })),
-    mockSeed: vi.fn(),
     mockSetQueryData: vi.fn(),
     mockNavigate: vi.fn(),
-    mockStore: { get: vi.fn(), set: vi.fn() },
+    mockStore: { get: vi.fn(), set: vi.fn(), update: vi.fn() },
     mockCanUse,
   }
 })
@@ -162,8 +158,6 @@ vi.mock('@renderer/context/user-context', () => ({
 
 vi.mock('@renderer/context/drafts-context', () => ({
   useDraftsStore: () => mockStore,
-  snapshotSessionDraft: mockSnapshot,
-  seedSessionDraft: mockSeed,
 }))
 
 vi.mock('@tanstack/react-query', () => ({
@@ -381,8 +375,9 @@ describe('Fork Session item', () => {
   beforeEach(() => {
     mockFork.mockReset()
     mockForkAndCompact.mockReset()
-    mockSnapshot.mockClear()
-    mockSeed.mockReset()
+    mockStore.get.mockClear()
+    mockStore.set.mockClear()
+    mockStore.update.mockClear()
     mockSetQueryData.mockReset()
     mockNavigate.mockReset()
     mockPreventDefault.mockClear()
@@ -472,8 +467,8 @@ describe('Fork Session item', () => {
     fireEvent.click(screen.getByTestId('fork-session-item'))
     await waitFor(() => expect(mockFork).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' }))
     expect(mockNavigate).not.toHaveBeenCalled()
-    expect(mockSnapshot).not.toHaveBeenCalled()
-    expect(mockSeed).not.toHaveBeenCalled()
+    expect(mockStore.get).not.toHaveBeenCalled()
+    expect(mockStore.set).not.toHaveBeenCalled()
     expect(mockSetQueryData).not.toHaveBeenCalled()
   })
 

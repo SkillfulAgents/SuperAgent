@@ -75,6 +75,7 @@ vi.mock('@renderer/components/messages/composer-options', () => ({
     setModel: vi.fn(),
     setEffort: vi.fn(),
     toRuntimeOptions: () => ({}),
+    markSubmitted: vi.fn(),
   }),
   findCatalogModel: () => ({ label: 'Sonnet', icon: 'sonnet' }),
 }))

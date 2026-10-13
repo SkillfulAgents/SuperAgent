@@ -443,6 +443,11 @@ describe('drafted option picks', () => {
 
     state.connections = { connections: [global], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
     remount({ ...args })
-    expect(latest.options.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+    const sent = latest.options.toRuntimeOptions()
+    expect(sent).toMatchObject({ llmProviderId: 'global', model: 'same' })
+
+    // Sending what the stale pick resolved to clears it from the draft.
+    act(() => latest.options.markSubmitted(sent))
+    expect(latest.store.get('session:s-1')).toBeUndefined()
   })
 })
