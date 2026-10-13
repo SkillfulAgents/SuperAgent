@@ -176,6 +176,7 @@ const mockUserContext = {
   user: null,
   signOut: vi.fn(),
   agentMemberCount: vi.fn((_slug: string) => 1),
+  canUseAgent: vi.fn((_slug: string) => true),
 }
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUserContext,
@@ -447,6 +448,7 @@ beforeEach(() => {
   mockUserContext.isAuthMode = false
   mockUserContext.user = null
   mockUserContext.agentMemberCount.mockReturnValue(1)
+  mockUserContext.canUseAgent.mockReturnValue(true)
   mockUseAgentMembers.mockReturnValue({ data: [], isLoading: false, isError: false })
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
@@ -727,6 +729,20 @@ describe('AppSidebar — agent rows', () => {
     await user.click(row)
     // Row click does NOT toggle expansion → no session sub-items rendered.
     expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
+  })
+
+  it('offers a new-session link in the status slot that opens a blank session', () => {
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug/sessions/new')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent' }))
+    expect(link).toHaveAccessibleName('New session with Test Agent')
+  })
+
+  it('offers no new-session link to a view-only member', () => {
+    mockUserContext.canUseAgent.mockReturnValue(false)
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('agent-new-session-test-agent')).not.toBeInTheDocument()
   })
 
   it('chevron click toggles expansion without selecting the agent', async () => {

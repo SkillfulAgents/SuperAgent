@@ -55,6 +55,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
   const inboundXAgentOpen = view.kind === 'inboundXAgent'
   const completedTasksOpen = view.kind === 'completedTasks'
+  const newSessionOpen = view.kind === 'newSession'
   const apiLogsOpen = view.kind === 'apiLogs'
   const memoriesOpen = view.kind === 'memories'
   const secretsOpen = view.kind === 'secrets'
@@ -235,6 +236,12 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
           <>
             <BreadcrumbSeparator />
             <span className="text-sm font-light text-foreground">API Logs</span>
+          </>
+        )}
+        {newSessionOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">New Session</span>
           </>
         )}
         {memoriesOpen && (

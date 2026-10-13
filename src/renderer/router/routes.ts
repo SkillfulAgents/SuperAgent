@@ -53,6 +53,7 @@ const DashboardRoute = lazyRouteComponent(() => import('./lazy-routes/dashboard-
 const MemoriesRoute = lazyRouteComponent(() => import('./lazy-routes/memories-route'), 'MemoriesRoute')
 const SecretsRoute = lazyRouteComponent(() => import('./lazy-routes/secrets-route'), 'SecretsRoute')
 const SessionRoute = lazyRouteComponent(() => import('./lazy-routes/session-route'), 'SessionRoute')
+const NewSessionRoute = lazyRouteComponent(() => import('./lazy-routes/new-session-route'), 'NewSessionRoute')
 const TaskRoute = lazyRouteComponent(() => import('./lazy-routes/task-route'), 'TaskRoute')
 const WebhookRoute = lazyRouteComponent(() => import('./lazy-routes/webhook-route'), 'WebhookRoute')
 const SettingsLayout = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsLayout')
@@ -171,6 +172,14 @@ export const agentHomeRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
   path: '/',
   component: AgentHomeRoute,
+})
+
+// A blank session: the composer whose first send creates the session. The
+// static `new` segment outranks `$sessionId`, and session ids never collide.
+export const newSessionRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'sessions/new',
+  component: NewSessionRoute,
 })
 
 export const sessionRoute = createRoute({
@@ -295,6 +304,7 @@ export const routeTree = rootRoute.addChildren([
     exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
+      newSessionRoute,
       sessionRoute,
       taskRoute,
       webhookRoute,

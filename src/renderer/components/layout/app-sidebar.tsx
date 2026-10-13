@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -483,7 +483,7 @@ const AgentMenuItemInner = React.forwardRef<
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
   const { view } = useRouteLocation()
-  const { isAuthMode, agentMemberCount } = useUser()
+  const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
@@ -571,6 +571,9 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  // View-only members can't send, so they get no new-session control; nor
+  // does the slot while it shows the ⌘-number hint.
+  const canStartSession = hint === null && canUseAgent(agent.slug)
   const dragHandlers = useSidebarFileDrop({
     kind: 'agent',
     agentSlug: agent.slug,
@@ -596,7 +599,7 @@ const AgentMenuItemInner = React.forwardRef<
           <SidebarMenuButton
             asChild
             isActive={isSelected}
-            className={cn('relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
+            className={cn('group/agent-row relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
           >
             <div {...dragHandlers}>
               {/* Stretch the native link across the row; the roster and
@@ -613,21 +616,47 @@ const AgentMenuItemInner = React.forwardRef<
                 <AgentLastRun date={agent.lastActivityAt} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
-              {/* Expose the status title above the stretched link while keeping
-                  clicks (including modifier clicks) native agent navigation. */}
-              <AppLink
-                to="/agents/$slug"
-                params={{ slug: agent.displaySlug }}
-                tabIndex={-1}
-                aria-label={`Open ${agent.name}`}
-                className="relative z-10 ml-auto flex shrink-0 items-center"
-              >
-                {hint !== null ? (
-                  <CmdHintBadge hint={hint} />
-                ) : (
-                  <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+              {/* The status slot doubles as the new-session control: hovering
+                  the row (or focusing the button) swaps the status for a pen
+                  linking to Agent Home, whose composer starts a new session. */}
+              <span className="group/status-slot relative z-10 ml-auto flex shrink-0 items-center">
+                {/* Expose the status title above the stretched link while keeping
+                    clicks (including modifier clicks) native agent navigation. */}
+                <AppLink
+                  to="/agents/$slug"
+                  params={{ slug: agent.displaySlug }}
+                  tabIndex={-1}
+                  aria-label={`Open ${agent.name}`}
+                  className={cn(
+                    'flex items-center transition-opacity',
+                    canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
+                  )}
+                >
+                  {hint !== null ? (
+                    <CmdHintBadge hint={hint} />
+                  ) : (
+                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  )}
+                </AppLink>
+                {canStartSession && (
+                  <TooltipProvider delayDuration={200}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <AppLink
+                          to="/agents/$slug/sessions/new"
+                          params={{ slug: agent.displaySlug }}
+                          aria-label={`New session with ${agent.name}`}
+                          data-testid={`agent-new-session-${agent.slug}`}
+                          className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"
+                        >
+                          <SquarePen className="h-3.5 w-3.5" />
+                        </AppLink>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">New session</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
-              </AppLink>
+              </span>
               {/* The avatar holds the expand slot; hovering it (or focusing
                   the toggle) swaps in the chevron, Notion-style. */}
               {hasExpandableContent ? (
