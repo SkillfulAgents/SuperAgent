@@ -112,6 +112,7 @@ import {
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
+import { AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
 import {
   AgentDragOverlayRow,
@@ -427,16 +428,6 @@ function SessionsSkeleton() {
     </>
   )
 }
-
-// Agent-row avatar, px across, in a 40px row that holds the name and its
-// last-run line. It sits centred in a 32px slot at left 4px, so its centre is
-// x=20: the sessions sub-list is padded 25px to land its tree connector
-// (drawn 5px left of each item) there.
-const AGENT_AVATAR_SIZE = 27
-
-// Avatars follow the cursor while it's over the sidebar, and go back to their
-// own motion (an orb's wander, its look at the viewer) when it leaves.
-const SIDEBAR_FOLLOW_REGION = '[data-sidebar="sidebar"]'
 
 // Only this label subscribes to the clock; the expensive agent row stays memoized.
 function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {

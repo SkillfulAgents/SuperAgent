@@ -201,8 +201,8 @@ async function dragRowOnto(
 
 /**
  * Folders this file created and has not yet removed. Folders are per-user
- * settings, so anything left behind outlives the test and — because a new
- * folder mounts above "Your Agents" — sits ahead of every unfiled agent for
+ * settings, so anything left behind outlives the test and — because folders
+ * can be reordered above "Your Agents" — may sit ahead of unfiled agents for
  * every later spec in the run (the ⌘-hint numbering, for one, only has nine
  * slots). `removeCreatedFolders` clears them after each test.
  */
@@ -288,6 +288,7 @@ async function listOrder(page: Page): Promise<string[]> {
 }
 
 test.describe('agent folders in the left nav', () => {
+  test.setTimeout(60_000)
   // Every other spec in the suite leaves its agents behind, so by the time this
   // one runs the sidebar can be long enough to scroll. A tall window keeps the
   // rows being dragged between on screen at the same time, which a pointer
@@ -296,6 +297,70 @@ test.describe('agent folders in the left nav', () => {
 
   test.afterEach(async ({ request }) => {
     await removeCreatedFolders(request)
+  })
+
+  test('creates an agent in a collapsed section and waits for its assignment before navigating', async ({ page }, testInfo) => {
+    await page.goto('/')
+    const folder = await createFolder(page, uniqueName(testInfo, 'Create In Section'))
+    const id = await folderIdOf(folder)
+    const body = await folderBody(page, folder)
+    await expect(body.locator('[data-avatar-orb="ghost"]')).toBeVisible()
+    await folder.click()
+    await expect(body).toBeHidden()
+
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let assignmentStarted = false
+    await page.route('**/api/user-settings', async (route) => {
+      if (route.request().method() === 'PUT' && route.request().postDataJSON().agentFolderAssignments) {
+        assignmentStarted = true
+        await held
+      }
+      await route.continue()
+    })
+    const created = page.waitForResponse((response) =>
+      response.url().endsWith('/api/agents') && response.request().method() === 'POST' && response.status() === 201,
+    )
+    await page.getByTestId(`new-agent-in-folder-${id}`).click()
+    const agent = await (await created).json() as { slug: string }
+    try {
+      await expect.poll(() => assignmentStarted).toBe(true)
+      expect(new URL(page.url()).pathname).toBe('/')
+    } finally {
+      release()
+    }
+    await expect(page).toHaveURL(/\/agents\//)
+    await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
+    await expect(body.locator('[data-avatar-orb="ghost"]')).toHaveCount(0)
+    await page.reload()
+    await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
+  })
+
+  test('opens the section menu with the keyboard and cancels a rename through its actions', async ({ page }, testInfo) => {
+    await page.goto('/')
+    const name = uniqueName(testInfo, 'Keyboard Section')
+    const folder = await createFolder(page, name)
+    const id = await folderIdOf(folder)
+    const trigger = page.getByTestId(`section-menu-${id}`)
+    await trigger.focus()
+    await trigger.press('ArrowDown')
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await page.getByTestId('rename-folder-item').press('Enter')
+    const input = page.getByTestId('folder-name-input')
+    await expect(input).toBeFocused()
+    await input.fill('Discard this draft')
+    await input.press('Tab')
+    await expect(page.getByTestId('folder-name-save')).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByTestId('folder-name-cancel')).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(folder).toHaveText(name)
+    await page.reload()
+    await expect(folder).toHaveText(name)
+
+    await trigger.click()
+    await page.getByTestId('delete-folder-item').click()
+    await expect(folder).toHaveCount(0)
   })
 
   test('files an agent by drag, keeps it across a reload, and releases it on delete', async ({
@@ -318,7 +383,7 @@ test.describe('agent folders in the left nav', () => {
     const body = await folderBody(page, folderRow)
 
     // An empty folder says what it is for, and is the drop target itself.
-    await expect(body).toContainText('Drag agents here')
+    await expect(body).toContainText('No agents in here yet')
 
     // Dropping on the header files the agent at the end of that folder.
     await dragRowOnto(page, filedRow, folderRow, async () => {
@@ -388,7 +453,7 @@ test.describe('agent folders in the left nav', () => {
       await expect(secondBody.getByTestId(`agent-item-${alpha.slug}`)).toBeVisible({ timeout: 3_000 })
     })
     await expect(firstBody.getByTestId(`agent-item-${alpha.slug}`)).toHaveCount(0)
-    await expect(firstBody).toContainText('Drag agents here')
+    await expect(firstBody).toContainText('No agents in here yet')
 
     // And back out to the ungrouped list, by aiming at an agent already there.
     await dragRowOnto(page, alphaRow, looseRow, async () => {

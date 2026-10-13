@@ -1580,7 +1580,8 @@ describe('AppSidebar — agent folders', () => {
     })
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByText('Drag agents here')).toBeInTheDocument()
+    expect(screen.getByText('No agents in here yet')).toBeInTheDocument()
+    expect(screen.getByText('Drag in or click + to add')).toBeInTheDocument()
   })
 })
 
