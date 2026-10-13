@@ -13,6 +13,7 @@ import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy } from './chat-policy'
 
 type ConnectorConstructor<Config> = ChatConnectorClass & {
+  isAvailable(): boolean | Promise<boolean>
   new (config: Config, appLink?: AppLinkContext): ChatAgentIntegration
 }
 
@@ -32,6 +33,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
   const identitySchema = z.object({ [identityField]: z.string().min(1) })
   return {
     definition: chatDefinitions[provider],
+    async isAvailable() { return (await load()).isAvailable() },
     policy: chatIntegrationPolicy,
     setup: chatProviderSetup(provider, schema),
     storage: () => [chatIntegrationAccess, chatIntegrationSessions, ...(provider === 'slack' ? [slackThreadState] : [])],

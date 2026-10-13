@@ -7,6 +7,10 @@ import { disableIntegrationRelay, integrationRelayName, provisionIntegrationRela
 import { requiresRelay, supportedTransports } from './transport'
 import type { IntegrationStatus } from './types'
 
+export async function assertIntegrationAvailable(provider: string): Promise<void> {
+  if (!await agentIntegrationRegistry.isAvailable(provider)) throw new IntegrationSetupError('This integration is unavailable on this host', 400)
+}
+
 export function getIntegrationSetup(provider: string) {
   const setup = agentIntegrationRegistry.getDefinition(provider) && agentIntegrationRegistry.getProvider(provider).setup
   if (!setup) throw new IntegrationSetupError('Provider setup is unavailable')
@@ -24,6 +28,7 @@ export interface PreparedIntegrationSetup {
   release(): Promise<void>
 }
 export async function prepareIntegrationSetup(provider: string, input: unknown, context: IntegrationSetupContext, fromAgent = false): Promise<PreparedIntegrationSetup> {
+  await assertIntegrationAvailable(provider)
   const setup = getIntegrationSetup(provider)
   if (fromAgent && !setup.allowAgentCreation) throw new IntegrationSetupError('This account must be set up by its owner in the agent integration page.', 403)
   const { relay: wantsRelay, ...prepared } = await setup.prepare(input, context)
@@ -46,6 +51,7 @@ export async function prepareIntegrationSetup(provider: string, input: unknown, 
   }
 }
 export async function testIntegrationCredentials(provider: string, input: unknown) {
+  await assertIntegrationAvailable(provider)
   const setup = getIntegrationSetup(provider)
   if (!setup.testCredentials) throw new IntegrationSetupError('Credentials are verified when this integration connects')
   return setup.testCredentials(input)

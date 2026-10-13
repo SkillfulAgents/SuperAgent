@@ -16,6 +16,7 @@ async function setupCall<T>(run: () => Promise<T>): Promise<T> {
 }
 export const platformEmailProvider: IntegrationProvider = {
   definition: emailDefinition,
+  async isAvailable() { const { PlatformEmailAgentIntegration } = await import('./platform-email-agent-integration'); return PlatformEmailAgentIntegration.isAvailable() },
   policy: { isAllowed: async context => platformConnected() && await emailSessionAllowed(context), sessionPolicy: emailSessionPolicy },
   setup: {
     async describe(context) {

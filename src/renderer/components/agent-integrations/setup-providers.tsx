@@ -19,7 +19,7 @@ function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<
 
 /** Composition point for provider UI; the home list, dialog and transcript only consume definitions. */
 export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
-  { slug: 'platform-email', label: 'Email', managementAccess: 'owner', platformOnly: true, Setup: EmailIntegrationSetupForm, Settings: EmailSettingsCard, Message: EmailIntegrationMessage },
+  { slug: 'platform-email', label: 'Email', managementAccess: 'owner', Setup: EmailIntegrationSetupForm, Settings: EmailSettingsCard, Message: EmailIntegrationMessage },
   chatProvider('telegram', 'Telegram', TelegramIntegrationMessage),
   chatProvider('slack', 'Slack', SlackIntegrationMessage),
   chatProvider('imessage', 'iMessage', IMessageIntegrationMessage),
