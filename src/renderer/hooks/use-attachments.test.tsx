@@ -40,7 +40,7 @@ describe('useAttachments initial attachments', () => {
     const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>
 
     const { result, unmount } = renderHook(() =>
-      useAttachments({ restoredAttachments: [attachment] }),
+      useAttachments({ initialAttachments: [attachment] }),
     { wrapper })
 
     expect(createObjectURL).toHaveBeenCalledTimes(2)
@@ -52,13 +52,7 @@ describe('useAttachments initial attachments', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:live-preview')
   })
 
-  it('prefers a one-shot carryover over an existing destination draft', () => {
-    const carried: Attachment = {
-      type: 'file',
-      id: 'carried',
-      file: new File(['carried'], 'carried.txt'),
-      upload: { status: 'done', path: '/old/carried.txt', agentSlug: 'agent-a' },
-    }
+  it('restores drafted chips with their upload state, so finished uploads are reused', () => {
     const restored: Attachment = {
       type: 'file',
       id: 'restored',
@@ -66,11 +60,9 @@ describe('useAttachments initial attachments', () => {
       upload: { status: 'done', path: '/workspace/restored.txt', agentSlug: 'agent-a' },
     }
 
-    const { result } = renderHook(() =>
-      useAttachments({ initialAttachments: [carried], restoredAttachments: [restored] }),
-    )
+    const { result } = renderHook(() => useAttachments({ initialAttachments: [restored] }))
 
-    expect(result.current.attachments).toEqual([{ ...carried, upload: undefined, error: undefined }])
+    expect(result.current.attachments).toEqual([restored])
   })
 
   it('revokes previews created for images added after mount', () => {

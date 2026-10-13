@@ -5,7 +5,8 @@ import { createElement } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import type { FolderGroup } from '@renderer/lib/file-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
+import { DraftsProvider } from '@renderer/context/drafts-context'
+import { useDraftText } from '@renderer/test/test-utils'
 
 // --- Mocks ---
 
@@ -662,7 +663,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:abc' }),
-          draft: useDraft<string>('session:abc'),
+          draft: useDraftText('session:abc'),
         }),
         { wrapper },
       )
@@ -675,7 +676,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:abc' }),
-          draft: useDraft<string>('session:abc'),
+          draft: useDraftText('session:abc'),
         }),
         { wrapper },
       )
@@ -690,7 +691,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:xyz' }),
-          draft: useDraft<string>('session:xyz'),
+          draft: useDraftText('session:xyz'),
         }),
         { wrapper },
       )
@@ -705,7 +706,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(
         () => ({
           composer: useMessageComposer(defaultOptions()),
-          draft: useDraft<string>('session:abc'),
+          draft: useDraftText('session:abc'),
         }),
         { wrapper },
       )
@@ -723,8 +724,8 @@ describe('useMessageComposer', () => {
         () => ({
           a: useMessageComposer({ ...defaultOptions(), draftKey: 'agent:A' }),
           b: useMessageComposer({ ...defaultOptions(), draftKey: 'agent:B' }),
-          draftA: useDraft<string>('agent:A'),
-          draftB: useDraft<string>('agent:B'),
+          draftA: useDraftText('agent:A'),
+          draftB: useDraftText('agent:B'),
         }),
         { wrapper },
       )

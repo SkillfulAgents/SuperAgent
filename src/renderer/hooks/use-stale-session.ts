@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useDraftsStore } from '@renderer/context/drafts-context'
+import { moveSessionDraftToAgent, useDraftsStore, type ComposerOptionPicks } from '@renderer/context/drafts-context'
 import { useForkAndCompact } from '@renderer/hooks/use-sessions'
-import {
-  newSessionCarryoverKey,
-  splitComposerSnapshot,
-  type ComposerSnapshot,
-} from '@renderer/lib/new-session-carryover'
 import { computeContextTokens } from '@shared/lib/utils/context-usage'
 import { shouldPromptForNewSession } from '@shared/lib/stale-session/stale-session-trigger'
 import type { SessionUsage } from '@shared/lib/types/agent'
@@ -44,7 +39,7 @@ export function useStaleSession({
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
   const wasActiveRef = useRef(isActive)
-  const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
+  const composerSnapshotRef = useRef<(() => ComposerOptionPicks) | null>(null)
   const forkInFlightRef = useRef(false)
 
   // Persisted activity can lag a just-completed turn. Stamp active -> idle locally
@@ -73,17 +68,13 @@ export function useStaleSession({
     })
   }, [contextUsage, isActive, isAwaitingInput, isWaitingBackground, lastActivityAt, liveActivityAt])
 
-  const registerSnapshot = useCallback((getSnapshot: (() => ComposerSnapshot) | null) => {
+  const registerSnapshot = useCallback((getSnapshot: (() => ComposerOptionPicks) | null) => {
     composerSnapshotRef.current = getSnapshot
   }, [])
 
   const startFresh = useCallback(() => {
     if (forkInFlightRef.current) return
-    const { draftText, carryover } = splitComposerSnapshot(composerSnapshotRef.current?.())
-    if (draftText !== undefined) draftsStore.set(`agent:${agentSlug}`, draftText)
-    draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
-    draftsStore.set(`session:${sessionId}`, undefined)
-    draftsStore.set(`session:${sessionId}:attachments`, undefined)
+    moveSessionDraftToAgent(draftsStore, sessionId, agentSlug, composerSnapshotRef.current?.())
     void navigate({ to: '/agents/$slug', params: { slug: routeAgentSlug ?? agentSlug } })
   }, [agentSlug, draftsStore, navigate, routeAgentSlug, sessionId])
 

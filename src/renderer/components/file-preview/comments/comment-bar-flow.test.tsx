@@ -4,9 +4,8 @@ import { useEffect, useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { CommentBar } from './comment-bar'
 import type { FileComment } from '@renderer/context/file-preview-context'
-import { useDraft } from '@renderer/context/drafts-context'
 import { registerSessionComposerFocus } from '@renderer/components/messages/composer-focus'
-import { renderWithProviders, screen, waitFor, userEvent } from '@renderer/test/test-utils'
+import { renderWithProviders, screen, waitFor, userEvent, useDraftText } from '@renderer/test/test-utils'
 
 const sendMessage = vi.hoisted(() => vi.fn().mockResolvedValue({ success: true }))
 
@@ -15,7 +14,7 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 }))
 
 function DraftProbe({ sessionId, initialDraft }: { sessionId: string; initialDraft?: string }) {
-  const [draft, setDraft] = useDraft<string>(`session:${sessionId}`)
+  const [draft, setDraft] = useDraftText(`session:${sessionId}`)
 
   useEffect(() => {
     if (initialDraft !== undefined) setDraft(initialDraft)

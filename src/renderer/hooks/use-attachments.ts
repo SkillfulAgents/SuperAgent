@@ -7,23 +7,15 @@ const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
+  /** Chips restored from the composer's draft, upload state included. */
   initialAttachments?: Attachment[]
-  restoredAttachments?: Attachment[]
   onAttachmentsAdded?: (added: Attachment[]) => void
 }
 
 export type UploadPatch = { upload?: UploadState; error?: string }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
-  const [attachments, setAttachments] = useState<Attachment[]>(() => {
-    const restoringDraft = options?.initialAttachments === undefined && options?.restoredAttachments !== undefined
-    return (options?.initialAttachments ?? options?.restoredAttachments ?? []).map((attachment) => {
-      const withoutPreview = attachment.type === 'file' ? { ...attachment, preview: undefined } : attachment
-      return restoringDraft || withoutPreview.type === 'mount'
-        ? withoutPreview
-        : { ...withoutPreview, upload: undefined, error: undefined }
-    })
-  })
+  const [attachments, setAttachments] = useState<Attachment[]>(() => options?.initialAttachments ?? [])
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   const [isDragOver, setIsDragOver] = useState(false)

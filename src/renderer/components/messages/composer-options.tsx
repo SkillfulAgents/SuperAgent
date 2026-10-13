@@ -7,6 +7,7 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import { useDraftsStore, type ComposerOptionPicks } from '@renderer/context/drafts-context'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -116,6 +117,11 @@ export interface UseComposerOptionsArgs {
    * where the two must visibly stay in sync.
    */
   followDefaults?: boolean
+  /**
+   * Composer draft key. Explicit picks that have not been sent are saved there,
+   * so they survive the composer unmounting, and restored as picks on mount.
+   */
+  draftKey?: string
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
@@ -132,17 +138,27 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     agentKey,
     agentDefaultsReady = true,
     followDefaults = false,
+    draftKey,
   } = args
+
+  // Only unsent explicit picks are stored. An adopted default is never written,
+  // so the server keeps resolving agent default > global for untouched knobs.
+  const draftsStore = useDraftsStore()
+  const [restored] = useState<ComposerOptionPicks | undefined>(() => (draftKey ? draftsStore.get(draftKey)?.options : undefined))
+  const persistPicks = useCallback((patch: ComposerOptionPicks) => {
+    if (!draftKey) return
+    draftsStore.update(draftKey, { options: { ...draftsStore.get(draftKey)?.options, ...patch } })
+  }, [draftKey, draftsStore])
 
   // Picker-safe endpoint — readable by non-admin users too, unlike the
   // admin-gated full settings (which would leave them an empty catalog).
   const { data: settings } = useModelSettings()
 
   const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId)
-  const [llmProviderId, setLlmProviderId] = useState<string | undefined>(initialLlmProviderId ?? undefined)
-  const connectionDirty = useRef(false)
+  const [llmProviderId, setLlmProviderId] = useState<string | undefined>(restored?.llmProviderId ?? initialLlmProviderId ?? undefined)
+  const connectionDirty = useRef(restored?.llmProviderId !== undefined)
   const connections = useMemo(() => connectionData?.connections ?? [], [connectionData])
-  const [model, setModelState] = useState<string | undefined>(initialModel)
+  const [model, setModelState] = useState<string | undefined>(restored?.model ?? initialModel)
   const legacyLlmProviderId = connectionData?.legacyLlmProviderId
   const currentSelection = resolveSelection(initialModel && initialLlmProviderId !== null ? { model: initialModel, llmProviderId: initialLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
   const agentSelection = resolveSelection(agentDefaultModel && agentDefaultLlmProviderId !== null ? { model: agentDefaultModel, llmProviderId: agentDefaultLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
@@ -159,10 +175,10 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [initialLlmProviderId, agentKey])
 
   // ---- Effort ----
-  const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
-  const effortSeededRef = useRef(initialEffort !== undefined)
+  const [effort, setEffortState] = useState<EffortLevel>(restored?.effort ?? initialEffort ?? DEFAULT_EFFORT)
+  const effortSeededRef = useRef(initialEffort !== undefined || restored?.effort !== undefined)
   const lastInitialEffortRef = useRef(initialEffort)
-  const effortDirtyRef = useRef(false)
+  const effortDirtyRef = useRef(restored?.effort !== undefined)
   useEffect(() => {
     if (lastInitialEffortRef.current === initialEffort) return
     lastInitialEffortRef.current = initialEffort
@@ -178,13 +194,14 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     effortSeededRef.current = true
     effortDirtyRef.current = true
     setEffortState(e)
-  }, [])
+    persistPicks({ effort: e })
+  }, [persistPicks])
 
   // ---- Speed ---- (same seeding/locking shape as effort)
-  const [speed, setSpeedState] = useState<SpeedLevel>(initialSpeed ?? DEFAULT_SPEED)
-  const speedSeededRef = useRef(initialSpeed !== undefined)
+  const [speed, setSpeedState] = useState<SpeedLevel>(restored?.speed ?? initialSpeed ?? DEFAULT_SPEED)
+  const speedSeededRef = useRef(initialSpeed !== undefined || restored?.speed !== undefined)
   const lastInitialSpeedRef = useRef(initialSpeed)
-  const speedDirtyRef = useRef(false)
+  const speedDirtyRef = useRef(restored?.speed !== undefined)
   useEffect(() => {
     if (lastInitialSpeedRef.current === initialSpeed) return
     lastInitialSpeedRef.current = initialSpeed
@@ -197,7 +214,8 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     speedSeededRef.current = true
     speedDirtyRef.current = true
     setSpeedState(sp)
-  }, [])
+    persistPicks({ speed: sp })
+  }, [persistPicks])
 
   // ---- Catalog from active provider ----
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
@@ -219,14 +237,14 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   )
 
   // ---- Model ----
-  const modelSeededRef = useRef(initialModel !== undefined)
+  const modelSeededRef = useRef(initialModel !== undefined || restored?.model !== undefined)
   // `initialModel` is authoritative session state, but the first render may
   // contain a stale React Query cache entry while a background refetch is in
   // flight. Track every distinct value rather than treating the first one as
   // final. The only thing allowed to beat a newer session value is an explicit
   // user pick that has not been accepted by the server yet.
   const lastInitialModelRef = useRef(initialModel)
-  const modelDirtyRef = useRef(false)
+  const modelDirtyRef = useRef(restored?.model !== undefined)
   useEffect(() => {
     if (lastInitialModelRef.current === initialModel) return
     lastInitialModelRef.current = initialModel
@@ -243,14 +261,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setLlmProviderId(effectiveLlmProviderId)
     }
     setModelState(m)
-  }, [effectiveLlmProviderId])
+    persistPicks({ model: m, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) })
+  }, [effectiveLlmProviderId, persistPicks])
 
   useEffect(() => {
     if (modelDirtyRef.current && !llmProviderId && inheritedLlmProviderId) {
       connectionDirty.current = true
       setLlmProviderId(inheritedLlmProviderId)
+      persistPicks({ llmProviderId: inheritedLlmProviderId })
     }
-  }, [llmProviderId, inheritedLlmProviderId])
+  }, [llmProviderId, inheritedLlmProviderId, persistPicks])
 
   const setConnection = useCallback((id: string) => {
     const next = connections.find(c => c.id === id)
@@ -260,25 +280,34 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     modelSeededRef.current = true
     modelDirtyRef.current = true
     setModelState(next.defaultModel)
-  }, [connections])
+    persistPicks({ model: next.defaultModel, llmProviderId: id })
+  }, [connections, persistPicks])
 
   const markSubmitted = useCallback(
     (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }) => {
-      if (options.llmProviderId === effectiveLlmProviderId) connectionDirty.current = false
+      const sent: ComposerOptionPicks = {}
+      if (options.llmProviderId === effectiveLlmProviderId) {
+        connectionDirty.current = false
+        sent.llmProviderId = undefined
+      }
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
       // but the equality check keeps this helper correct for other callers.
       if (options.effort !== undefined && options.effort === effort) {
         effortDirtyRef.current = false
+        sent.effort = undefined
       }
       if (options.speed !== undefined && options.speed === speed) {
         speedDirtyRef.current = false
+        sent.speed = undefined
       }
       if (options.model !== undefined && options.model === model) {
         modelDirtyRef.current = false
+        sent.model = undefined
       }
+      if (Object.keys(sent).length > 0) persistPicks(sent)
     },
-    [effort, speed, model, effectiveLlmProviderId],
+    [effort, speed, model, effectiveLlmProviderId, persistPicks],
   )
 
   // ---- Default adoption ----

@@ -3,10 +3,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ConnectivityProvider } from '@renderer/context/connectivity-context'
 import { UserProvider } from '@renderer/context/user-context'
 import { DialogProvider } from '@renderer/context/dialog-context'
-import { DraftsProvider } from '@renderer/context/drafts-context'
+import { DraftsProvider, useComposerDraft } from '@renderer/context/drafts-context'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import type { ReactElement, ReactNode } from 'react'
+import { useCallback, type ReactElement, type ReactNode } from 'react'
 
 export { screen, waitFor, within, act } from '@testing-library/react'
 export { default as userEvent } from '@testing-library/user-event'
@@ -48,4 +48,11 @@ export function renderWithProviders(
   options?: Omit<RenderOptions, 'wrapper'>
 ) {
   return render(ui, { wrapper: AllProviders, ...options })
+}
+
+/** Read and write only the text of a composer draft. */
+export function useDraftText(key: string): [string | undefined, (text: string | undefined) => void] {
+  const [draft, update] = useComposerDraft(key)
+  const setText = useCallback((text: string | undefined) => update({ text }), [update])
+  return [draft?.text, setText]
 }

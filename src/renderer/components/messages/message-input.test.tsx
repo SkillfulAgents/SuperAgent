@@ -6,11 +6,11 @@ import { MessageInput } from './message-input'
 import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
-import { renderWithProviders } from '@renderer/test/test-utils'
-import { useDraft } from '@renderer/context/drafts-context'
+import { renderWithProviders, useDraftText } from '@renderer/test/test-utils'
 import { useEffect } from 'react'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
-import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import { setPendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import { useDraftsStore } from '@renderer/context/drafts-context'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 
@@ -785,7 +785,7 @@ describe('MessageInput', () => {
     expect(input.textContent).toBe(key)
   })
 
-  it('registers a getter for the live composer and deregisters on unmount', async () => {
+  it('registers a getter for the effective runtime options and deregisters on unmount', async () => {
     const user = userEvent.setup()
     const registerSnapshot = vi.fn()
     const { unmount } = renderWithProviders(
@@ -800,14 +800,11 @@ describe('MessageInput', () => {
 
     const getSnapshot = registerSnapshot.mock.calls.find(([value]) => typeof value === 'function')?.[0]
     expect(getSnapshot).toEqual(expect.any(Function))
-    await user.type(screen.getByTestId('message-input'), 'Move this draft')
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('effort-option-low'))
 
-    expect(getSnapshot()).toMatchObject({
-      text: 'Move this draft',
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-    })
+    // Unpicked session values count too: Start Fresh carries the model in use.
+    expect(getSnapshot()).toMatchObject({ model: 'sonnet', effort: 'low' })
     unmount()
     expect(registerSnapshot).toHaveBeenLastCalledWith(null)
   })
@@ -1480,14 +1477,14 @@ describe('MessageInput', () => {
   describe('draft persistence', () => {
     /** Writes the given value to the session draft key and self-unmounts. */
     function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
-      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      const [, setDraft] = useDraftText(`session:${sessionId}`)
       useEffect(() => { setDraft(value) }, [setDraft, value])
       return null
     }
 
     function AttachmentDropSeeder({ sessionId, value }: { sessionId: string; value: DataTransferResult }) {
-      const [, setPending] = useDraft<PendingAttachmentDrop>(pendingAttachmentDropKey(`session:${sessionId}`))
-      useEffect(() => { setPending({ items: value, droppedAt: Date.now() }) }, [setPending, value])
+      const store = useDraftsStore()
+      useEffect(() => { setPendingAttachmentDrop(store, `session:${sessionId}`, value) }, [store, sessionId, value])
       return null
     }
 
@@ -1583,6 +1580,29 @@ describe('MessageInput', () => {
       expect(mockUploadFile.mutateAsync).toHaveBeenCalledTimes(1)
     })
 
+    it('restores an unsent model pick after switching sessions, without leaking it', async () => {
+      const user = userEvent.setup()
+      const { rerender } = renderWithProviders(
+        <MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" initialModel="opus" />
+      )
+
+      await user.click(screen.getByTestId('composer-options-trigger'))
+      await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" initialModel="opus" />)
+      expect(screen.getByTestId('composer-options-trigger')).not.toHaveTextContent('Haiku')
+
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" initialModel="opus" />)
+      expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+
+      await user.type(screen.getByTestId('message-input'), 'Use the pick')
+      await user.keyboard('{Enter}')
+      await waitFor(() => {
+        expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-haiku-4-5' }))
+      })
+    })
+
     it('clears the stored draft after sending', async () => {
       const user = userEvent.setup()
       const { rerender } = renderWithProviders(
@@ -1604,7 +1624,7 @@ describe('MessageInput', () => {
 
     it('reflects externally-injected drafts (file comments, restored messages) into the input', async () => {
       function DraftWriter({ sessionId, value }: { sessionId: string; value: string | null }) {
-        const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+        const [, setDraft] = useDraftText(`session:${sessionId}`)
         useEffect(() => {
           if (value !== null) setDraft(value)
         }, [setDraft, value])

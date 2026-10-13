@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { DraftsProvider, useDraftsStore, type DraftsStore } from '@renderer/context/drafts-context'
 import {
   PENDING_ATTACHMENT_DROP_TTL_MS,
-  pendingAttachmentDropKey,
   setPendingAttachmentDrop,
   usePendingAttachmentDrop,
 } from './pending-attachment-drop'
@@ -16,16 +15,23 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe('pending attachment drops', () => {
-  it('namespaces drops by composer draft key', () => {
-    expect(pendingAttachmentDropKey('agent:agent-1')).toBe('pending-attachment-drop:agent:agent-1')
-    expect(pendingAttachmentDropKey('session:session-1')).toBe('pending-attachment-drop:session:session-1')
+  it('holds the drop in the composer draft without disturbing the rest of it', () => {
+    let store: DraftsStore | undefined
+    renderHook(() => { store = useDraftsStore() }, { wrapper })
+    act(() => {
+      store!.update('session:session-1', { text: 'typed' })
+      setPendingAttachmentDrop(store!, 'session:session-1', { files: [], folders: [] })
+    })
+    expect(store!.get('session:session-1')).toEqual({
+      text: 'typed',
+      pendingDrop: { items: { files: [], folders: [] }, droppedAt: expect.any(Number) },
+    })
   })
 
   it('reactively drains a drop exactly once', async () => {
     const addItems = vi.fn()
     let store: DraftsStore | undefined
     const draftKey = 'session:session-1'
-    const key = pendingAttachmentDropKey(draftKey)
     const dropped: DataTransferResult = {
       files: [{ file: new File(['hello'], 'hello.txt', { type: 'text/plain' }) }],
       folders: [],
@@ -39,7 +45,7 @@ describe('pending attachment drops', () => {
     act(() => setPendingAttachmentDrop(store!, draftKey, dropped))
 
     await waitFor(() => expect(addItems).toHaveBeenCalledWith(dropped))
-    expect(store!.get(key)).toBeUndefined()
+    expect(store!.get(draftKey)).toBeUndefined()
 
     await act(async () => {})
     expect(addItems).toHaveBeenCalledTimes(1)
@@ -49,7 +55,6 @@ describe('pending attachment drops', () => {
     const addItems = vi.fn()
     let store: DraftsStore | undefined
     const draftKey = 'session:session-1'
-    const key = pendingAttachmentDropKey(draftKey)
 
     // A drop written before the composer existed — e.g. the target route errored
     // out, or the user navigated away again — must not attach itself on a later,
@@ -65,7 +70,7 @@ describe('pending attachment drops', () => {
     rerender({ key: draftKey })
     await act(async () => {})
     expect(addItems).not.toHaveBeenCalled()
-    expect(store!.get(key)).toBeUndefined()
+    expect(store!.get(draftKey)).toBeUndefined()
     vi.restoreAllMocks()
   })
 })
