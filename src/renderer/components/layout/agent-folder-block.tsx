@@ -335,7 +335,7 @@ export function AgentFolderBlock({
           // the way they always did under the old "Your Agents" label.
           className={cn(isBodyOver && activeDragType === 'agent' && 'rounded-md bg-sidebar-accent/40')}
         >
-          <ul className="flex w-full min-w-0 flex-col gap-1">{children}</ul>
+          <ul className="flex w-full min-w-0 flex-col gap-2">{children}</ul>
           {agentCount === 0 && (
             // An empty folder has no rows to aim at, so it needs a body with
             // real height or it cannot be dropped into at all.

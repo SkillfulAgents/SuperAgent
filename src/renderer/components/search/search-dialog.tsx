@@ -10,13 +10,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
-import { formatDistanceToNow } from 'date-fns'
+import { formatLastRun } from '@renderer/lib/last-run'
 import { filterAgentsAndSessions, flattenGroups, getRecentAgents, type FlatItem } from './filter'
-
-function formatLastRun(date: Date | string | null | undefined): string | null {
-  if (!date) return null
-  return `Last run ${formatDistanceToNow(new Date(date), { addSuffix: true })}`
-}
 
 /**
  * Rendered inside the router, so it can use the `useNavigate` hook directly.

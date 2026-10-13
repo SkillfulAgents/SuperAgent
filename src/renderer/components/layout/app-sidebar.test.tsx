@@ -647,6 +647,25 @@ describe('AppSidebar — agent rows', () => {
     expect(screen.getByText('Other Agent')).toBeInTheDocument()
   })
 
+  it('shows the home card\'s last-run meta line under each agent name', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-09T12:00:00Z'), toFake: ['Date'] })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [
+          makeAgent({ lastActivityAt: new Date('2026-10-09T09:00:00Z') }),
+          makeAgent({ slug: 'idle-agent', displaySlug: 'idle-agent', name: 'Idle Agent', lastActivityAt: null }),
+        ],
+        isLoading: false,
+        error: null,
+      })
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 3 hours ago')
+      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Last run never')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows a status indicator for each agent (collapsed)', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('agent-status-running')).toBeInTheDocument()

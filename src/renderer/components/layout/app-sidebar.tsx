@@ -62,6 +62,7 @@ import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agen
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { formatLastRun } from '@renderer/lib/last-run'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -575,7 +576,7 @@ const AgentMenuItemInner = React.forwardRef<
           <SidebarMenuButton
             asChild
             isActive={isSelected}
-            className={cn('relative gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
+            className={cn('relative h-10 gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
           >
             <div {...dragHandlers}>
               {/* Stretch the native link across the row; the roster and
@@ -589,6 +590,10 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                {/* The same meta line as the agent's card in the home grid. */}
+                <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
+                  {formatLastRun(agent.lastActivityAt) ?? 'Last run never'}
+                </span>
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
               {/* Expose the status title above the stretched link while keeping
