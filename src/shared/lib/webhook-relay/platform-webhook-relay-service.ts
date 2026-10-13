@@ -121,6 +121,9 @@ interface QueuedEvent {
   event: RelayEvent
   /** The scope that claimed it, which is the one that must acknowledge it. */
   scope: RelayScope
+  /** Times the consumer answered `retry`, and when it may be offered again. */
+  attempt: number
+  retryAt: number
 }
 
 interface ConsumerState {
@@ -131,8 +134,8 @@ interface ConsumerState {
   queue: QueuedEvent[]
   queuedIds: Set<string>
   offering: boolean
+  /** Wakes delivery when the earliest waiting retry is due. */
   retryTimer: NodeJS.Timeout | null
-  retryAttempt: number
   /** A claim skipped this consumer's endpoints because its queue was full. */
   heldBack: boolean
   /** Disposed, but still delivering events claimed before that. */
@@ -345,7 +348,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       queuedIds: new Set(),
       offering: false,
       retryTimer: null,
-      retryAttempt: 0,
       heldBack: false,
       draining: false,
       claimsInFlight: 0,
@@ -372,6 +374,14 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         }
         this.wake()
         this.emit()
+      },
+      retryNow: () => {
+        if (state.disposed) return
+        for (const queued of state.queue) {
+          queued.attempt = 0
+          queued.retryAt = 0
+        }
+        this.pump(state)
       },
       dispose: () => {
         if (state.disposed || state.draining) return
@@ -760,7 +770,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       if (owner.queuedIds.has(event.id)) continue
       // Settled here, but the platform re-leased it because the ack is late.
       if (this.pendingAcks.get(scope)?.has(event.id)) continue
-      owner.queue.push({ event, scope })
+      owner.queue.push({ event, scope, attempt: 0, retryAt: 0 })
       owner.queuedIds.add(event.id)
       touched.add(owner)
     }
@@ -774,7 +784,17 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private pump(state: ConsumerState): void {
-    if (!this.started || state.offering || state.retryTimer || state.disposed || state.queue.length === 0) return
+    if (!this.started || state.offering || state.disposed || state.queue.length === 0) return
+    // Retries wait out their own backoff; everything else goes now, so one
+    // event that keeps retrying never holds up the rest.
+    const dueAt = Math.min(...state.queue.map((queued) => queued.retryAt))
+    const now = Date.now()
+    if (dueAt > now) {
+      this.scheduleRetry(state, dueAt - now)
+      return
+    }
+    if (state.retryTimer) clearTimeout(state.retryTimer)
+    state.retryTimer = null
     state.offering = true
     this.deps.detach(() => {
       void this.limit(() => this.offer(state))
@@ -792,7 +812,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private async offer(state: ConsumerState): Promise<void> {
     // stop() may have landed while this offer waited for a concurrency slot.
     if (!this.started || state.disposed) return
-    const batch = state.queue.slice(0, CLAIM_BATCH_SIZE)
+    const now = Date.now()
+    const batch = state.queue.filter((queued) => queued.retryAt <= now).slice(0, CLAIM_BATCH_SIZE)
+    if (batch.length === 0) return
 
     let outcome: RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>
     try {
@@ -804,11 +826,14 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
 
     const settled: QueuedEvent[] = []
-    let retrying = false
     for (const queued of batch) {
       const result = typeof outcome === 'string' ? outcome : (outcome.get(queued.event.id) ?? 'retry')
-      if (result === 'retry') retrying = true
-      else settled.push(queued)
+      if (result !== 'retry') {
+        settled.push(queued)
+        continue
+      }
+      queued.retryAt = Date.now() + this.retryDelaysMs[Math.min(queued.attempt, this.retryDelaysMs.length - 1)]
+      queued.attempt++
     }
     // Settled work is done even if the consumer let go meanwhile.
     for (const queued of settled) this.queueAck(queued.scope, queued.event.id)
@@ -821,9 +846,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       for (const id of settledIds) state.queuedIds.delete(id)
     }
 
-    if (retrying) this.scheduleRetry(state)
-    else state.retryAttempt = 0
-
     if (state.draining) return
     // A round skipped this consumer's endpoints while it was full.
     if (state.heldBack && state.queue.length < this.maxConsumerBacklog) {
@@ -832,11 +854,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
   }
 
-  private scheduleRetry(state: ConsumerState): void {
+  private scheduleRetry(state: ConsumerState, delay: number): void {
     // After stop(), start() resumes delivery instead.
     if (!this.started || state.disposed) return
-    const delay = this.retryDelaysMs[Math.min(state.retryAttempt, this.retryDelaysMs.length - 1)]
-    state.retryAttempt++
+    if (state.retryTimer) clearTimeout(state.retryTimer)
     this.deps.detach(() => {
       state.retryTimer = setTimeout(() => {
         state.retryTimer = null

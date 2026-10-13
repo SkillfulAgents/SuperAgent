@@ -131,7 +131,7 @@ it('describes setup using the host callback without creating or connecting an in
   vi.stubEnv('HOST_PUBLIC_URL', 'https://public.example/')
   const response = await app.request('/api/agent-integrations/agents/agent/providers/test-oauth/setup?name=Release%20Assistant', { headers })
   expect(response.status).toBe(200)
-  expect(await response.json()).toEqual({ redirectUri: 'https://public.example/api/agent-integrations/providers/test-oauth/callback', creationUrl: 'https://provider.invalid/create?name=Release%20Assistant' })
+  expect(await response.json()).toEqual({ transports: ['direct'], redirectUri: 'https://public.example/api/agent-integrations/providers/test-oauth/callback', creationUrl: 'https://provider.invalid/create?name=Release%20Assistant' })
   expect(await listAgentIntegrations()).toEqual([])
   expect(prepare).not.toHaveBeenCalled()
   expect(runtime.add).not.toHaveBeenCalled()

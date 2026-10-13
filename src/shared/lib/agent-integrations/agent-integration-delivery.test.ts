@@ -14,6 +14,9 @@ import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../s
 import { requireIntegrationReconnect } from './lifecycle'
 import { deliveryStore } from './delivery-store'
 import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { IntegrationRelays, relayAcceptResult } from './relay-transport'
+import type { IntegrationRelayAttachment } from './transport'
+import { createFakeWebhookRelay, type FakeWebhookRelay } from '../webhook-relay/testing/fake-webhook-relay'
 import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
@@ -53,6 +56,24 @@ class Tasks extends TaskManagerAgentIntegration {
   input(id = 'input') { return this.acceptTaskEvent({ id, taskId: 'conversation', interactionId: 'conversation', kind: 'invocation', timestamp: new Date().toISOString(), text: id, replyTarget: { commentId: 'thread' }, payload: {} } satisfies TaskEvent) }
   context(id: string) { return this.acceptTaskEvent({ id, taskId: 'conversation', interactionId: 'conversation', kind: 'context', timestamp: new Date().toISOString(), text: id, replyTarget: {}, payload: {} } satisfies TaskEvent) }
 }
+/** A provider in relay mode: the relay's events go through the same handoff as direct input. */
+class RelayTasks extends Tasks {
+  private attachment?: IntegrationRelayAttachment
+  /** Which path the last connect took. */
+  path?: 'relay' | 'direct'
+  async connect() {
+    this.connected = true
+    // Uses the relay when the host offers one; otherwise its own (here, imaginary) socket.
+    const relay = this.host.relay
+    this.path = relay ? 'relay' : 'direct'
+    this.attachment = relay?.attach(relayBinding, async events => new Map(await Promise.all(events.map(async event =>
+      [event.id, relayAcceptResult(await this.input(event.id))] as const))))
+  }
+  async disconnect() { this.connected = false; this.attachment?.detach(); this.attachment = undefined }
+  isConnected() { return this.connected && (this.attachment?.isAttached() ?? true) }
+}
+const relayBinding = { endpointId: 'whep_tasks', url: 'https://relay.test/v1/hooks/whep_tasks', scope: 'sub_owner' }
+const relayEvent = (id: string) => ({ id, endpointId: 'whep_tasks', type: 'CUSTOM_WEBHOOK', payload: {}, createdAt: '' })
 let manager: AgentIntegrationManager
 let adapter: Chat | Tasks
 async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 'slack') {
@@ -62,6 +83,19 @@ async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 's
   adapter = provider === 'linear' ? new Tasks((await getAgentIntegration('integration'))!) : Object.assign(new Chat(), { provider })
   const registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
+  await manager.start()
+}
+async function startRelay(relay: FakeWebhookRelay) {
+  await database.insert(chatIntegrations).values({
+    id: 'integration', provider: 'linear', agentSlug: 'agent', config: JSON.stringify({ relay: relayBinding }),
+    requireApproval: false, createdAt: new Date(), updatedAt: new Date(),
+  }).run()
+  adapter = new RelayTasks((await getAgentIntegration('integration'))!)
+  const relays = new IntegrationRelays(() => relay)
+  manager = new AgentIntegrationManager(
+    new AgentIntegrationRegistry([{ definition: { ...adapter.definition, transports: ['direct', 'relay'] }, policy: adapter, create: async () => adapter }]),
+    id => relays.hostFor(id),
+  )
   await manager.start()
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
@@ -80,6 +114,38 @@ beforeEach(async () => {
   runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
+
+describe('relay transport', () => {
+  it('accepts relayed events durably, acknowledges duplicates, and holds them while paused', async () => {
+    const relay = createFakeWebhookRelay()
+    await startRelay(relay)
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'accepted']]))
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'duplicate']]))
+
+    await manager.pauseIntegration('integration')
+    expect(relay.consumers.get('integration:integration')?.endpointIds).toEqual([])
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_2')])).toEqual(new Map([['whe_2', 'retry']]))
+
+    await manager.resumeIntegration('integration')
+    expect(relay.log.at(-1)).toEqual({ op: 'retryNow', id: 'integration:integration' })
+    expect(await relay.deliver('integration:integration', [relayEvent('whe_2')])).toEqual(new Map([['whe_2', 'accepted']]))
+    await vi.waitFor(async () => expect((await rows()).filter(row => row.state === 'delivered')).toHaveLength(2))
+    expect(relay.log.filter(entry => entry.op === 'register')).toHaveLength(1)
+  })
+
+  it('connects directly when the host has no relay as it connects', async () => {
+    const relay = createFakeWebhookRelay()
+    relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
+    await startRelay(relay)
+
+    expect((adapter as RelayTasks).path).toBe('direct')
+    expect(relay.consumers.size).toBe(0)
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+  })
+})
 
 describe('input handoff results', () => {
   it('tells the provider whether its input was accepted, a duplicate, or rejected', async () => {

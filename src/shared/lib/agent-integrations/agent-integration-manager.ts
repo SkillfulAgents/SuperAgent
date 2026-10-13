@@ -16,6 +16,8 @@ import { integrationRequestEventSchema } from './runtime-schema'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
+import { integrationRelays } from './relay-transport'
+import type { IntegrationRelayHost } from './transport'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 import {
   listStartupIntegrations,
@@ -92,7 +94,11 @@ interface ManagedSession {
 // ── Manager ─────────────────────────────────────────────────────────────
 
 export class AgentIntegrationManager {
-  constructor(private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry) {}
+  constructor(
+    private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry,
+    /** The webhook relay for one connection, or null while the host has none available. */
+    private readonly relayHost: (integrationId: string) => IntegrationRelayHost | null = (integrationId) => integrationRelays.hostFor(integrationId),
+  ) {}
 
   private readonly deliveries = new IntegrationDeliveryQueue({
     connectedIds: () => this.isRunning ? [...this.connections.keys()].filter(id => !this.pausedIds.has(id) && this.connections.get(id)?.connector.isConnected()) : [],
@@ -577,8 +583,9 @@ export class AgentIntegrationManager {
     // Another window: creating the connector can await.
     if (this.generationOf(id) !== generation) return false
 
+    // The relay is offered once per connection; a provider that can use it does.
     connector.bindHost({ session: async externalId => this.connections.get(id)?.connector === connector
-      ? this.recoverSessionContext(id, externalId, generation) : undefined })
+      ? this.recoverSessionContext(id, externalId, generation) : undefined, relay: this.relayHost(id) })
 
     const conn: IntegrationConnection = {
       connector,
