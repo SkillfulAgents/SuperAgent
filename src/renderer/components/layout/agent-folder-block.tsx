@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ChevronRight, Folder, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, Folder, MoreHorizontal, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import {
   defaultDropAnimation,
@@ -46,26 +46,40 @@ export const SECTION_ICON_CLASS = 'h-3.5 w-3.5 text-muted-foreground'
 const HEADER_ACTION_CLASS =
   'absolute top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/80 transition-opacity hover:bg-black/10 hover:text-sidebar-foreground dark:hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
 
+/** The ✓ and ✕ beside the name input: plain icons with the header buttons' fill. */
+const NAME_ACTION_CLASS =
+  'shrink-0 rounded p-0.5 text-sidebar-foreground/60 outline-none hover:bg-black/10 hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring dark:hover:bg-white/15'
+
 /**
  * Inline rename for a folder. Mirrors the dashboard rename in `app-sidebar.tsx`
- * — commit on Enter or blur, abandon on Escape — but writes to user settings
- * through the caller rather than hitting an API of its own.
+ * — commit on Enter, blur or ✓, abandon on Escape or ✕ — but writes to user
+ * settings through the caller rather than hitting an API of its own.
+ *
+ * A just-added section opens EMPTY with a placeholder, so the caret blinks at
+ * the start instead of sitting on a selected "New Section"; leaving it empty
+ * keeps that default name. Renaming an existing section starts from its name
+ * with the caret at the end.
  */
 function FolderNameInput({
   currentName,
+  startEmpty = false,
   onCommit,
   onDone,
 }: {
   currentName: string
+  startEmpty?: boolean
   onCommit: (name: string) => void
   onDone: () => void
 }) {
-  const [value, setValue] = useState(currentName)
+  const [value, setValue] = useState(startEmpty ? '' : currentName)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const settledRef = React.useRef(false)
 
   React.useEffect(() => {
-    inputRef.current?.select()
+    const input = inputRef.current
+    if (!input) return
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
   }, [])
 
   const submit = () => {
@@ -82,24 +96,74 @@ function FolderNameInput({
     onDone()
   }
 
+  // Pressing ✓ or ✕ must not blur the input first: the blur would commit
+  // before ✕ could cancel. Holding focus through the press leaves the click
+  // as the only thing that settles the edit.
+  const keepFocus = (e: React.MouseEvent | React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  const cancelOnEscape = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation()
+      cancel()
+    }
+  }
+
   return (
-    <input
-      ref={inputRef}
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        e.stopPropagation()
-        if (e.key === 'Enter') submit()
-        if (e.key === 'Escape') cancel()
+    <div
+      role="group"
+      aria-label="Edit section name"
+      className="flex min-w-0 flex-1 items-center gap-1"
+      onBlur={(event) => {
+        // Moving between the input, Save and Cancel is still editing.
+        if (!event.currentTarget.contains(event.relatedTarget)) submit()
       }}
-      onBlur={submit}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      autoFocus
-      aria-label="Section name"
-      data-testid="folder-name-input"
-      className="w-full bg-background border border-input rounded px-1 py-0 text-[13px] outline-none focus:ring-1 focus:ring-ring"
-    />
+    >
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          e.stopPropagation()
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit()
+          if (e.key === 'Escape') cancel()
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        placeholder="Section name"
+        aria-label="Section name"
+        data-testid="folder-name-input"
+        className="h-6 min-w-0 flex-1 rounded border border-black/10 bg-transparent px-1.5 text-xs text-sidebar-foreground outline-none placeholder:text-sidebar-foreground/35 focus:border-black/20 dark:border-white/15 dark:focus:border-white/25"
+      />
+      <button
+        type="button"
+        onMouseDown={keepFocus}
+        onPointerDown={keepFocus}
+        onKeyDown={cancelOnEscape}
+        onClick={submit}
+        aria-label="Save section name"
+        title="Save"
+        data-testid="folder-name-save"
+        className={NAME_ACTION_CLASS}
+      >
+        <Check className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onMouseDown={keepFocus}
+        onPointerDown={keepFocus}
+        onKeyDown={cancelOnEscape}
+        onClick={cancel}
+        aria-label="Cancel rename"
+        title="Cancel"
+        data-testid="folder-name-cancel"
+        className={NAME_ACTION_CLASS}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
   )
 }
 
@@ -254,7 +318,13 @@ export function AgentFolderBlock({
   children: React.ReactNode
 }) {
   const [isRenaming, setIsRenaming] = useState(initialRenaming ?? false)
-  const startRename = React.useCallback(() => setIsRenaming(true), [])
+  // Only the just-added section's first edit starts empty (see FolderNameInput).
+  const [renameStartsEmpty, setRenameStartsEmpty] = useState(initialRenaming ?? false)
+  const startRename = React.useCallback(() => {
+    setRenameStartsEmpty(false)
+    setIsRenaming(true)
+  }, [])
+
   const {
     attributes,
     listeners,
@@ -323,9 +393,10 @@ export function AgentFolderBlock({
         // The input REPLACES the header rather than sitting inside it: a form
         // control nested in a <button> is invalid markup, and clicking it would
         // land on the button and toggle the folder shut mid-edit.
-        <div className="flex h-8 items-center rounded-md px-2">
+        <div className="flex h-8 items-center gap-1 rounded-md px-2">
           <FolderNameInput
             currentName={folder.name}
+            startEmpty={renameStartsEmpty}
             onCommit={onRename}
             onDone={() => {
               setIsRenaming(false)
