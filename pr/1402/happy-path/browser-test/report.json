@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  loaded fine (HTTP 200), and I've closed the browser.\"\n\nThe agent successfully executed browser tools to navigate to https://example.com, retrieved the correct page title (\"Example Domain\"), and reported the results back in the chat interface. The feature is working correctly with no bugs detected.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 90229,
+  "sessionId": "aa307763-9a0b-4a9b-99b5-a41e76766cea",
+  "cost": {
+    "inputTokens": 380,
+    "outputTokens": 11505,
+    "cacheCreationTokens": 72388,
+    "cacheReadTokens": 1025794,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.250969
+  }
+}
