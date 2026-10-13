@@ -337,3 +337,13 @@ describe('scope fallbacks', () => {
     expect(isValidApiScope('slack', 'chat:write')).toBe(true)
   })
 })
+
+describe('googledrive endpoint descriptions', () => {
+  it.each([
+    ['GET', '/drive/v3/files/abc', /file's metadata or content/],
+    ['DELETE', '/drive/v3/files/abc', /deletes a file/],
+    ['PATCH', '/drive/v3/files/abc', /Updates a file/],
+  ])('%s %s describes the file operation, not another method', (method, path, re) => {
+    expect(matchScopes('googledrive', method, path).endpointDescription).toMatch(re)
+  })
+})
