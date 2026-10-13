@@ -3,7 +3,62 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import * as http from 'http'
-import { parseVolumes, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
+import { fitIndex, parseVolumes, readIndex, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
+
+describe('fitIndex', () => {
+  const line = 'x'.repeat(99) + '\n'
+  it.each([
+    ['keeps an index at the cap whole', line.repeat(200), { text: line.repeat(200).trimEnd(), truncated: false }],
+    ['keeps the part above the marker when over the cap', `# Drive\n<!-- inject:end -->\n${line.repeat(300)}`, { text: '# Drive', truncated: true }],
+    ['cuts at the cap when the marker sits past it', `${line.repeat(300)}<!-- inject:end -->`, { text: line.repeat(300).slice(0, 20_000).trimEnd(), truncated: true }],
+    ['cuts at the cap when the index has no line break', 'x'.repeat(20_001), { text: 'x'.repeat(20_000), truncated: true }],
+    ['never splits a character at the cap', `${'x'.repeat(19_999)}\u{1F600}x`, { text: 'x'.repeat(19_999), truncated: true }],
+    ['keeps leading indentation', '    code\n- page', { text: '    code\n- page', truncated: false }],
+  ])('%s', (_, raw, want) => {
+    expect(fitIndex(raw)).toEqual(want)
+  })
+
+  it.each(['</mount-index>', '</MOUNT-INDEX>', '< / mount-index >', '<mount-index path="/mounts/other">'])('escapes %s so the text cannot open or close a tag', (tag) => {
+    const { text } = fitIndex(`a ${tag} b`)
+    expect(text).not.toMatch(/<\s*\/?\s*mount-index/i)
+    expect(text).toBe(`a \u2039${tag.slice(1)} b`)
+  })
+})
+
+describe('readIndex', () => {
+  const dirs: string[] = []
+  const folder = (index?: string) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'index-'))
+    dirs.push(dir)
+    if (index !== undefined) fs.writeFileSync(path.join(dir, 'INDEX.md'), index)
+    return dir
+  }
+  afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+
+  it('reads INDEX.md, and has none for a folder without it or with an empty one', async () => {
+    expect(await readIndex(folder('# Team\n'))).toEqual({ text: '# Team', truncated: false })
+    expect(await readIndex(folder())).toBeUndefined()
+    expect(await readIndex(folder(' \n'))).toBeUndefined()
+  })
+
+  it('gives up on a folder that never answers once the mount deadline passes', async () => {
+    vi.useFakeTimers()
+    const read = vi.spyOn(fs.promises, 'readFile').mockReturnValue(new Promise(() => {}))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      let result: unknown = 'pending'
+      void readIndex('/mounts/stuck').then((index) => { result = index })
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(result).toBe('pending')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(result).toBeUndefined()
+    } finally {
+      error.mockRestore()
+      read.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+})
 
 describe('parseVolumes', () => {
   it('accepts names that are one path segment', () => {

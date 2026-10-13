@@ -27,7 +27,7 @@ import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
-import { mountedVolumePaths } from './volume-mounts';
+import { mountedVolumeIndexes, mountedVolumePaths, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
@@ -348,6 +348,7 @@ export interface SystemPromptVars {
   envVars: string[];
   hasMounts: boolean;
   mountPathsJoined: string;
+  mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
 }
@@ -415,6 +416,7 @@ export function buildSystemPromptVars(
     // Each path is rendered as a JSON string literal. A folder name is user
     // bytes, and a raw newline or `#` in it would read as prompt structure.
     mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
+    mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };
