@@ -5,6 +5,8 @@ import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
 import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
 import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
+import { useSessionTurn } from '@renderer/lib/session-turns'
+import { reconcileEdits, type FileEdits } from '@renderer/components/file-preview/file-edits'
 
 /**
  * Where a file's bytes come from when it is not in the agent's workspace: a
@@ -21,6 +23,8 @@ export interface FileTab extends PreviewFileTab {
   source?: PreviewSource
   /** The file's ETag when this tab last loaded it, once the drawer has asked. */
   revision?: string
+  /** What changed in it since the last turn that changed it, for markdown tabs in a session. */
+  edits?: FileEdits
 }
 
 export interface FolderTab extends PreviewFolderTab {
@@ -94,6 +98,11 @@ interface FilePreviewContextType {
   setPdfPage: (filePath: string, agentSlug: string, page: number) => void
   /** The file is at `revision` now: reload its tab if that is not the one it loaded. */
   reloadIfChanged: (filePath: string, agentSlug: string, revision: string) => void
+  setShowEdits: (filePath: string, agentSlug: string, show: boolean) => void
+  /** One file's edits; the one place the renderer looks them up. */
+  editsFor: (filePath: string, agentSlug: string) => FileEdits | undefined
+  /** The preview showed this text for the file: highlight what changed since it last showed it. */
+  recordShownText: (filePath: string, agentSlug: string, text: string) => void
   close: () => void
 
   /** Comments on one agent's copy of a path; the one place the key is composed. */
@@ -150,10 +159,13 @@ const EMPTY_COMMENTS: FileComment[] = []
 export function FilePreviewProvider({
   children,
   sessionId: sessionIdProp,
+  sessionAgentSlug,
   commentsEnabled = false,
 }: {
   children: ReactNode
   sessionId?: string | null
+  /** The session's agent. Its open markdown files highlight what changed since the last turn. */
+  sessionAgentSlug?: string
   commentsEnabled?: boolean
 }) {
   const { view } = useRouteLocation()
@@ -176,6 +188,14 @@ export function FilePreviewProvider({
     setComments(new Map())
     setIsOpen(false)
   }, [sessionId, setOpenTabs, setActiveTabIndex])
+
+  // A new turn makes the next change to a file start a new highlight.
+  const turn = useSessionTurn(sessionAgentSlug ? sessionId : null)
+  useEffect(() => {
+    setOpenTabs(prev => (prev.some(tab => tab.kind === 'file' && tab.edits)
+      ? prev.map(tab => (tab.kind === 'file' && tab.edits ? { ...tab, edits: { ...tab.edits, fresh: true } } : tab))
+      : prev))
+  }, [turn, setOpenTabs])
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
@@ -406,6 +426,36 @@ export function FilePreviewProvider({
     })
   }, [setOpenTabs])
 
+  const editsFor = useCallback((filePath: string, agentSlug: string) => {
+    const tab = openTabs.find(t => t.kind === 'file' && t.agentSlug === agentSlug && t.filePath === filePath)
+    return tab?.kind === 'file' ? tab.edits : undefined
+  }, [openTabs])
+
+  // Only the session's own agent keeps copies to diff: a highlight follows this
+  // session's turns, and another agent's changes do not.
+  const recordShownText = useCallback((filePath: string, agentSlug: string, text: string) => {
+    if (!sessionAgentSlug || agentSlug !== sessionAgentSlug) return
+    setOpenTabs(prev => {
+      let changed = false
+      const next = prev.map(tab => {
+        if (tab.kind !== 'file' || tab.agentSlug !== agentSlug || tab.filePath !== filePath) return tab
+        const edits = reconcileEdits(tab.edits, text)
+        if (edits === tab.edits) return tab
+        changed = true
+        return { ...tab, edits }
+      })
+      return changed ? next : prev
+    })
+  }, [sessionAgentSlug, setOpenTabs])
+
+  const setShowEdits = useCallback((filePath: string, agentSlug: string, show: boolean) => {
+    setOpenTabs(prev => prev.map(tab => (
+      tab.kind === 'file' && tab.edits && tab.agentSlug === agentSlug && tab.filePath === filePath
+        ? { ...tab, edits: { ...tab.edits, show } }
+        : tab
+    )))
+  }, [setOpenTabs])
+
   const close = useCallback(() => {
     setIsOpen(false)
   }, [])
@@ -467,12 +517,15 @@ export function FilePreviewProvider({
     setActiveTab,
     setPdfPage,
     reloadIfChanged,
+    setShowEdits,
+    editsFor,
+    recordShownText,
     close,
     commentsFor,
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, reloadIfChanged, close, commentsFor, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, reloadIfChanged, setShowEdits, editsFor, recordShownText, close, commentsFor, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

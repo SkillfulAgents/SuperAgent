@@ -4,6 +4,7 @@ import { renderHook, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
 import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
+import { noteTurnStarted } from '@renderer/lib/session-turns'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -581,5 +582,28 @@ describe('reloading a tab whose file changed', () => {
     act(() => result.current.reloadIfChanged('/workspace/notes.md', 'agent-1', 'r2'))
     expect(tab().revision).toBe('r2')
     expect(tab().version).toBeGreaterThan(opened)
+  })
+})
+
+describe('edits since the last turn that changed the file', () => {
+  const agentWrapper = ({ children }: { children: ReactNode }) => <FilePreviewProvider sessionAgentSlug="agent-1">{children}</FilePreviewProvider>
+
+  it('grows one highlight per turn and starts a new one at the first change after a new turn', () => {
+    const { result } = renderHook(() => useFilePreview(), { wrapper: agentWrapper })
+    act(() => result.current.openFile('/workspace/notes.md', 'agent-1'))
+    const turnStarts = () => noteTurnStarted('session-1')
+    const shownAs = (text: string) => act(() => result.current.recordShownText('/workspace/notes.md', 'agent-1', text))
+    const before = () => result.current.editsFor('/workspace/notes.md', 'agent-1')?.before
+
+    shownAs('a')
+    act(() => turnStarts())
+    shownAs('b')
+    shownAs('c')
+    expect(before()).toBe('a')
+
+    act(() => turnStarts())
+    expect(before()).toBe('a')
+    shownAs('d')
+    expect(before()).toBe('c')
   })
 })

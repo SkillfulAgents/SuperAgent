@@ -183,6 +183,7 @@
     "cronstrue": "^3.32.0",
     "cross-env": "^7.0.3",
     "d3-force": "^3.0.0",
+    "diff": "^8.0.4",
     "dompurify": "3.4.17",
     "drizzle-kit": "^0.31.9",
     "electron": "^45.0.0",
