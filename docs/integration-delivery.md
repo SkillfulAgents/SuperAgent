@@ -16,7 +16,19 @@ separate scheduling lane.
 
 The manager resolves the provider's route and inserts the event and route before
 its `onEvent` handler resolves. The unique key is `(integrationId, externalId,
-eventId)`, where `externalId` is the logical session key. Payloads must be JSON
+eventId)`, where `externalId` is the logical session key. An input's
+`emitEvent` resolves to what happened to it:
+
+| Result | Meaning |
+|---|---|
+| `accepted` | Stored for delivery. |
+| `duplicate` | Already stored under the same key. |
+| `rejected` | Will never be taken: the integration isn't taking input (removed, paused, disconnected), the event has no route, or it is task context rather than input. |
+| `retry` | Not taken now: the connection it arrived on was replaced or stopped. Whatever delivered the event should hand it over again. |
+
+A handler failure (an invalid envelope, a database error) still rejects the
+promise. Providers that can redeliver, such as a relay transport, use the result
+to decide what to acknowledge; the others may ignore it. Payloads must be JSON
 serializable; families validate and decode their payloads, including dates, on use.
 The generic envelope is validated with Zod both when written and when recovered.
 The optional `acknowledgeInput` hook runs only after a newly accepted event is
