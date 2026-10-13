@@ -1296,6 +1296,49 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
   })
 
+  it('creates a new agent filed into the folder whose + was pressed', async () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'f1' })
+    // Already open: nothing to expand, so no settings write from the sidebar.
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  it('opens a collapsed folder before creating an agent in it', async () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      { collapsedAgentFolders: [] },
+      expect.anything()
+    )
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'f1' })
+    expect(screen.getByTestId('agent-item-test-agent')).toBeVisible()
+  })
+
+  it('offers + on the default folder as well, creating an unfiled agent', async () => {
+    mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-root'))
+
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'root' })
+  })
+
   it('defaults the default folder first before anything is arranged', () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],

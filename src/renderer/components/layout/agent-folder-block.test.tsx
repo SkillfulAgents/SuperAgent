@@ -323,6 +323,42 @@ describe('AgentFolderBlock', () => {
     expect(props.onDelete).toHaveBeenCalledTimes(1)
   })
 
+  it('creates an agent in the folder from the header +', async () => {
+    const props = renderBlock({ onCreateAgent: vi.fn() })
+    const plus = screen.getByTestId('new-agent-in-folder-f1')
+    expect(plus).toHaveAttribute('aria-label', 'New agent in Work')
+    await userEvent.click(plus)
+    expect(props.onCreateAgent).toHaveBeenCalledTimes(1)
+    // Pressing + must neither toggle the folder nor begin its drag.
+    expect(props.onToggle).not.toHaveBeenCalled()
+  })
+
+  it('shows the new-agent button at rest, not only on hover', () => {
+    renderBlock({ onCreateAgent: vi.fn() })
+    expect(screen.getByTestId('new-agent-in-folder-f1').className).not.toContain('opacity-0')
+  })
+
+  it('keeps the new-agent button outside the header button', () => {
+    // A button cannot nest inside a button, and pressing + must not begin the
+    // folder's drag — so it overlays as a sibling of the drag activator.
+    renderBlock({ onCreateAgent: vi.fn() })
+    const plus = screen.getByTestId('new-agent-in-folder-f1')
+    expect(plus.closest('button')).toBe(plus)
+    expect(screen.getByTestId('agent-folder-f1').contains(plus)).toBe(false)
+    expect(nodes.activator?.contains(plus)).toBe(false)
+    // Part of the header row, so moving onto it keeps the chevron up.
+    expect(plus).toHaveAttribute('data-header-zone')
+  })
+
+  it('renders no new-agent button without a handler, or while renaming', () => {
+    renderBlock()
+    expect(screen.queryByTestId('new-agent-in-folder-f1')).not.toBeInTheDocument()
+    cleanup()
+
+    renderBlock({ onCreateAgent: vi.fn(), initialRenaming: true })
+    expect(screen.queryByTestId('new-agent-in-folder-f1')).not.toBeInTheDocument()
+  })
+
   it('highlights as a drop target when an agent is dragged over it', () => {
     mockUseSortable.mockImplementation((args) => sortableState(args, true))
     renderBlock({ activeDragType: 'agent' })
@@ -417,6 +453,23 @@ describe('AgentFolderBlock — the default folder', () => {
   it('does not render the new-folder button on ordinary folders', () => {
     renderBlock()
     expect(screen.queryByTestId('new-folder-button')).not.toBeInTheDocument()
+  })
+
+  it('hosts the new-agent button too, right of the new-section one', async () => {
+    const props = renderRoot({ onCreateAgent: vi.fn() })
+    const plus = screen.getByTestId('new-agent-in-folder-root')
+    await userEvent.click(plus)
+    expect(props.onCreateAgent).toHaveBeenCalledTimes(1)
+    expect(props.onCreateFolder).not.toHaveBeenCalled()
+    // Both overlay the header's right edge: + in the rows' status-icon
+    // column, the new-section button one slot in.
+    expect(plus.className).toContain('right-[7px]')
+    expect(screen.getByTestId('new-folder-button').className).toContain('right-8')
+  })
+
+  it('gives the new-section button the edge slot when there is no new-agent button', () => {
+    renderRoot()
+    expect(screen.getByTestId('new-folder-button').className).toContain('right-[7px]')
   })
 
   it('still collapses like any folder', async () => {
