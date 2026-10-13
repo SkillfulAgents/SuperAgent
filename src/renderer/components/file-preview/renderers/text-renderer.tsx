@@ -1,22 +1,21 @@
 import { Loader2, AlertCircle } from 'lucide-react'
-import { useRef } from 'react'
-import { useTextSelection } from '../comments/use-text-selection'
-import { CommentOverlay } from '../comments/comment-overlay'
-import { selectionToAnchor } from '../comments/anchor'
+import { useMemo, useRef } from 'react'
+import { useCommentBox } from '../comments/use-comment-box'
 import { useFileContent } from './use-file-content'
 
 interface TextRendererProps {
   url: string
   filePath: string
   agentSlug: string
-  commentsEnabled?: boolean
 }
 
-export function TextRenderer({ url, filePath, agentSlug, commentsEnabled = true }: TextRendererProps) {
+export function TextRenderer({ url, filePath, agentSlug }: TextRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
-
   const { data, isLoading, error } = useFileContent(url)
+  // New content replaces the rows, so markers and highlights re-read them.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const surface = useMemo(() => ({ text: { blocks: containerRef } }), [data])
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
   const sizeTruncated = data?.truncated ?? false
 
   const MAX_LINES = 5000
@@ -45,8 +44,8 @@ export function TextRenderer({ url, filePath, agentSlug, commentsEnabled = true 
                   <td className="pr-4 text-right text-muted-foreground/50 select-none align-top tabular-nums w-[1%] whitespace-nowrap">
                     {i + 1}
                   </td>
-                  <td className="whitespace-pre-wrap break-all select-text">
-                    {line || '\n'}
+                  <td data-comment-lines={`${i + 1}-${i + 1}`} className="relative whitespace-pre-wrap break-all select-text">
+                    <span className="select-text">{line || '\n'}</span>
                   </td>
                 </tr>
               ))}
@@ -65,15 +64,7 @@ export function TextRenderer({ url, filePath, agentSlug, commentsEnabled = true 
         )}
         </>
       )}
-      {selection && (
-        <CommentOverlay
-          anchor={selectionToAnchor(selection)}
-          rect={selection.rect}
-          filePath={filePath}
-          agentSlug={agentSlug}
-          onClose={clearSelection}
-        />
-      )}
+      {box}
     </div>
   )
 }

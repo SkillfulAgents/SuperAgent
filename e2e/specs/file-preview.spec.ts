@@ -878,6 +878,45 @@ test.describe('File Preview', () => {
     await expect(page.getByTestId('file-preview-tray').getByText('At position (75%, 15%)')).toBeVisible()
   })
 
+  test('comments on markdown by selecting text and with C, each on its own lines', async ({ page }) => {
+    await agentPage.createAgent(`MarkdownComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Release notes\n\nThe build is green.\n\nShip it.\n\n## Later\n\nShip it.\n')
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    const doc = markdown(page)
+    await expect(doc.getByRole('heading', { name: 'Later' })).toBeVisible({ timeout: 10000 })
+    const overlay = page.locator('[data-comment-overlay]')
+    const tray = page.getByTestId('file-preview-tray')
+
+    // Selecting shows the chip first, so copying is not interrupted.
+    await doc.getByText('The build is green.').click({ clickCount: 3 })
+    await overlay.getByRole('button', { name: 'Comment' }).click()
+    await expect(overlay.getByText('Line 3: > "The build is green."')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Link the run')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    // C over the second "Ship it." points at that one, not the first.
+    await doc.getByText('Ship it.').nth(1).hover()
+    await page.keyboard.press('c')
+    await expect(overlay.getByText('Line 9: > "Ship it."')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Not yet')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    await expect(tray.getByText('Line 3: > "The build is green."')).toBeVisible()
+    await expect(tray.getByText('Line 9: > "Ship it."')).toBeVisible()
+    await expect(doc.getByText('1', { exact: true })).toBeVisible()
+    await expect(doc.getByText('2', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(true)
+
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('Line 3: > "The build is green."')
+    await expect(composer).toContainText('Line 9: > "Ship it."')
+    await expect.poll(() => page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(false)
+  })
+
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
     await agentPage.createAgent(`MultiFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)

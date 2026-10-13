@@ -1,9 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
-import { useTextSelection } from '../comments/use-text-selection'
-import { CommentOverlay } from '../comments/comment-overlay'
-import { selectionToAnchor } from '../comments/anchor'
+import { useCommentBox } from '../comments/use-comment-box'
 
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -23,7 +21,6 @@ interface PdfRendererProps {
   agentSlug: string
   pageNumber: number
   onPageChange: (page: number) => void
-  commentsEnabled?: boolean
 }
 
 export function PdfRenderer({
@@ -32,13 +29,11 @@ export function PdfRenderer({
   agentSlug,
   pageNumber,
   onPageChange,
-  commentsEnabled = true,
 }: PdfRendererProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [pageWidth, setPageWidth] = useState(400)
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
   const updateWidth = useCallback(() => {
     if (containerRef.current) {
@@ -56,6 +51,13 @@ export function PdfRenderer({
   const currentPage = numPages === null
     ? null
     : Math.max(1, Math.min(pageNumber, numPages))
+
+  // The page's text has no source lines: a selection keeps its quote, anything else is the page.
+  const surface = useMemo(
+    () => ({ text: { blocks: containerRef }, part: currentPage === null ? undefined : { label: 'Page', value: currentPage } }),
+    [currentPage],
+  )
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   const handleLoadSuccess = ({ numPages: loadedPages }: { numPages: number }) => {
     setNumPages(loadedPages)
@@ -121,15 +123,7 @@ export function PdfRenderer({
         </div>
       )}
 
-      {selection && (
-        <CommentOverlay
-          anchor={selectionToAnchor(selection)}
-          rect={selection.rect}
-          filePath={filePath}
-          agentSlug={agentSlug}
-          onClose={clearSelection}
-        />
-      )}
+      {box}
     </div>
   )
 }

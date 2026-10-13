@@ -1,7 +1,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, memo, lazy, Suspense, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
-import type { ElementContent } from 'hast'
+import type { Element, ElementContent } from 'hast'
 import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
@@ -23,6 +23,12 @@ function CodeBlock({ children }: { children: ReactNode }) {
       {children}
     </pre>
   )
+}
+
+/** Source lines the drawer stamps for comments (rehype-comment-lines). Chat never stamps them. */
+function commentLines(node: Element | undefined): string | undefined {
+  const lines = node?.properties.dataCommentLines
+  return typeof lines === 'string' ? lines : undefined
 }
 
 function extractText(node: ReactNode): string {
@@ -74,16 +80,16 @@ const STREAMING_COMPONENTS: Components = {
   table: ({ children }) => <ExpandingTable>{children}</ExpandingTable>,
   // Cap individual cell width so prose-heavy cells wrap instead of stretching the
   // table to one giant line, while many short columns still drive the breakout.
-  th: ({ children }) => (
-    <th className={cn(
+  th: ({ children, node }) => (
+    <th data-comment-lines={commentLines(node)} className={cn(
       'border-b-2 px-3 py-1.5 text-left font-medium align-top',
       'border-border'
     )}>
       <div className="max-w-[32rem]">{children}</div>
     </th>
   ),
-  td: ({ children }) => (
-    <td className={cn(
+  td: ({ children, node }) => (
+    <td data-comment-lines={commentLines(node)} className={cn(
       'border-b px-3 py-1.5 align-top',
       'border-border'
     )}>
@@ -127,6 +133,13 @@ const RENDERED_FENCES = [
 // tail would re-render incomplete output on every delta, so it stays a code block.
 const settledPre = (htmlPreview: boolean): Components['pre'] =>
   function SettledPre({ children, node }) {
+  // A wrapper carries the lines: a scrolling pre would clip a comment pin on its corner.
+  const lines = commentLines(node)
+  const block = settledFence(htmlPreview, children, node)
+  return lines ? <div data-comment-lines={lines}>{block}</div> : block
+}
+
+function settledFence(htmlPreview: boolean, children: ReactNode, node: ElementContent | undefined): ReactNode {
   const codeBlock = <CodeBlock>{children}</CodeBlock>
   const html = htmlPreview ? fenceSource(node, ['language-html', 'language-htm']) : null
   if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />

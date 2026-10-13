@@ -1,26 +1,28 @@
 import { Loader2, AlertCircle } from 'lucide-react'
 import { AgentMarkdown } from '@renderer/components/messages/agent-markdown'
-import { useRef } from 'react'
-import { useTextSelection } from '../comments/use-text-selection'
-import { CommentOverlay } from '../comments/comment-overlay'
-import { selectionToAnchor } from '../comments/anchor'
+import { useMemo, useRef } from 'react'
+import { rehypeCommentLines } from '@renderer/lib/rehype-comment-lines'
+import { useCommentBox } from '../comments/use-comment-box'
 import { useFileContent } from './use-file-content'
+
+const REHYPE_PLUGINS = [rehypeCommentLines]
 
 interface MarkdownRendererProps {
   url: string
   filePath: string
   agentSlug: string
-  commentsEnabled?: boolean
 }
 
-export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = true }: MarkdownRendererProps) {
+export function MarkdownRenderer({ url, filePath, agentSlug }: MarkdownRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
-
   // Shares the ['file-content', url] cache with the text/CSV renderers, so all
   // consumers of that key must agree on the cached shape (see use-file-content).
   const { data, isLoading, error } = useFileContent(url)
   const content = data?.text
+  // New content replaces the blocks, so markers and highlights re-read them.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const surface = useMemo(() => ({ text: { blocks: containerRef } }), [content])
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   return (
     <div ref={containerRef} className="relative p-4">
@@ -35,10 +37,10 @@ export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = t
         </div>
       ) : (
         <div
-          className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert"
+          className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert [&_[data-comment-lines]]:relative [&_:is(h2,h3,h4,hr)+div>pre]:mt-0 [&>div:first-child>pre]:mt-0 [&>div:last-child>pre]:mb-0"
           data-testid="markdown-renderer"
         >
-          <AgentMarkdown text={content || ''} mode="settled" agentSlug={agentSlug} />
+          <AgentMarkdown text={content || ''} mode="settled" agentSlug={agentSlug} rehypePlugins={REHYPE_PLUGINS} />
           {data?.truncated && (
             <div className="mt-3 pt-3 border-t text-xs text-muted-foreground text-center not-prose">
               File is larger than 5&nbsp;MB and was truncated. Download the file for the full content.
@@ -46,15 +48,7 @@ export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = t
           )}
         </div>
       )}
-      {selection && (
-        <CommentOverlay
-          anchor={selectionToAnchor(selection)}
-          rect={selection.rect}
-          filePath={filePath}
-          agentSlug={agentSlug}
-          onClose={clearSelection}
-        />
-      )}
+      {box}
     </div>
   )
 }

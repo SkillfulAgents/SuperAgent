@@ -15,14 +15,15 @@ interface CommentOverlayProps {
   filePath: string
   agentSlug: string
   onClose: () => void
-  /** Skip the intermediate "Comment" button and open the editor immediately. */
+  /** The editor. Otherwise a "Comment" chip, which calls `onEdit`. */
   autoEdit?: boolean
   /** Start the mic as the editor opens, when voice input is set up. */
   autoListen?: boolean
+  /** The "Comment" chip was clicked. */
+  onEdit?: () => void
 }
 
-export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, autoEdit = false, autoListen = false }: CommentOverlayProps) {
-  const [isEditing, setIsEditing] = useState(autoEdit)
+export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onEdit, autoEdit = false, autoListen = false }: CommentOverlayProps) {
   const [commentText, setCommentText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const { addComment } = useFilePreview()
@@ -30,10 +31,10 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, aut
   const canAdd = !voiceInput.isFinalizing && (!!commentText.trim() || voiceInput.isRecording)
 
   useEffect(() => {
-    if (isEditing && textareaRef.current) {
+    if (autoEdit && textareaRef.current) {
       textareaRef.current.focus()
     }
-  }, [isEditing])
+  }, [autoEdit])
 
   // Slide the overlay left, before it paints, so it ends 8px inside the pane that clips it.
   // Re-runs when the editor opens or its anchor moves.
@@ -46,7 +47,7 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, aut
     overlay.style.marginLeft = ''
     const right = pane.getBoundingClientRect().left + pane.clientWidth - 8
     overlay.style.marginLeft = `${Math.min(0, right - overlay.getBoundingClientRect().right)}px`
-  }, [isEditing, rect.x])
+  }, [autoEdit, rect.x])
 
   const handleAdd = async () => {
     if (!canAdd) return
@@ -59,7 +60,6 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, aut
       anchor,
     })
     setCommentText('')
-    setIsEditing(false)
     onClose()
   }
 
@@ -75,7 +75,7 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, aut
     }
   }
 
-  if (!isEditing) {
+  if (!autoEdit) {
     return (
       <div
         ref={overlayRef}
@@ -84,7 +84,7 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, aut
         style={{ left: rect.x, top: rect.y + 4 }}
       >
         <button
-          onClick={() => setIsEditing(true)}
+          onClick={onEdit}
           className="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
         >
           <MessageSquarePlus className="h-3 w-3" />
@@ -102,7 +102,7 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, aut
       style={{ left: rect.x, top: rect.y + 4 }}
     >
       <div className="rounded-lg border border-border bg-popover p-2 shadow-lg space-y-2">
-        <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5 line-clamp-2">
+        <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5 truncate">
           {describeAnchor(anchor)}
         </div>
         <textarea
