@@ -62,7 +62,9 @@ import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agen
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
-import { AgentAvatar, agentActivity, agentAvatarState } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { formatLastRun } from '@renderer/lib/last-run'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -430,6 +432,16 @@ const AGENT_AVATAR_SIZE = 27
 // own motion (an orb's wander, its look at the viewer) when it leaves.
 const SIDEBAR_FOLLOW_REGION = '[data-sidebar="sidebar"]'
 
+// Only this label subscribes to the clock; the expensive agent row stays memoized.
+function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
+  useMinuteClock()
+  return (
+    <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
+      {formatLastRun(date) ?? 'Last run never'}
+    </span>
+  )
+}
+
 // Right-side indicator on the agent row.
 // Awaiting / working aggregate across sessions regardless of expansion, with
 // the same formula as the agent header's AgentStatus (fresh sessions data
@@ -601,10 +613,7 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                {/* The same meta line as the agent's card in the home grid. */}
-                <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
-                  {formatLastRun(agent.lastActivityAt) ?? 'Last run never'}
-                </span>
+                <AgentLastRun date={agent.lastActivityAt} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
               {/* Expose the status title above the stretched link while keeping

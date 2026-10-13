@@ -1,5 +1,3 @@
-import type { ApiAgent } from '@renderer/hooks/use-agents'
-
 import { useAvatarChoice } from './avatar-choice-store'
 import { avatarForId, orbId, type AvatarId, type AvatarSource } from './avatar-ids'
 import { DEFAULT_ORBS } from './avatar-orbs'
@@ -23,37 +21,6 @@ function hashSeed(seed: string): number {
   h = Math.imul(h, 0xc2b2ae35) >>> 0
   h ^= h >>> 16
   return h >>> 0
-}
-
-/**
- * Awaiting / working for an agent: fresh sessions data when loaded, the
- * agent-level flags as fallback. Shared by the sidebar's status indicator and
- * every avatar so they can never disagree. Awaiting wins over working.
- */
-export function agentActivity(
-  agent: Pick<ApiAgent, 'hasSessionsAwaitingInput' | 'hasActiveSessions'>,
-  sessions?: readonly { isAwaitingInput?: boolean; isActive?: boolean }[],
-) {
-  const isAwaiting = sessions?.some(s => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)
-  const isWorking = !isAwaiting && (sessions?.some(s => s.isActive) || (agent.hasActiveSessions ?? false))
-  return { isAwaiting, isWorking }
-}
-
-/**
- * The avatar's state for an agent, by the same priority as the sidebar's
- * status indicator: needs input, working, done (results not yet opened),
- * sleeping (its runtime stopped), else idle.
- */
-export function agentAvatarState(
-  agent: Parameters<typeof agentActivity>[0] & Pick<ApiAgent, 'hasUnreadNotifications' | 'status'>,
-  sessions?: Parameters<typeof agentActivity>[1],
-): AvatarMotionState {
-  const { isAwaiting, isWorking } = agentActivity(agent, sessions)
-  if (isAwaiting) return 'needs-input'
-  if (isWorking) return 'working'
-  if (agent.hasUnreadNotifications) return 'done'
-  if (agent.status === 'stopped') return 'sleeping'
-  return 'idle'
 }
 
 /**

@@ -168,6 +168,15 @@ const NUMERIC = [
   'glowOpacity', 'saturation',
 ] as const
 
+/** Idle poses often hold for many frames; avoid repainting an identical one. */
+export function sameFrame(a: OrbFrame, b: OrbFrame): boolean {
+  return a.phi === b.phi && NUMERIC.every(key => a[key] === b[key])
+    && a.dots.length === b.dots.length && a.dots.every((dot, i) => {
+      const other = b.dots[i]
+      return dot.x === other.x && dot.y === other.y && dot.size === other.size && dot.opacity === other.opacity
+    })
+}
+
 /** Ease from one frame to another (k 0…1); the gaze turns the short way, dots belong to the target. */
 export function blendFrames(from: OrbFrame, to: OrbFrame, k: number): OrbFrame {
   const frame: OrbFrame = { ...to }

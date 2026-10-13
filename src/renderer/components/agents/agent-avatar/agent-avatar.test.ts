@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { agentAvatarId, agentAvatarState, orbRestingPhi } from './agent-avatar'
+import { agentAvatarId, orbRestingPhi } from './agent-avatar'
 import { avatarForId } from './avatar-ids'
 import { DEFAULT_ORBS } from './avatar-orbs'
 import { ORB_SHAPES } from './orb-shapes'
@@ -36,22 +36,5 @@ describe('orbRestingPhi', () => {
     expect(orbRestingPhi('abc')).toBe(orbRestingPhi('abc'))
     expect(orbRestingPhi('abc')).toBeGreaterThanOrEqual(-240)
     expect(orbRestingPhi('abc')).toBeLessThan(60)
-  })
-})
-
-describe('agentAvatarState', () => {
-  const agent = { hasSessionsAwaitingInput: false, hasActiveSessions: false, hasUnreadNotifications: false, status: 'running' as const }
-
-  it('follows the sidebar indicator’s priority: needs input, working, done, sleeping, idle', () => {
-    expect(agentAvatarState({ ...agent, hasSessionsAwaitingInput: true, hasActiveSessions: true, hasUnreadNotifications: true })).toBe('needs-input')
-    expect(agentAvatarState({ ...agent, hasActiveSessions: true, hasUnreadNotifications: true, status: 'stopped' })).toBe('working')
-    expect(agentAvatarState({ ...agent, hasUnreadNotifications: true, status: 'stopped' })).toBe('done')
-    expect(agentAvatarState({ ...agent, status: 'stopped' })).toBe('sleeping')
-    expect(agentAvatarState(agent)).toBe('idle')
-  })
-
-  it('prefers fresh session data over the agent-level flags', () => {
-    expect(agentAvatarState(agent, [{ isActive: true }])).toBe('working')
-    expect(agentAvatarState(agent, [{ isAwaitingInput: true }])).toBe('needs-input')
   })
 })
