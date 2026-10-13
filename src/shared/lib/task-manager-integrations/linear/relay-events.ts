@@ -54,20 +54,24 @@ export type LinearWebhookCheck =
   | { ok: false; reason: 'not_linear' | 'handshake' | 'signature' | 'stale' }
 
 /**
- * Verifies `Linear-Signature` (hex HMAC-SHA256 of the raw body) and that the
- * relay received the delivery within a minute of Linear signing it. The
- * receive time, not now, because relayed events may be claimed much later.
+ * Verifies `Linear-Signature` (hex HMAC-SHA256 of the raw body) when a secret
+ * is saved, and that the relay received the delivery within a minute of
+ * Linear signing it. The receive time, not now, because relayed events may be
+ * claimed much later. Without a secret the delivery is only a pointer that is
+ * read back from Linear, so the signature check is skipped.
  */
-export function checkLinearWebhook(event: RelayEvent, secret: string): LinearWebhookCheck {
+export function checkLinearWebhook(event: RelayEvent, secret: string | undefined): LinearWebhookCheck {
   const envelope = webhookEnvelopeSchema.safeParse(event.payload)
   if (!envelope.success || envelope.data.body === undefined) return { ok: false, reason: 'not_linear' }
   if (envelope.data.kind === 'handshake') return { ok: false, reason: 'handshake' }
   const raw = Buffer.from(envelope.data.body, envelope.data.body_encoding === 'base64' ? 'base64' : 'utf8')
   const signature = envelope.data.headers?.['linear-signature']
   if (!signature) return { ok: false, reason: 'not_linear' }
-  const expected = Buffer.from(createHmac('sha256', secret).update(raw).digest('hex'))
-  const given = Buffer.from(signature)
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return { ok: false, reason: 'signature' }
+  if (secret !== undefined) {
+    const expected = Buffer.from(createHmac('sha256', secret).update(raw).digest('hex'))
+    const given = Buffer.from(signature)
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) return { ok: false, reason: 'signature' }
+  }
 
   let body: LinearWebhookBody
   try {

@@ -173,7 +173,7 @@ treated as fixed: switching relay implementations breaks set-up webhooks, as it
 does agent-minted webhook triggers.
 
 "Webhooks are set up" is the stored config's `relay: { endpointId, url, scope }`,
-plus whatever the provider needs on its side (for Linear, the signing secret).
+plus whatever the provider keeps on its side (for Linear, the optional signing secret).
 When provider setup returns `relay: true`, setup mints the endpoint before the
 installation exists, under the creator's platform member (as agent-minted
 webhook endpoints are), so provider setup can hand out its URL; a relay-only

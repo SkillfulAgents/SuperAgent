@@ -158,22 +158,25 @@ describe('Linear authorization recovery', () => {
 })
 
 describe('Linear over the webhook relay', () => {
-  it('sets up webhooks by default, creates the webhook URL before the app, and sends the signing secret', async () => {
+  it('sets up webhooks by default, and one click creates the webhook URL and opens Linear with it', async () => {
     relayAvailable = true
     setupForm()
-    const getUrl = await screen.findByRole('button', { name: 'Get webhook URL' })
+    const createApp = await screen.findByRole('button', { name: 'Create app in Linear' })
     expect(screen.getByRole('checkbox', { name: /Set up webhooks/ })).toBeChecked()
-    expect(screen.queryByRole('link', { name: 'Create app in Linear' })).toBeNull()
 
-    fireEvent.click(getUrl)
-    expect(await screen.findByRole('link', { name: 'Create app in Linear' })).toHaveAttribute('href', expect.stringContaining('webhook.enabled=true'))
+    fireEvent.click(createApp)
+    // The tab opens inside the click, then goes to the form once the URL exists.
+    expect(fakeLoginWindow.prepare).toHaveBeenCalledOnce()
+    await waitFor(() => expect(fakeLoginWindow.navigate).toHaveBeenCalledWith(expect.stringContaining('webhook.enabled=true')))
     expect(JSON.parse(creates()[0][1].body)).toMatchObject({ config: { webhooks: true } })
-    // Fixed once the account exists.
+    // Fixed once the account exists; the link stays for opening it again.
     expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(await screen.findByRole('link', { name: 'Create app in Linear' })).toHaveAttribute('href', expect.stringContaining('webhook.enabled=true'))
 
     fillCredentials()
-    expect(screen.getByRole('button', { name: /^Connect$/ })).toBeDisabled()
-    fireEvent.change(screen.getByLabelText('Webhook signing secret'), { target: { value: 'lin_wh_secret' } })
+    // Optional, though strongly recommended.
+    expect(screen.getByRole('button', { name: /^Connect$/ })).toBeEnabled()
+    fireEvent.change(screen.getByLabelText('Webhook signing secret (strongly recommended)'), { target: { value: 'lin_wh_secret' } })
     fireEvent.click(screen.getByRole('button', { name: /^Connect$/ }))
 
     await waitFor(() => expect(authorizationCount).toBe(1))
@@ -186,7 +189,7 @@ describe('Linear over the webhook relay', () => {
     setupForm()
     await screen.findByRole('link', { name: 'Create app in Linear' })
     expect(screen.queryByRole('checkbox')).toBeNull()
-    expect(screen.queryByLabelText('Webhook signing secret')).toBeNull()
+    expect(screen.queryByLabelText(/Webhook signing secret/)).toBeNull()
   })
 
   it('skips webhooks when unticked, for a plain live connection', async () => {
@@ -194,17 +197,17 @@ describe('Linear over the webhook relay', () => {
     setupForm()
     fireEvent.click(await screen.findByRole('checkbox', { name: /Set up webhooks/ }))
     expect(await screen.findByRole('link', { name: 'Create app in Linear' })).toHaveAttribute('href', expect.not.stringContaining('webhook.enabled=true'))
-    expect(screen.queryByLabelText('Webhook signing secret')).toBeNull()
+    expect(screen.queryByLabelText(/Webhook signing secret/)).toBeNull()
   })
 
-  it('shows the webhook URL, says why the next connection would use the live one without a secret, and saves one', async () => {
+  it('shows the webhook URL, strongly recommends the missing signing secret, and saves one', async () => {
     relayAvailable = true
     runningTransport = 'direct'
     render(<LinearIntegrationSettings integration={relayIntegration('connected')} />, { wrapper })
     expect(screen.getByTestId('linear-webhook-url')).toHaveTextContent('https://relay.test/v1/hooks/whep_1')
     expect(screen.getByText(/Inbox notifications, Comments, Issues/)).toBeInTheDocument()
     await waitFor(() => expect(screen.getByTestId('linear-delivery-path')).toHaveTextContent('Over a live connection'))
-    expect(screen.getByTestId('linear-delivery-reason')).toHaveTextContent('signing secret hasn’t been pasted')
+    expect(screen.getByTestId('linear-secret-missing')).toHaveTextContent('Strongly recommended')
 
     fireEvent.change(screen.getByLabelText('Webhook signing secret'), { target: { value: ' lin_wh_secret ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -249,13 +252,13 @@ describe('Linear over the webhook relay', () => {
 })
 
 describe('Linear relay reconnection', () => {
-  it('asks for the signing secret when a relay account was left without one', async () => {
+  it('offers, without requiring, the signing secret when a relay account was left without one', async () => {
     render(<LinearConnectionSettings integration={relayIntegration('setup_required')} />, { wrapper })
     fillCredentials()
     const button = screen.getByRole('button', { name: 'Continue to authorization' })
-    expect(button).toBeDisabled()
+    expect(button).toBeEnabled()
 
-    fireEvent.change(screen.getByLabelText('Webhook signing secret'), { target: { value: 'lin_wh_secret' } })
+    fireEvent.change(screen.getByLabelText('Webhook signing secret (strongly recommended)'), { target: { value: 'lin_wh_secret' } })
     fireEvent.click(button)
 
     await waitFor(() => expect(authorizationCount).toBe(1))

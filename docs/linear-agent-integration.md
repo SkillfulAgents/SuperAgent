@@ -44,19 +44,25 @@ on the platform while the host is offline and are delivered when it is back, whi
 the live connection cannot do.
 
 Which path a connection uses is decided each time it connects, never stored: webhooks
-when the host offers its relay and they are usable (endpoint, signing secret saved and
-not rejected), the live socket otherwise. Installations from before webhooks existed
+when the host offers its relay and they are usable (an endpoint, and a signing secret
+that hasn't been rejected), the live socket otherwise. Installations from before webhooks existed
 have none set up and keep using the socket. A relay that comes or goes while
 connected changes nothing until the next connect.
 
-Setting webhooks up changes setup in three places. The webhook URL must exist before the Linear app, so
-**Get webhook URL** creates the installation (minting its relay endpoint) first. The
-app-creation link then turns webhooks on with that URL and the `AppUserNotification`,
-`Comment` and `Issue` resource types. Linear shows the app's webhook signing secret
-once the app exists; it is pasted with the client ID and secret, and authorization
-refuses to start without it. The secret stays on the host.
+Setting webhooks up changes setup in two places. The webhook URL must exist before the
+Linear app, so **Create app in Linear** first creates the installation (minting its
+relay endpoint), then opens Linear's app form with webhooks on, that URL and the
+`AppUserNotification`, `Comment` and `Issue` resource types: still one click. Linear
+shows the app's webhook signing secret once the app exists, and nothing in Linear's API
+returns it, so it is pasted with the client ID and secret. It is optional but strongly
+recommended, and stays on the host.
 
-Each delivery is verified before anything else: `Linear-Signature` must be the hex
+Without a secret, deliveries are not verified. Each is still only a pointer that is read
+back from Linear (below), so nothing is invented, but anyone who learns the URL could
+point the agent at real Linear items it would otherwise have skipped. Settings say so
+until a secret is saved.
+
+With a secret, each delivery is verified before anything else: `Linear-Signature` must be the hex
 HMAC-SHA256 of the raw stored body, and the relay must have received it within a
 minute of Linear's signed `webhookTimestamp`. Freshness is judged at receipt, not at
 processing, because relayed events can be claimed much later. Handshakes and stale

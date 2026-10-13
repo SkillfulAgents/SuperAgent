@@ -56,10 +56,11 @@ describe('Linear webhook setup', () => {
     expect(integration).toMatchObject({ webhook: { url: 'https://relay.test/v1/hooks/whep_1', secretSaved: false } })
   })
 
-  it('needs the webhook signing secret before authorizing, and never shows it', async () => {
+  it('authorizes without the signing secret (optional), stores it when given, and never shows it', async () => {
     const integration = await createLinearSetup('agent', 'Helper', 'owner', 'http://localhost:47897', { webhooks: true })
 
-    await expect(authorizeLinearSetup(integration.id, { clientId: 'client', clientSecret: 'client-secret' })).rejects.toThrow('signing secret')
+    await expect(authorizeLinearSetup(integration.id, { clientId: 'client', clientSecret: 'client-secret' })).resolves.toContain('linear.app/oauth/authorize')
+    expect((await getLinearConfig(integration.id)).webhookSecret).toBeUndefined()
     await authorizeLinearSetup(integration.id, { clientId: 'client', clientSecret: 'client-secret', webhookSecret: 'signing-secret' })
 
     expect((await getLinearConfig(integration.id)).webhookSecret).toBe('signing-secret')

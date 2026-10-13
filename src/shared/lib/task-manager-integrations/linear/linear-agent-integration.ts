@@ -70,9 +70,11 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     const config = await getLinearConfig(this.installation.id)
     if (config.authorizationPending || config.authorizationError || !config.tokens || !config.identity) throw new Error('Finish authorizing the Linear app')
     // Webhooks when the host offers its relay and they're usable; the live
-    // socket otherwise (no relay right now, webhooks never set up, secret
-    // missing or rejected). Decided once per connection.
-    const relay = this.host.relay && config.relay && config.webhookSecret && config.webhookSecretStatus !== 'rejected'
+    // socket otherwise (no relay right now, webhooks never set up, or the
+    // saved secret rejected). Decided once per connection. The signing
+    // secret is optional (strongly recommended): without one, deliveries are
+    // unverified pointers, each read back from Linear with the app's token.
+    const relay = this.host.relay && config.relay && config.webhookSecretStatus !== 'rejected'
       ? { host: this.host.relay, binding: config.relay, secret: config.webhookSecret } : undefined
     const identity = await new LinearClient(this.installation.id).identity()
     if (identity.appUserId !== config.identity.appUserId || identity.workspaceId !== config.identity.workspaceId) throw new Error('Linear app identity changed. Reconnect the integration.')
@@ -173,7 +175,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   }
 
   /** Relay transport: each webhook is verified, read back by id, then received like a live event. */
-  private async receiveRelayed(events: readonly RelayEvent[], secret: string, generation: number, version: string | undefined, appUserId: string) {
+  private async receiveRelayed(events: readonly RelayEvent[], secret: string | undefined, generation: number, version: string | undefined, appUserId: string) {
     const results = new Map<string, RelayAcceptResult>()
     let unreadable = false
     for (const event of events) {
@@ -185,15 +187,15 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     }
     return results
   }
-  private async receiveWebhook(event: RelayEvent, secret: string, generation: number, version: string | undefined, appUserId: string): Promise<RelayAcceptResult | 'unreadable'> {
+  private async receiveWebhook(event: RelayEvent, secret: string | undefined, generation: number, version: string | undefined, appUserId: string): Promise<RelayAcceptResult | 'unreadable'> {
     if (!this.connected || generation !== this.generation || this.secretRejected) return 'retry'
     const check = checkLinearWebhook(event, secret)
-    if (!check.ok && check.reason === 'signature') return this.signatureMismatch(event, secret)
+    if (!check.ok && check.reason === 'signature') return this.signatureMismatch(event, secret!)
     if (!check.ok) {
       if (check.reason !== 'handshake') console.warn(`[Linear] Discarding relayed delivery ${event.id} for ${this.installation.id}: ${check.reason}`)
       return 'discard'
     }
-    if (!this.secretVerified) this.markSecretVerified(secret)
+    if (secret && !this.secretVerified) this.markSecretVerified(secret)
     let direct: DirectSubscriptionEvent[]
     try {
       direct = await linearWebhookEvents(this.client, check.body, appUserId, issueId => !!this.participation?.get(issueId))

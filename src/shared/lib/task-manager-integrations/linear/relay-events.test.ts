@@ -38,6 +38,12 @@ describe('checkLinearWebhook', () => {
     expect(checkLinearWebhook(delivery(spaced), secret)).toMatchObject({ ok: true })
   })
 
+  it('skips the signature check when no secret is saved', () => {
+    expect(checkLinearWebhook(delivery(notificationBody, { secret: 'anything' }), undefined)).toMatchObject({ ok: true })
+    // Still has to look like Linear's, and arrive fresh.
+    expect(checkLinearWebhook(delivery(notificationBody, { signature: null }), undefined)).toEqual({ ok: false, reason: 'not_linear' })
+  })
+
   it('rejects another secret, a missing signature and handshakes', () => {
     expect(checkLinearWebhook(delivery(notificationBody, { secret: 'other' }), secret)).toEqual({ ok: false, reason: 'signature' })
     expect(checkLinearWebhook(delivery(notificationBody, { signature: null }), secret)).toEqual({ ok: false, reason: 'not_linear' })

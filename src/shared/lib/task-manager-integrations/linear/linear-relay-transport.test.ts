@@ -119,12 +119,16 @@ describe('Linear over the webhook relay', () => {
     expect(relay.current!.consumers.size).toBe(0)
     await integration.disconnect()
 
-    // Webhooks set up but no secret yet: still the socket, even with a relay.
+    // Webhooks set up without a secret (optional): still the relay, unverified.
     await updateLinearConfig(id, config => ({ ...config, webhookSecret: undefined }))
     integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
+    integration.onEvent(async event => { if (event.type === 'input') events.push(event); return event.type === 'input' ? deliveryStore.accept(id, event, integration.resolveRoute(event)) : undefined })
     await connect()
-    expect(socket.starts).toBe(2)
-    expect(relay.current!.consumers.size).toBe(0)
+    expect(socket.starts).toBe(1)
+    expect(relay.current!.consumers.size).toBe(1)
+    // Signed with whatever: there is nothing to check it against, and it's read back from Linear.
+    const unverified = delivery({ type: 'AppUserNotification', action: 'issueAssignedToYou', appUserId: 'app', notification: { id: 'notif-1' } }, 'anything')
+    expect(await deliver(unverified)).toEqual(new Map([[unverified.id, 'accepted']]))
   })
 
   it('keeps deliveries the saved secret does not verify, and falls back to the socket until a new secret is saved', async () => {
