@@ -1261,7 +1261,6 @@ describe('AppSidebar — agent folders', () => {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-')
       )
       .map((id) =>
@@ -1277,17 +1276,14 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
-  it('renders a folder with its name, and how many agents are in it only while collapsed', () => {
+  it('renders a folder with its name and no member count, open or collapsed', () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
       agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
     })
     const { unmount } = renderWithProviders(<AppSidebar />)
-
-    // Expanded: the rows underneath say how many there are, so no count.
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
     unmount()
 
     mockUserSettings.mockReturnValue({
@@ -1297,8 +1293,7 @@ describe('AppSidebar — agent folders', () => {
       collapsedAgentFolders: ['f1'],
     })
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
   })
 
   it('defaults the default folder first before anything is arranged', () => {
@@ -1830,7 +1825,6 @@ describe('AppSidebar — drag orchestration', () => {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-') &&
           !id.startsWith('agent-folder-insert-indicator-')
       )

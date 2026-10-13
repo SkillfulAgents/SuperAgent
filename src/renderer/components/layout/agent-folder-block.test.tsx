@@ -98,29 +98,42 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('AgentFolderBlock', () => {
-  it('shows the folder name, and how many agents it holds only while collapsed', () => {
-    // Expanded, the rows underneath already say how many there are, so the
-    // header drops the count; collapsed, the count is the only hint.
-    renderBlock({ isCollapsed: true })
-    const row = screen.getByTestId('agent-folder-f1')
-    expect(row).toHaveTextContent('Work')
-    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
-    cleanup()
-    renderBlock({ isCollapsed: false })
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+  it('puts the chevron right after the label, not at the row end', () => {
+    renderBlock()
+    const header = screen.getByTestId('agent-folder-f1')
+    expect(header.className).not.toContain('justify-between')
+    const [label, trailing] = Array.from(header.children)
+    expect(label).toHaveTextContent('Work')
+    expect(trailing).toContainElement(screen.getByTestId('agent-folder-chevron-f1'))
   })
 
-  it('reveals the chevron only on hover, in the count’s slot', () => {
-    // The header reads as a section label at rest (name + count, no icon);
-    // hovering swaps the count for the expand/collapse affordance.
-    renderBlock({ isCollapsed: true })
-    expect(screen.getByTestId('agent-folder-count-f1').className).toContain(
-      'group-hover/folder-header:hidden'
-    )
-    const chevron = screen.getByTestId('agent-folder-chevron-f1')
-    expect(chevron.getAttribute('class')).toContain('hidden')
-    expect(chevron.getAttribute('class')).toContain('group-hover/folder-header:block')
+  it('shows the folder name and no member count, open or collapsed', () => {
+    for (const isCollapsed of [true, false]) {
+      renderBlock({ isCollapsed })
+      const header = screen.getByTestId('agent-folder-f1')
+      expect(header).toHaveTextContent(/^Work$/)
+      cleanup()
+    }
+  })
+
+  it('shows the chevron only while the header row is hovered or focused, open or collapsed', () => {
+    for (const isCollapsed of [true, false]) {
+      renderBlock({ isCollapsed })
+      const cls = screen.getByTestId('agent-folder-chevron-f1').getAttribute('class') ?? ''
+      expect(cls).toContain('opacity-0')
+      expect(cls).toContain('group-has-[[data-header-zone]:hover]/folder-block:opacity-100')
+      expect(cls).toContain('group-has-[[data-header-zone]_:focus-visible]/folder-block:opacity-100')
+      expect(nodes.activator).toHaveAttribute('data-header-zone')
+      cleanup()
+    }
+  })
+
+  it('shows the chevron while an agent is dragged over the header', () => {
+    mockUseSortable.mockImplementation((args) => sortableState(args, true))
+    renderBlock({ activeDragType: 'agent' })
+    const cls = screen.getByTestId('agent-folder-chevron-f1').getAttribute('class') ?? ''
+    expect(cls).toContain('opacity-100')
+    expect(cls).not.toContain('opacity-0')
   })
 
   it('points the chevron down while expanded and right while collapsed', () => {
@@ -313,7 +326,22 @@ describe('AgentFolderBlock', () => {
   it('highlights as a drop target when an agent is dragged over it', () => {
     mockUseSortable.mockImplementation((args) => sortableState(args, true))
     renderBlock({ activeDragType: 'agent' })
-    expect(screen.getByTestId('agent-folder-f1').className).toContain('ring-1')
+    const header = screen.getByTestId('agent-folder-f1')
+    expect(header.className).toContain('ring-1')
+    // The pointer is over the header mid-drag, so the fill must hold on hover.
+    expect(header.className).toContain('hover:bg-sidebar-accent')
+    expect(header.className).not.toContain('hover:bg-transparent')
+  })
+
+  it('has no hover or press fill at rest: it is a label, not a row', () => {
+    renderBlock()
+    const header = screen.getByTestId('agent-folder-f1')
+    expect(header.className).toContain('hover:bg-transparent')
+    expect(header.className).toContain('active:bg-transparent')
+    expect(header.className).not.toContain('hover:bg-sidebar-accent')
+    expect(header.className).not.toContain('active:bg-sidebar-accent')
+    // Out of reach of the vibrancy hover rules keyed on menu buttons.
+    expect(header).toHaveAttribute('data-sidebar', 'folder-header')
   })
 
   it('draws the insert line on the edge the drop will use', () => {
@@ -362,8 +390,7 @@ describe('AgentFolderBlock — the default folder', () => {
   it('renders like any folder header', () => {
     renderRoot({ isCollapsed: true })
     const row = screen.getByTestId('agent-folder-root')
-    expect(row).toHaveTextContent('Your Agents')
-    expect(screen.getByTestId('agent-folder-count-root')).toHaveTextContent('2')
+    expect(row).toHaveTextContent(/^Your Agents$/)
   })
 
   it('offers no rename or delete — it is the fallback bucket', () => {

@@ -23,6 +23,15 @@ import {
 } from '@renderer/lib/agent-folders'
 
 /**
+ * A section-level row of the left nav (a folder header): small muted label
+ * text with no hover or press fill.
+ */
+export const SECTION_ROW_CLASS =
+  'h-8 gap-1 text-xs font-normal text-sidebar-foreground/50 hover:bg-transparent hover:text-sidebar-foreground/50 active:bg-transparent active:text-sidebar-foreground/50'
+/** The icon in a section-level row: a folder's chevron. */
+export const SECTION_ICON_CLASS = 'h-3.5 w-3.5 text-muted-foreground'
+
+/**
  * Inline rename for a folder. Mirrors the dashboard rename in `app-sidebar.tsx`
  * — commit on Enter or blur, abandon on Escape — but writes to user settings
  * through the caller rather than hitting an API of its own.
@@ -89,7 +98,6 @@ function FolderNameInput({
 const FolderHeader = React.memo(function FolderHeader({
   folder,
   isRoot,
-  agentCount,
   isCollapsed,
   isDropTarget,
   onToggle,
@@ -98,7 +106,6 @@ const FolderHeader = React.memo(function FolderHeader({
 }: {
   folder: AgentFolder
   isRoot: boolean
-  agentCount: number
   isCollapsed: boolean
   isDropTarget: boolean
   onToggle: () => void
@@ -106,35 +113,41 @@ const FolderHeader = React.memo(function FolderHeader({
   onDelete: () => void
 }) {
   // Styled like a section label rather than as a row of the list: small muted
-  // text, no icon. The member count sits at the right only while the folder is
-  // collapsed — the rows themselves say how many there are once it is open —
-  // and yields to the expand/collapse chevron on hover. The slot keeps its
-  // size either way so the chevron lands in the same spot.
+  // text, no icon, no count. The expand/collapse chevron follows the label,
+  // shown only while the header row is hovered or focused — the row being the
+  // header plus any button overlaid on it, which all carry data-header-zone
+  // (see the block) — or while an agent is dragged over it. It is wrapped so
+  // the menu button's direct-child svg sizing doesn't reach it.
+  // The right edge stays clear for the header's overlaid buttons (pr-8).
+  // As a label it has no hover or press fill — the menu button's own are
+  // cancelled — except as a drop target, where the fill must survive the
+  // pointer being over it. It also opts out of `data-sidebar="menu-button"`:
+  // the Electron vibrancy rules in globals.css give every menu button an
+  // !important hover fill that the classes here cannot override.
   const header = (
         <SidebarMenuButton
+          data-sidebar="folder-header"
           onClick={onToggle}
           aria-expanded={!isCollapsed}
           className={cn(
-            'group/folder-header h-8 justify-between text-xs font-normal text-sidebar-foreground/50 hover:text-sidebar-foreground/70',
-            isDropTarget && 'bg-sidebar-accent ring-1 ring-sidebar-ring text-sidebar-foreground'
+            SECTION_ROW_CLASS,
+            'pr-8',
+            isDropTarget &&
+              'bg-sidebar-accent text-sidebar-foreground ring-1 ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-foreground'
           )}
           data-testid={`agent-folder-${folder.id}`}
         >
           <span className="truncate">{folder.name}</span>
-          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            {isCollapsed && (
-              <span
-                className="text-[11px] tabular-nums text-muted-foreground/70 group-hover/folder-header:hidden"
-                data-testid={`agent-folder-count-${folder.id}`}
-              >
-                {agentCount}
-              </span>
-            )}
+          <span className="flex shrink-0 items-center">
             <ChevronRight
               aria-hidden
               data-testid={`agent-folder-chevron-${folder.id}`}
               className={cn(
-                'hidden h-3.5 w-3.5 text-muted-foreground group-hover/folder-header:block transition-transform',
+                SECTION_ICON_CLASS,
+                'transition-[opacity,transform]',
+                isDropTarget
+                  ? 'opacity-100'
+                  : 'opacity-0 group-has-[[data-header-zone]:hover]/folder-block:opacity-100 group-has-[[data-header-zone]:focus-visible]/folder-block:opacity-100 group-has-[[data-header-zone]_:focus-visible]/folder-block:opacity-100',
                 !isCollapsed && 'rotate-90'
               )}
             />
@@ -255,7 +268,10 @@ export function AgentFolderBlock({
   const isAgentTarget = (isOver || isBodyOver) && activeDragType === 'agent'
 
   return (
-    <li ref={setNodeRef} style={style} className="group/folder-block relative list-none">
+    // mt-2: air above each section header. A margin, not padding, so the
+    // header's absolutely placed buttons (top-4 = the header's centre) and the
+    // insert line keep their offsets from the block's top edge.
+    <li ref={setNodeRef} style={style} className="group/folder-block relative mt-2 list-none">
       {insertEdge && !isDragging && (
         // A folder over a folder is a reorder, not a nest — folders do not
         // nest — so it gets an insert line rather than the fill an agent drop
@@ -289,11 +305,10 @@ export function AgentFolderBlock({
           />
         </div>
       ) : (
-        <div ref={setActivatorNodeRef} {...handleAttributes} {...listeners} className="relative">
+        <div ref={setActivatorNodeRef} {...handleAttributes} {...listeners} className="relative" data-header-zone>
           <FolderHeader
             folder={folder}
             isRoot={isRoot}
-            agentCount={agentCount}
             isCollapsed={isCollapsed}
             isDropTarget={isAgentTarget}
             onToggle={onToggle}
@@ -308,6 +323,7 @@ export function AgentFolderBlock({
           type="button"
           onClick={onCreateFolder}
           aria-label="New section"
+          data-header-zone
           title="New section"
           data-testid="new-folder-button"
           className="absolute right-8 top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/50 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/folder-block:opacity-100"
