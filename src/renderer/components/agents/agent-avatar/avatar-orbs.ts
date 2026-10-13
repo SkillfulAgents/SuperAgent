@@ -10,9 +10,9 @@
 
 import type { AgentAvatarColor } from '@shared/lib/types/agent-avatar'
 
-export interface AvatarOrb {
-  /** Stable persisted key; renames require a data migration. */
-  name: AgentAvatarColor
+export interface OrbAppearance {
+  /** Identifies a rendered colourway, including decorative placeholders. */
+  name: string
   /** Shown in the picker. */
   label: string
   core: string
@@ -20,6 +20,11 @@ export interface AvatarOrb {
   faceA: string
   faceB: string
   hold: number
+}
+
+export interface AvatarOrb extends OrbAppearance {
+  /** Stable persisted key; renames require a data migration. */
+  name: AgentAvatarColor
 }
 
 function hexMix(from: string, to: string, t: number): string {
@@ -30,7 +35,7 @@ function hexMix(from: string, to: string, t: number): string {
 }
 
 /** A colourway from just a core and a rim, by the design's face rule. */
-function colourway(name: AgentAvatarColor, label: string, core: string, rim: string, hold: number): AvatarOrb {
+function colourway<Color extends string>(name: Color, label: string, core: string, rim: string, hold: number): OrbAppearance & { name: Color } {
   return { name, label, core, rim, faceA: hexMix(core, rim, 0.1), faceB: hexMix(rim, core, 0.05), hold }
 }
 
@@ -89,6 +94,12 @@ export const PAIRED_DUOS: readonly AvatarOrb[] = [
   pair('duo-pink-blue', 'tonal-pink', 'tonal-blue'),
   pair('duo-brown-amber', 'tonal-brown', 'tonal-amber'),
 ]
+
+/**
+ * A neutral grey orb for placeholders — the ghost of an agent in an empty
+ * left-nav section. Not on offer in the picker and never an agent's own look.
+ */
+export const GHOST_ORB = colourway('ghost', 'Ghost', '#E4E4E7', '#A1A1AA', 34)
 
 /** Every colour on offer, as the picker shows them: the palette, then the duos as the last two rows. */
 export const OFFERED_ORBS: readonly AvatarOrb[] = [...DEFAULT_ORBS, ...PAIRED_DUOS]

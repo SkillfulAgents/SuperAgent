@@ -221,9 +221,26 @@ describe('AgentFolderBlock', () => {
     expect(props.onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('invites a drop when it holds nothing', () => {
+  it('invites a drop when it holds nothing, as the ghost of an agent row', () => {
     renderBlock({ agentCount: 0, children: null })
-    expect(screen.getByTestId('agent-folder-empty-f1')).toBeInTheDocument()
+    const empty = screen.getByTestId('agent-folder-empty-f1')
+    expect(empty).toHaveTextContent('No agents in here yet')
+    expect(empty).toHaveTextContent('Drag in or click + to add')
+    expect(empty.className).not.toContain('border')
+    // An agent row's height and avatar inset, so it lines up with real rows.
+    expect(empty.className).toContain('h-10')
+    expect(empty.className).toContain('pl-[42px]')
+    // A ghost avatar sits in the avatar slot, decorative and dimmed.
+    const ghost = screen.getByTestId('section-ghost-f1')
+    expect(empty).toContainElement(ghost)
+    expect(ghost).toHaveAttribute('aria-hidden')
+    expect(ghost.className).toContain('opacity-45')
+  })
+
+  it('firms up the ghost while an agent is dragged over the empty section', () => {
+    mockUseDroppable.mockReturnValue({ setNodeRef: vi.fn(), isOver: true })
+    renderBlock({ agentCount: 0, children: null, activeDragType: 'agent' })
+    expect(screen.getByTestId('section-ghost-f1').className).toContain('opacity-80')
   })
 
   it('shows no placeholder once it holds something', () => {

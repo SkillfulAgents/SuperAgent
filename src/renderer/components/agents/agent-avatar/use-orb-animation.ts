@@ -1,5 +1,5 @@
 import { createRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AvatarOrb } from './avatar-orbs'
+import type { OrbAppearance } from './avatar-orbs'
 import { OrbAnimation } from './orb-animation'
 import { createOrbPainter, type OrbLayers } from './orb-painter'
 import type { OrbShape } from './orb-shapes'
@@ -11,7 +11,7 @@ const layer = () => createRef<HTMLSpanElement>()
 
 /** Owns the animation lifecycle; the component only supplies the static layers. */
 export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer }: {
-  orb: AvatarOrb
+  orb: OrbAppearance
   shape: OrbShape
   diameter: number
   restingPhi: number

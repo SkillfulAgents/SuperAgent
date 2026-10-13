@@ -22,11 +22,18 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/components/ui/dropdown-menu'
 import { SidebarMenuButton } from '@renderer/components/ui/sidebar'
+import { OrbAvatar } from '@renderer/components/agents/agent-avatar/orb-avatar'
+import { GHOST_ORB } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { orbShape } from '@renderer/components/agents/agent-avatar/orb-shapes'
+import { AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import {
   containerIdForFolder,
   sortableIdForFolder,
   type AgentFolder,
 } from '@renderer/lib/agent-folders'
+
+/** The ghost avatar in an empty section: the dome (the palette's "Arch"). */
+const GHOST_SHAPE = orbShape('arch')
 
 /**
  * A section-level row of the left nav — a folder header, or "Add section"
@@ -486,15 +493,43 @@ export function AgentFolderBlock({
           <ul className="flex w-full min-w-0 flex-col gap-2">{children}</ul>
           {agentCount === 0 && (
             // An empty folder has no rows to aim at, so it needs a body with
-            // real height or it cannot be dropped into at all.
+            // real height or it cannot be dropped into at all. A grey ghost
+            // orb sits in an agent row's avatar slot (40px row, slot at left
+            // 4px), so the empty state lines up with the rows that will replace
+            // it; beside it, two quiet lines in the section label's type. The
+            // body around it carries the fill while an agent is dragged over,
+            // and the ghost and text firm up with it.
             <div
-              className={cn(
-                'mx-1 my-0.5 rounded-md border border-dashed border-sidebar-border px-2 py-1.5 text-[11px] text-muted-foreground/70',
-                isBodyOver && 'border-sidebar-ring text-sidebar-foreground'
-              )}
+              className="relative flex h-10 min-w-0 flex-col justify-center pl-[42px] pr-2"
               data-testid={`agent-folder-empty-${folder.id}`}
             >
-              Drag agents here
+              <span
+                aria-hidden
+                className={cn(
+                  'pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center transition-opacity',
+                  isBodyOver ? 'opacity-80' : 'opacity-45'
+                )}
+                data-testid={`section-ghost-${folder.id}`}
+              >
+                <OrbAvatar
+                  orb={GHOST_ORB}
+                  shape={GHOST_SHAPE}
+                  diameter={AGENT_AVATAR_SIZE}
+                  restingPhi={-90}
+                  followPointer={SIDEBAR_FOLLOW_REGION}
+                />
+              </span>
+              {/* What is going on, then the two ways to fix it: the drag, and
+                  the header's + just above. */}
+              <span
+                className={cn(
+                  'flex flex-col text-xs leading-snug transition-colors',
+                  isBodyOver ? 'text-sidebar-foreground/70' : 'text-sidebar-foreground/50'
+                )}
+              >
+                <span>No agents in here yet</span>
+                <span>Drag in or click + to add</span>
+              </span>
             </div>
           )}
         </div>
