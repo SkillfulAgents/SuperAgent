@@ -126,6 +126,7 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
           presentation={current.presentation}
           live={current.live}
           onDisplaceChildren={setDisplaced}
+          dismissible
           session={{ sessionId, agentSlug }}
         />
       )}
