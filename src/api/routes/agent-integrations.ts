@@ -31,7 +31,7 @@ import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentI
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
-import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
 import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
@@ -79,6 +79,10 @@ agentIntegrationsRouter.get('/:provider/callback', async (c, next) => {
   return completeAuthorization(c)
 })
 agentIntegrationsRouter.use('*', Authenticated())
+agentIntegrationsRouter.get('/providers', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json(await agentIntegrationRegistry.listAvailableDefinitions())
+})
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
 
 const IntegrationAgentRole = EntityAgentRole({
@@ -148,6 +152,7 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
   c.header('Cache-Control', 'no-store')
   try {
     const provider = c.req.param('provider')
+    await assertIntegrationAvailable(provider)
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
     const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
@@ -259,6 +264,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
 agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
   const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
   try {
+    await assertIntegrationAvailable(row.provider)
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())

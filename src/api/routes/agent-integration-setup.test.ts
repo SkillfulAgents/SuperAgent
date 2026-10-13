@@ -6,6 +6,7 @@ import type { AppDatabase } from '@shared/lib/db/drivers/types'
 let handle: TestDatabase
 let testDb: AppDatabase
 let owner = true
+let available = true
 const pending = new Map<string, string>()
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
@@ -39,6 +40,7 @@ import router from './agent-integrations'
 const prepare = vi.fn(async (_input: unknown, context: { callbackUrl: string }) => ({ config: { callbackUrl: context.callbackUrl }, status: 'disconnected' as const }))
 const describeSetup = vi.fn((context: { callbackUrl: string }, name?: string) => ({ redirectUri: context.callbackUrl, creationUrl: `https://provider.invalid/create?name=${encodeURIComponent(name ?? '')}` }))
 agentIntegrationRegistry.register({
+  isAvailable: () => available,
   definition: { provider: 'test-oauth', name: 'Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'oauth', credentialFields: [] } },
   policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
   create: async () => { throw new Error('not needed') },
@@ -62,7 +64,7 @@ agentIntegrationRegistry.register({
 const app = new Hono().route('/api/agent-integrations', router)
 const headers = { Authorization: 'user-token', 'Content-Type': 'application/json' }
 const create = () => app.request('/api/agent-integrations/agents/agent', { method: 'POST', headers, body: JSON.stringify({ provider: 'test-oauth', name: 'Agent identity', config: {} }) })
-beforeEach(async () => { vi.clearAllMocks(); owner = true; pending.clear(); handle = await createTestDatabase(); testDb = handle.db
+beforeEach(async () => { vi.clearAllMocks(); owner = true; available = true; pending.clear(); handle = await createTestDatabase(); testDb = handle.db
   runtime.pause.mockImplementation(async id => { await updateAgentIntegrationStatus(id, 'paused') })
   runtime.resume.mockImplementation(async id => { await updateAgentIntegrationStatus(id, 'active') })
 })
@@ -203,4 +205,24 @@ it('returns a setup error rather than signing the user out on an invalid iMessag
   expect(response.status).toBe(400)
   expect(await response.json()).toEqual({ error: 'Invalid or expired code' })
   expect(await listAgentIntegrations()).toEqual([])
+})
+
+it('hides unavailable providers and rejects setup without side effects, but keeps installed rows readable', async () => {
+  const row = await (await create()).json()
+  available = false
+  const providers = await app.request('/api/agent-integrations/providers', { headers })
+  expect(providers.status).toBe(200)
+  expect((await providers.json()).some((entry: { provider: string }) => entry.provider === 'test-oauth')).toBe(false)
+  prepare.mockClear(); describeSetup.mockClear()
+  expect((await create()).status).toBe(400)
+  expect((await app.request('/api/agent-integrations/agents/agent/providers/test-oauth/setup', { headers })).status).toBe(400)
+  expect((await app.request(`/api/agent-integrations/${row.id}/authorize`, { method: 'POST', headers, body: JSON.stringify({ clientId: 'client' }) })).status).toBe(400)
+  expect(prepare).not.toHaveBeenCalled()
+  expect(describeSetup).not.toHaveBeenCalled()
+  expect(runtime.pause).not.toHaveBeenCalled()
+  expect((await app.request(`/api/agent-integrations/${row.id}`, { headers })).status).toBe(200)
+  await expect(prepareIntegrationSetup('test-oauth', {}, { agentSlug: 'agent', callbackUrl: 'https://host/callback' }, true)).rejects.toThrow('unavailable')
+  available = true
+  const refreshed = await app.request('/api/agent-integrations/providers', { headers })
+  expect((await refreshed.json()).some((entry: { provider: string }) => entry.provider === 'test-oauth')).toBe(true)
 })

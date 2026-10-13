@@ -1,3 +1,4 @@
+import { captureException } from '../error-reporting'
 import { platformEmailProvider } from '../email-integrations/provider'
 import type { IntegrationProviderSetup } from './setup-types'
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
@@ -10,6 +11,8 @@ import { chatProviders } from '../chat-integrations/providers'
 import { formatProviderName } from './presentation'
 
 export interface IntegrationProvider {
+  /** Delegate to the integration class without constructing a live connection. */
+  isAvailable?(): boolean | Promise<boolean>
   setup?: IntegrationProviderSetup
   definition: AgentIntegrationDefinition
   /** Child tables, in deletion order, owned by this provider/family. */
@@ -60,6 +63,22 @@ export class AgentIntegrationRegistry {
 
   listDefinitions(): AgentIntegrationDefinition[] {
     return [...this.providers.values()].map(provider => provider.definition)
+  }
+
+  async isAvailable(provider: string): Promise<boolean> {
+    const implementation = this.providers.get(provider)
+    if (!implementation) return false
+    try { return await implementation.isAvailable?.() ?? true }
+    catch (error) {
+      captureException(error, { tags: { component: 'agent-integration', operation: 'availability' }, extra: { provider } })
+      return false
+    }
+  }
+
+  async listAvailableDefinitions(): Promise<AgentIntegrationDefinition[]> {
+    const definitions = this.listDefinitions()
+    const available = await Promise.all(definitions.map(definition => this.isAvailable(definition.provider)))
+    return definitions.filter((_, index) => available[index])
   }
 
   async isAllowed(context: IntegrationSessionContext): Promise<boolean> {

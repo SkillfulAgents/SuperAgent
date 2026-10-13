@@ -9,6 +9,9 @@ import type { IntegrationTransport } from './transport'
 
 /** Application-facing lifecycle, input, and output contract for every integration. */
 export abstract class AgentIntegration {
+  /** Whether this host can offer new installations. Existing rows remain manageable. */
+  static isAvailable(): boolean | Promise<boolean> { return true }
+
   abstract readonly provider: string
   abstract readonly definition: AgentIntegrationDefinition
   private eventHandlers = new Set<IntegrationEventHandler>()
