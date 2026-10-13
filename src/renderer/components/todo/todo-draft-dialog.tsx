@@ -189,7 +189,8 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const startTodo = useStartTodo()
   const suggestTodoAgent = useSuggestTodoAgent()
   const [suggesting, setSuggesting] = useState(false)
-  const [suggestedSlug, setSuggestedSlug] = useState<string | null>(null)
+  // The suggested agent and the text it was picked for.
+  const [suggested, setSuggested] = useState<{ slug: string; text: string } | null>(null)
   const [descriptionEnd] = useState(() => {
     const slot = document.createElement('span')
     slot.contentEditable = 'false'
@@ -442,7 +443,11 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const written = !!(fields.title.trim() || fields.description.trim() || files.attachments.length)
   const canStart = hasAgent && !alreadyStarting && written && !finishing && !saveBlocked
   // Auto sits at the end of the last line written: the description's, else the title's.
-  const canAuto = !hasAgent && !alreadyStarting && !finishing && !saveBlocked
+  const todoText = `${fields.title}\n${fields.description}`
+  // A suggested agent can be picked again once the text changes; one the person picked stays.
+  const canResuggest = !!suggested && suggested.slug === fields.agentSlug && suggested.text !== todoText &&
+    files.attachments.length === 0
+  const canAuto = (!hasAgent || canResuggest) && !alreadyStarting && !finishing && !saveBlocked
   const autoInDescription = canAuto && !!fields.description.trim()
   const autoAfterTitle = canAuto && !autoInDescription && !!fields.title.trim()
 
@@ -487,7 +492,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       trigger={
         agent ? (
           <Button variant="outline" size="sm" className="h-[34px] gap-1.5 text-xs" data-testid="todo-assign-agent">
-            {suggestedSlug === fields.agentSlug && <span className="text-muted-foreground">Suggested:</span>}
+            {suggested?.slug === fields.agentSlug && <span className="text-muted-foreground">Suggested:</span>}
             <span className="max-w-[12rem] truncate">{agent.name}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </Button>
@@ -531,14 +536,15 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const suggestAgent = async () => {
     if (suggesting) return
     setSuggesting(true)
-    const { title, description } = fieldsRef.current
+    const { title, description, agentSlug: before } = fieldsRef.current
     const slug = await suggestTodoAgent.mutateAsync({ title: title.trim(), description }).catch(() => null)
     setSuggesting(false)
-    if (closingRef.current || fieldsRef.current.agentSlug || fieldsRef.current.newAgent) return
+    // The person picked an agent while this ran.
+    if (closingRef.current || fieldsRef.current.newAgent || fieldsRef.current.agentSlug !== before) return
     if (slug && bySlug.has(slug)) {
-      setSuggestedSlug(slug)
-      change({ agentSlug: slug, newAgent: false })
-    } else {
+      setSuggested({ slug, text: `${title}\n${description}` })
+      if (slug !== before) change({ agentSlug: slug, newAgent: false })
+    } else if (!before) {
       setAskAgent({ held: null, toStart: true })
     }
   }
@@ -553,7 +559,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
         data-testid="todo-auto-agent"
       >
         <ArrowUpRight className="h-3 w-3" />
-        {suggesting ? 'Picking…' : 'Auto'}
+        {suggesting ? 'Picking…' : 'Auto agent'}
       </button>
     </ShortcutTooltip>
   )
