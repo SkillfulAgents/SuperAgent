@@ -64,7 +64,11 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
         if (event.type === 'message.received' && event.messageId) {
           const message = await this.getMessage(event.messageId)
           if (this.stopped) return
-          await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
+          const handoff = await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
+          // Not taken: this connection was replaced or stopped while it polled.
+          // Leave the cursor here so the connection that replaces it reads this
+          // message again, instead of skipping it for good.
+          if (handoff === 'retry') return
         }
         // The shared manager durably accepts input before this provider advances its cursor.
         const checkpoint = emailConfigSchema.shape.eventCursor.parse(event.cursor)
