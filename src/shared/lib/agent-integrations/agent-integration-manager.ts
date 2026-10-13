@@ -17,7 +17,7 @@ import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { integrationRelays } from './relay-transport'
-import type { IntegrationRelayHost } from './transport'
+import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 import {
   listStartupIntegrations,
@@ -547,6 +547,11 @@ export class AgentIntegrationManager {
   isIntegrationConnected(integrationId: string): boolean {
     const conn = this.connections.get(integrationId)
     return conn?.connector.isConnected() ?? false
+  }
+
+  /** The path the live connection runs on, if it has one and reports it. */
+  integrationTransport(integrationId: string): IntegrationTransport | null {
+    return this.connections.get(integrationId)?.connector.activeTransport() ?? null
   }
 
   getActiveIntegrationIds(): string[] {

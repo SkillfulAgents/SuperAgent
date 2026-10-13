@@ -11,7 +11,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 const runtime = vi.hoisted(() => ({ add: vi.fn(async (_id: string) => {}), pause: vi.fn(async (_id: string) => {}), resume: vi.fn(async (_id: string) => {}) }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: {
-  addIntegration: runtime.add, pauseIntegration: runtime.pause, resumeIntegration: runtime.resume, integrationCreated: vi.fn(), isIntegrationConnected: () => false,
+  addIntegration: runtime.add, pauseIntegration: runtime.pause, resumeIntegration: runtime.resume, integrationCreated: vi.fn(), isIntegrationConnected: () => false, integrationTransport: () => null,
 } }))
 vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: () => owner ? 'owner' : 'user',
