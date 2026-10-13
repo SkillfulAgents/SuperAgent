@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { act, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DEFAULT_ORBS } from './avatar-orbs'
 import { OrbAvatar, type AvatarMotionState } from './orb-avatar'
-import { orbShape } from './orb-shapes'
+import { orbShape, shapePath, type OrbShapeName } from './orb-shapes'
 
 const layer = (name: string) => document.querySelector(`[data-orb-layer="${name}"]`) as HTMLElement
 const body = () => layer('glow').parentElement as HTMLElement
@@ -22,13 +22,15 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance', 'setTimeout', 'clearTimeout'] })
 })
 afterEach(() => {
+  cleanup()
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
-const orb = (state: AvatarMotionState, shape = 'circle', followPointer?: string) => (
+const orb = (state: AvatarMotionState, shape: OrbShapeName = 'circle', followPointer?: string) => (
   <div data-testid="region" data-follow="">
-    <OrbAvatar orb={DEFAULT_ORBS[0]} shape={orbShape(shape as never)} diameter={28} restingPhi={-90} state={state} followPointer={followPointer} />
+    <OrbAvatar orb={DEFAULT_ORBS[0]} shape={orbShape(shape)} diameter={28} restingPhi={-90} state={state} followPointer={followPointer} />
   </div>
 )
 
@@ -82,9 +84,54 @@ describe('OrbAvatar follow within a region', () => {
     expect(Math.abs(faceOffset()[0])).toBeLessThan(0.01)
     expect(faceOffset()[1]).toBeGreaterThan(3)
   })
+
+  it('measures only after pointer or layout changes', () => {
+    render(orb('done', 'circle', '[data-follow]'))
+    place()
+    const root = document.querySelector('[data-avatar-orb]') as HTMLElement
+    const measure = vi.mocked(root.getBoundingClientRect)
+    act(() => move(screen.getByTestId('region'), 300, 100))
+    advance(1000)
+    expect(measure).toHaveBeenCalledTimes(1)
+    advance(1000)
+    expect(measure).toHaveBeenCalledTimes(1)
+    act(() => window.dispatchEvent(new Event('scroll')))
+    advance(50)
+    expect(measure).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('OrbAvatar states', () => {
+  it('invalidates typing-dot geometry when the shape changes', () => {
+    const { rerender } = render(orb('working', 'circle'))
+    advance(2000)
+    const dot = layer('dot')
+    const size = Math.round(Number.parseFloat(dot.style.width) * 2) / 2
+    expect(dot.style.clipPath).toBe(`path('${shapePath(orbShape('circle'), size)}')`)
+    rerender(orb('working', 'triangle'))
+    advance(50)
+    expect(dot.style.clipPath).toBe(`path('${shapePath(orbShape('triangle'), size)}')`)
+    // Steady typing moves through transforms, without changing layout geometry.
+    const width = dot.style.width
+    const position = dot.style.transform
+    advance(250)
+    expect(dot.style.width).toBe(width)
+    expect(dot.style.left).toBe('0px')
+    expect(dot.style.top).toBe('0px')
+    expect(dot.style.transform).not.toBe(position)
+  })
+
+  it('keeps the current still state after changing shape under reduced motion', () => {
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const { rerender } = render(orb('idle', 'circle'))
+    rerender(orb('sleeping', 'circle'))
+    rerender(orb('sleeping', 'triangle'))
+    expect(faceOffset()[1]).toBeGreaterThan(0)
+    expect(lid().style.transform).toBe('scaleY(0.25)')
+    expect(raf).not.toHaveBeenCalled()
+  })
+
   it('turns into typing dots while working and keeps them, then plays out the gather when work stops', () => {
     const { rerender } = render(orb('working', 'squircle'))
     advance(2000)
@@ -153,5 +200,84 @@ describe('OrbAvatar states', () => {
     const lidScale = Number(lid().style.transform.match(/scaleY\(([\d.]+)\)/)![1])
     expect(lidScale).toBeGreaterThan(0.3)
     expect(lidScale).toBeLessThan(0.95)
+  })
+})
+
+describe('OrbAvatar visibility', () => {
+  function intersections() {
+    let notify: IntersectionObserverCallback
+    const disconnect = vi.fn()
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { notify = callback }
+      observe() {}
+      unobserve() {}
+      disconnect = disconnect
+    })
+    return {
+      disconnect,
+      set: (visible: boolean, ratio = visible ? 1 : 0) => act(() => notify(
+        [...document.querySelectorAll('[data-avatar-orb]')].map(target => ({ target, isIntersecting: visible, intersectionRatio: ratio }) as IntersectionObserverEntry),
+        {} as IntersectionObserver,
+      )),
+    }
+  }
+
+  it('waits for visible area, stops offscreen, and resumes an ongoing working animation', () => {
+    const visibility = intersections()
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const { unmount } = render(orb('working'))
+    expect(raf).not.toHaveBeenCalled()
+    visibility.set(true, 0) // touching the viewport edge is not visible
+    expect(raf).not.toHaveBeenCalled()
+    visibility.set(true)
+    advance(2000)
+    expect(dotsShown()).toBe(3)
+    visibility.set(false)
+    raf.mockClear()
+    const position = layer('dot').style.transform
+    advance(5000)
+    expect(raf).not.toHaveBeenCalled()
+    expect(layer('dot').style.transform).toBe(position)
+    visibility.set(true)
+    advance(100)
+    expect(dotsShown()).toBe(3) // no replay of the intro
+    unmount()
+    expect(visibility.disconnect).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('uses the latest state when returning onscreen', () => {
+    const visibility = intersections()
+    const { rerender } = render(orb('working'))
+    visibility.set(true)
+    advance(2000)
+    visibility.set(false)
+    rerender(orb('sleeping'))
+    advance(5000)
+    visibility.set(true)
+    advance(2500)
+    expect(dotsShown()).toBe(0)
+    expect(lid().style.transform).toBe('scaleY(0.25)')
+  })
+
+  it('stops all frame work when the document is hidden', () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    render(orb('sleeping'))
+    advance(1000)
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    act(() => {
+      hidden.mockReturnValue(true)
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    const glow = layer('glow').style.opacity
+    advance(2000)
+    expect(raf).not.toHaveBeenCalled()
+    expect(layer('glow').style.opacity).toBe(glow)
+    act(() => {
+      hidden.mockReturnValue(false)
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    advance(1000)
+    expect(raf).toHaveBeenCalled()
   })
 })

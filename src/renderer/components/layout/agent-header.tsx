@@ -19,6 +19,7 @@ import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { agentActivity } from '@shared/lib/types/agent-activity-status'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
 import { ForkedFromIndicator } from './forked-from-indicator'
 import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/todo-session-chrome'
@@ -67,8 +68,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const { data: session } = useSession(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
-  const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)
-  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) || (agent?.hasSessionsAwaitingInput ?? false)
+  const { isWorking: hasActiveSessions, isAwaiting: hasSessionsAwaitingInput } = agentActivity(agent ?? {}, sessions)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'

@@ -666,6 +666,38 @@ describe('AppSidebar — agent rows', () => {
     }
   })
 
+  it('ages last-run labels without rerendering rows and immediately accepts new activity', () => {
+    vi.useFakeTimers({
+      now: new Date('2026-10-09T12:00:00Z'),
+      toFake: ['Date', 'setInterval', 'clearInterval'],
+    })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ lastActivityAt: new Date('2026-10-09T09:00:00Z') })],
+        isLoading: false, error: null,
+      })
+      const { rerender, unmount } = renderWithProviders(<AppSidebar />)
+      const renders = mockUseAgents.mock.calls.length
+      act(() => vi.advanceTimersByTime(60 * 60 * 1000))
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
+      expect(mockUseAgents.mock.calls).toHaveLength(renders)
+
+      // An agent-summary refetch lands between clock ticks after a session event.
+      act(() => vi.advanceTimersByTime(45_000))
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ lastActivityAt: new Date('2026-10-09T13:00:45Z') })],
+        isLoading: false, error: null,
+      })
+      rerender(<AppSidebar />)
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run less than a minute ago')
+      act(() => vi.advanceTimersByTime(75_000))
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run 1 minute ago')
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows a status indicator for each agent (collapsed)', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('agent-status-running')).toBeInTheDocument()

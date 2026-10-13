@@ -15,10 +15,10 @@ import {
   type HomeCardHealthData,
   type HomeCardWebhook,
 } from '@shared/lib/types/home-card-health-schema'
-import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
+import { agentAvatarState, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { AgentAvatar, agentAvatarState } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
