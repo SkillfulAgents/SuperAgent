@@ -282,7 +282,6 @@ async function listOrder(page: Page): Promise<string[]> {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-')
       )
   )
