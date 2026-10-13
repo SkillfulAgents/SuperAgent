@@ -138,6 +138,32 @@ describe('POST /:agentSlug/events/dashboard-screenshot-ready', () => {
   })
 })
 
+describe('POST /:agentSlug/events/file-changed', () => {
+  it('announces the paths to the agent\'s open file views through the announcer', async () => {
+    vi.useFakeTimers()
+    try {
+      validateProxyToken.mockResolvedValue('agent-files')
+      const res = await post('/agent-files/events/file-changed', { paths: ['notes.md', 'node_modules/x.js'] }, { Authorization: 'Bearer synth_x' })
+      expect(res.status).toBe(204)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(broadcastGlobal).toHaveBeenCalledWith({ type: 'file_changed', agentSlug: 'agent-files', scopes: ['/workspace/notes.md'] })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects more than 500 paths and a token belonging to another agent', async () => {
+    validateProxyToken.mockResolvedValue('agent-files')
+    const full = Array.from({ length: 500 }, (_, i) => `f${i}.md`)
+    // The container batches up to 500 paths; the route has to take a full batch.
+    expect((await post('/agent-files/events/file-changed', { paths: full }, { Authorization: 'Bearer synth_x' })).status).toBe(204)
+    const tooMany = [...full, 'f500.md']
+    expect((await post('/agent-files/events/file-changed', { paths: tooMany }, { Authorization: 'Bearer synth_x' })).status).toBe(400)
+    validateProxyToken.mockResolvedValue('agent-2')
+    expect((await post('/agent-files/events/file-changed', { paths: ['a.md'] }, { Authorization: 'Bearer synth_other' })).status).toBe(403)
+  })
+})
+
 describe('POST /:agentSlug/events/dashboard-status-changed', () => {
   it('broadcasts an authenticated status event to renderer clients', async () => {
     validateProxyToken.mockResolvedValue('agent-1')

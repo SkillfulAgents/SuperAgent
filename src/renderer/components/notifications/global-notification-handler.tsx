@@ -26,6 +26,8 @@ import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notificatio
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import { WEBHOOK_RELAY_QUERY_KEY } from '@renderer/hooks/use-webhook-relay'
+import { emitWorkspaceChanges } from '@renderer/lib/workspace-changes'
+import { useOnWindowReturn } from '@renderer/hooks/use-on-window-return'
 import {
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
@@ -242,6 +244,10 @@ export function GlobalNotificationHandler() {
       }
     })
   }, [dispatchNotificationEvent, navigate])
+
+  // A file edited in another app (or while this window was away) reaches no
+  // watcher on some runtimes, so open files reload when the user comes back.
+  useOnWindowReturn(() => emitWorkspaceChanges(queryClient, null, ['/workspace']))
 
   // Web Push keep-alive: with no service worker there is no
   // pushsubscriptionchange event, so re-upsert this device's subscription
@@ -565,6 +571,13 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'file_changed': {
+            const agentSlug = data.agentSlug as string | undefined
+            const scopes = Array.isArray(data.scopes) ? data.scopes.filter((s: unknown): s is string => typeof s === 'string') : []
+            if (agentSlug && scopes.length > 0) emitWorkspaceChanges(queryClient, agentSlug, scopes)
+            break
+          }
+
           case 'dashboard_status_changed': {
             // Patch the cached artifact status so a waiting DashboardView flips
             // immediately, then refetch for the authoritative list (port,
@@ -671,6 +684,8 @@ export function GlobalNotificationHandler() {
     // already loading on mount; only refresh them after a gap.
     es.onopen = () => {
       const isReconnect = hasConnectedRef.current || wasDeadRef.current
+      // File changes sent while the stream was down are gone; open files reload instead.
+      if (isReconnect) emitWorkspaceChanges(queryClient, null, ['/workspace'])
       hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
       if (wasDeadRef.current) {

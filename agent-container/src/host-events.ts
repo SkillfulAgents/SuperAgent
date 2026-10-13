@@ -1,7 +1,7 @@
 import type { UndeliveredTurnReport } from './session-manager'
 
 /** Best-effort container → host events that keep renderer caches precise. */
-async function postHostEvent(event: string, body: Record<string, unknown>): Promise<boolean> {
+async function postHostEvent(event: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<boolean> {
   const baseUrl = process.env.SUPERAGENT_HOST_API_URL
   const token = process.env.PROXY_TOKEN
   const agentSlug = process.env.SUPERAGENT_AGENT_SLUG
@@ -16,6 +16,7 @@ async function postHostEvent(event: string, body: Record<string, unknown>): Prom
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     },
   )
   if (!response.ok) {
@@ -64,4 +65,13 @@ export async function notifyWidgetSnapshotReady(
  */
 export async function notifyUndeliveredTurn(report: UndeliveredTurnReport): Promise<boolean> {
   return postHostEvent('undelivered-turn', { ...report })
+}
+
+/**
+ * Workspace paths the watcher saw change, relative to /workspace. `''` means
+ * anything may have changed. `watcherDown` is why the watcher stopped, so the
+ * host can report it.
+ */
+export async function notifyFileChanged(paths: string[], watcherDown?: string, signal?: AbortSignal): Promise<boolean> {
+  return postHostEvent('file-changed', watcherDown ? { paths, watcherDown } : { paths }, signal)
 }

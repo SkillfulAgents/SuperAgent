@@ -47,6 +47,7 @@ import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import type { Bookmark } from '@renderer/hooks/use-bookmarks'
 import { isCopyableTextFile, looksBinary } from '@renderer/lib/file-types'
+import { isPathAtOrBelow } from '@shared/lib/utils/workspace-path'
 
 interface FolderEntryContextMenuProps {
   folder: FolderTab
@@ -74,12 +75,8 @@ async function getResponseError(response: Response, fallback: string): Promise<s
   return payload?.error ?? fallback
 }
 
-function pathAtOrBelow(basePath: string, candidatePath: string): boolean {
-  return candidatePath === basePath || candidatePath.startsWith(`${basePath}/`)
-}
-
 function rebasePath(candidatePath: string, oldPath: string, newPath: string): string {
-  return pathAtOrBelow(oldPath, candidatePath)
+  return isPathAtOrBelow(oldPath, candidatePath)
     ? `${newPath}${candidatePath.slice(oldPath.length)}`
     : candidatePath
 }
@@ -222,10 +219,10 @@ export function FolderEntryContextMenu({
       setRenameOpen(false)
       await refreshFolder()
       const updatedBookmarks = bookmarkList.map(bookmark => {
-        if (bookmark.file && pathAtOrBelow(entry.path, bookmark.file)) {
+        if (bookmark.file && isPathAtOrBelow(entry.path, bookmark.file)) {
           return { ...bookmark, file: rebasePath(bookmark.file, entry.path, result.path) }
         }
-        if (bookmark.folder && pathAtOrBelow(entry.path, bookmark.folder)) {
+        if (bookmark.folder && isPathAtOrBelow(entry.path, bookmark.folder)) {
           return { ...bookmark, folder: rebasePath(bookmark.folder, entry.path, result.path) }
         }
         return bookmark
@@ -264,8 +261,8 @@ export function FolderEntryContextMenu({
       setDeleteOpen(false)
       await refreshFolder()
       const updatedBookmarks = bookmarkList.filter(bookmark => (
-        !(bookmark.file && pathAtOrBelow(entry.path, bookmark.file))
-        && !(bookmark.folder && pathAtOrBelow(entry.path, bookmark.folder))
+        !(bookmark.file && isPathAtOrBelow(entry.path, bookmark.file))
+        && !(bookmark.folder && isPathAtOrBelow(entry.path, bookmark.folder))
       ))
       if (updatedBookmarks.length !== bookmarkList.length) {
         try {

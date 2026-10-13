@@ -38,6 +38,8 @@ let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
 let prevDataDir: string | undefined
 
+// Workspace writes here announce on a timer that would outlive this file's database.
+vi.mock('@shared/lib/agent-actor/workspace-changes', () => ({ announceWorkspaceChange: vi.fn() }))
 vi.mock('@shared/lib/db', async () => ({
   get db() {
     return testDb

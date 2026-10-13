@@ -9,6 +9,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { getSettings } from '@shared/lib/config/settings'
+import { announceWorkspaceChange } from '@shared/lib/agent-actor/workspace-changes'
 
 const agentBootstrap = new Hono()
 const DASHBOARD_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
@@ -32,6 +33,13 @@ const UndeliveredTurnSchema = z.object({
   socketAgeMs: z.number().int().nonnegative().optional(),
   idleMsBeforeClose: z.number().int().nonnegative().optional(),
   socketError: z.string().max(200).optional(),
+})
+
+const watcherDownLogged = new Set<string>()
+// Capped: any container holding a valid token controls this body.
+const FileChangedSchema = z.object({
+  paths: z.array(z.string().max(4096)).max(500),
+  watcherDown: z.string().max(200).optional(),
 })
 
 agentBootstrap.get('/:agentSlug/env', async (c) => {
@@ -119,6 +127,33 @@ agentBootstrap.post('/:agentSlug/events/widget-snapshot-ready', async (c) => {
     agentSlug,
     ...parsed.data,
   })
+  return c.body(null, 204)
+})
+
+// The container's workspace watcher saw these paths change ('' when it cannot
+// say which). Open file views of this agent reload what they hold.
+agentBootstrap.post('/:agentSlug/events/file-changed', async (c) => {
+  const agentSlug = c.req.param('agentSlug')
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const callerSlug = await validateProxyToken(token)
+  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
+  if (callerSlug !== agentSlug) return c.json({ error: 'Token does not match agent' }, 403)
+
+  const parsed = FileChangedSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Invalid file changed event' }, 400)
+
+  if (!parsed.data.watcherDown) watcherDownLogged.delete(agentSlug)
+  else if (!watcherDownLogged.has(agentSlug)) {
+    watcherDownLogged.add(agentSlug)
+    console.warn(`[AgentBootstrap] ${agentSlug}: workspace watcher is down, open files reload only on window return`)
+    const containerRunner = getSettings().container?.containerRunner ?? 'unknown'
+    captureException(new Error('Workspace watcher is down'), {
+      tags: { component: 'container', operation: 'file-watcher', containerRunner, reason: parsed.data.watcherDown },
+      extra: { agentId: agentSlug },
+    })
+  }
+  announceWorkspaceChange(agentSlug, parsed.data.paths, (event) => messagePersister.broadcastGlobal(event))
   return c.body(null, 204)
 })
 

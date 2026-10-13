@@ -1,8 +1,10 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
-import { getPathName } from '@shared/lib/utils/workspace-path'
+import { getPathName, isPathAtOrBelow } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
 import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
+import { isUnderChange, subscribeWorkspaceChanges } from '@renderer/lib/workspace-changes'
+import { refreshesOnWorkspaceWrite } from '@renderer/lib/file-types'
 
 export interface FileTab extends PreviewFileTab {
   agentSlug: string
@@ -94,14 +96,26 @@ function normalizeFolderPath(folderPath: string): string {
   return folderPath === '/' ? folderPath : folderPath.replace(/\/+$/, '')
 }
 
-function isPathAtOrBelow(basePath: string, candidatePath: string): boolean {
-  return candidatePath === basePath || candidatePath.startsWith(`${basePath}/`)
-}
-
 function replacePathPrefix(candidatePath: string, oldPath: string, newPath: string): string {
   return isPathAtOrBelow(oldPath, candidatePath)
     ? `${newPath}${candidatePath.slice(oldPath.length)}`
     : candidatePath
+}
+
+/**
+ * New versions for the open file tabs at or under a changed scope that reload
+ * in place, so their previews refetch. `agentSlug` null matches every agent.
+ * Returns `tabs` itself when none match.
+ */
+export function reloadChangedTabs(tabs: PreviewTab[], agentSlug: string | null, scopes: string[], version: number): PreviewTab[] {
+  let changed = false
+  const next = tabs.map(tab => {
+    if (tab.kind !== 'file' || (agentSlug !== null && tab.agentSlug !== agentSlug)) return tab
+    if (!refreshesOnWorkspaceWrite(tab.filePath) || !isUnderChange(tab.filePath, scopes)) return tab
+    changed = true
+    return { ...tab, version }
+  })
+  return changed ? next : tabs
 }
 
 let commentIdCounter = 0
@@ -138,6 +152,11 @@ export function FilePreviewProvider({
     setComments(new Map())
     setIsOpen(false)
   }, [sessionId, setOpenTabs, setActiveTabIndex])
+
+  useEffect(() => subscribeWorkspaceChanges((agentSlug, scopes) => {
+    const version = nextFileVersion()
+    setOpenTabs(prev => reloadChangedTabs(prev, agentSlug, scopes, version))
+  }), [setOpenTabs])
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
     const version = nextFileVersion()

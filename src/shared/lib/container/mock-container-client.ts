@@ -23,6 +23,8 @@ import type {
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
+import { announceWorkspaceChange } from '../agent-actor/workspace-changes'
+import { messagePersister } from './message-persister'
 import { reviewManager } from '../proxy/review-manager'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
@@ -783,7 +785,12 @@ export class ToolUseScenario implements MockScenario {
     private toolName: string,
     private toolInput: Record<string, unknown>,
     private toolResult: string,
-    private finalText: string
+    private finalText: string,
+    /**
+     * What happens in the workspace `delayMs` after the tool's result, like a background job the tool
+     * started. `holdMs` keeps the reply open after it, so a test sees the write's effect alone.
+     */
+    private toolEffect?: { delayMs: number; holdMs?: number; run: (client: MockContainerClient) => void },
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -862,6 +869,19 @@ export class ToolUseScenario implements MockScenario {
       })
     }, delay)
     delay += 20
+
+    const effect = this.toolEffect
+    if (effect) {
+      delay += effect.delayMs
+      setTimeout(() => {
+        try {
+          effect.run(client)
+        } catch (error) {
+          console.error('[MockContainerClient] tool effect failed:', error)
+        }
+      }, delay)
+      delay += 10 + (effect.holdMs ?? 0)
+    }
 
     // Final text response - new text block
     setTimeout(() => {
@@ -2395,6 +2415,25 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: remoteMcpRequestInput,
       },
     ])],
+    // An Edit whose write lands 1.5s after its tool result, for the preview's live reload. A reload
+    // on the tool result would fetch the old text, and the hold keeps the reply's end 8s away, so a
+    // test sees the reload the write alone causes.
+    ['edit report', new ToolUseScenario(
+      'Edit',
+      { file_path: '/workspace/output/report.md', old_string: 'Old line.', new_string: 'New line.' },
+      'The file /workspace/output/report.md has been updated.',
+      'I updated the report.',
+      {
+        delayMs: 1500,
+        holdMs: 8000,
+        run: (client) => {
+          const reportPath = path.join(getAgentWorkspaceDir(client.getAgentId()), 'output', 'report.md')
+          fs.writeFileSync(reportPath, fs.readFileSync(reportPath, 'utf8').replace('Old line.', 'New line.'))
+          // A mock has no container, so it announces the write the way the container's watcher does.
+          announceWorkspaceChange(client.getAgentId(), ['output/report.md'], (event) => messagePersister.broadcastGlobal(event))
+        },
+      },
+    )],
     // File delivery scenario for E2E tests
     ['deliver file', new ToolUseScenario(
       'mcp__user-input__deliver_file',

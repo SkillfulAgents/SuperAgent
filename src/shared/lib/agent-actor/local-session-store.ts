@@ -22,9 +22,9 @@ const defaultDeps: LocalSessionStoreDeps = { getAgentWorkspaceDir: (slug) => get
 export function createLocalSessionStore(
   slug: AgentSlug,
   deps: LocalSessionStoreDeps = defaultDeps,
-  hooks: Pick<SessionStore, 'onActivity'> = {},
+  hooks: Pick<SessionStore, 'onActivity'> & { onFileChange?: (workspacePath: string) => void } = {},
 ): SessionStore {
-  const files = createLocalFileOps(slug, deps)
+  const files = createLocalFileOps(slug, deps, hooks.onFileChange)
   const config = createLocalConfigOps({ files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
   return {
     slug,
