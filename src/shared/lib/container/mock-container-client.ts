@@ -19,6 +19,7 @@ import type {
   StartOptions,
   StopOptions,
   StreamMessage,
+  StreamSocketInfo,
 } from './types'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
@@ -3711,6 +3712,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
 
     return { unsubscribe, ready: Promise.resolve() }
+  }
+
+  getStreamSocketInfo(_sessionId: string): StreamSocketInfo | null {
+    return null
   }
 
   // Events (inherited from EventEmitter)

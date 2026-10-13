@@ -148,9 +148,12 @@ agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
   )
   if (!hostStuck) return c.body(null, 204)
 
+  // The host's side of the same socket, to compare with the container's close.
+  const hostSocket = messagePersister.getStreamSocketInfo(agentSlug, report.sessionId)
+  console.warn(`[AgentBootstrap] Host stream socket for session ${report.sessionId}: ${JSON.stringify(hostSocket)}`)
   captureException(new Error('Session turn ended after its stream socket dropped'), {
     tags: { component: 'container', operation: 'undelivered-turn', containerRunner, closeCode: String(closeCode) },
-    extra: { agentId: agentSlug, ...report },
+    extra: { agentId: agentSlug, ...report, hostSocket },
   })
   return c.body(null, 204)
 })

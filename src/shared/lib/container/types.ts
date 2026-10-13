@@ -203,6 +203,18 @@ export interface StopResult {
 // Only 'unreachable' is a proven block; 'unknown' must never fail a launch.
 export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
 
+export interface StreamSocketInfo {
+  readyState: 'CONNECTING' | 'OPEN' | 'CLOSING' | 'CLOSED'
+  openedAt: string | null
+  lastFrameAt: string | null
+  framesReceived: number
+  bufferedAmount: number
+  // null when ws has no TCP socket attached.
+  tcpDestroyed: boolean | null
+  tcpBytesRead: number | null
+  tcpBytesWritten: number | null
+}
+
 export interface ContainerClient {
   // Lifecycle management
   // Returns the state already proven by the runtime's health gate. All
@@ -291,6 +303,8 @@ export interface ContainerClient {
     sessionId: string,
     callback: (message: StreamMessage) => void
   ): { unsubscribe: () => void; ready: Promise<void> }
+  // The host's view of the session's stream socket, or null when none is tracked.
+  getStreamSocketInfo(sessionId: string): StreamSocketInfo | null
 
   // Events
   on(event: 'error', callback: (error: Error) => void): void

@@ -9,6 +9,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import WebSocket from 'ws'
+import type { Socket } from 'net'
 import * as fs from 'fs'
 import os from 'os'
 import net from 'net'
@@ -25,6 +26,7 @@ import type {
   StopOptions,
   StopResult,
   StreamMessage,
+  StreamSocketInfo,
 } from './types'
 import { ContainerConflictError, ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
@@ -295,6 +297,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
   private wsReadyRejectors = new WeakMap<WebSocket, (error: Error) => void>()
+  private wsStats = new WeakMap<WebSocket, { openedAt?: number; lastFrameAt?: number; framesReceived: number }>()
 
   /** Whether this runner is eligible on the current platform. Override for platform-specific runners. */
   static isEligible(): boolean {
@@ -1696,12 +1699,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       socket = ws
       this.wsReadyRejectors.set(ws, rejectReady)
+      const stats: { openedAt?: number; lastFrameAt?: number; framesReceived: number } = { framesReceived: 0 }
+      this.wsStats.set(ws, stats)
 
       ws.on('open', () => {
+        stats.openedAt = Date.now()
         console.log(`WebSocket connected for session ${sessionId}`)
       })
 
       ws.on('message', (data) => {
+        stats.lastFrameAt = Date.now()
+        stats.framesReceived++
         try {
           const message = JSON.parse(data.toString())
           const streamMessage: StreamMessage = {
@@ -1790,6 +1798,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     return { unsubscribe, ready }
+  }
+
+  getStreamSocketInfo(sessionId: string): StreamSocketInfo | null {
+    const ws = this.wsConnections.get(sessionId)
+    if (!ws) return null
+    const stats = this.wsStats.get(ws)
+    // ws keeps its TCP socket private. Reading it tells a TCP connection that is
+    // still up apart from one that died without the WebSocket emitting close.
+    const tcp = (ws as unknown as { _socket?: Socket | null })._socket
+    const iso = (ms?: number) => (ms === undefined ? null : new Date(ms).toISOString())
+    return {
+      readyState: (['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'] as const)[ws.readyState],
+      openedAt: iso(stats?.openedAt),
+      lastFrameAt: iso(stats?.lastFrameAt),
+      framesReceived: stats?.framesReceived ?? 0,
+      bufferedAmount: ws.bufferedAmount,
+      tcpDestroyed: tcp ? tcp.destroyed : null,
+      tcpBytesRead: tcp ? tcp.bytesRead : null,
+      tcpBytesWritten: tcp ? tcp.bytesWritten : null,
+    }
   }
 
   /**
