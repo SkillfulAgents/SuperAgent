@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
@@ -203,6 +203,15 @@ export interface WorkflowRunLive {
 }
 const EMPTY_WORKFLOWS: WorkflowRunLive[] = []
 const sessionWorkflows = new Map<string, WorkflowRunLive[]>()
+
+// Bumped when a new turn starts, so an open preview starts a new highlight at the next change.
+// A message queued mid-turn waits for its own turn. Kept outside StreamState, like thinking,
+// so the full state-rebuild sites never reset it.
+const sessionTurnRevisions = new Map<string, number>()
+
+function bumpTurnRevision(sessionId: string): void {
+  sessionTurnRevisions.set(sessionId, (sessionTurnRevisions.get(sessionId) ?? 0) + 1)
+}
 
 // `done`/`failed` are terminal and sticky: a later `running`/`progress` snapshot must
 // never downgrade them (snapshots can momentarily lag or reorder).
@@ -474,6 +483,9 @@ function getOrCreateEventSource(
       const current = streamStates.get(sessionId)
 
       if (data.type === 'connected') {
+        // A turn may have started while disconnected. Counting a reconnect as one can split a
+        // highlight, but never merges two turns into one.
+        bumpTurnRevision(sessionId)
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
@@ -570,7 +582,10 @@ function getOrCreateEventSource(
         // opting it out is an explicit line in the turn-scoped group.
         const queuedMidTurn = data.queuedMidTurn === true
         // The thinking stream lives outside StreamState but is turn-scoped too.
-        if (!queuedMidTurn) sessionThinking.delete(sessionId)
+        if (!queuedMidTurn) {
+          sessionThinking.delete(sessionId)
+          bumpTurnRevision(sessionId)
+        }
         streamStates.set(sessionId, {
           ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
@@ -1585,6 +1600,31 @@ export function clearBrowserActive(sessionId: string): void {
   }
 }
 
+/**
+ * Changes whenever a new turn starts. Re-read only when the stream notifies, so a
+ * caller re-renders when it changes rather than on every streamed token. Reads an
+ * open stream; it does not open one.
+ */
+export function useTurnRevision(sessionId: string | null): number {
+  const subscribe = useCallback((onChange: () => void) => (sessionId ? subscribeStream(sessionId, onChange) : () => {}), [sessionId])
+  const read = useCallback(() => (sessionId ? sessionTurnRevisions.get(sessionId) ?? 0 : 0), [sessionId])
+  return useSyncExternalStore(subscribe, read, read)
+}
+
+/** Hear every change the session's stream makes; the returned function stops it. */
+function subscribeStream(sessionId: string, listener: () => void): () => void {
+  let listeners = streamListeners.get(sessionId)
+  if (!listeners) {
+    listeners = new Set()
+    streamListeners.set(sessionId, listeners)
+  }
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) streamListeners.delete(sessionId)
+  }
+}
+
 export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
   const [state, setState] = useState<StreamState>(EMPTY_STREAM_STATE)
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
@@ -1660,13 +1700,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       return
     }
 
-    // Register listener
-    let listeners = streamListeners.get(sessionId)
-    if (!listeners) {
-      listeners = new Set()
-      streamListeners.set(sessionId, listeners)
-    }
-    listeners.add(updateState)
+    const unsubscribe = subscribeStream(sessionId, updateState)
 
     // Initialize state
     if (!streamStates.has(sessionId)) {
@@ -1678,10 +1712,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     getOrCreateEventSource(sessionId, agentSlug, queryClient)
 
     return () => {
-      listeners?.delete(updateState)
-      if (listeners?.size === 0) {
-        streamListeners.delete(sessionId)
-      }
+      unsubscribe()
       releaseEventSource(sessionId)
     }
   }, [sessionId, agentSlug, updateState, queryClient])

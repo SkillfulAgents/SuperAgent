@@ -122,6 +122,7 @@ const mockStreamState = {
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
+  useTurnRevision: () => 0,
 }))
 
 // Mock useIsOnline — default online, override per test

@@ -3677,4 +3677,20 @@ describe('typing leases', () => {
       vi.useRealTimers()
     }
   })
+
+  it('bumps the turn revision when a new turn starts or the stream reconnects, not when a message is queued mid-turn', async () => {
+    const { useMessageStream, useTurnRevision } = await getHookModule()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const { result } = renderHook(() => useTurnRevision('session-1'))
+    const es = MockEventSource.instances[0]
+    const start = result.current
+
+    act(() => es.simulateMessage({ type: 'session_active', queuedMidTurn: true }))
+    expect(result.current).toBe(start)
+    act(() => es.simulateMessage({ type: 'session_active' }))
+    expect(result.current).toBe(start + 1)
+    act(() => es.simulateMessage({ type: 'connected', isActive: true }))
+    expect(result.current).toBe(start + 2)
+  })
+
 })

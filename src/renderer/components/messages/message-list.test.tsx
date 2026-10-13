@@ -86,6 +86,7 @@ const mockConsumeThinkingBlocks = vi.fn((_sessionId: string, ids: number[]) => {
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
+  useTurnRevision: () => 0,
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
