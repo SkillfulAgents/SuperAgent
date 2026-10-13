@@ -1251,7 +1251,7 @@ export function AppSidebar() {
       const section = sectionsRef.current.find((s) => s.folder.id === data.folderId)
       setActiveDrag({
         type: 'folder',
-        label: section?.folder.name ?? 'Folder',
+        label: section?.folder.name ?? 'Section',
         folderId: String(data.folderId),
       })
       return

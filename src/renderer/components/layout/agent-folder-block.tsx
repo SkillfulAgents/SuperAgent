@@ -72,7 +72,7 @@ function FolderNameInput({
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
       autoFocus
-      aria-label="Folder name"
+      aria-label="Section name"
       data-testid="folder-name-input"
       className="w-full bg-background border border-input rounded px-1 py-0 text-[13px] outline-none focus:ring-1 focus:ring-ring"
     />
@@ -152,7 +152,7 @@ const FolderHeader = React.memo(function FolderHeader({
       <ContextMenuContent>
         <ContextMenuItem onClick={onStartRename} data-testid="rename-folder-item">
           <Pencil className="h-4 w-4 mr-2" />
-          Rename Folder
+          Rename Section
         </ContextMenuItem>
         <ContextMenuItem
           className="text-destructive focus:bg-destructive/10 focus:text-destructive"
@@ -160,7 +160,7 @@ const FolderHeader = React.memo(function FolderHeader({
           data-testid="delete-folder-item"
         >
           <Trash2 className="h-4 w-4 mr-2" />
-          Delete Folder
+          Delete Section
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -307,8 +307,8 @@ export function AgentFolderBlock({
         <button
           type="button"
           onClick={onCreateFolder}
-          aria-label="New folder"
-          title="New folder"
+          aria-label="New section"
+          title="New section"
           data-testid="new-folder-button"
           className="absolute right-8 top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/50 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/folder-block:opacity-100"
         >
