@@ -1,0 +1,161 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e383] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20261013-001502-n37s Open QA-20261013-001502-n37s Collapse Check Example.com Page Title" [ref=e494] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20261013-001502-n37s" [ref=e52]:
+                    - /url: /agents/qa-20261013-001502-n37s-ip8us9x34w
+                    - generic [ref=e53]: QA-20261013-001502-n37s
+                  - link "Open QA-20261013-001502-n37s" [ref=e54]:
+                    - /url: /agents/qa-20261013-001502-n37s-ip8us9x34w
+                    - img "idle" [ref=e495]:
+                      - img [ref=e496]
+                  - button "Collapse" [expanded] [ref=e390]:
+                    - img [ref=e391]
+                - list [ref=e394]:
+                  - listitem [ref=e395]:
+                    - link "Check Example.com Page Title" [ref=e505]:
+                      - /url: /agents/ip8us9x34w/sessions/9bd83887-2977-4b20-b0db-33f161142a27
+                      - generic [ref=e398]: Check Example.com Page Title
+              - button "QA-20261013-001501-d420 Open QA-20261013-001501-d420 Expand" [ref=e377] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20261013-001501-d420" [ref=e67]:
+                    - /url: /agents/qa-20261013-001501-d420-rwxitq9xav
+                    - generic [ref=e68]: QA-20261013-001501-d420
+                  - link "Open QA-20261013-001501-d420" [ref=e69]:
+                    - /url: /agents/qa-20261013-001501-d420-rwxitq9xav
+                    - img "sleeping" [ref=e534]:
+                      - img [ref=e535]
+                  - button "Expand" [ref=e380]:
+                    - img [ref=e381]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.39" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.39
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - link "QA-20261013-001502-n37s" [ref=e415]:
+              - /url: /agents/qa-20261013-001502-n37s-ip8us9x34w
+            - text: /Check Example.com Page Title
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img [ref=e506]
+              - generic [ref=e186]: idle
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e422]:
+          - region "Messages" [ref=e424]:
+            - log [ref=e426]:
+              - time [ref=e428]: Today at 12:15 AM
+              - paragraph [ref=e433]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e434] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - button "Collapse completed turn work" [expanded] [active] [ref=e537] [cursor=pointer]:
+                - generic [ref=e517]:
+                  - generic [ref=e518]: Worked for 4s
+                  - generic [ref=e519]: ·
+                - generic [ref=e520]:
+                  - generic [ref=e521]: 3 tool calls
+                  - generic [ref=e522]: ·
+                - generic [ref=e523]:
+                  - generic [ref=e524]: 152,068 tokens
+                  - img [ref=e525]
+              - button "Expand ToolSearch tool call" [ref=e544] [cursor=pointer]:
+                - img [ref=e545]
+                - generic [ref=e548]: ToolSearch
+                - generic [ref=e549]:
+                  - img [ref=e552]
+                  - img [ref=e555]
+              - button "Expand mcp__browser__browser_open tool call" [ref=e563] [cursor=pointer]:
+                - img [ref=e564]
+                - generic [ref=e567]: Open Browser
+                - generic [ref=e568]: →
+                - generic [ref=e569]: https://example.com
+                - generic [ref=e570]:
+                  - img [ref=e573]
+                  - img [ref=e576]
+              - button "Expand mcp__browser__browser_close tool call" [ref=e584] [cursor=pointer]:
+                - img [ref=e585]
+                - generic [ref=e588]: Close Browser
+                - generic [ref=e589]:
+                  - img [ref=e592]
+                  - img [ref=e595]
+              - paragraph [ref=e531]:
+                - text: The page title is
+                - strong [ref=e532]: "\"Example Domain\""
+                - text: . I closed the browser afterward.
+          - generic [ref=e461]:
+            - generic [ref=e465]:
+              - textbox "Type a message..." [ref=e533]:
+                - text: Type a message...
+                - paragraph [ref=e469]
+              - generic [ref=e470]:
+                - generic [ref=e471]:
+                  - button "Add files" [ref=e472] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e473] [cursor=pointer]':
+                    - generic [ref=e474]:
+                      - text: Opus 5.5
+                      - generic [ref=e475]: · Medium
+                    - img
+                - generic [ref=e476]:
+                  - button "Set up voice input" [ref=e477] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e481]:
+              - generic [ref=e482]:
+                - generic [ref=e483]: Context Usage
+                - img [ref=e485]
+              - generic [ref=e488]:
+                - generic [ref=e489]: ↵
+                - generic [ref=e490]: Send
+                - generic [ref=e491]: ·
+                - generic [ref=e492]: ⇧↵
+                - generic [ref=e493]: New line
+  - region "Notifications alt+T"
