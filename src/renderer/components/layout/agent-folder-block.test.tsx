@@ -253,12 +253,18 @@ describe('AgentFolderBlock', () => {
     expect(screen.queryByTestId('folder-name-input')).not.toBeInTheDocument()
   })
 
-  it('commits a rename on blur, the way the dashboard rename does', async () => {
+  it('commits a rename when focus leaves the input and its actions', async () => {
     const props = renderBlock()
     await userEvent.click(screen.getByTestId('rename-folder-item'))
     const input = screen.getByTestId('folder-name-input')
     await userEvent.clear(input)
     await userEvent.type(input, 'Clients')
+    await userEvent.tab()
+    expect(screen.getByTestId('folder-name-save')).toHaveFocus()
+    expect(props.onRename).not.toHaveBeenCalled()
+    await userEvent.tab()
+    expect(screen.getByTestId('folder-name-cancel')).toHaveFocus()
+    expect(props.onRename).not.toHaveBeenCalled()
     await userEvent.tab()
 
     expect(props.onRename).toHaveBeenCalledWith('Clients')
@@ -321,9 +327,71 @@ describe('AgentFolderBlock', () => {
     expect(mockUseSortable).toHaveBeenLastCalledWith(expect.objectContaining({ disabled: true }))
   })
 
-  it('opens straight into rename mode for a freshly created folder', () => {
+  it('opens a freshly added section empty, with a placeholder and the caret at the start', () => {
     renderBlock({ initialRenaming: true })
-    expect(screen.getByTestId('folder-name-input')).toBeInTheDocument()
+    const input = screen.getByTestId('folder-name-input') as HTMLInputElement
+    expect(input).toHaveValue('')
+    expect(input).toHaveAttribute('placeholder', 'Section name')
+    expect(input).toHaveFocus()
+    // A blinking caret, not a selection.
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(0)
+  })
+
+  it('keeps the default name when a fresh section is left empty', async () => {
+    const props = renderBlock({ initialRenaming: true })
+    await userEvent.type(screen.getByTestId('folder-name-input'), '{Enter}')
+    expect(props.onRename).not.toHaveBeenCalled()
+    expect(props.onRenameEnd).toHaveBeenCalled()
+  })
+
+  it('starts a rename of an existing section from its name, caret at the end', async () => {
+    renderBlock()
+    await userEvent.click(screen.getByTestId('rename-folder-item'))
+    const input = screen.getByTestId('folder-name-input') as HTMLInputElement
+    expect(input).toHaveValue('Work')
+    expect(input.selectionStart).toBe(4)
+    expect(input.selectionEnd).toBe(4)
+  })
+
+  it('draws the name box light: transparent fill, a faint 1px border', () => {
+    renderBlock({ initialRenaming: true })
+    const cls = screen.getByTestId('folder-name-input').className
+    expect(cls).toContain('bg-transparent')
+    expect(cls).toMatch(/(^|\s)border(\s|$)/)
+    expect(cls).toContain('border-black/10')
+    expect(cls).not.toContain('bg-background')
+  })
+
+  it('saves with ✓, beside the box rather than inside it', async () => {
+    const props = renderBlock({ initialRenaming: true })
+    const input = screen.getByTestId('folder-name-input')
+    await userEvent.type(input, 'Clients')
+    const save = screen.getByTestId('folder-name-save')
+    expect(input.contains(save)).toBe(false)
+    await userEvent.click(save)
+    expect(props.onRename).toHaveBeenCalledTimes(1)
+    expect(props.onRename).toHaveBeenCalledWith('Clients')
+  })
+
+  it('cancels with ✕ without the blur committing first', async () => {
+    const props = renderBlock()
+    await userEvent.click(screen.getByTestId('rename-folder-item'))
+    await userEvent.type(screen.getByTestId('folder-name-input'), ' Stuff')
+    await userEvent.click(screen.getByTestId('folder-name-cancel'))
+    expect(props.onRename).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('folder-name-input')).not.toBeInTheDocument()
+  })
+
+  it('lets keyboard users reach Cancel without saving the draft', async () => {
+    const props = renderBlock({ initialRenaming: true })
+    await userEvent.type(screen.getByTestId('folder-name-input'), 'Discard this')
+    await userEvent.tab()
+    await userEvent.tab()
+    expect(screen.getByTestId('folder-name-cancel')).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(props.onRename).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('folder-name-input')).not.toBeInTheDocument()
   })
 
   it('deletes on request', async () => {
