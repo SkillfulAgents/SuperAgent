@@ -36,11 +36,16 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ),
 }))
 
-vi.mock('@renderer/components/ui/sidebar', () => ({
-  SidebarMenuButton: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button type="button" {...props}>{children}</button>
-  ),
-}))
+vi.mock('@renderer/components/ui/sidebar', async () => {
+  const { forwardRef } = await import('react')
+  return {
+    SidebarMenuButton: forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(
+      ({ children, ...props }, ref) => (
+        <button ref={ref} type="button" {...props}>{children}</button>
+      )
+    ),
+  }
+})
 
 import { AgentDragOverlayRow, AgentFolderBlock, overlayDropKeyframes } from './agent-folder-block'
 import type { DropAnimationKeyframeResolver } from '@dnd-kit/core'
@@ -118,12 +123,16 @@ describe('AgentFolderBlock', () => {
 
   it('shows the chevron only while the header row is hovered or focused, open or collapsed', () => {
     for (const isCollapsed of [true, false]) {
-      renderBlock({ isCollapsed })
+      renderBlock({ isCollapsed, onCreateAgent: vi.fn() })
       const cls = screen.getByTestId('agent-folder-chevron-f1').getAttribute('class') ?? ''
       expect(cls).toContain('opacity-0')
       expect(cls).toContain('group-has-[[data-header-zone]:hover]/folder-block:opacity-100')
       expect(cls).toContain('group-has-[[data-header-zone]_:focus-visible]/folder-block:opacity-100')
+      // The header row is the header plus its ⋯ and +, so moving onto either
+      // keeps the chevron up.
       expect(nodes.activator).toHaveAttribute('data-header-zone')
+      expect(screen.getByTestId('section-menu-f1')).toHaveAttribute('data-header-zone')
+      expect(screen.getByTestId('new-agent-in-folder-f1')).toHaveAttribute('data-header-zone')
       cleanup()
     }
   })
@@ -359,6 +368,49 @@ describe('AgentFolderBlock', () => {
     expect(screen.queryByTestId('new-agent-in-folder-f1')).not.toBeInTheDocument()
   })
 
+  it('offers a ⋯ menu left of the +, revealed on hover', () => {
+    renderBlock({ onCreateAgent: vi.fn() })
+    const dots = screen.getByTestId('section-menu-f1')
+    expect(dots).toHaveAttribute('aria-label', 'Actions for Work')
+    expect(dots).toHaveAttribute('aria-haspopup', 'menu')
+    // One slot in from the + at the header's edge.
+    expect(dots.className).toContain('right-8')
+    expect(screen.getByTestId('new-agent-in-folder-f1').className).toContain('right-[7px]')
+    expect(dots.className).toContain('opacity-0')
+    expect(dots.className).toContain('group-hover/folder-block:opacity-100')
+    // Lighter than the + until hovered itself.
+    expect(dots.className).toContain('text-sidebar-foreground/40')
+    expect(dots.className).not.toContain('text-sidebar-foreground/80')
+    expect(dots.className).toContain('hover:text-sidebar-foreground')
+    // Like the +, outside the header button and its drag activator.
+    expect(screen.getByTestId('agent-folder-f1').contains(dots)).toBe(false)
+    expect(nodes.activator?.contains(dots)).toBe(false)
+  })
+
+  it('opens the menu from the keyboard and returns focus on Escape without toggling', async () => {
+    const props = renderBlock()
+    const trigger = screen.getByTestId('section-menu-f1')
+    trigger.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('menu')).toHaveTextContent('Rename Section')
+    expect(screen.getByRole('menu')).toHaveTextContent('Delete Section')
+    await userEvent.keyboard('{Escape}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(trigger).toHaveFocus()
+    expect(props.onToggle).not.toHaveBeenCalled()
+  })
+
+  it('has no ⋯ while renaming', () => {
+    renderBlock({ initialRenaming: true })
+    expect(screen.queryByTestId('section-menu-f1')).not.toBeInTheDocument()
+  })
+
+  it('clears room for the ⋯ and + on a section header', () => {
+    renderBlock()
+    expect(screen.getByTestId('agent-folder-f1').className).toContain('pr-14')
+  })
+
   it('highlights as a drop target when an agent is dragged over it', () => {
     mockUseSortable.mockImplementation((args) => sortableState(args, true))
     renderBlock({ activeDragType: 'agent' })
@@ -432,6 +484,13 @@ describe('AgentFolderBlock — the default folder', () => {
     renderRoot()
     expect(screen.queryByTestId('rename-folder-item')).not.toBeInTheDocument()
     expect(screen.queryByTestId('delete-folder-item')).not.toBeInTheDocument()
+  })
+
+  it('has no ⋯ menu: it cannot be renamed or deleted', () => {
+    renderRoot({ onCreateAgent: vi.fn() })
+    expect(screen.queryByTestId('section-menu-root')).not.toBeInTheDocument()
+    // Only the + to clear room for.
+    expect(screen.getByTestId('agent-folder-root').className).toContain('pr-8')
   })
 
   it('has no new-section button: sections are made from Add section', () => {
