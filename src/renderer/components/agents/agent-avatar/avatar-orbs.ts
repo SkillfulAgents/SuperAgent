@@ -11,7 +11,7 @@
 import type { AgentAvatarColor } from '@shared/lib/types/agent-avatar'
 
 export interface AvatarOrb {
-  /** Unique key, used in stored avatar ids: never rename one. */
+  /** Stable persisted key; renames require a data migration. */
   name: AgentAvatarColor
   /** Shown in the picker. */
   label: string
@@ -52,7 +52,7 @@ export const DEFAULT_ORBS: readonly AvatarOrb[] = [
   colourway('tonal-forest', 'Forest', '#0B953D', '#005521', 34),
   colourway('tonal-teal', 'Teal', '#3BE4D9', '#14868D', 34),
   colourway('tonal-blue', 'Blue', '#9CCEFC', '#2B79FA', 34),
-  colourway('Cobalt', 'Cobalt', '#4890FC', '#1834DE', 30),
+  colourway('tonal-cobalt', 'Cobalt', '#4890FC', '#1834DE', 30),
   colourway('tonal-purple', 'Purple', '#C39EFB', '#7A1FFD', 34),
   colourway('tonal-blush', 'Blush', '#FDC4E5', '#FB67C5', 34),
   colourway('tonal-pink', 'Pink', '#FDA0D1', '#F11898', 34),
@@ -85,7 +85,7 @@ export const PAIRED_DUOS: readonly AvatarOrb[] = [
   pair('duo-forest-teal', 'tonal-forest', 'tonal-teal'),
   pair('duo-teal-blush', 'tonal-teal', 'tonal-blush'),
   pair('duo-blue-amber', 'tonal-blue', 'tonal-amber'),
-  pair('duo-cobalt-teal', 'Cobalt', 'tonal-teal'),
+  pair('duo-cobalt-teal', 'tonal-cobalt', 'tonal-teal'),
   pair('duo-pink-blue', 'tonal-pink', 'tonal-blue'),
   pair('duo-brown-amber', 'tonal-brown', 'tonal-amber'),
 ]

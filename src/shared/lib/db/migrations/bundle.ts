@@ -577,10 +577,10 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "sql": [
       "ALTER TABLE `agents` ADD `avatar_color` text DEFAULT 'tonal-blue' NOT NULL;",
       "\nALTER TABLE `agents` ADD `avatar_shape` text DEFAULT 'circle' NOT NULL;",
-      "\n-- Backfill once in the same atomic migration as the column additions. Keep\n-- this historical palette fixed: later palette edits must not reassign agents.\n-- Applying abs after the remainder avoids SQLite's minimum-integer overflow.\nUPDATE `agents` SET\n  `avatar_color` = CASE abs(random() % 12)\n    WHEN 0 THEN 'tonal-red'\n    WHEN 1 THEN 'tonal-orange'\n    WHEN 2 THEN 'tonal-amber'\n    WHEN 3 THEN 'tonal-green'\n    WHEN 4 THEN 'tonal-forest'\n    WHEN 5 THEN 'tonal-teal'\n    WHEN 6 THEN 'tonal-blue'\n    WHEN 7 THEN 'Cobalt'\n    WHEN 8 THEN 'tonal-purple'\n    WHEN 9 THEN 'tonal-blush'\n    WHEN 10 THEN 'tonal-pink'\n    ELSE 'tonal-brown'\n  END,\n  `avatar_shape` = CASE abs(random() % 8)\n    WHEN 0 THEN 'circle'\n    WHEN 1 THEN 'squircle'\n    WHEN 2 THEN 'triangle'\n    WHEN 3 THEN 'diamond'\n    WHEN 4 THEN 'hexagon'\n    WHEN 5 THEN 'pill'\n    WHEN 6 THEN 'arch'\n    ELSE 'bloom'\n  END;\n"
+      "\n-- Backfill once in the same atomic migration as the column additions. Keep\n-- this historical palette fixed: later palette edits must not reassign agents.\n-- Applying abs after the remainder avoids SQLite's minimum-integer overflow.\nUPDATE `agents` SET\n  `avatar_color` = CASE abs(random() % 12)\n    WHEN 0 THEN 'tonal-red'\n    WHEN 1 THEN 'tonal-orange'\n    WHEN 2 THEN 'tonal-amber'\n    WHEN 3 THEN 'tonal-green'\n    WHEN 4 THEN 'tonal-forest'\n    WHEN 5 THEN 'tonal-teal'\n    WHEN 6 THEN 'tonal-blue'\n    WHEN 7 THEN 'tonal-cobalt'\n    WHEN 8 THEN 'tonal-purple'\n    WHEN 9 THEN 'tonal-blush'\n    WHEN 10 THEN 'tonal-pink'\n    ELSE 'tonal-brown'\n  END,\n  `avatar_shape` = CASE abs(random() % 8)\n    WHEN 0 THEN 'circle'\n    WHEN 1 THEN 'squircle'\n    WHEN 2 THEN 'triangle'\n    WHEN 3 THEN 'diamond'\n    WHEN 4 THEN 'hexagon'\n    WHEN 5 THEN 'pill'\n    WHEN 6 THEN 'arch'\n    ELSE 'bloom'\n  END;\n"
     ],
     "bps": true,
     "folderMillis": 1791852666500,
-    "hash": "00aba0286c3fe7513c900014eb3b2251072376398c185d3f31c2e2868bd74084"
+    "hash": "509e144ec0676c120491a0a92af8f5d94780b0930658d88b80472d1748f89f0b"
   }
 ]

@@ -12,7 +12,7 @@ UPDATE `agents` SET
     WHEN 4 THEN 'tonal-forest'
     WHEN 5 THEN 'tonal-teal'
     WHEN 6 THEN 'tonal-blue'
-    WHEN 7 THEN 'Cobalt'
+    WHEN 7 THEN 'tonal-cobalt'
     WHEN 8 THEN 'tonal-purple'
     WHEN 9 THEN 'tonal-blush'
     WHEN 10 THEN 'tonal-pink'

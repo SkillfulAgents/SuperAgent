@@ -1,9 +1,9 @@
 import { z } from 'zod'
 
-// Persisted names are identities, independent of palette order. Do not rename them.
+// Persisted IDs are independent of palette order; renames require a data migration.
 export const DEFAULT_AGENT_AVATAR_COLORS = [
   'tonal-red', 'tonal-orange', 'tonal-amber', 'tonal-green', 'tonal-forest',
-  'tonal-teal', 'tonal-blue', 'Cobalt', 'tonal-purple', 'tonal-blush',
+  'tonal-teal', 'tonal-blue', 'tonal-cobalt', 'tonal-purple', 'tonal-blush',
   'tonal-pink', 'tonal-brown',
 ] as const
 

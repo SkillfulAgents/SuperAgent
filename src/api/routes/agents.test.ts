@@ -10084,8 +10084,8 @@ describe('PUT /api/agents/:id/avatar', () => {
     app = createApp()
   })
 
-  it('saves a complete validated pair and announces the change to other clients', async () => {
-    const avatar = { color: 'duo-red-amber', shape: 'bloom' } as const
+  it.each(['duo-red-amber', 'tonal-cobalt'] as const)('saves a validated %s pair and announces the change to other clients', async color => {
+    const avatar = { color, shape: 'bloom' } as const
     vi.mocked(updateAgentAvatar).mockResolvedValue(avatar)
     const response = await app.request('/api/agents/test-agent/avatar', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(avatar),
@@ -10101,6 +10101,7 @@ describe('PUT /api/agents/:id/avatar', () => {
     { color: null, shape: 'circle' },
     { color: 'tonal-blue', shape: null },
     { color: 'unknown', shape: 'circle' },
+    { color: 'Cobalt', shape: 'circle' },
     { color: 'tonal-blue', shape: 'unknown' },
     { color: 'tonal-blue' },
     { color: 'tonal-blue', shape: 'circle', extra: true },

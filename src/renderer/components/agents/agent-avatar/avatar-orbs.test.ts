@@ -7,7 +7,7 @@ describe('avatar colourways', () => {
     // Five full rows in the picker's four-wide grid: three of the palette, two of duos.
     expect(DEFAULT_ORBS.map(orb => orb.name)).toEqual([
       'tonal-red', 'tonal-orange', 'tonal-amber', 'tonal-green',
-      'tonal-forest', 'tonal-teal', 'tonal-blue', 'Cobalt',
+      'tonal-forest', 'tonal-teal', 'tonal-blue', 'tonal-cobalt',
       'tonal-purple', 'tonal-blush', 'tonal-pink', 'tonal-brown',
     ])
     expect(OFFERED_ORBS.map(orb => orb.name)).toEqual([
