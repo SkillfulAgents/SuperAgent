@@ -22,6 +22,8 @@ export interface FileAttachment {
   preview?: string
   /** Set when uploading this attachment failed; renders the chip in an error state. */
   error?: string
+  /** A rejected request needs a different file or destination, rather than another attempt. */
+  errorRetryable?: boolean
   upload?: UploadState
 }
 
@@ -34,6 +36,7 @@ export interface FolderAttachment {
   totalSize: number
   /** Set when uploading this attachment failed; renders the chip in an error state. */
   error?: string
+  errorRetryable?: boolean
   upload?: UploadState
 }
 
@@ -46,7 +49,18 @@ export interface MountAttachment {
   error?: string
 }
 
-export type Attachment = FileAttachment | FolderAttachment | MountAttachment
+/** A file already held with a draft. A reopened draft has no browser File. */
+export interface SavedAttachment {
+  type: 'saved'
+  id: string
+  name: string
+  size: number
+  mimeType: string
+  kind?: 'file' | 'folder'
+  error?: string
+}
+
+export type Attachment = FileAttachment | FolderAttachment | MountAttachment | SavedAttachment
 
 export type AttachmentStatus = 'queued' | 'uploading' | 'done' | 'error'
 
@@ -54,7 +68,7 @@ export type AttachmentStatus = 'queued' | 'uploading' | 'done' | 'error'
 // failed retry never shows a stale bar.
 export function attachmentStatus(a: Attachment): AttachmentStatus | undefined {
   if (a.error) return 'error'
-  if (a.type === 'mount') return undefined
+  if (a.type === 'mount' || a.type === 'saved') return undefined
   return a.upload?.status
 }
 
@@ -65,7 +79,9 @@ interface AttachmentPreviewProps {
 }
 
 function attachmentName(attachment: Attachment): string {
-  return attachment.type === 'file' ? attachment.file.name : attachment.folderName
+  if (attachment.type === 'file') return attachment.file.name
+  if (attachment.type === 'saved') return attachment.name
+  return attachment.folderName
 }
 
 function folderSizeText(attachment: FolderAttachment): string {
@@ -80,7 +96,7 @@ function UploadMeta({ attachment, sizeText, onRetry }: { attachment: FileAttachm
       <span className="flex items-center gap-1 text-destructive">
         <AlertTriangle className="h-3 w-3 text-amber-500" />
         <span className="truncate max-w-[120px]" title={attachment.error}>upload failed</span>
-        {onRetry && (
+        {onRetry && attachment.errorRetryable !== false && (
           <button type="button" onClick={() => onRetry(attachment.id)} className="underline hover:text-foreground" data-testid="attachment-retry">
             retry
           </button>
@@ -120,7 +136,7 @@ function ImageUploadOverlay({ attachment, onRetry }: { attachment: FileAttachmen
   if (status === 'error') {
     // The whole square is the retry target: a second button beside the remove
     // control, inside 44px, would be too small to aim at.
-    if (!onRetry) {
+    if (!onRetry || attachment.errorRetryable === false) {
       return (
         <div className="absolute inset-0 flex items-center justify-center bg-destructive/40" title={attachment.error}>
           <AlertTriangle className="h-4 w-4 text-destructive-foreground" />
@@ -217,6 +233,16 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
                 ) : (
                   <span className="text-muted-foreground">mounted, read-write</span>
                 )}
+              </div>
+            </>
+          ) : attachment.type === 'saved' ? (
+            <>
+              <FileIconTile filename={attachment.name} folder={attachment.kind === 'folder'} />
+              <div className="flex flex-col min-w-0">
+                <span className="truncate max-w-[160px] font-medium" title={attachment.name}>
+                  {attachment.name}
+                </span>
+                <span className="text-muted-foreground">{attachment.kind === 'folder' ? 'Folder' : formatFileSize(attachment.size)}</span>
               </div>
             </>
           ) : attachment.type === 'folder' ? (

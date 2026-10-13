@@ -11,14 +11,14 @@ interface UseAttachmentsOptions {
   onAttachmentsAdded?: (added: Attachment[]) => void
 }
 
-export type UploadPatch = { upload?: UploadState; error?: string }
+export type UploadPatch = { upload?: UploadState; error?: string; errorRetryable?: boolean }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
   // Carried-over chips (stale-session → agent home) always re-upload: their
   // paths belong to the composer that uploaded them.
   const [attachments, setAttachments] = useState<Attachment[]>(() =>
     (options?.initialAttachments ?? []).map((attachment) => {
-      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined }
+      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined, errorRetryable: undefined }
       return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !stripped.preview
         ? { ...stripped, preview: URL.createObjectURL(stripped.file) }
         : stripped
