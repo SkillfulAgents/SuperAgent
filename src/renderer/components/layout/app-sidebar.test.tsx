@@ -11,7 +11,7 @@ if (typeof localStorage === 'undefined' || !localStorage) {
   }
   Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
 }
-import { cloneElement, isValidElement, type ReactElement } from 'react'
+import { cloneElement, forwardRef, isValidElement, type ReactElement } from 'react'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
@@ -290,10 +290,13 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,
   // Honor asChild (Slot): merge data-active + our props onto the child element so
   // the link carries the testid/active state and keeps its own onClick.
-  SidebarMenuButton: ({ children, onClick, isActive, asChild, ...props }: any) =>
-    asChild && isValidElement(children)
+  // Forwards its ref like the real one (a section's ⋯ reaches its header
+  // button through it).
+  SidebarMenuButton: forwardRef(function SidebarMenuButton({ children, onClick, isActive, asChild, ...props }: any, ref: any) {
+    return asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
-      : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
+      : <button ref={ref} onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>
+  }),
   SidebarMenuItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,

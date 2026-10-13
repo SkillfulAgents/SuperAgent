@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ChevronRight, Folder, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Folder, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import {
   defaultDropAnimation,
@@ -15,6 +15,12 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu'
 import { SidebarMenuButton } from '@renderer/components/ui/sidebar'
 import {
   containerIdForFolder,
@@ -32,10 +38,10 @@ export const SECTION_ROW_CLASS =
 export const SECTION_ICON_CLASS = 'h-3.5 w-3.5 text-muted-foreground'
 
 /**
- * A section header's + (a new agent filed into the section). Its hover fill
- * is a step darker than an agent row's (the Electron vibrancy rows use 6%
- * black, 10% white in dark), so it reads as a button on the row rather than
- * the row.
+ * A section header's buttons: its ⋯ menu and its + (a new agent filed into
+ * the section). Their hover fill is a step darker than an agent row's (the
+ * Electron vibrancy rows use 6% black, 10% white in dark), so they read as
+ * buttons on the row rather than the row.
  */
 const HEADER_ACTION_CLASS =
   'absolute top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/80 transition-opacity hover:bg-black/10 hover:text-sidebar-foreground dark:hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
@@ -97,6 +103,30 @@ function FolderNameInput({
   )
 }
 
+/** Keep the right-click menu and the visible menu button's actions identical. */
+function FolderMenuItems({ Item, onRename, onDelete }: {
+  Item: typeof ContextMenuItem
+  onRename: () => void
+  onDelete: () => void
+}) {
+  return (
+    <>
+      <Item onClick={onRename} data-testid="rename-folder-item">
+        <Pencil className="h-4 w-4 mr-2" />
+        Rename Section
+      </Item>
+      <Item
+        className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+        onClick={onDelete}
+        data-testid="delete-folder-item"
+      >
+        <Trash2 className="h-4 w-4 mr-2" />
+        Delete Section
+      </Item>
+    </>
+  )
+}
+
 /**
  * The folder header's interactive row. Memoized because the block around it
  * re-renders on every drag tick (its dnd-kit hooks subscribe to the live drag
@@ -127,7 +157,8 @@ const FolderHeader = React.memo(function FolderHeader({
   // header plus any button overlaid on it, which all carry data-header-zone
   // (see the block) — or while an agent is dragged over it. It is wrapped so
   // the menu button's direct-child svg sizing doesn't reach it.
-  // The right edge stays clear for the header's overlaid buttons (pr-8).
+  // The right edge stays clear for the header actions, which overlay it: the
+  // + alone on Your Agents (pr-8), ⋯ and + on every other section (pr-14).
   // As a label it has no hover or press fill — the menu button's own are
   // cancelled — except as a drop target, where the fill must survive the
   // pointer being over it. It also opts out of `data-sidebar="menu-button"`:
@@ -140,7 +171,7 @@ const FolderHeader = React.memo(function FolderHeader({
           aria-expanded={!isCollapsed}
           className={cn(
             SECTION_ROW_CLASS,
-            'pr-8',
+            isRoot ? 'pr-8' : 'pr-14',
             isDropTarget &&
               'bg-sidebar-accent text-sidebar-foreground ring-1 ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-foreground'
           )}
@@ -169,21 +200,10 @@ const FolderHeader = React.memo(function FolderHeader({
   if (isRoot) return header
 
   return (
-    <ContextMenu>
+    <ContextMenu modal={false}>
       <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={onStartRename} data-testid="rename-folder-item">
-          <Pencil className="h-4 w-4 mr-2" />
-          Rename Section
-        </ContextMenuItem>
-        <ContextMenuItem
-          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-          onClick={onDelete}
-          data-testid="delete-folder-item"
-        >
-          <Trash2 className="h-4 w-4 mr-2" />
-          Delete Section
-        </ContextMenuItem>
+        <FolderMenuItems Item={ContextMenuItem} onRename={onStartRename} onDelete={onDelete} />
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -327,15 +347,38 @@ export function AgentFolderBlock({
         </div>
       )}
 
-      {/*
-        The + overlays the row as a SIBLING of the drag activator: a button
-        cannot nest inside the header <button>, and pressing it must not begin
-        the folder's drag. It takes the header's right edge, centred on the
-        column the agent rows' status icons sit in (16px in), is always shown
-        — it is the folder's own "New Agent" — and gives way to the rename
-        input. New sections are made from "Add section" at the end of the
-        list, not from a header.
-      */}
+      {/* Keep the menu non-modal inside the mobile drawer. A modal menu sets
+          body pointer-events:none, so the touch that opened it lands on the
+          drawer's pointer-events:auto backdrop and closes the sidebar. */}
+      {!isRoot && !isRenaming && (
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              // WebKit emits mousedown after the touch opens the menu. Keep
+              // its default focus change from dismissing this non-modal menu.
+              onMouseDown={(event) => event.preventDefault()}
+              aria-label={`Actions for ${folder.name}`}
+              data-header-zone
+              title="Rename or delete"
+              data-testid={`section-menu-${folder.id}`}
+              className={cn(
+                HEADER_ACTION_CLASS,
+                'right-8 text-sidebar-foreground/40 opacity-0 focus-visible:opacity-100 group-hover/folder-block:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100'
+              )}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            onEscapeKeyDown={(event) => event.stopPropagation()}
+          >
+            <FolderMenuItems Item={DropdownMenuItem} onRename={startRename} onDelete={onDelete} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
       {onCreateAgent && !isRenaming && (
         <button
           type="button"
