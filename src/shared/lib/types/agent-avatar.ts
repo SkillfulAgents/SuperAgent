@@ -4,7 +4,8 @@ import { z } from 'zod'
 export const DEFAULT_AGENT_AVATAR_COLORS = [
   'tonal-red', 'tonal-orange', 'tonal-amber', 'tonal-green', 'tonal-forest',
   'tonal-teal', 'tonal-blue', 'tonal-cobalt', 'tonal-purple', 'tonal-blush',
-  'tonal-pink', 'tonal-brown',
+  'tonal-pink', 'tonal-brown', 'tonal-chocolate', 'tonal-white', 'tonal-grey',
+  'tonal-black',
 ] as const
 
 export const AGENT_AVATAR_COLORS = [

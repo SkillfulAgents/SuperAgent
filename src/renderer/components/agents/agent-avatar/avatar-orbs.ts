@@ -46,8 +46,10 @@ function colourway<Color extends string>(name: Color, label: string, core: strin
  * The design's tile palette with a saturation pass (it read dark in the app):
  * rims a touch lighter and more saturated, cores lifted alongside so faces
  * still read. Forest, Teal and Blush fill gaps the tiles left; Cobalt gives
- * blue a dark partner; Brown is a burnt orange round a deep brown rim, clear
- * of Amber and Orange.
+ * blue a dark partner; Rust is a burnt orange round a deep brown rim, clear
+ * of Amber and Orange, and Brown a true mid brown. The neutrals close it:
+ * White keeps a light grey rim so it holds its edge on the light sidebar and
+ * white cards (a pure white rim disappears there).
  */
 export const DEFAULT_ORBS: readonly AvatarOrb[] = [
   colourway('tonal-red', 'Red', '#FA8274', '#DE0223', 34),
@@ -61,7 +63,12 @@ export const DEFAULT_ORBS: readonly AvatarOrb[] = [
   colourway('tonal-purple', 'Purple', '#C39EFB', '#7A1FFD', 34),
   colourway('tonal-blush', 'Blush', '#FDC4E5', '#FB67C5', 34),
   colourway('tonal-pink', 'Pink', '#FDA0D1', '#F11898', 34),
-  colourway('tonal-brown', 'Brown', '#EC7622', '#7D3B0A', 34),
+  // Labelled Brown until the true Brown joined; the persisted id stays.
+  colourway('tonal-brown', 'Rust', '#EC7622', '#7D3B0A', 34),
+  colourway('tonal-chocolate', 'Brown', '#C08A5A', '#4E2C14', 34),
+  colourway('tonal-white', 'White', '#FFFFFF', '#C2BEBA', 34),
+  colourway('tonal-grey', 'Grey', '#C9C5C2', '#5F5D5C', 34),
+  colourway('tonal-black', 'Black', '#5C5050', '#151212', 34),
 ]
 
 /** One palette colour's rim round another's core. */
