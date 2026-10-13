@@ -614,6 +614,18 @@ describe('AppSidebar — layout & top nav', () => {
 })
 
 describe('AppSidebar — agent rows', () => {
+  it('renders older agents without avatars and keeps their expand control visible', async () => {
+    const agent = makeAgent({ avatar: undefined })
+    mockUseAgents.mockReturnValue({ data: [agent], isLoading: false, error: null })
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(row.querySelector('[data-avatar-orb]')).toBeNull()
+    const expand = within(row).getByRole('button', { name: 'Expand' })
+    expect(expand.querySelector('svg')).not.toHaveClass('opacity-0')
+    await userEvent.click(expand)
+    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+  })
+
   it('keeps the member roster control beside the agent navigation link', () => {
     mockUserContext.isAuthMode = true
     mockUserContext.agentMemberCount.mockImplementation(slug => slug === 'test-agent' ? 4 : 1)
