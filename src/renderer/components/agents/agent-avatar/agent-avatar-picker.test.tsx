@@ -1,139 +1,130 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
-
-import { AgentAvatar, agentAvatarId } from './agent-avatar'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import type { ApiAgent } from '@shared/lib/types/api'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import { apiFetch } from '@renderer/lib/api'
+import { AgentAvatar } from './agent-avatar'
 import { AgentAvatarPicker } from './agent-avatar-picker'
-import { setAvatarChoice } from './avatar-choice-store'
-import { avatarForId } from './avatar-ids'
 import { OFFERED_ORBS } from './avatar-orbs'
 import { ORB_SHAPES } from './orb-shapes'
 
-const shapeOf = (testId: string) =>
-  screen.getByTestId(testId).querySelector('[data-avatar-shape]')?.getAttribute('data-avatar-shape')
+vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 
-const orbOf = (testId: string) =>
-  screen.getByTestId(testId).querySelector('[data-avatar-orb]')?.getAttribute('data-avatar-orb')
-
-// Each agent's own colour and shape, from its slug.
-const own = (slug: string) => avatarForId(agentAvatarId(slug))!
+const first: ApiAgent = {
+  slug: 'first', displaySlug: 'first', name: 'First', createdAt: new Date(),
+  status: 'stopped', containerPort: null, avatar: { color: 'tonal-blue', shape: 'circle' },
+}
+const initialSecond: ApiAgent = {
+  ...first, slug: 'second', displaySlug: 'second', name: 'Second',
+  avatar: { color: 'tonal-green', shape: 'triangle' },
+}
+let second: ApiAgent
+const clients: QueryClient[] = []
+const orbOf = (id: string) => screen.getByTestId(id).querySelector('[data-avatar-orb]')?.getAttribute('data-avatar-orb')
+const shapeOf = (id: string) => screen.getByTestId(id).querySelector('[data-avatar-shape]')?.getAttribute('data-avatar-shape')
 
 function Harness() {
-  return (
-    <>
-      <AgentAvatarPicker slug="second" agentName="Second" />
-      <span data-testid="first">
-        <AgentAvatar slug="first" />
-      </span>
-      <span data-testid="second">
-        <AgentAvatar slug="second" />
-      </span>
-    </>
-  )
+  const { data = [] } = useQuery({ queryKey: ['agents'], queryFn: async () => [first, second] })
+  const edited = data.find(agent => agent.slug === 'second')!
+  return <>
+    <AgentAvatarPicker agent={edited} />
+    {data.map(agent => <span key={agent.slug} data-testid={agent.slug}><AgentAvatar agent={agent} /></span>)}
+  </>
 }
 
-describe('AgentAvatarPicker', () => {
-  beforeEach(() => localStorage.clear())
+function mount() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  clients.push(client)
+  client.setQueryData(['agents'], [first, second])
+  return render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>)
+}
 
-  it('shows each agent its own colour and shape, from its slug', () => {
-    render(<Harness />)
-    expect(orbOf('first')).toBe(own('first').orb.name)
-    expect(shapeOf('first')).toBe(own('first').shape.name)
-    expect(orbOf('second')).toBe(own('second').orb.name)
-    expect(shapeOf('second')).toBe(own('second').shape.name)
+beforeEach(() => {
+  second = initialSecond
+  vi.mocked(apiFetch).mockReset().mockImplementation(async (_url, init) => {
+    const avatar = agentAvatarSchema.parse(JSON.parse(String(init?.body)))
+    second = { ...second, avatar }
+    return Response.json(avatar)
   })
+})
+afterEach(() => {
+  cleanup()
+  clients.splice(0).forEach(client => client.clear())
+})
 
-  it('opens on the agent’s own shape and colour', async () => {
-    const user = userEvent.setup()
-    render(<Harness />)
-    await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
-    expect(screen.getByRole('button', { name: own('second').shape.label })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: own('second').orb.label })).toHaveAttribute('aria-pressed', 'true')
+it('shows the persisted pair and opens with that color and shape selected', async () => {
+  mount()
+  expect(orbOf('first')).toBe('tonal-blue')
+  expect(orbOf('second')).toBe('tonal-green')
+  expect(shapeOf('second')).toBe('triangle')
+  await userEvent.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  expect(screen.getByRole('button', { name: 'Green' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('button', { name: 'Triangle' })).toHaveAttribute('aria-pressed', 'true')
+})
+
+it('previews locally, saves both fields once on close, and reads the saved pair in a new client', async () => {
+  const user = userEvent.setup()
+  const view = mount()
+  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  for (const orb of OFFERED_ORBS) expect(screen.getByRole('button', { name: orb.label })).toBeInTheDocument()
+  for (const shape of ORB_SHAPES) expect(screen.getByRole('button', { name: shape.label })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Bloom' }))
+  await user.click(screen.getByRole('button', { name: 'Red / Amber' }))
+  expect(shapeOf('agent-avatar-picker')).toBe('bloom')
+  expect(orbOf('agent-avatar-picker')).toBe('duo-red-amber')
+  expect(shapeOf('second')).toBe('triangle')
+  expect(apiFetch).not.toHaveBeenCalled()
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(shapeOf('second')).toBe('bloom'))
+  expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/agents/second/avatar', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color: 'duo-red-amber', shape: 'bloom' }),
   })
+  expect(orbOf('first')).toBe('tonal-blue')
+  view.unmount()
+  mount()
+  expect(orbOf('second')).toBe('duo-red-amber')
+  expect(shapeOf('second')).toBe('bloom')
+})
 
-  const openPicker = (user: ReturnType<typeof userEvent.setup>) => user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
-  // The picker has no buttons of its own: closing it keeps the draft.
-  const close = (user: ReturnType<typeof userEvent.setup>) => user.keyboard('{Escape}')
-  const pickerOpen = () => screen.queryByRole('button', { name: ORB_SHAPES[0].label }) !== null
-  // A colour and shape that differ from the agent's own, whatever its slug gives it.
-  const otherColour = () => OFFERED_ORBS.find(orb => orb !== own('second').orb)!
-  const otherShape = () => ORB_SHAPES.find(shape => shape !== own('second').shape)!
+it('saves when dismissed by clicking outside, but skips unchanged choices', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.keyboard('{Escape}')
+  expect(apiFetch).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: 'Pill' }))
+  await user.click(document.body)
+  await waitFor(() => expect(shapeOf('second')).toBe('pill'))
+})
 
-  it('offers every colour, previews a pick as a draft, and applies it on close', async () => {
-    const user = userEvent.setup()
-    render(<Harness />)
-    await openPicker(user)
-    for (const orb of OFFERED_ORBS) expect(screen.getByRole('button', { name: orb.label })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: otherColour().label }))
-    expect(screen.getByRole('button', { name: otherColour().label })).toHaveAttribute('aria-pressed', 'true')
-    // A draft: the avatar being edited shows it in place; elsewhere the agent doesn't wear it yet.
-    expect(orbOf('agent-avatar-picker')).toBe(otherColour().name)
-    expect(orbOf('second')).toBe(own('second').orb.name)
-
-    await close(user)
-    expect(pickerOpen()).toBe(false)
-    expect(orbOf('second')).toBe(otherColour().name)
+it('does not overwrite a remote change when an untouched picker closes', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await act(async () => {
+    second = { ...second, avatar: { color: 'tonal-red', shape: 'bloom' } }
+    clients.at(-1)!.setQueryData(['agents'], [first, second])
   })
+  await waitFor(() => expect(shapeOf('second')).toBe('bloom'))
+  await user.keyboard('{Escape}')
+  expect(apiFetch).not.toHaveBeenCalled()
+  expect(shapeOf('agent-avatar-picker')).toBe('bloom')
+  expect(orbOf('agent-avatar-picker')).toBe('tonal-red')
+})
 
-  it('keeps the draft when clicking out of the picker', async () => {
-    const user = userEvent.setup()
-    render(<Harness />)
-    await openPicker(user)
-    await user.click(screen.getByRole('button', { name: otherShape().label }))
-    await user.click(document.body)
-    expect(pickerOpen()).toBe(false)
-    expect(shapeOf('second')).toBe(otherShape().name)
-    expect(shapeOf('agent-avatar-picker')).toBe(otherShape().name)
-  })
-
-  it('stores nothing when closed without a change', async () => {
-    const user = userEvent.setup()
-    render(<Harness />)
-    await openPicker(user)
-    await close(user)
-    expect(Object.keys(localStorage).filter(name => name.startsWith('agent-avatar-choices.'))).toEqual([])
-  })
-
-  it('picks shape and colour independently, and remembers them', async () => {
-    const user = userEvent.setup()
-    const { unmount } = render(<Harness />)
-    await openPicker(user)
-    for (const shape of ORB_SHAPES) expect(screen.getByRole('button', { name: shape.label })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: otherShape().label }))
-    expect(shapeOf('agent-avatar-picker')).toBe(otherShape().name)
-    expect(orbOf('agent-avatar-picker')).toBe(own('second').orb.name) // colour kept
-
-    await user.click(screen.getByRole('button', { name: otherColour().label }))
-    expect(shapeOf('agent-avatar-picker')).toBe(otherShape().name) // shape kept
-    expect(screen.getByRole('button', { name: otherShape().label })).toHaveAttribute('aria-pressed', 'true')
-    await close(user)
-
-    unmount()
-    render(<Harness />)
-    expect(shapeOf('second')).toBe(otherShape().name)
-    expect(orbOf('second')).toBe(otherColour().name)
-  })
-
-  it('stores nothing when the agent’s own look is picked back', async () => {
-    setAvatarChoice('second', `orb:${otherColour().name}`)
-    const user = userEvent.setup()
-    render(<Harness />)
-    await openPicker(user)
-    await user.click(screen.getByRole('button', { name: own('second').shape.label }))
-    await user.click(screen.getByRole('button', { name: own('second').orb.label }))
-    await close(user)
-    expect(orbOf('second')).toBe(own('second').orb.name)
-    const key = Object.keys(localStorage).find(name => name.startsWith('agent-avatar-choices.'))!
-    expect(localStorage.getItem(key)).not.toContain('second')
-  })
-
-  it('falls back to the agent’s own avatar for a pick this build doesn’t know', () => {
-    setAvatarChoice('second', 'orb:tonal-grey')
-    render(<Harness />)
-    expect(orbOf('second')).toBe(own('second').orb.name)
-    expect(shapeOf('second')).toBe(own('second').shape.name)
-  })
+it('keeps the last persisted avatar when the server rejects a save', async () => {
+  vi.mocked(apiFetch).mockResolvedValue(new Response('Save failed', { status: 500 }))
+  const user = userEvent.setup()
+  mount()
+  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: 'Bloom' }))
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(screen.getByTestId('agent-avatar-picker')).not.toBeDisabled())
+  expect(shapeOf('agent-avatar-picker')).toBe('triangle')
+  expect(shapeOf('second')).toBe('triangle')
 })

@@ -9,9 +9,11 @@
  * (`phi`) are degrees with 0 = right, 90 = down, as in Math.atan2 on screen.
  */
 
+import type { AgentAvatarShape } from '@shared/lib/types/agent-avatar'
+
 type Point = readonly [number, number]
 
-export type OrbShapeName = 'circle' | 'squircle' | 'triangle' | 'diamond' | 'hexagon' | 'pill' | 'arch' | 'bloom'
+export type OrbShapeName = AgentAvatarShape
 
 export interface OrbShape {
   name: OrbShapeName

@@ -642,7 +642,7 @@ const AgentMenuItemInner = React.forwardRef<
                   className="group/avatar absolute left-1 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
                   <AgentAvatar
-                    slug={agent.slug}
+                    agent={agent}
                     state={avatarState}
                     size={AGENT_AVATAR_SIZE}
                     followPointer={SIDEBAR_FOLLOW_REGION}
@@ -657,7 +657,7 @@ const AgentMenuItemInner = React.forwardRef<
                 </button>
               ) : (
                 <span className="pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
-                  <AgentAvatar slug={agent.slug} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
+                  <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
                 </span>
               )}
             </div>

@@ -365,6 +365,7 @@ vi.mock('@dnd-kit/modifiers', () => ({
 
 function makeAgent(overrides: Record<string, any> = {}) {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'test-agent',
     displaySlug: 'test-agent',
     name: 'Test Agent',

@@ -894,6 +894,15 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
+  it('agent_updated refreshes saved appearance in list and detail queries on other clients', () => {
+    queryClient.setQueryData(['agents'], [])
+    queryClient.setQueryData(['agents', 'agent-a'], {})
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_updated', agentSlug: 'agent-a' })
+    expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 

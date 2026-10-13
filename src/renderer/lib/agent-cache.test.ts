@@ -6,9 +6,11 @@ import {
   invalidateAgentArtifacts,
   markDashboardScreenshotReady,
   updateAgentRuntimeCache,
+  updateAgentAvatarCache,
 } from './agent-cache'
 
 const agent: ApiAgent = {
+  avatar: { color: 'tonal-blue', shape: 'circle' } as const,
   slug: 'agent-a',
   displaySlug: 'agent-a-display',
   name: 'Agent A',
@@ -31,6 +33,16 @@ function seededClient() {
 }
 
 describe('targeted agent cache updates', () => {
+  it('updates a saved avatar in the list and every detail alias, preserving other agents and summaries', () => {
+    const client = seededClient()
+    const avatar = { color: 'duo-red-amber', shape: 'bloom' } as const
+    updateAgentAvatarCache(client, 'agent-a', avatar)
+    expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0]).toMatchObject({ avatar, sessionCount: 7 })
+    expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])?.avatar).toEqual(avatar)
+    expect(client.getQueryData<ApiAgent>(['agents', 'agent-a-display'])?.avatar).toEqual(avatar)
+    expect(client.getQueryData<ApiAgent[]>(['agents'])?.[1].avatar).toEqual(agent.avatar)
+  })
+
   it('updates runtime state in list and every cached detail alias without losing summaries', () => {
     const client = seededClient()
 

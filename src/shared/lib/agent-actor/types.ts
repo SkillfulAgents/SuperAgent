@@ -22,6 +22,7 @@
  * synchronous persister reads. Everything that does I/O returns a Promise.
  */
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import type {
   ContainerInfo,
   ContainerSession,
@@ -130,6 +131,7 @@ export interface AgentPlacement {
 export interface AgentRecord {
   slug: AgentSlug
   name: string
+  avatar: AgentAvatar
   description?: string
   createdAt: Date
   placement: AgentPlacement
@@ -137,6 +139,7 @@ export interface AgentRecord {
 
 export interface AgentIdentityChanges {
   name?: string
+  avatar?: AgentAvatar
   /** Null clears the description. */
   description?: string | null
 }
@@ -165,7 +168,7 @@ export interface AgentCatalog {
   mint(): Promise<AgentSlug>
   /** Record a new local agent. The caller has written its workspace already. */
   insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date }): Promise<AgentRecord>
-  /** Change an agent's name or description; null when there is no such agent. */
+  /** Change an agent's identity or appearance; null when there is no such agent. */
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
