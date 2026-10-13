@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { Archive, ArrowUpRight, ChevronDown, Maximize2, Minimize2, Play, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { deriveTodoTitle, TODO_TITLE_MAX, type TodoAttachment } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
@@ -550,18 +550,17 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   }
 
   const autoButton = (
-    <ShortcutTooltip label="Pick an agent for this todo">
-      <button
-        type="button"
-        onClick={() => void suggestAgent()}
-        disabled={suggesting}
-        className="ml-2 inline-flex items-center gap-0.5 align-middle text-xs font-normal tracking-normal text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-60"
-        data-testid="todo-auto-agent"
-      >
-        <ArrowUpRight className="h-3 w-3" />
-        {suggesting ? 'Picking…' : 'Auto agent'}
-      </button>
-    </ShortcutTooltip>
+    <button
+      type="button"
+      onClick={() => void suggestAgent()}
+      disabled={suggesting}
+      aria-keyshortcuts="Tab"
+      className="ml-2 inline-flex items-center gap-1 align-middle text-xs font-normal tracking-normal text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-60"
+      data-testid="todo-auto-agent"
+    >
+      <kbd className="inline-flex h-4 items-center rounded border border-current/40 px-1 text-[10px] font-medium leading-none">Tab</kbd>
+      {suggesting ? 'Picking…' : 'Auto agent'}
+    </button>
   )
 
   const start = async () => {
@@ -592,8 +591,18 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       failed()
     }
   }
-  // ⌘↩ starts from either the title or the description.
-  const startOnModEnter = (e: { key: string; metaKey: boolean; ctrlKey: boolean; preventDefault: () => void }) => {
+  // ⌘↩ starts from either field. Tab accepts Auto agent, like autocomplete, but
+  // only in the field the hint sits in. Shift-Tab still moves focus or outdents.
+  const onDraftKeyDown = (
+    e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; preventDefault: () => void },
+    field: 'title' | 'description',
+  ) => {
+    const autoHere = field === 'description' ? autoInDescription : autoAfterTitle
+    if (e.key === 'Tab' && autoHere && !suggesting && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault()
+      void suggestAgent()
+      return
+    }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       void start()
@@ -724,7 +733,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
               value={fields.title}
               readOnly={saveBlocked && !canCorrectSave(saveError)}
               onChange={(e) => change({ title: e.target.value })}
-              onKeyDown={startOnModEnter}
+              onKeyDown={(e) => onDraftKeyDown(e, 'title')}
               // Unnamed, the card shows a title taken from the description.
               placeholder={deriveTodoTitle(fields.description) || 'Task title'}
               maxLength={TODO_TITLE_MAX}
@@ -808,7 +817,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
             value={fields.description}
             disabled={saveBlocked && !canCorrectSave(saveError)}
             onChange={(description) => change({ description })}
-            onKeyDown={startOnModEnter}
+            onKeyDown={(e) => onDraftKeyDown(e, 'description')}
             placeholder="Describe what you want to get done. Paste links for context."
             minRows={expanded ? 12 : 3}
             className="mt-5 text-[15px] leading-7"
