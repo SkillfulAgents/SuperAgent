@@ -62,6 +62,7 @@ import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agen
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { AgentAvatar, agentActivity, agentAvatarState } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { formatLastRun } from '@renderer/lib/last-run'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -419,6 +420,16 @@ function SessionsSkeleton() {
   )
 }
 
+// Agent-row avatar, px across, in a 40px row that holds the name and its
+// last-run line. It sits centred in a 32px slot at left 4px, so its centre is
+// x=20: the sessions sub-list is padded 25px to land its tree connector
+// (drawn 5px left of each item) there.
+const AGENT_AVATAR_SIZE = 27
+
+// Avatars follow the cursor while it's over the sidebar, and go back to their
+// own motion (an orb's wander, its look at the viewer) when it leaves.
+const SIDEBAR_FOLLOW_REGION = '[data-sidebar="sidebar"]'
+
 // Right-side indicator on the agent row.
 // Awaiting / working aggregate across sessions regardless of expansion, with
 // the same formula as the agent header's AgentStatus (fresh sessions data
@@ -437,8 +448,7 @@ function AgentRowIndicator({
   sessions: ApiSession[] | undefined
   isOpen: boolean
 }) {
-  const isAwaiting = sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)
-  const isWorking = !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+  const { isAwaiting, isWorking } = agentActivity(agent, sessions)
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (
@@ -511,6 +521,7 @@ const AgentMenuItemInner = React.forwardRef<
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
+  const avatarState = agentAvatarState(agent, sessions)
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -576,7 +587,7 @@ const AgentMenuItemInner = React.forwardRef<
           <SidebarMenuButton
             asChild
             isActive={isSelected}
-            className={cn('relative h-10 gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
+            className={cn('relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
           >
             <div {...dragHandlers}>
               {/* Stretch the native link across the row; the roster and
@@ -611,21 +622,34 @@ const AgentMenuItemInner = React.forwardRef<
                   <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
                 )}
               </AppLink>
-              {hasExpandableContent && (
+              {/* The avatar holds the expand slot; hovering it (or focusing
+                  the toggle) swaps in the chevron, Notion-style. */}
+              {hasExpandableContent ? (
                 <button
                   type="button"
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="absolute left-1.5 top-1/2 z-10 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+                  className="group/avatar absolute left-1 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
+                  <AgentAvatar
+                    slug={agent.slug}
+                    state={avatarState}
+                    size={AGENT_AVATAR_SIZE}
+                    followPointer={SIDEBAR_FOLLOW_REGION}
+                    className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
+                  />
                   <ChevronRight
                     className={cn(
-                      'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                      'absolute h-3.5 w-3.5 text-sidebar-foreground opacity-0 transition-[opacity,transform] group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
                       isOpen && !isDragActive && 'rotate-90'
                     )}
                   />
                 </button>
+              ) : (
+                <span className="pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
+                  <AgentAvatar slug={agent.slug} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
+                </span>
               )}
             </div>
           </SidebarMenuButton>
@@ -633,7 +657,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[25px]', SIDEBAR_TREE_CONNECTORS)}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (

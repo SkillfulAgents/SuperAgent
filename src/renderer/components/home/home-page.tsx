@@ -18,6 +18,7 @@ import {
 import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { AgentAvatar, agentAvatarState } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
@@ -603,13 +604,16 @@ function AgentCard({
       : null
 
   const titleOverlay = (
-    <div className="pointer-events-none absolute bottom-2 left-4 z-10 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
-      <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
-      {isSmall && notifState ? (
-        <TickerTitleMeta lastRun={lastRun} notifCount={notifSessions.length} notifState={notifState} />
-      ) : (
-        <div className="truncate text-xs text-muted-foreground">{lastRun}</div>
-      )}
+    <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
+      <AgentAvatar slug={agent.slug} state={agentAvatarState(agent)} size={34} />
+      <div className="min-w-0">
+        <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
+        {isSmall && notifState ? (
+          <TickerTitleMeta lastRun={lastRun} notifCount={notifSessions.length} notifState={notifState} />
+        ) : (
+          <div className="truncate text-xs text-muted-foreground">{lastRun}</div>
+        )}
+      </div>
     </div>
   )
 
