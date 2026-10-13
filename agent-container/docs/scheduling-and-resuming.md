@@ -62,8 +62,11 @@ Call `mcp__user-input__schedule_resume` with:
 
 - `wakeTime`: a clear natural-language time such as `tomorrow 9am` or `in 72
   hours`;
+- `summary`: one short line for the user, shown in a banner while the session
+  sleeps — what you are waiting on, in plain words (e.g. "Waiting on Pepco's
+  payment-history letter"). Under 80 characters; no instructions to yourself;
 - `note`: a compact instruction to the future continuation explaining what to
-  check and what outcome is expected.
+  check and what outcome is expected. Only you read it.
 
 After scheduling the resume, end the turn. The current session supports one
 pending wake; a new wake replaces the previous one. Wakes are one-shot. If the

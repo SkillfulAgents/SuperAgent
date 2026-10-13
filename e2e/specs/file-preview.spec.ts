@@ -724,7 +724,7 @@ test.describe('File Preview', () => {
             summaryPieceLines: leaves(summary).map(lines),
             footerTextLines: leaves(footer).map(lines),
             footerOverflow: footer.scrollWidth - footer.clientWidth,
-            wakeMessageLines: lines(deadline.parentElement!),
+            wakeMessageLines: lines(banner.querySelector('[data-testid="pending-wake-summary"]')!),
             // The key hint, wrapped under Context Usage, starts at the same left edge.
             hint: (() => {
               const [context, hint] = [...footer.children].filter((c) => c.textContent!.trim()).map((c) => box(c))

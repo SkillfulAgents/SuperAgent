@@ -3402,6 +3402,20 @@ describe('MessagePersister', () => {
       expect(body.value).toContain('auto-resume')
     })
 
+    it('passes the summary through for the banner, trimmed', async () => {
+      simulateScheduleResumeToolUse('wake-tool-summary', {
+        wakeTime: 'at tomorrow 9am',
+        summary: '  Waiting on Dana\'s reply  ',
+        note: 'Check whether Dana replied',
+      })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+
+      expect(mockCreateSessionWake).toHaveBeenCalledWith(
+        expect.objectContaining({ summary: 'Waiting on Dana\'s reply' })
+      )
+    })
+
     it('normalizes a wakeTime without the "at " prefix', async () => {
       simulateScheduleResumeToolUse('wake-tool-2', {
         wakeTime: 'in 72 hours',

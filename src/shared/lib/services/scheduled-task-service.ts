@@ -47,8 +47,10 @@ export interface CreateSessionWakeParams {
   // Why the session is sleeping / what to check on wake — echoed back verbatim
   // in the wake message. Stored as the task prompt.
   note: string
+  // One line for the user, shown in the pending-wake banner. Stored as the task
+  // name (the scheduled task's display name).
+  summary?: string
   sessionId: string
-  name?: string
   createdByUserId?: string
   timezone?: string
 }
@@ -165,7 +167,7 @@ async function replaceSessionWake(
     scheduleType: 'at',
     scheduleExpression: params.scheduleExpression,
     prompt: params.note,
-    name: params.name,
+    name: params.summary,
     status: 'pending',
     nextExecutionAt,
     isRecurring: false,

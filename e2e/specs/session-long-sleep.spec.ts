@@ -20,6 +20,7 @@ interface SessionWithWake {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  pendingWakeSummary?: string
 }
 
 /**
@@ -90,6 +91,7 @@ test.describe('Session long sleep (schedule_resume)', () => {
     // A real wake row is persisted, targeting THIS session
     const session = await waitForPendingWake(request, agentSlug, sessionId)
     expect(session.pendingWakeNote).toBe('Check whether the review has been approved')
+    expect(session.pendingWakeSummary).toBe('Waiting on the review to be approved')
     expect(new Date(session.pendingWakeAt!).getTime()).toBeGreaterThan(Date.now())
 
     await gotoSession(page, agentSlug, sessionId)
@@ -97,8 +99,8 @@ test.describe('Session long sleep (schedule_resume)', () => {
     // The auto-resume banner shows above the composer with the note + actions
     const banner = page.locator('[data-testid="pending-wake-banner"]')
     await expect(banner).toBeVisible({ timeout: 15000 })
-    await expect(banner).toContainText('auto-resume')
-    await expect(banner).toContainText('Check whether the review has been approved')
+    await expect(banner).toContainText('Auto-resumes')
+    await expect(banner).toContainText('Waiting on the review to be approved')
 
     // The sidebar session row shows the pending-wake (moon) indicator
     await expect(
@@ -113,7 +115,7 @@ test.describe('Session long sleep (schedule_resume)', () => {
     expect(tasks.find((t) => t.id === session.pendingWakeTaskId)).toBeUndefined()
   })
 
-  test('Wake now resumes the session and clears the wake', async ({ page, request }) => {
+  test('Run now resumes the session and clears the wake', async ({ page, request }) => {
     const { agentSlug, sessionId } = await scheduleResumeInNewSession(page)
     const session = await waitForPendingWake(request, agentSlug, sessionId)
 

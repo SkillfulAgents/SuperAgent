@@ -182,6 +182,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               pendingWakeAt={session?.pendingWakeAt}
               pendingWakeTaskId={session?.pendingWakeTaskId}
               pendingWakeNote={session?.pendingWakeNote}
+              pendingWakeSummary={session?.pendingWakeSummary}
             />
           </div>
         </WorkflowProvider>

@@ -42,6 +42,7 @@ interface SessionChatColumnProps {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  pendingWakeSummary?: string
 }
 
 export function SessionChatColumn({
@@ -64,6 +65,7 @@ export function SessionChatColumn({
   pendingWakeAt,
   pendingWakeTaskId,
   pendingWakeNote,
+  pendingWakeSummary,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   const voiceModeActive = useIsVoiceModeActive(sessionId)
@@ -135,6 +137,7 @@ export function SessionChatColumn({
                       wakeAt={pendingWakeAt}
                       taskId={pendingWakeTaskId}
                       note={pendingWakeNote}
+                      summary={pendingWakeSummary}
                       readOnly={isViewOnly}
                     />
                   )}

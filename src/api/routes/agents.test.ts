@@ -8962,6 +8962,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
         resumeSessionId: 's-waking',
         nextExecutionAt: new Date('2026-02-01T09:30:00.000Z'),
         prompt: 'Check the deploy',
+        name: 'Waiting on the deploy',
       } as never,
     ])
 
@@ -8976,6 +8977,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
         pendingWakeAt: '2026-02-01T09:30:00.000Z',
         pendingWakeTaskId: 'wake-1',
         pendingWakeNote: 'Check the deploy',
+        pendingWakeSummary: 'Waiting on the deploy',
       }),
       expect.objectContaining({ id: 's-unread', hasUnreadNotifications: true }),
       expect.objectContaining({ id: 's-plain', hasUnreadNotifications: false }),

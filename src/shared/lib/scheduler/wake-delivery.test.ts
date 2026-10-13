@@ -148,7 +148,7 @@ describe('deliverSessionWake', () => {
     )
   })
 
-  it('does not notify on manual (Wake now) delivery', async () => {
+  it('does not notify on manual (Run now) delivery', async () => {
     const result = await deliverSessionWake(createWakeTask(), 'manual')
 
     expect(result.outcome).toBe('delivered')

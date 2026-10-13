@@ -2425,11 +2425,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
     // Schedule resume (session long-sleep) scenario — the host interceptor
     // persists a real wake row targeting this session, so E2E can exercise the
-    // pending-wake banner, sidebar badge, and Wake now / Cancel actions.
+    // pending-wake banner, sidebar badge, and Run now / Cancel actions.
     ['schedule resume', new ToolUseScenario(
       'mcp__user-input__schedule_resume',
       {
         wakeTime: 'at now + 2 hours',
+        summary: 'Waiting on the review to be approved',
         note: 'Check whether the review has been approved',
       },
       'Scheduled this session to auto-resume in 2 hours.',

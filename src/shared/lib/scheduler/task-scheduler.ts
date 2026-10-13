@@ -304,7 +304,7 @@ class TaskScheduler {
   /**
    * Fire a session wake: resume the existing target session with a system
    * message instead of creating a new session. Delivery (claim, guards, send,
-   * record) lives in deliverSessionWake, shared with the manual "Wake now"
+   * record) lives in deliverSessionWake, shared with the manual "Run now"
    * route so the two paths can never double-deliver. Transient delivery
    * errors propagate to the caller's retry handling.
    */
@@ -321,7 +321,7 @@ class TaskScheduler {
         )
         break
       case 'in-flight':
-        // Another delivery (e.g. a "Wake now" click) holds the claim — its
+        // Another delivery (e.g. a "Run now" click) holds the claim — its
         // completion records the execution; nothing to do here.
         console.log(`[TaskScheduler] Wake ${task.id} delivery already in flight; skipping`)
         break
