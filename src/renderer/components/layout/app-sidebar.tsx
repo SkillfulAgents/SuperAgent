@@ -782,50 +782,83 @@ function TodoMenuButton() {
   )
 }
 
-function UserMenu() {
+const userMenuItemClassName =
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+
+/**
+ * The footer's primary button. With a signed-in user it is their avatar and
+ * name, opening a popover that holds Settings and sign out; without one (local
+ * mode) it is the plain Settings button.
+ */
+function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { isAuthMode, user, signOut } = useUser()
   // Go through the same switch path as the sidebar's control rather than
   // calling switchTarget directly: it owns the failure handling, so a switch
   // that cannot be recorded reports itself instead of rejecting into nothing.
   const { switching, switchTo } = useTargetSwitch()
-  if (!isAuthMode || !user) return null
+  const [open, setOpen] = useState(false)
+  if (!isAuthMode || !user) {
+    return (
+      <SidebarMenuButton
+        onClick={onOpenSettings}
+        className="w-auto"
+        data-testid="settings-button"
+      >
+        <Settings className="h-4 w-4" />
+        <span>Settings</span>
+      </SidebarMenuButton>
+    )
+  }
   return (
-    <div className="px-2">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <UserAvatar user={user} size={22} />
-            <span className="truncate max-w-[140px]">{user.name}</span>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <SidebarMenuButton className="w-auto min-w-0" data-testid="user-menu-trigger">
+          <UserAvatar user={user} size={20} className="-ml-0.5" />
+          <span className="truncate">{user.name || user.email}</span>
+        </SidebarMenuButton>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-48 p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false)
+            onOpenSettings()
+          }}
+          className={userMenuItemClassName}
+          data-testid="settings-button"
+        >
+          <Settings className="h-4 w-4" />
+          Settings
+        </button>
+        <div className="-mx-1 my-1 h-px bg-border" role="separator" />
+        {hasInteractiveLogin() ? (
+          <button
+            type="button"
+            onClick={signOut}
+            className={userMenuItemClassName}
+            data-testid="sign-out-button"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign out
           </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-48 p-1">
-          {hasInteractiveLogin() ? (
-            <button
-              onClick={signOut}
-              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
-              data-testid="sign-out-button"
-            >
-              <LogOut className="h-4 w-4" />
-              Sign out
-            </button>
-          ) : (
-            // Cloud workspace: signing out would revoke the deployment session
-            // the desktop's grant is bound to — disruptive, and pointless since
-            // main still holds the platform connection and would just mint
-            // another. Offer the action that actually means something here.
-            <button
-              onClick={() => void switchTo('local')}
-              disabled={switching}
-              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60"
-              data-testid="switch-to-local-button"
-            >
-              <LogOut className="h-4 w-4" />
-              Use this computer
-            </button>
-          )}
-        </PopoverContent>
-      </Popover>
-    </div>
+        ) : (
+          // Cloud workspace: signing out would revoke the deployment session
+          // the desktop's grant is bound to — disruptive, and pointless since
+          // main still holds the platform connection and would just mint
+          // another. Offer the action that actually means something here.
+          <button
+            type="button"
+            onClick={() => void switchTo('local')}
+            disabled={switching}
+            className={userMenuItemClassName}
+            data-testid="switch-to-local-button"
+          >
+            <LogOut className="h-4 w-4" />
+            Use this computer
+          </button>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -1772,17 +1805,9 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
-        <UserMenu />
+      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-between gap-2">
-          <SidebarMenuButton
-            onClick={() => openSettings()}
-            className="w-auto"
-            data-testid="settings-button"
-          >
-            <Settings className="h-4 w-4" />
-            <span>Settings</span>
-          </SidebarMenuButton>
+          <UserMenu onOpenSettings={() => openSettings()} />
           {isCloud && versionState.showPair && versionState.cloudVersion ? (
             <div
               className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"

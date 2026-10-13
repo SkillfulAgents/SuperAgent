@@ -1044,6 +1044,25 @@ describe('UserMenu action for the current target', () => {
     expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
   })
 
+  it('replaces the footer Settings button with the user, holding Settings in its menu', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    renderWithProviders(<AppSidebar />)
+
+    const trigger = screen.getByTestId('user-menu-trigger')
+    expect(trigger).toHaveTextContent('Ada')
+    // One Settings entry, and it lives in the user's popover (rendered open by
+    // this file's Popover mock), not beside it in the footer.
+    const settings = screen.getByTestId('settings-button')
+    const popover = trigger.closest('[data-testid="popover"]')
+    expect(popover).not.toBeNull()
+    expect(settings.closest('[data-testid="popover"]')).toBe(popover)
+
+    await userEvent.click(settings)
+
+    expect(mockDialogContext.openSettings).toHaveBeenCalled()
+  })
+
   it('does not revoke the deployment session when that action is used', async () => {
     vi.stubGlobal('__AUTH_MODE__', false)
     setActiveTarget('cloud', null)
