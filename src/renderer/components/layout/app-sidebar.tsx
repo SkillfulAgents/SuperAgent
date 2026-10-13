@@ -1772,7 +1772,7 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
+      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton
