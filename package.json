@@ -30,6 +30,7 @@
     "lint:e2e": "eslint e2e --ext .ts",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:packaging": "node --test scripts/packaging/*.test.cjs",
     "test:coverage": "vitest run --coverage",
     "test:container": "npm --prefix agent-container test",
     "test:e2e": "E2E_MOCK=true playwright test --project=web-chromium",
@@ -105,6 +106,7 @@
     "@dnd-kit/modifiers": "^9.0.0",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@electron/asar": "^3.4.1",
     "@electron/rebuild": "^4.0.6",
     "@hono/vite-dev-server": "^0.24.1",
     "@hookform/resolvers": "^5.2.2",
@@ -242,8 +244,14 @@
       }
     ],
     "files": [
-      "dist/**/*"
+      "dist/{main,preload,renderer}/**/*",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.d.{ts,mts,cts}",
+      "!node_modules/better-sqlite3/{src,deps,bin}/**/*",
+      "!node_modules/better-sqlite3/build/!(Release){,/**}",
+      "!node_modules/better-sqlite3/build/Release/!(better_sqlite3.node){,/**}"
     ],
+    "afterPack": "./scripts/packaging/check-package.cjs",
     "asarUnpack": [
       "node_modules/@skillful-agents/agent-computer/bin/**"
     ],
@@ -314,6 +322,7 @@
         ]
       },
       "files": [
+        "dist/{main,preload,renderer}/**/*",
         "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-*"
       ]
     },
@@ -397,6 +406,7 @@
         "publisherName": "Datawizz Inc."
       },
       "files": [
+        "dist/{main,preload,renderer}/**/*",
         "!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*",
         "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-!(${arch}).exe"
       ]

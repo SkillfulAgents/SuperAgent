@@ -14,7 +14,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: .node-version
           cache: 'npm'
 
       # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
@@ -23,10 +23,11 @@ jobs:
         run: npm install -g npm@11.14.1
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --foreground-scripts
 
       - name: Build and sign Windows app
         env:
+          DEBUG: electron-rebuild
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
