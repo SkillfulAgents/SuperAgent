@@ -7,6 +7,10 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import { bestAllowedModel } from '@shared/lib/llm-provider/plan-model-policy'
+import { usePlanModelLock } from '@renderer/hooks/use-plan-model-lock'
+import { announcePlanFallback } from '@renderer/lib/plan-fallback-notice'
+import type { PlanLock } from './model-family-list'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -41,6 +45,8 @@ export interface ComposerOptionsState {
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
+  /** Models the workspace's plan excludes on the selected connection (platform only). */
+  planLock?: PlanLock
   /**
    * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
    * explicit user pick, no session-seeded value) are OMITTED, not serialized:
@@ -344,13 +350,44 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
+
+  // ---- Plan fallback ----
+  // An inherited default the workspace's plan now excludes (a downgrade since it
+  // was saved) would be refused on every send. New chats show the best model the
+  // plan allows instead and send it explicitly, so the server's own default
+  // resolution can't put the excluded one on the wire. Derived, not stored: the
+  // saved default is untouched and comes back as soon as the plan allows it.
+  // New chats only: an existing session runs on its own model (a trigger-created
+  // one may carry none in its metadata), and a user pick is explicit; the 403
+  // card covers both.
+  const planLock = usePlanModelLock(selectedConnection?.provider)
+  const inheritedDefault = !sessionId && !currentSelection && !modelSeededRef.current
+  const lockedDefault = planLock && inheritedDefault ? findCatalogModel(displayedModel, catalog) : undefined
+  const planFallback = planLock && lockedDefault && planLock.isLocked(lockedDefault)
+    ? bestAllowedModel(catalog, planLock.isLocked, lockedDefault)
+    : undefined
+  const planFallbackId = planFallback?.id
+  useEffect(() => {
+    if (!planLock || !lockedDefault || !planFallback) return
+    announcePlanFallback({
+      locked: lockedDefault,
+      fallback: planFallback,
+      planName: planLock.planName,
+      onUpgrade: () => planLock.onLockedPick(lockedDefault),
+    })
+  }, [planLock, lockedDefault, planFallback])
+
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
-      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
+      ...(modelSeededRef.current && displayedModel
+        ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
+        : planFallbackId
+          ? { model: planFallbackId, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
+          : {}),
     }),
-    [effort, speed, displayedModel, effectiveLlmProviderId],
+    [effort, speed, displayedModel, effectiveLlmProviderId, planFallbackId],
   )
 
   return useMemo(
@@ -362,15 +399,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setEffort,
       speed,
       setSpeed,
-      model: displayedModel,
+      model: planFallbackId ?? displayedModel,
       setModel,
       catalog,
       defaultModel: fallbackModel,
       webProvider: settings?.webProvider,
+      planLock,
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, planFallbackId, setModel, catalog, fallbackModel, settings, planLock, toRuntimeOptions, markSubmitted],
   )
 }
 

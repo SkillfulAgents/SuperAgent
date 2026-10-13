@@ -8,7 +8,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import type { BillingEmbedView } from '@renderer/lib/billing-embed'
+import { planNameFromId, type BillingEmbedView } from '@renderer/lib/billing-embed'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -216,6 +216,11 @@ function SubscribeBody({ plan, hint, actions, expanded, pooled }: { plan: Subscr
       >
         {plan && (
           <div data-testid="paywall-plan">
+            {plan.planId && (
+              <p className="mb-1 text-[11px] font-medium leading-4 text-muted-foreground" data-testid="paywall-plan-name">
+                {planNameFromId(plan.planId)}
+              </p>
+            )}
             <p className="text-xl font-medium leading-6 text-foreground">
               {formatDollars(plan.seats * plan.seatPriceCents)}
               <span className="text-sm font-normal leading-[18px] text-muted-foreground">/mo</span>

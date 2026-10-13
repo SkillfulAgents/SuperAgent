@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveDisplayName, shouldHideToolStatusInChat, isDisplayNameFallback } from './chat-delivery'
+import { deriveDisplayName, friendlyErrorMessage, shouldHideToolStatusInChat, isDisplayNameFallback } from './chat-delivery'
 import { buildSessionName } from './chat-policy'
 
 // ── deriveDisplayName ───────────────────────────────────────────────────
@@ -188,5 +188,23 @@ describe('buildSessionName', () => {
   it('does NOT append timestamp when timeout is 0', () => {
     const name = buildSessionName('My Bot', 'telegram', 'Alice', 0)
     expect(name).toBe('My Bot — Alice')
+  })
+})
+
+// ── friendlyErrorMessage ────────────────────────────────────────────────
+
+describe('friendlyErrorMessage', () => {
+  const NOT_IN_PLAN = 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"claude-fable-5-1 is not included in your workspace\'s plan.","model":"claude-fable-5-1"}}'
+
+  it('names the model a plan refuses instead of blaming the integration\'s credentials', () => {
+    // The CLI may tag the 403 as an auth failure.
+    expect(friendlyErrorMessage('authentication_failed', NOT_IN_PLAN)).toBe(
+      "⚠️ Fable 5.1 isn't included in your workspace's plan. Upgrade the plan, or pick another model for this integration.",
+    )
+  })
+
+  it('keeps the code-based message for every other error', () => {
+    expect(friendlyErrorMessage('authentication_failed', 'API Error: 401 invalid token')).toContain('could not authenticate')
+    expect(friendlyErrorMessage('rate_limit')).toContain('rate limit')
   })
 })

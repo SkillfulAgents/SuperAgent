@@ -15,6 +15,12 @@ import { StaleAgentsNotice } from './stale-agents-notice'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { pendingPlanChangeText } from '@renderer/hooks/use-platform-plan'
+import { usePlanUpgrade } from '@renderer/context/plan-upgrade-context'
+import { familyDisplayName } from '@renderer/components/messages/model-family-list'
+import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
+import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
+import { excludedModelsLabel } from '@shared/lib/llm-provider/plan-model-policy'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -76,15 +82,40 @@ function subscriptionLabel(b: ParsedPlatformBillingInfo): string {
 
 const VALUE_CLASS = 'text-xs text-muted-foreground truncate max-w-[260px]'
 
+// The plan row's value: the plan's name, with the subscription's state when it
+// isn't plainly active ("Pro 30 · Cancelling").
+function planLabel(b: ParsedPlatformBillingInfo, plan: NonNullable<ParsedPlatformBillingInfo['plan']>): string {
+  const status = subscriptionLabel(b)
+  return status === 'Subscribed' || status === 'Active' ? plan.name : `${plan.name} · ${status}`
+}
+
+// What the plan leaves out and what is about to change, under the plan's name.
+function PlanDetails({ billing }: { billing: ParsedPlatformBillingInfo }) {
+  const excluded = billing.plan ? excludedModelsLabel(billing.plan.deniedModels, PLATFORM_CATALOG, familyDisplayName) : null
+  const pending = billing.pendingPlanChange ? pendingPlanChangeText(billing.pendingPlanChange) : null
+  if (!excluded && !pending) return null
+  return (
+    <>
+      {excluded && <span className="block" data-testid="billing-plan-excludes">Excludes {excluded}</span>}
+      {pending && <span className="block" data-testid="billing-plan-pending">{pending}</span>}
+    </>
+  )
+}
+
 function PlatformBillingCard({
   platformBaseUrl,
   orgId,
+  role,
 }: {
   platformBaseUrl?: string | null
   orgId?: string | null
+  /** The member's org role; only owners and admins can change the plan. Unknown = offer it. */
+  role?: string | null
 }) {
   const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
   const billing = data?.billing
+  const openPlanUpgrade = usePlanUpgrade()
+  const canChangePlan = role == null || isPlatformOrgAdmin(role)
 
   async function handleManageBilling() {
     if (!platformBaseUrl || !orgId) return
@@ -131,10 +162,27 @@ function PlatformBillingCard({
           />
         ) : billing ? (
           <>
-            <SettingRow
-              name="Subscription"
-              right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
-            />
+            {billing.plan ? (
+              <SettingRow
+                name="Plan"
+                subtitle={<PlanDetails billing={billing} />}
+                right={
+                  <>
+                    <span className={VALUE_CLASS} data-testid="billing-plan-name">{planLabel(billing, billing.plan)}</span>
+                    {canChangePlan && (
+                      <Button size="sm" variant="outline" onClick={() => openPlanUpgrade()} data-testid="billing-change-plan">
+                        Change plan
+                      </Button>
+                    )}
+                  </>
+                }
+              />
+            ) : (
+              <SettingRow
+                name="Subscription"
+                right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
+              />
+            )}
             {billing.seat ? (
               <SubscriptionCreditsRow
                 seat={billing.seat}
@@ -332,12 +380,14 @@ function HoverArrow() {
 
 interface WorkspaceSwitcherProps {
   orgName: string
+  /** The workspace's plan, shown beside its name. */
+  planName?: string | null
   /** Re-auth is rejected in auth mode and pointless mid-launch — see ReconnectRow. */
   switchDisabled: boolean
   onSwitch: () => void
 }
 
-function WorkspaceSwitcher({ orgName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
+function WorkspaceSwitcher({ orgName, planName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -349,6 +399,11 @@ function WorkspaceSwitcher({ orgName, switchDisabled, onSwitch }: WorkspaceSwitc
           className="flex items-center gap-1 max-w-[260px] rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="truncate">{orgName}</span>
+          {planName && (
+            <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] leading-4" data-testid="workspace-plan-badge">
+              {planName}
+            </span>
+          )}
           <ChevronsUpDown className="h-3 w-3 shrink-0 text-foreground" aria-hidden />
         </button>
       </PopoverTrigger>
@@ -539,6 +594,8 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   // The signed-in user's own profile leads this tab instead of having a tab of
   // its own. Only auth mode has a user to edit, so local installs skip it.
   const { isAuthMode } = useUser()
+  // Same snapshot the billing card reads; the plan's name also labels the workspace.
+  const plan = useBillingInfo(isConnected).data?.billing?.plan
 
   const connectLabel = isConnected ? 'Reconnect' : 'Connect'
 
@@ -588,6 +645,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
                 // action opens the same platform login Reconnect below launches.
                 <WorkspaceSwitcher
                   orgName={data?.orgName ?? '—'}
+                  planName={plan?.name}
                   switchDisabled={readOnly || isLaunching}
                   onSwitch={handleConnect}
                 />
@@ -637,7 +695,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         // Billing is non-critical display data — never let a glitch here take
         // down the Account screen. Errors render a compact, retryable fallback.
         <ErrorBoundary compact>
-          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
+          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} role={data?.role} />
         </ErrorBoundary>
       )}
 

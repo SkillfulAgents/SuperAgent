@@ -4,6 +4,9 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeExtras } from './home-extras'
 
+// The workspace's plan locks nothing here (plan locks have their own tests).
+vi.mock('@renderer/hooks/use-plan-model-lock', () => ({ usePlanModelLock: () => undefined }))
+
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   openFolder: vi.fn(),

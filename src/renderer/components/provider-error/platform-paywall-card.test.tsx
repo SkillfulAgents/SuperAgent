@@ -659,12 +659,24 @@ describe('PlatformPaywallCard', () => {
       postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 2, seatPriceCents: 20000 })
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$400/mo')
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent(/2 seats\s*×\s*\$200\/mo/)
+      // A platform before plans names none.
+      expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('w-full')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.'))
       expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    })
+
+    it('names the plan the subscribe quote is for, and drops an id that is not a plan slug (SUP-1143)', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200' })
+      expect(screen.getByTestId('paywall-plan-name')).toHaveTextContent('Pro 200')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 3000, planId: '<b>Pro</b>' })
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$30/mo')
+      expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
     })
 
     it('sizes the subscribe CTA box for the promo line the platform draws under the button', async () => {

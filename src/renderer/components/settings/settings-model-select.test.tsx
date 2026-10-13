@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+// The workspace's plan locks nothing here (plan locks have their own tests).
+vi.mock('@renderer/hooks/use-plan-model-lock', () => ({ usePlanModelLock: () => undefined }))
+
 const useSettingsMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => useSettingsMock(),
@@ -373,5 +376,17 @@ describe('ModelPickerPopover', () => {
     render(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} />)
     await userEvent.click(screen.getByTestId('settings-model-trigger'))
     expect(screen.queryByTestId('settings-model-empty')).toBeNull()
+  })
+
+  it('flags a saved model the workspace\'s plan now excludes on the trigger (SUP-1143)', async () => {
+    const planLock = { isLocked: (m: ModelDefinition) => m.family === 'opus', onLockedPick: vi.fn(), planName: 'Pro 30' }
+    const { rerender } = render(<ModelPickerPopover catalog={CATALOG} model="opus" onPick={vi.fn()} planLock={planLock} />)
+    const trigger = screen.getByTestId('settings-model-trigger')
+    expect(trigger).toHaveAttribute('data-locked', 'true')
+    expect(trigger).toHaveAccessibleName(/not in your plan/)
+    await userEvent.click(trigger)
+    expect(screen.getByTestId('model-not-in-plan-warning')).toHaveTextContent("Opus 4.8 isn't included in your Pro 30 plan.")
+    rerender(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} planLock={planLock} />)
+    expect(screen.getByTestId('settings-model-trigger')).not.toHaveAttribute('data-locked')
   })
 })

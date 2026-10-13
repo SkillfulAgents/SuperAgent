@@ -1,0 +1,110 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { renderHook, act } from '@testing-library/react'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
+
+// SUP-1143: a saved default the workspace's plan now excludes (a downgrade)
+// falls back to the best allowed model in new chats, which is sent explicitly
+// so the server's own default resolution can't put the excluded one on the wire.
+
+const state = vi.hoisted(() => ({
+  connections: undefined as unknown,
+  denied: ['claude-fable-'] as string[],
+  onLockedPick: vi.fn(),
+  announce: vi.fn(),
+}))
+
+vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: state.connections }) }))
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useModelSettings: () => ({ data: { llmProvider: 'platform', models: {}, llmProviderStatus: [] } }),
+}))
+// Only platform connections are restricted, as in the real hook.
+vi.mock('@renderer/hooks/use-plan-model-lock', () => ({
+  usePlanModelLock: (provider: string | undefined) =>
+    provider === 'platform' && state.denied.length
+      ? { isLocked: (m: ModelDefinition) => state.denied.some((p) => m.id.startsWith(p)), onLockedPick: state.onLockedPick, planName: 'Pro 30' }
+      : undefined,
+}))
+vi.mock('@renderer/lib/plan-fallback-notice', () => ({ announcePlanFallback: state.announce }))
+
+const model = (id: string, extra: Partial<ModelDefinition> = {}): ModelDefinition =>
+  ({ id, label: id, icon: 'anthropic', supportedEfforts: ['medium'], ...extra })
+const PLATFORM = {
+  id: 'platform-conn',
+  provider: 'platform',
+  defaultModel: 'claude-opus-5-5',
+  catalog: [
+    model('claude-opus-5-5', { family: 'opus', isLatest: true, isDefault: true }),
+    model('claude-fable-5-1', { family: 'fable', isLatest: true }),
+  ],
+}
+const ANTHROPIC = { ...PLATFORM, id: 'anthropic-conn', provider: 'anthropic' }
+
+function render(initialProps: UseComposerOptionsArgs) {
+  return renderHook((props: UseComposerOptionsArgs) => useComposerOptions(props), { initialProps })
+}
+
+beforeEach(() => {
+  state.denied = ['claude-fable-']
+  state.onLockedPick.mockReset()
+  state.announce.mockReset()
+  state.connections = { connections: [PLATFORM, ANTHROPIC], defaultSelection: { llmProviderId: 'platform-conn', model: 'claude-fable-5-1' } }
+})
+
+describe('useComposerOptions plan fallback', () => {
+  it('shows and sends the best allowed model when the global default is excluded, and says so once', () => {
+    const { result } = render({})
+    expect(result.current.model).toBe('claude-opus-5-5')
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform-conn', model: 'claude-opus-5-5' })
+    expect(result.current.planLock?.planName).toBe('Pro 30')
+    expect(state.announce).toHaveBeenCalledWith(expect.objectContaining({
+      locked: expect.objectContaining({ id: 'claude-fable-5-1' }),
+      fallback: expect.objectContaining({ id: 'claude-opus-5-5' }),
+      planName: 'Pro 30',
+    }))
+  })
+
+  it('falls back from an excluded agent default too', () => {
+    state.connections = { connections: [PLATFORM], defaultSelection: { llmProviderId: 'platform-conn', model: 'claude-opus-5-5' } }
+    const { result } = render({ agentDefaultLlmProviderId: 'platform-conn', agentDefaultModel: 'fable' })
+    expect(result.current.model).toBe('claude-opus-5-5')
+    expect(result.current.toRuntimeOptions()).toMatchObject({ model: 'claude-opus-5-5' })
+  })
+
+  it('returns to the saved default once the plan allows it (no rewrite of the default)', () => {
+    const { result, rerender } = render({})
+    expect(result.current.model).toBe('claude-opus-5-5')
+    state.denied = []
+    rerender({})
+    expect(result.current.model).toBe('claude-fable-5-1')
+    // Untouched again: the server resolves the default itself.
+    expect(result.current.toRuntimeOptions()).toEqual({})
+  })
+
+  it('leaves a session\'s own model alone; the 403 card covers it', () => {
+    const { result } = render({ initialLlmProviderId: 'platform-conn', initialModel: 'claude-fable-5-1' })
+    expect(result.current.model).toBe('claude-fable-5-1')
+    expect(state.announce).not.toHaveBeenCalled()
+  })
+
+  it('leaves an existing session without model metadata (trigger-created) on its own model', () => {
+    const { result } = render({ sessionId: 's1' })
+    expect(result.current.model).toBe('claude-fable-5-1')
+    expect(result.current.toRuntimeOptions()).toEqual({})
+  })
+
+  it('keeps an explicit pick of an allowed model', () => {
+    const { result } = render({})
+    act(() => result.current.setModel('claude-opus-5-5'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ model: 'claude-opus-5-5' })
+  })
+
+  it('does not restrict a non-platform connection', () => {
+    state.connections = { connections: [ANTHROPIC], defaultSelection: { llmProviderId: 'anthropic-conn', model: 'claude-fable-5-1' } }
+    const { result } = render({})
+    expect(result.current.model).toBe('claude-fable-5-1')
+    expect(result.current.planLock).toBeUndefined()
+    expect(result.current.toRuntimeOptions()).toEqual({})
+  })
+})

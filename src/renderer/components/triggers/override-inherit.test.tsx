@@ -12,6 +12,9 @@ import { RuntimeOptionsCard } from './runtime-options-card'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
 
+// The workspace's plan locks nothing here (plan locks have their own tests).
+vi.mock('@renderer/hooks/use-plan-model-lock', () => ({ usePlanModelLock: () => undefined }))
+
 const STD: EffortLevel[] = ['low', 'medium', 'high']
 const CATALOG: ModelDefinition[] = [
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },

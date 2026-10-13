@@ -1,12 +1,17 @@
 import {
   extractErrorMessage,
   inferErrorStatus,
+  parseFirstJsonObject,
   type ProviderErrorPresentation,
 } from './error-presentation'
+import { PLATFORM_CATALOG } from './builtin-catalogs'
+import { parseModelNotInPlan, planModelLabel } from './plan-model-policy'
 
 // Registry key for the platform-billing-aware paywall card. Platform-only: the card
 // reads the platform billing snapshot, so other providers must register their own key.
 export const PLATFORM_PAYWALL_COMPONENT = 'platform-paywall'
+// Registry key for the 403 model_not_in_plan card (upgrade, or continue on an allowed model).
+export const PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT = 'platform-model-not-in-plan'
 
 // Dashboard billing page for the connected org; null without org context.
 export function orgBillingUrl(
@@ -36,36 +41,6 @@ function isInsufficientBalance(status: number | undefined, raw: string): boolean
 function readBooleanField(record: Record<string, unknown>, key: string): boolean | undefined {
   const value = record[key]
   return typeof value === 'boolean' ? value : undefined
-}
-
-// Balanced-brace scan: survives prose after the JSON blob, which a greedy
-// first-{ to last-} regex would not.
-function parseFirstJsonObject(raw: string): unknown {
-  for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
-    let depth = 0
-    let inString = false
-    for (let i = start; i < raw.length; i++) {
-      const ch = raw[i]
-      if (inString) {
-        if (ch === '\\') i++
-        else if (ch === '"') inString = false
-        continue
-      }
-      if (ch === '"') inString = true
-      else if (ch === '{') depth++
-      else if (ch === '}') {
-        depth--
-        if (depth === 0) {
-          try {
-            return JSON.parse(raw.slice(start, i + 1))
-          } catch {
-            break
-          }
-        }
-      }
-    }
-  }
-  return undefined
 }
 
 // The proxy's `subscription_required` flag, if the 402 body kept it.
@@ -113,6 +88,13 @@ function paywallMessage(subscriptionRequired: boolean | undefined): string {
   return '**You need more usage credit to continue** Subscribe or top up to resume this answer.'
 }
 
+// Copy for the plan's refusal; the card component renders its own, this is the
+// markdown every other surface (and an older client) falls back to.
+export function modelNotInPlanMessage(model: string | null): string {
+  const name = model ? planModelLabel(model, PLATFORM_CATALOG) : 'This model'
+  return `**${name} isn't included in your plan** Upgrade your workspace's plan to use it, or continue with a model your plan includes.`
+}
+
 // Null = not a platform-specific error class; the base provider applies the
 // generic banner. `billingUrl` is the org's resolved billing page, or null without org context.
 export function parsePlatformErrorResponse(
@@ -120,6 +102,20 @@ export function parsePlatformErrorResponse(
   body: unknown,
   billingUrl: string | null,
 ): ProviderErrorPresentation | null {
+  // The plan excludes this model (403). Keyed on the error type, not the status:
+  // history rows carry no status, and a 403 here is never a credential problem.
+  const notInPlan = parseModelNotInPlan(body)
+  if (notInPlan) {
+    return {
+      severity: 'warning',
+      icon: 'lock',
+      message: modelNotInPlanMessage(notInPlan.model),
+      component: PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT,
+      placement: 'composer',
+      ...(billingUrl && { href: billingUrl }),
+    }
+  }
+
   const raw = extractErrorMessage(body)
   const inferred = status ?? inferErrorStatus(raw)
 

@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, HelpCircle, Settings, TriangleAlert } from 'lucide-react'
+import { Check, HelpCircle, Lock, Settings, TriangleAlert } from 'lucide-react'
 import { ModelIcon, isUploadedIcon } from '@renderer/components/ui/model-icon'
 import {
   Tooltip,
@@ -234,6 +234,32 @@ interface FamilyGroup {
   lineage: boolean
 }
 
+/**
+ * Models the workspace's plan excludes (SUP-1143). They stay listed so users
+ * can find what an upgrade unlocks, but greyed, and picking one opens the
+ * upgrade flow instead of selecting it.
+ */
+export interface PlanLock {
+  isLocked: (model: ModelDefinition) => boolean
+  onLockedPick: (model: ModelDefinition) => void
+  /** The plan's name for copy ("Pro 30"); absent = "your workspace's plan". */
+  planName?: string
+}
+
+/** "isn't included in your Pro 30 plan" copy for a locked model. */
+export function notInPlanText(label: string, planName: string | undefined): string {
+  return `${label} isn't included in ${planName ? `your ${planName} plan` : "your workspace's plan"}.`
+}
+
+function UpgradeBadge() {
+  return (
+    <span className="flex shrink-0 items-center gap-0.5 rounded-sm border border-border px-1 text-[10px] leading-4 text-muted-foreground">
+      <Lock className="h-2.5 w-2.5" aria-hidden="true" />
+      Upgrade
+    </span>
+  )
+}
+
 interface ModelFamilyListProps {
   catalog: ModelDefinition[]
   /** Raw selection — a concrete id, or (when offerLatest) a bare family alias. */
@@ -251,6 +277,8 @@ interface ModelFamilyListProps {
    * a vendor (Exa) clears the warning. Undefined / 'native' = no host vendor.
    */
   webProvider?: string
+  /** Models the workspace's plan excludes; unset = nothing is locked. */
+  planLock?: PlanLock
 }
 
 function Row({
@@ -258,6 +286,7 @@ function Row({
   icon,
   isSelected,
   indent,
+  locked = false,
   onClick,
   testId,
 }: {
@@ -268,6 +297,8 @@ function Row({
   icon?: ReactNode
   isSelected: boolean
   indent?: boolean
+  /** Not in the workspace's plan: greyed, badged, and the click opens the upgrade flow. */
+  locked?: boolean
   onClick: () => void
   testId: string
 }) {
@@ -275,6 +306,7 @@ function Row({
     <button
       type="button"
       data-testid={testId}
+      data-locked={locked || undefined}
       onClick={onClick}
       className={cn(
         'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
@@ -282,11 +314,14 @@ function Row({
         isSelected && 'bg-accent'
       )}
     >
-      <span className="flex min-w-0 items-center gap-2">
+      <span className={cn('flex min-w-0 items-center gap-2', locked && 'text-muted-foreground')}>
         {icon}
         <span className="truncate">{label}</span>
       </span>
-      {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
+      <span className="flex shrink-0 items-center gap-1.5">
+        {locked && <UpgradeBadge />}
+        {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
+      </span>
     </button>
   )
 }
@@ -316,12 +351,18 @@ function LineRow({
   chipLabel,
   onPickModel,
   latestChip,
+  locked = false,
+  isModelLocked,
 }: {
   label: string
   models: ModelDefinition[]
   rowTestId: string
   onRowPick: () => void
   selected: boolean
+  /** The row's own pick is not in the workspace's plan (greyed and badged). */
+  locked?: boolean
+  /** Per-version plan lock, for the pin chips and the touch version menu. */
+  isModelLocked?: (m: ModelDefinition) => boolean
   /** Concrete id whose chip renders highlighted (the pinned selection). */
   activeId?: string
   chipLabel: (m: ModelDefinition) => string
@@ -358,8 +399,9 @@ function LineRow({
         <button
           type="button"
           data-testid={rowTestId}
+          data-locked={locked || undefined}
           onClick={onRowPick}
-          className="flex min-w-0 items-center py-1 pl-2 text-left text-xs"
+          className={cn('flex min-w-0 items-center py-1 pl-2 text-left text-xs', locked && 'text-muted-foreground')}
         >
           <span className="truncate">{label}</span>
         </button>
@@ -380,18 +422,23 @@ function LineRow({
               Latest
             </button>
           )}
-          {models.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              data-testid={`model-pinned-${m.id}`}
-              aria-label={m.label}
-              onClick={() => onPickModel(m.id)}
-              className={chipClass(activeId === m.id)}
-            >
-              {chipLabel(m)}
-            </button>
-          ))}
+          {models.map((m) => {
+            const chipLocked = isModelLocked?.(m) ?? false
+            return (
+              <button
+                key={m.id}
+                type="button"
+                data-testid={`model-pinned-${m.id}`}
+                data-locked={chipLocked || undefined}
+                aria-label={chipLocked ? `${m.label} — not in your plan` : m.label}
+                title={chipLocked ? 'Not in your plan' : undefined}
+                onClick={() => onPickModel(m.id)}
+                className={cn(chipClass(activeId === m.id), chipLocked && 'opacity-50')}
+              >
+                {chipLabel(m)}
+              </button>
+            )
+          })}
         </span>
         {/* The rest of the row is also a "pick the default" target, so clicking
             anywhere that isn't a version chip selects the latest. A plain div —
@@ -402,6 +449,7 @@ function LineRow({
           onClick={onRowPick}
           className="h-6 min-w-0 flex-1 cursor-pointer"
         />
+        {locked && <UpgradeBadge />}
         {/* No gear for a bare alias row (models=[]) — there's nothing to pin. */}
         {selected && models.length > 0 && (
           <button
@@ -424,6 +472,7 @@ function LineRow({
             testId={`${rowTestId}-menu-latest`}
             label={<span>{label} <span className="text-muted-foreground">· latest</span></span>}
             isSelected={!pinnedVersionShown}
+            locked={locked}
             onClick={onRowPick}
           />
           {models.map((m) => (
@@ -433,6 +482,7 @@ function LineRow({
               testId={`model-version-${m.id}`}
               label={m.label}
               isSelected={activeId === m.id}
+              locked={isModelLocked?.(m)}
               onClick={() => onPickModel(m.id)}
             />
           ))}
@@ -465,10 +515,24 @@ export function ModelFamilyList({
   onPick,
   offerLatest = false,
   webProvider,
+  planLock,
 }: ModelFamilyListProps) {
   // Resolve the current selection (exact id, or a bare alias → its latest) for
   // highlighting and default vendor tab.
   const resolved = findCatalogModel(value, catalog)
+
+  // A model the plan excludes opens the upgrade flow instead of being picked.
+  // `stored` is what a pick saves: the model's id, or a bare alias resolving to it.
+  const isLocked = (m: ModelDefinition | undefined): boolean => !!m && !!planLock?.isLocked(m)
+  const pick = (m: ModelDefinition, stored: string = m.id) => {
+    if (planLock && isLocked(m)) planLock.onLockedPick(m)
+    else onPick(stored)
+  }
+  const pickId = (id: string) => {
+    const m = catalog.find((entry) => entry.id === id)
+    if (m) pick(m)
+    else onPick(id)
+  }
 
   // Vendor tabs, in catalog order of first appearance. Until the user picks a
   // tab, follow the selection's vendor so opening the picker lands on the tab
@@ -561,7 +625,9 @@ export function ModelFamilyList({
                         setPickedVendor(key)
                         if (resolved && vendorKey(resolved) === key) return
                         const defaultModel = vendorDefault(catalog, key)
-                        if (defaultModel) {
+                        // A locked default is left for the user to pick (and
+                        // upgrade); the tab switch alone changes nothing.
+                        if (defaultModel && !isLocked(defaultModel)) {
                           // The catalog declares a concrete default. Do
                           // not turn it into a family alias on settings
                           // surfaces: the family's latest may be a
@@ -596,17 +662,19 @@ export function ModelFamilyList({
               rowTestId={offerLatest ? `model-latest-${group.family}` : `model-family-${group.family}`}
               // Bare alias in settings (rides upgrades); latest concrete id in
               // the composer (per-message picks are concrete).
-              onRowPick={() => onPick(offerLatest ? group.family : latestVersion.id)}
+              onRowPick={() => pick(latestVersion, offerLatest ? group.family : latestVersion.id)}
               selected={familyHasSelection}
+              locked={isLocked(latestVersion)}
+              isModelLocked={isLocked}
               activeId={!isLatestSelected ? resolved?.id : undefined}
               chipLabel={(m) => versionChipLabel(m.label, group.displayName)}
-              onPickModel={onPick}
+              onPickModel={pickId}
               // Alias surfaces get an explicit Latest chip so latest-vs-pinned
               // is readable at a glance (Latest lit = alias; version lit = pin).
               latestChip={
                 offerLatest
                   ? {
-                      onPick: () => onPick(group.family),
+                      onPick: () => pick(latestVersion, group.family),
                       active: isLatestSelected && familyHasSelection,
                       testId: `model-latest-chip-${group.family}`,
                     }
@@ -624,12 +692,13 @@ export function ModelFamilyList({
                 label={group.displayName}
                 models={[]}
                 rowTestId={`model-latest-${group.family}`}
-                onRowPick={() => onPick(group.family)}
+                onRowPick={() => pick(latestOf(group.versions), group.family)}
                 selected={familyHasSelection && isLatestSelected}
+                locked={isLocked(latestOf(group.versions))}
                 chipLabel={() => ''}
-                onPickModel={onPick}
+                onPickModel={pickId}
                 latestChip={{
-                  onPick: () => onPick(group.family),
+                  onPick: () => pick(latestOf(group.versions), group.family),
                   active: isLatestSelected && familyHasSelection,
                   testId: `model-latest-chip-${group.family}`,
                 }}
@@ -646,11 +715,13 @@ export function ModelFamilyList({
                     rowTestId={`model-family-${lineSlug(line.base)}`}
                     // No bare alias exists for a sub-line, so both modes pin
                     // the line's newest concrete id.
-                    onRowPick={() => onPick(lineLatest.id)}
+                    onRowPick={() => pick(lineLatest)}
                     selected={!isLatestSelected && line.models.some((m) => m.id === resolved?.id)}
+                    locked={isLocked(lineLatest)}
+                    isModelLocked={isLocked}
                     activeId={!isLatestSelected ? resolved?.id : undefined}
                     chipLabel={(m) => versionChipLabel(m.label, line.base)}
-                    onPickModel={onPick}
+                    onPickModel={pickId}
                   />
                 )
               }
@@ -661,7 +732,8 @@ export function ModelFamilyList({
                   testId={`model-pinned-${version.id}`}
                   label={version.label}
                   isSelected={!isLatestSelected && resolved?.id === version.id}
-                  onClick={() => onPick(version.id)}
+                  locked={isLocked(version)}
+                  onClick={() => pick(version)}
                 />
               )
             })}
@@ -678,7 +750,8 @@ export function ModelFamilyList({
           icon={<ModelIcon icon={m.icon} className="h-3.5 w-3.5 shrink-0" />}
           label={m.label}
           isSelected={resolved?.id === m.id}
-          onClick={() => onPick(m.id)}
+          locked={isLocked(m)}
+          onClick={() => pick(m)}
         />
       ))}
       {/* Selection-dependent notes go BELOW the rows: picks keep the popover
@@ -687,6 +760,27 @@ export function ModelFamilyList({
           wrong-row hazard). Like the cliff note, the warning is scoped to the
           tab that owns the selection — on any other tab its "this model" copy
           would read as being about the listed models. */}
+      {/* Plan lock first: a saved selection the plan now excludes (a downgrade)
+          fails every run until it changes, which outranks the advisories below. */}
+      {planLock && resolved && isLocked(resolved) && vendorKey(resolved) === activeVendor && (
+        <div
+          data-testid="model-not-in-plan-warning"
+          className="mx-1 mt-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>
+            {notInPlanText(resolved.label, planLock.planName)} Pick another model, or{' '}
+            <button
+              type="button"
+              onClick={() => planLock.onLockedPick(resolved)}
+              className="font-medium underline underline-offset-2"
+            >
+              upgrade
+            </button>
+            .
+          </span>
+        </div>
+      )}
       {/* Data-use first: a missing web tool is an inconvenience the user can
           fix in settings, but this one leaves the building with their prompt
           and has no remedy after the fact, so it must not sit below the fold

@@ -49,6 +49,36 @@ export function extractErrorMessage(body: unknown): string {
   return body == null ? '' : String(body)
 }
 
+// Balanced-brace scan: survives prose after the JSON blob, which a greedy
+// first-{ to last-} regex would not.
+export function parseFirstJsonObject(raw: string): unknown {
+  for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
+    let depth = 0
+    let inString = false
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i]
+      if (inString) {
+        if (ch === '\\') i++
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') inString = true
+      else if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          try {
+            return JSON.parse(raw.slice(start, i + 1))
+          } catch {
+            break
+          }
+        }
+      }
+    }
+  }
+  return undefined
+}
+
 export function inferErrorStatus(raw: string): number | undefined {
   const paren = raw.match(/\((\d{3})\)/)
   if (paren) return Number(paren[1])

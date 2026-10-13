@@ -1,6 +1,7 @@
 import { lazyRouteComponent, Outlet, useRouterState } from '@tanstack/react-router'
 import { Suspense, useCallback, useState, useEffect, useRef } from 'react'
 import { DialogProvider } from '@renderer/context/dialog-context'
+import { PlanUpgradeProvider } from '@renderer/context/plan-upgrade-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
@@ -139,44 +140,46 @@ export function RootLayout() {
 
   return (
     <DialogProvider onOpenWizard={openWizard}>
-      <UpdateStatusProvider>
-        <OnboardingProvider>
-          {/* Real-time + native-nav handlers live HERE (root, above the
-              shell⇄settings switch) so they stay mounted while /settings is open.
-              The /settings route replaces the whole shell, so handlers mounted
-              inside the shell would unmount on open — dropping the notification
-              SSE + OS popups, the container-setup stream, and any native
-              menu/tray command fired while in settings. MenuCommandHandler also
-              drains the window-closed menu-command queue (SUP-264). All only need
-              useNavigate / useDialogs / useUser / useUserSettings — available at
-              the root route. */}
-          <MenuCommandHandler />
-          <PackageImportHandler />
-          <HistoryNavigationHandler />
-          <GlobalNotificationHandler />
-          <ContainerSetupHandler />
-          <WindowControls />
-          <UpdateToastNotifier />
-          {/* Rendered here (inside the router) so it can use useNavigate. The
-              dialog stays off the boot graph until first opened, then stays
-              mounted (closed) so Radix can play its exit animation. */}
-          {searchOpen || searchEverOpened ? (
-            <Suspense fallback={null}>
-              <SearchDialog />
-            </Suspense>
-          ) : null}
-          {/* Above the wizard ternary: the wizard replaces the outlet, so a
-              consumer inside the outlet may never commit an effect. */}
-          <SignupHandoffConsumer />
-          {wizardOpen ? (
-            <Suspense fallback={null}>
-              <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
-            </Suspense>
-          ) : (
-            <Outlet />
-          )}
-        </OnboardingProvider>
-      </UpdateStatusProvider>
+      <PlanUpgradeProvider>
+        <UpdateStatusProvider>
+          <OnboardingProvider>
+            {/* Real-time + native-nav handlers live HERE (root, above the
+                shell⇄settings switch) so they stay mounted while /settings is open.
+                The /settings route replaces the whole shell, so handlers mounted
+                inside the shell would unmount on open — dropping the notification
+                SSE + OS popups, the container-setup stream, and any native
+                menu/tray command fired while in settings. MenuCommandHandler also
+                drains the window-closed menu-command queue (SUP-264). All only need
+                useNavigate / useDialogs / useUser / useUserSettings — available at
+                the root route. */}
+            <MenuCommandHandler />
+            <PackageImportHandler />
+            <HistoryNavigationHandler />
+            <GlobalNotificationHandler />
+            <ContainerSetupHandler />
+            <WindowControls />
+            <UpdateToastNotifier />
+            {/* Rendered here (inside the router) so it can use useNavigate. The
+                dialog stays off the boot graph until first opened, then stays
+                mounted (closed) so Radix can play its exit animation. */}
+            {searchOpen || searchEverOpened ? (
+              <Suspense fallback={null}>
+                <SearchDialog />
+              </Suspense>
+            ) : null}
+            {/* Above the wizard ternary: the wizard replaces the outlet, so a
+                consumer inside the outlet may never commit an effect. */}
+            <SignupHandoffConsumer />
+            {wizardOpen ? (
+              <Suspense fallback={null}>
+                <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
+              </Suspense>
+            ) : (
+              <Outlet />
+            )}
+          </OnboardingProvider>
+        </UpdateStatusProvider>
+      </PlanUpgradeProvider>
     </DialogProvider>
   )
 }

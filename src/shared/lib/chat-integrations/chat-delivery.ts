@@ -7,6 +7,8 @@ import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/regist
 import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
+import { PLATFORM_CATALOG } from '../llm-provider/builtin-catalogs'
+import { parseModelNotInPlan, planModelLabel } from '../llm-provider/plan-model-policy'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -61,7 +63,15 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
  * SDK error code; never echoes the raw internal error (which can leak file paths,
  * tokens, or stack text into the chat).
  */
-function friendlyErrorMessage(apiErrorCode: string | null | undefined): string {
+export function friendlyErrorMessage(apiErrorCode: string | null | undefined, errorText?: unknown): string {
+  // The workspace's plan excludes the integration's model (403 model_not_in_plan).
+  // Checked first: the CLI may tag that 403 `authentication_failed`, which would
+  // otherwise read as a credential problem.
+  const notInPlan = parseModelNotInPlan(errorText)
+  if (notInPlan) {
+    const name = notInPlan.model ? planModelLabel(notInPlan.model, PLATFORM_CATALOG) : 'This model'
+    return `⚠️ ${name} isn't included in your workspace's plan. Upgrade the plan, or pick another model for this integration.`
+  }
   const code = (apiErrorCode ?? '').toLowerCase()
   if (code.includes('overload')) return '⚠️ The assistant is overloaded right now. Please try again in a moment.'
   if (code.includes('rate') || code.includes('429')) return '⚠️ Hit a rate limit. Please wait a few seconds and try again.'
@@ -383,7 +393,7 @@ export async function processSSEEvent(
       if (!managed.turnNotified) {
         managed.turnNotified = true
         try {
-          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null, data.error) })
         } catch (err) {
           // Delivery failed — release the latch so a later notice isn't suppressed.
           managed.turnNotified = false

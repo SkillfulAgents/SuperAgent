@@ -177,6 +177,38 @@ describe('presentationForTurnError', () => {
     expect(provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
     expect(provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
   })
+
+  describe('403 model_not_in_plan (SUP-1143)', () => {
+    const NOT_IN_PLAN = 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"claude-fable-5-1 is not included in your workspace\'s plan. Upgrade your plan to use it.","model":"claude-fable-5-1"}} · Please run /login'
+
+    it('names the model and routes to the upgrade card, not a credential or generic error', async () => {
+      // The CLI may tag a 403 as an auth failure; the plan refusal still wins.
+      const parsed = provider.presentationForTurnError(403, NOT_IN_PLAN, 'authentication_failed')
+      expect(parsed).toEqual({
+        severity: 'warning',
+        icon: 'lock',
+        message: "**Fable 5.1 isn't included in your plan** Upgrade your workspace's plan to use it, or continue with a model your plan includes.",
+        component: 'platform-model-not-in-plan',
+        placement: 'composer',
+        href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+      })
+    })
+
+    it('recognizes a history row, which carries no status', async () => {
+      expect(provider.presentationForTurnError(undefined, NOT_IN_PLAN, 'unknown')?.component).toBe('platform-model-not-in-plan')
+    })
+
+    it('still names no model when the body omits it', async () => {
+      const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"Not in plan."}}', 'unknown')
+      expect(parsed?.message).toMatch(/^\*\*This model isn't included in your plan\*\*/)
+    })
+
+    it('leaves other 403s to the generic banner', async () => {
+      const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Forbidden"}}', 'authentication_failed')
+      expect(parsed?.component).toBeUndefined()
+      expect(parsed?.message).toContain('**LLM Provider Error:**')
+    })
+  })
 })
 
 describe('sanitizeAgentName', () => {

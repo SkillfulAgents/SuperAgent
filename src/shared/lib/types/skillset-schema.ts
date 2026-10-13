@@ -9,6 +9,8 @@
 
 import { z } from 'zod'
 
+import { normalizeDeniedModels } from '@shared/lib/llm-provider/plan-model-policy'
+
 export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 
 /**
@@ -287,8 +289,31 @@ export const PlatformBillingInfoSchema = z.object({
       reason: z.string(),
     })
     .optional(),
+  // The workspace's plan (SUP-1124); null when not subscribed or from an older
+  // proxy. `deniedModels` are canonical model-id prefixes the proxy refuses with
+  // 403 model_not_in_plan, normalized the way the proxy reads them. A malformed
+  // value reads as no plan rather than failing the whole snapshot.
+  plan: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      deniedModels: z.unknown().transform(normalizeDeniedModels),
+    })
+    .nullish()
+    .catch(null)
+    .transform((v) => v ?? null),
+  // A plan switch scheduled for a later date (a downgrade applies at renewal).
+  pendingPlanChange: z
+    .object({
+      toPlan: z.object({ id: z.string(), name: z.string() }),
+      effectiveAt: z.string(),
+    })
+    .nullish()
+    .catch(null)
+    .transform((v) => v ?? null),
 })
 export type ParsedPlatformBillingInfo = z.infer<typeof PlatformBillingInfoSchema>
+export type ParsedPlatformPlan = NonNullable<ParsedPlatformBillingInfo['plan']>
 
 export type ParsedSkillsetConfig = z.infer<typeof SkillsetConfigSchema>
 export type ParsedInstalledSkillMetadata = z.infer<typeof InstalledSkillMetadataSchema>

@@ -25,7 +25,7 @@ import {
 import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
-import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
+import { ProviderModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalog-schema'
@@ -630,7 +630,8 @@ export function ConnectionEditor({
                 <div className="text-xs font-medium">{label}</div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">{description}</div>
               </div>
-              <ModelPickerPopover
+              <ProviderModelPickerPopover
+                provider={provider}
                 catalog={catalog}
                 model={model}
                 onPick={onPick}
