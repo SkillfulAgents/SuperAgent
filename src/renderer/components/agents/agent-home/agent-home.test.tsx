@@ -7,11 +7,7 @@ import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentHomeAction } from '@renderer/context/nav-transient-context'
-import { useDraftsStore } from '@renderer/context/drafts-context'
-import {
-  newSessionCarryoverKey,
-  type NewSessionCarryover,
-} from '@renderer/lib/new-session-carryover'
+import { useDraftsStore, type ComposerDraft, type DraftsStore } from '@renderer/context/drafts-context'
 
 // --- Mock data ---
 
@@ -183,10 +179,13 @@ const mockComposer = {
 
 let capturedComposerOptions: any
 
-function CarryoverSeeder({ value, children }: { value: NewSessionCarryover; children: ReactNode }) {
+let seededStore: DraftsStore | undefined
+
+function DraftSeeder({ value, children }: { value: ComposerDraft; children: ReactNode }) {
   const store = useDraftsStore()
+  seededStore = store
   useState(() => {
-    store.set(newSessionCarryoverKey(testAgent.slug), value)
+    store.set(`agent:${testAgent.slug}`, value)
     return null
   })
   return children
@@ -670,28 +669,23 @@ describe('AgentHome', () => {
     expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
   })
 
-  it('hydrates a carried composer and sends its model and effort on the new session', async () => {
-    const attachment = {
-      type: 'file' as const,
-      id: 'file-1',
-      file: new File(['hello'], 'hello.txt', { type: 'text/plain' }),
-    }
+  it('restores drafted option picks, sends them, then clears them once the session is created', async () => {
     renderWithProviders(
-      <CarryoverSeeder value={{ attachments: [attachment], model: 'opus', effort: 'high', speed: 'normal' }}>
+      <DraftSeeder value={{ options: { model: 'opus', effort: 'high', speed: 'normal' } }}>
         <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
-      </CarryoverSeeder>,
+      </DraftSeeder>,
     )
 
-    expect(capturedComposerOptions.initialAttachments).toEqual([attachment])
     await act(() => capturedComposerOptions.onSubmit('Continue in a new session'))
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
       agentSlug: 'test-agent',
       message: 'Continue in a new session',
       model: 'opus',
       effort: 'high',
-      // A carried speed is an explicit (session-seeded) value, so it rides along.
+      // A drafted speed is an explicit pick, so it rides along.
       speed: 'normal',
     })
+    expect(seededStore?.get('agent:test-agent')).toBeUndefined()
   })
 
   it('passes submitDisabled based on createSession.isPending and runtime readiness', () => {

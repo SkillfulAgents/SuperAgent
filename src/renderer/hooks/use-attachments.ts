@@ -7,6 +7,7 @@ const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
+  /** Chips restored from the composer's draft, upload state included. */
   initialAttachments?: Attachment[]
   onAttachmentsAdded?: (added: Attachment[]) => void
 }
@@ -14,16 +15,9 @@ interface UseAttachmentsOptions {
 export type UploadPatch = { upload?: UploadState; error?: string; errorRetryable?: boolean }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
-  // Carried-over chips (stale-session → agent home) always re-upload: their
-  // paths belong to the composer that uploaded them.
-  const [attachments, setAttachments] = useState<Attachment[]>(() =>
-    (options?.initialAttachments ?? []).map((attachment) => {
-      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined, errorRetryable: undefined }
-      return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !stripped.preview
-        ? { ...stripped, preview: URL.createObjectURL(stripped.file) }
-        : stripped
-    }),
-  )
+  const [attachments, setAttachments] = useState<Attachment[]>(() => options?.initialAttachments ?? [])
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
   const [isDragOver, setIsDragOver] = useState(false)
   const onAddedRef = useRef(options?.onAttachmentsAdded)
   onAddedRef.current = options?.onAttachmentsAdded
@@ -115,14 +109,27 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     })
   }, [])
 
-  // Cleanup object URLs on unmount
   useEffect(() => {
-    return () => {
-      attachments.forEach((a) => {
-        if (a.type === 'file' && a.preview) URL.revokeObjectURL(a.preview)
-      })
+    const initialPreviews = new Map<string, string>()
+    for (const attachment of attachmentsRef.current) {
+      if (attachment.type === 'file' && attachment.file.type.startsWith('image/')) {
+        initialPreviews.set(attachment.id, URL.createObjectURL(attachment.file))
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (initialPreviews.size > 0) {
+      setAttachments((current) => current.map((attachment) => {
+        const preview = initialPreviews.get(attachment.id)
+        return preview && attachment.type === 'file' ? { ...attachment, preview } : attachment
+      }))
+    }
+
+    return () => {
+      const previews = new Set(initialPreviews.values())
+      attachmentsRef.current.forEach((attachment) => {
+        if (attachment.type === 'file' && attachment.preview) previews.add(attachment.preview)
+      })
+      previews.forEach((preview) => URL.revokeObjectURL(preview))
+    }
   }, [])
 
   const addItems = useCallback(({ files, folders }: DataTransferResult) => {

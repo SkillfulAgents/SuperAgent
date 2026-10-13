@@ -47,7 +47,7 @@ describe('useForkSession', () => {
     })
     const { result } = renderHook(() => ({ fork: useForkSession(), store: useDraftsStore() }), { wrapper })
     act(() => {
-      result.current.store.set('session:src-1', 'unsent')
+      result.current.store.set('session:src-1', { text: 'unsent', options: { model: 'haiku' } })
     })
     await act(async () => {
       let settled = false
@@ -64,8 +64,8 @@ describe('useForkSession', () => {
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'agent-a', sessionId: 'fork-1' },
     })
-    expect(result.current.store.get('session:fork-1')).toBe('unsent')
-    expect(result.current.store.get('session:src-1')).toBe('unsent')
+    expect(result.current.store.get('session:fork-1')).toEqual({ text: 'unsent', options: { model: 'haiku' } })
+    expect(result.current.store.get('session:src-1')).toEqual({ text: 'unsent', options: { model: 'haiku' } })
     expect(queryClient.getQueryData(['session', 'fork-1', 'agent-a'])).toEqual(
       expect.objectContaining({ id: 'fork-1', agentSlug: 'agent-a' }),
     )

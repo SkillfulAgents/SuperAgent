@@ -4,7 +4,7 @@ import { useAttachments } from './use-attachments'
 import { useUploadQueue } from './use-upload-queue'
 import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useComposerDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
@@ -34,10 +34,6 @@ interface UseMessageComposerOptions {
   keepMessageUntilComplete?: boolean
   /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
   draftKey?: string
-  /** One-shot attachment seed, used when moving a draft into a new session. */
-  initialAttachments?: Attachment[]
-  /** One-shot secure-pill seed, used when moving a draft into a new session. */
-  initialSecuredSecrets?: SecuredSecret[]
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
 }
@@ -45,14 +41,11 @@ interface UseMessageComposerOptions {
 export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
 
-  const [draft, setDraft] = useDraft<string>(draftKey)
-  const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
-  const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
-  const [message, setMessage] = useState(draft ?? '')
+  const [draft, updateDraft] = useComposerDraft(draftKey)
+  const draftText = draft?.text
+  const [message, setMessage] = useState(draftText ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
-  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
-    () => options.initialSecuredSecrets ?? draftSecuredSecrets ?? []
-  )
+  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(() => draft?.securedSecrets ?? [])
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -67,21 +60,21 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       persistedOnceRef.current = true
       return
     }
-    setDraft(message || undefined)
-  }, [message, setDraft])
+    updateDraft({ text: message || undefined })
+  }, [message, updateDraft])
 
   useEffect(() => {
-    setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
-  }, [securedSecrets, setDraftSecuredSecrets])
+    updateDraft({ securedSecrets })
+  }, [securedSecrets, updateDraft])
 
   // Sync externally-injected drafts (file comments, restored undelivered
   // messages) into the local message.
   useEffect(() => {
-    if (draft !== undefined && draft !== message) {
-      setMessage(draft)
+    if (draftText !== undefined && draftText !== message) {
+      setMessage(draftText)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to external draft changes
-  }, [draft])
+  }, [draftText])
 
   // A dismissal lasts while that exact value remains in the draft. Removing it
   // and pasting/typing it again is treated as a fresh safety signal.
@@ -161,12 +154,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     dragHandlers,
   } = useAttachments({
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
-    initialAttachments: options.initialAttachments,
+    initialAttachments: draft?.attachments,
     onAttachmentsAdded: (added) => {
       for (const a of added) if (a.type === 'file' || a.type === 'folder') queueRef.current?.enqueue(a)
     },
   })
   attachmentsRef.current = attachments
+  useEffect(() => {
+    updateDraft({ attachments })
+  }, [attachments, updateDraft])
   usePendingAttachmentDrop(draftKey, addItems)
 
   const queue = useUploadQueue({
@@ -181,15 +177,25 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   queueRef.current = queue
 
   const removeAttachment = queue.remove
-  const clearAttachments = queue.clear
+  const clearQueuedAttachments = queue.clear
+  // Clear the stored chips synchronously: a send that navigates away unmounts
+  // the composer before the attachments effect could write the empty list.
+  const clearAttachments = useCallback(() => {
+    updateDraft({ attachments: undefined })
+    clearQueuedAttachments()
+  }, [clearQueuedAttachments, updateDraft])
   const retryAttachment = queue.retry
 
   useEffect(() => {
     // Unmount aborts the queue generation, so StrictMode's second setup must
-    // enqueue again. Skip done/error chips; later adds go through onAttachmentsAdded.
+    // enqueue again. Skip error chips and uploads this composer can send; later
+    // adds go through onAttachmentsAdded. A drafted chip finished under another
+    // slug (Start Fresh or a fork under the display slug) would be dropped at
+    // send, so it uploads again.
     for (const a of attachmentsRef.current) {
       if (a.type !== 'file' && a.type !== 'folder') continue
-      if (a.error || a.upload?.status === 'done') continue
+      if (a.error) continue
+      if (a.upload?.status === 'done' && a.upload.agentSlug === agentSlug) continue
       queue.enqueue(a)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
@@ -308,7 +314,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
       setMessage('')
-      setDraft(undefined)
+      updateDraft({ text: undefined })
       clearAttachments()
     }
 
@@ -328,10 +334,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     if (keepMessageUntilComplete) {
       setMessage('')
-      setDraft(undefined)
+      updateDraft({ text: undefined })
       clearAttachments()
     }
     setSecuredSecrets([])
+    updateDraft({ securedSecrets: undefined })
     return true
   }
 

@@ -2,9 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders as render } from '@renderer/test/test-utils'
+import { renderWithProviders as render, useDraftText } from '@renderer/test/test-utils'
 import { useEffect } from 'react'
-import { useDraft } from '@renderer/context/drafts-context'
 import { BrowserInputRequestItem } from './request'
 
 const mockApiFetch = vi.fn()
@@ -31,14 +30,14 @@ function deferred<T = unknown>() {
 
 // Probe to read the shared session draft (renderWithProviders wraps DraftsProvider).
 function DraftProbe({ sessionId }: { sessionId: string }) {
-  const [value] = useDraft<string>(`session:${sessionId}`)
+  const [value] = useDraftText(`session:${sessionId}`)
   return <div data-testid="draft-probe">{value ?? ''}</div>
 }
 
 // Seeds the shared session draft on mount — simulates text the user had already
 // typed in the composer before declining.
 function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
-  const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+  const [, setDraft] = useDraftText(`session:${sessionId}`)
   useEffect(() => {
     setDraft(value)
     // eslint-disable-next-line react-hooks/exhaustive-deps

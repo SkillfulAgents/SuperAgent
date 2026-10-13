@@ -5,9 +5,9 @@ import { completeAgentTemplateHandoff } from './agent-template-handoff'
 describe('completeAgentTemplateHandoff', () => {
   it('seeds a template prompt and suppresses the auto-started onboarding session', async () => {
     const order: string[] = []
-    const draftsStore: Pick<DraftsStore, 'set'> = {
-      set<T>(key: string, value: T | undefined): void {
-        order.push(`set:${key}:${String(value)}`)
+    const draftsStore: Pick<DraftsStore, 'update'> = {
+      update(key, patch) {
+        order.push(`update:${key}:${patch.text}`)
       },
     }
     const noteProgrammaticChange = vi.fn((prompt: string) => order.push(`baseline:${prompt}`))
@@ -26,7 +26,7 @@ describe('completeAgentTemplateHandoff', () => {
 
     expect(order).toEqual([
       'baseline:Start with this task',
-      'set:agent:new-agent:Start with this task',
+      'update:agent:new-agent:Start with this task',
       'open',
     ])
     expect(startOnboardingSession).not.toHaveBeenCalled()
@@ -37,7 +37,7 @@ describe('completeAgentTemplateHandoff', () => {
     const startOnboardingSession = vi.fn(() => { order.push('onboarding') })
 
     await completeAgentTemplateHandoff({
-      draftsStore: { set: vi.fn() as Pick<DraftsStore, 'set'>['set'] },
+      draftsStore: { update: vi.fn() },
       agentSlug: 'new-agent',
       hasOnboarding: true,
       openAgent: () => { order.push('open') },
@@ -52,7 +52,7 @@ describe('completeAgentTemplateHandoff', () => {
     const startOnboardingSession = vi.fn()
 
     await completeAgentTemplateHandoff({
-      draftsStore: { set: vi.fn() as Pick<DraftsStore, 'set'>['set'] },
+      draftsStore: { update: vi.fn() },
       agentSlug: 'new-agent',
       hasOnboarding: true,
       onboardingFirstPrompt: 'Walk me through HubSpot',

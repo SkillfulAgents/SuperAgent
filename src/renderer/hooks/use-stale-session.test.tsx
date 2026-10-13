@@ -4,10 +4,6 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftsProvider, useDraftsStore } from '@renderer/context/drafts-context'
-import {
-  newSessionCarryoverKey,
-  type NewSessionCarryover,
-} from '@renderer/lib/new-session-carryover'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { useStaleSession } from './use-stale-session'
 
@@ -79,23 +75,19 @@ describe('useStaleSession', () => {
     expect(renderStale({ isViewOnly: true }).result.current.stale.showNotice).toBe(false)
   })
 
-  it('moves the live composer into a new conversation and navigates home', () => {
+  it('moves the session draft into the agent home composer and navigates home', () => {
+    const attachment = { type: 'file' as const, id: 'a-1', file: new File(['x'], 'a.txt') }
     const { result } = renderStale()
-    act(() => result.current.stale.registerSnapshot(() => ({
-      text: 'Continue as a new task',
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-      speed: 'normal',
-    })))
+    act(() => {
+      result.current.store.set('session:session-1', { text: 'Continue as a new task', attachments: [attachment] })
+      result.current.stale.registerSnapshot(() => ({ model: 'sonnet', llmProviderId: 'anthropic', effort: 'high', speed: 'normal' }))
+    })
     act(() => result.current.stale.startFresh())
 
-    expect(result.current.store.get('agent:abc123def4')).toBe('Continue as a new task')
-    expect(result.current.store.get<NewSessionCarryover>(newSessionCarryoverKey('abc123def4'))).toEqual({
-      attachments: [],
-      model: 'sonnet',
-      effort: 'high',
-      speed: 'normal',
+    expect(result.current.store.get('agent:abc123def4')).toEqual({
+      text: 'Continue as a new task',
+      attachments: [attachment],
+      options: { model: 'sonnet', llmProviderId: 'anthropic', effort: 'high', speed: 'normal' },
     })
     expect(result.current.store.get('session:session-1')).toBeUndefined()
     expect(navigate).toHaveBeenCalledWith({
@@ -119,7 +111,7 @@ describe('useStaleSession', () => {
     })
     const { result } = renderStale()
     act(() => {
-      result.current.store.set('session:session-1', 'Unsent draft')
+      result.current.store.set('session:session-1', { text: 'Unsent draft' })
       // Two selections in the same event must be guarded before the next render.
       result.current.stale.continueCompacted()
       result.current.stale.continueCompacted()
@@ -128,7 +120,7 @@ describe('useStaleSession', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
     expect(result.current.stale.isPending).toBe(true)
     expect(navigate).not.toHaveBeenCalled()
-    expect(result.current.store.get('session:session-1')).toBe('Unsent draft')
+    expect(result.current.store.get('session:session-1')?.text).toBe('Unsent draft')
 
     await act(async () => releaseFork())
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2))
@@ -142,8 +134,8 @@ describe('useStaleSession', () => {
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'friendly-agent-abc123def4', sessionId: 'fork-1' },
     })
-    expect(result.current.store.get('session:fork-1')).toBe('Unsent draft')
-    expect(result.current.store.get('session:session-1')).toBe('Unsent draft')
+    expect(result.current.store.get('session:fork-1')?.text).toBe('Unsent draft')
+    expect(result.current.store.get('session:session-1')?.text).toBe('Unsent draft')
 
     await act(async () => releaseSend())
     await waitFor(() => expect(result.current.stale.isPending).toBe(false))

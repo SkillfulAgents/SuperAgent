@@ -64,8 +64,7 @@ import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
-import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
-import { useDraftsStore } from '@renderer/context/drafts-context'
+import { agentDraftKey, useDraftsStore } from '@renderer/context/drafts-context'
 import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
 
@@ -115,11 +114,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
   const { data: agentPrefs } = useAgentPreferences(agent.slug)
-  const carryover = useNewSessionCarryover(agent.slug)
   const composerOptions = useComposerOptions({
-    initialModel: carryover?.model,
-    initialEffort: carryover?.effort,
-    initialSpeed: carryover?.speed,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
     agentDefaultEffort: agentPrefs?.defaultEffort,
@@ -128,6 +123,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     // The default-model card sits next to this composer; an untouched selection
     // must visibly track it, including a reset back to the global default.
     followDefaults: true,
+    draftKey: agentDraftKey(agent.slug),
   })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLDivElement>(null)
@@ -221,11 +217,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
       const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
+      const runtimeOptions = composerOptions.toRuntimeOptions()
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
-        ...composerOptions.toRuntimeOptions(),
+        ...runtimeOptions,
       })
+      composerOptions.markSubmitted(runtimeOptions)
       // The server assigns the initial message's uuid and returns it; the
       // optimistic pending copy is materialized by exact id match.
       onSessionCreated(session.id, content, session.initialMessageUuid)
@@ -235,9 +233,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
-    draftKey: `agent:${agent.slug}`,
-    initialAttachments: carryover?.attachments,
-    initialSecuredSecrets: carryover?.securedSecrets,
+    draftKey: agentDraftKey(agent.slug),
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
@@ -281,12 +277,14 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     // Audio output is unlocked here, inside the click, for the reply to use.
     readAloud.unlockAudio()
     try {
+      const runtimeOptions = composerOptions.toRuntimeOptions()
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: VOICE_MODE_ENTERED_MESSAGE,
         inputMode: 'voice',
-        ...composerOptions.toRuntimeOptions(),
+        ...runtimeOptions,
       })
+      composerOptions.markSubmitted(runtimeOptions)
       onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
       track('voice_mode_entered', { origin })
     } catch (error) {

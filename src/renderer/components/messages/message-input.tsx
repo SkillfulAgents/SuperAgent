@@ -8,6 +8,7 @@ import { WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { sessionDraftKey, type ComposerOptionPicks } from '@renderer/context/drafts-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
 import { VoiceModeComposer } from './voice-mode-composer'
@@ -40,7 +41,6 @@ import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
-import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
 import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 interface MessageInputProps {
@@ -60,7 +60,7 @@ interface MessageInputProps {
   initialLlmProviderId?: string | null
   initialModel?: string
   /** Registers a getter so the stale-session prompt can move the live draft. */
-  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
+  registerSnapshot?: (getSnapshot: (() => ComposerOptionPicks) | null) => void
   /**
    * Hidden behind a request card the agent is waiting on. Voice mode pauses
    * (mic closed, the reply being read finishes, no hold sound) and resumes
@@ -105,6 +105,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
+    draftKey: sessionDraftKey(sessionId),
   })
   const textareaRef = useRef<HTMLDivElement>(null)
   // Set by the voice-mode send path so message_sent can tell a spoken turn from a typed one.
@@ -187,7 +188,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       track('message_sent', { origin: 'user', input_mode: inputMode })
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
-    draftKey: `session:${sessionId}`,
+    draftKey: sessionDraftKey(sessionId),
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
@@ -197,25 +198,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     enabled: warmStartEnabled && !isViewOnly,
   })
 
-  const snapshotRef = useRef<ComposerSnapshot>({
-    text: '',
-    attachments: [],
-    model: undefined,
-    effort: composerOptions.effort,
-    speed: composerOptions.speed,
-    securedSecrets: [],
-  })
-  snapshotRef.current = {
-    text: composer.message,
-    attachments: composer.attachments,
-    model: composerOptions.model,
-    effort: composerOptions.effort,
-    speed: composerOptions.speed,
-    securedSecrets: composer.securedSecrets,
-  }
+  // Start Fresh carries the session's own and the user's explicit choices.
+  // Adopted defaults stay out so the new conversation resolves them afresh.
+  const snapshotRef = useRef<() => ComposerOptionPicks>(composerOptions.toRuntimeOptions)
+  snapshotRef.current = composerOptions.toRuntimeOptions
   useEffect(() => {
     if (!registerSnapshot) return
-    registerSnapshot(() => snapshotRef.current)
+    registerSnapshot(() => snapshotRef.current())
     return () => registerSnapshot(null)
   }, [registerSnapshot])
 

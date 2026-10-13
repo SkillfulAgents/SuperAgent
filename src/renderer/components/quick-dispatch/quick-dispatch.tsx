@@ -32,6 +32,7 @@ type OpenMenu = 'agent' | 'model' | 'attach' | null
 // Window ≈ input + footer + this ≈ 450px, which fits below the launcher's
 // top anchor on any common display.
 const MENU_MAX_HEIGHT = 300
+const QUICK_DISPATCH_DRAFT_KEY = 'quick-dispatch'
 
 function activityTime(a: ApiAgent): number {
   return a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0
@@ -101,6 +102,7 @@ export function QuickDispatch() {
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
+    draftKey: QUICK_DISPATCH_DRAFT_KEY,
   })
   const createSession = useCreateSession()
   const editorRef = useRef<HTMLDivElement | null>(null)
@@ -138,11 +140,13 @@ export function QuickDispatch() {
       async (content: string) => {
         if (!selectedSlug) return
         try {
+          const runtimeOptions = composerOptions.toRuntimeOptions()
           const session = await createSession.mutateAsync({
             agentSlug: selectedSlug,
             message: content,
-            ...composerOptions.toRuntimeOptions(),
+            ...runtimeOptions,
           })
+          composerOptions.markSubmitted(runtimeOptions)
           // Hand off to the main process: hide the launcher and raise the main
           // window on the brand-new session.
           window.electronAPI?.quickDispatchDispatched?.({
@@ -163,7 +167,7 @@ export function QuickDispatch() {
     // flight, instead of clearing it up front — seeing your text vanish mid-send
     // is unnerving. It clears once the session is created, or stays on failure.
     keepMessageUntilComplete: true,
-    draftKey: 'quick-dispatch',
+    draftKey: QUICK_DISPATCH_DRAFT_KEY,
   })
 
   // Refocus + select the input each time the launcher is re-shown (autoFocus

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
-import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
+import { renderHook, act, render as renderTree } from '@testing-library/react'
+import { DraftsProvider, useDraftsStore, type DraftsStore } from '@renderer/context/drafts-context'
+import { useComposerOptions, type ComposerOptionsController, type UseComposerOptionsArgs } from './composer-options'
 
 // Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
@@ -24,7 +25,25 @@ const LOADED_SETTINGS = {
 function render(initialProps: UseComposerOptionsArgs) {
   return renderHook((props: UseComposerOptionsArgs) => useComposerOptions(props), {
     initialProps,
+    wrapper: DraftsProvider,
   })
+}
+
+/** Mounts the hook inside one long-lived provider so a test can remount just the composer. */
+function renderDrafted(initialProps: UseComposerOptionsArgs) {
+  const latest: { options?: ComposerOptionsController; store?: DraftsStore } = {}
+  function Probe({ props }: { props: UseComposerOptionsArgs }) {
+    latest.options = useComposerOptions(props)
+    latest.store = useDraftsStore()
+    return null
+  }
+  let mount = 0
+  const view = renderTree(<DraftsProvider><Probe key={mount} props={initialProps} /></DraftsProvider>)
+  return {
+    latest: latest as Required<typeof latest>,
+    rerender: (props: UseComposerOptionsArgs) => view.rerender(<DraftsProvider><Probe key={mount} props={props} /></DraftsProvider>),
+    remount: (props: UseComposerOptionsArgs = initialProps) => view.rerender(<DraftsProvider><Probe key={++mount} props={props} /></DraftsProvider>),
+  }
 }
 
 beforeEach(() => { state.connections = undefined })
@@ -364,5 +383,126 @@ describe('connection/model selection', () => {
     act(() => result.current.setConnection?.('personal'))
     rerender({ initialLlmProviderId: 'global', initialModel: 'global-default' })
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+  })
+})
+
+describe('drafted option picks', () => {
+  const sessionArgs: UseComposerOptionsArgs = { initialModel: 'opus', initialEffort: 'medium', agentKey: 'a', agentDefaultsReady: true, draftKey: 'session:s-1' }
+  beforeEach(() => { state.settings = LOADED_SETTINGS })
+
+  it('restores unsent picks after the composer remounts and still sends them', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => {
+      latest.options.setModel('haiku')
+      latest.options.setEffort('high')
+      latest.options.setSpeed('fast')
+    })
+
+    remount()
+
+    expect(latest.options.model).toBe('haiku')
+    expect(latest.options.effort).toBe('high')
+    expect(latest.options.speed).toBe('fast')
+    expect(latest.options.toRuntimeOptions()).toEqual({ model: 'haiku', effort: 'high', speed: 'fast' })
+  })
+
+  it('keeps a restored pick ahead of a later session refetch, like a pick made in place', () => {
+    const { latest, remount, rerender } = renderDrafted(sessionArgs)
+    act(() => latest.options.setModel('haiku'))
+    remount()
+    rerender({ ...sessionArgs, initialModel: 'sonnet' })
+    expect(latest.options.model).toBe('haiku')
+  })
+
+  it('never stores session values or adopted defaults, only explicit picks', () => {
+    const { latest } = renderDrafted({ ...sessionArgs, agentDefaultModel: 'sonnet', agentDefaultSpeed: 'fast' })
+    expect(latest.store.get('session:s-1')).toBeUndefined()
+  })
+
+  it('drops a pick from the draft once the server accepted it', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => latest.options.setModel('haiku'))
+    act(() => latest.options.markSubmitted({ model: 'haiku' }))
+    expect(latest.store.get('session:s-1')).toBeUndefined()
+
+    remount({ ...sessionArgs, initialModel: 'haiku' })
+    expect(latest.options.model).toBe('haiku')
+  })
+
+  it('restores an account pick, and falls back when that account was removed meanwhile', () => {
+    const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+    const global = { id: 'global', defaultModel: 'same', catalog: [model('same'), model('global-default')] }
+    const personal = { id: 'personal', defaultModel: 'same', catalog: [model('same')] }
+    state.connections = { connections: [global, personal], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    const args = { initialLlmProviderId: 'global', initialModel: 'same', draftKey: 'session:s-1' }
+    const { latest, remount } = renderDrafted(args)
+    act(() => latest.options.setConnection?.('personal'))
+
+    remount()
+    expect(latest.options.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+
+    state.connections = { connections: [global], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    remount({ ...args })
+    const sent = latest.options.toRuntimeOptions()
+    expect(sent).toMatchObject({ llmProviderId: 'global', model: 'same' })
+
+    // Sending what the stale pick resolved to clears it from the draft.
+    act(() => latest.options.markSubmitted(sent))
+    expect(latest.store.get('session:s-1')).toBeUndefined()
+  })
+
+  it('sends the restored account with the restored model while connections are still loading', () => {
+    const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+    const global = { id: 'global', defaultModel: 'same', catalog: [model('same')] }
+    const personal = { id: 'personal', defaultModel: 'same', catalog: [model('same')] }
+    state.connections = { connections: [global, personal], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const args = { initialLlmProviderId: 'global', initialModel: 'same', draftKey: 'session:s-1' }
+    const { latest, remount } = renderDrafted(args)
+    act(() => latest.options.setConnection?.('personal'))
+
+    state.connections = undefined
+    remount()
+
+    expect(latest.options.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+  })
+
+  it('an earlier send completing does not clear a newer pick made after remounting', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => {
+      latest.options.setModel('haiku')
+      latest.options.setEffort('high')
+      latest.options.setSpeed('fast')
+    })
+    const staleInstance = latest.options
+    const sent = staleInstance.toRuntimeOptions()
+
+    // Navigate away and back while that send is still in flight, then pick again.
+    remount()
+    act(() => {
+      latest.options.setModel('sonnet')
+      latest.options.setEffort('low')
+      latest.options.setSpeed('normal')
+    })
+    act(() => staleInstance.markSubmitted(sent))
+
+    expect(latest.store.get('session:s-1')?.options).toEqual({ model: 'sonnet', effort: 'low', speed: 'normal' })
+  })
+
+  it('an earlier send completing does not clear a newer account pick', () => {
+    const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+    const global = { id: 'global', defaultModel: 'same', catalog: [model('same')] }
+    const personal = { id: 'personal', defaultModel: 'same', catalog: [model('same')] }
+    state.connections = { connections: [global, personal], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const args = { initialLlmProviderId: 'global', initialModel: 'same', draftKey: 'session:s-1' }
+    const { latest, remount } = renderDrafted(args)
+    act(() => latest.options.setConnection?.('personal'))
+    const staleInstance = latest.options
+    const sent = staleInstance.toRuntimeOptions()
+
+    remount()
+    act(() => latest.options.setConnection?.('global'))
+    act(() => staleInstance.markSubmitted(sent))
+
+    expect(latest.store.get('session:s-1')?.options).toMatchObject({ llmProviderId: 'global' })
   })
 })
