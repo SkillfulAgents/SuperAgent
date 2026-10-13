@@ -543,9 +543,8 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     id: 'muse-spark-1.3',
     pricing: pricingFor('muse-spark-1.3'),
     label: 'Muse Spark 1.3',
-    blurb: 'Meta flagship, served via Platform',
+    blurb: 'Meta, served via Platform',
     isLatest: true,
-    isDefault: true,
     supportedEfforts: ALL_EFFORTS,
   },
   // Labels carry the full family name so the picker's version chips strip to
@@ -564,6 +563,26 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     label: 'Muse Spark Contributor 1.3',
     blurb: 'Meta contributor tier, served via Platform',
     isLatest: true,
+  },
+]
+
+/**
+ * Meta's frontier tier, on the same api.meta.ai route and traits as Spark.
+ * Efforts and window are from Meta's model page (dev.meta.ai/models/muse-wonder);
+ * Meta has no contributor tier for it.
+ */
+const MUSE_WONDER_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    family: 'muse-wonder',
+    id: 'muse-wonder-1.0',
+    pricing: pricingFor('muse-wonder-1.0'),
+    label: 'Muse Wonder 1.0',
+    blurb: 'Meta flagship, served via Platform',
+    isLatest: true,
+    isDefault: true,
+    supportedEfforts: ALL_EFFORTS,
+    contextWindow: 1_048_576,
   },
 ]
 
@@ -750,6 +769,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
     supportsImageInput: true,
   },
+  ...MUSE_WONDER_MODELS,
   ...MUSE_SPARK_MODELS,
   {
     // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.

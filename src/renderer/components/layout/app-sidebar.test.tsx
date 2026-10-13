@@ -11,7 +11,7 @@ if (typeof localStorage === 'undefined' || !localStorage) {
   }
   Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
 }
-import { cloneElement, isValidElement, type ReactElement } from 'react'
+import { cloneElement, forwardRef, isValidElement, type ReactElement } from 'react'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
@@ -290,10 +290,13 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,
   // Honor asChild (Slot): merge data-active + our props onto the child element so
   // the link carries the testid/active state and keeps its own onClick.
-  SidebarMenuButton: ({ children, onClick, isActive, asChild, ...props }: any) =>
-    asChild && isValidElement(children)
+  // Forwards its ref like the real one (a section's ⋯ reaches its header
+  // button through it).
+  SidebarMenuButton: forwardRef(function SidebarMenuButton({ children, onClick, isActive, asChild, ...props }: any, ref: any) {
+    return asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
-      : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
+      : <button ref={ref} onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>
+  }),
   SidebarMenuItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
@@ -365,6 +368,7 @@ vi.mock('@dnd-kit/modifiers', () => ({
 
 function makeAgent(overrides: Record<string, any> = {}) {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'test-agent',
     displaySlug: 'test-agent',
     name: 'Test Agent',
@@ -610,6 +614,18 @@ describe('AppSidebar — layout & top nav', () => {
 })
 
 describe('AppSidebar — agent rows', () => {
+  it('renders older agents without avatars and keeps their expand control visible', async () => {
+    const agent = makeAgent({ avatar: undefined })
+    mockUseAgents.mockReturnValue({ data: [agent], isLoading: false, error: null })
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(row.querySelector('[data-avatar-orb]')).toBeNull()
+    const expand = within(row).getByRole('button', { name: 'Expand' })
+    expect(expand.querySelector('svg')).not.toHaveClass('opacity-0')
+    await userEvent.click(expand)
+    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+  })
+
   it('keeps the member roster control beside the agent navigation link', () => {
     mockUserContext.isAuthMode = true
     mockUserContext.agentMemberCount.mockImplementation(slug => slug === 'test-agent' ? 4 : 1)
@@ -645,6 +661,57 @@ describe('AppSidebar — agent rows', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
     expect(screen.getByText('Other Agent')).toBeInTheDocument()
+  })
+
+  it('shows the home card\'s last-run meta line under each agent name', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-09T12:00:00Z'), toFake: ['Date'] })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [
+          makeAgent({ lastActivityAt: new Date('2026-10-09T09:00:00Z') }),
+          makeAgent({ slug: 'idle-agent', displaySlug: 'idle-agent', name: 'Idle Agent', lastActivityAt: null }),
+        ],
+        isLoading: false,
+        error: null,
+      })
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 3 hours ago')
+      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Last run never')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ages last-run labels without rerendering rows and immediately accepts new activity', () => {
+    vi.useFakeTimers({
+      now: new Date('2026-10-09T12:00:00Z'),
+      toFake: ['Date', 'setInterval', 'clearInterval'],
+    })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ lastActivityAt: new Date('2026-10-09T09:00:00Z') })],
+        isLoading: false, error: null,
+      })
+      const { rerender, unmount } = renderWithProviders(<AppSidebar />)
+      const renders = mockUseAgents.mock.calls.length
+      act(() => vi.advanceTimersByTime(60 * 60 * 1000))
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
+      expect(mockUseAgents.mock.calls).toHaveLength(renders)
+
+      // An agent-summary refetch lands between clock ticks after a session event.
+      act(() => vi.advanceTimersByTime(45_000))
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ lastActivityAt: new Date('2026-10-09T13:00:45Z') })],
+        isLoading: false, error: null,
+      })
+      rerender(<AppSidebar />)
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run less than a minute ago')
+      act(() => vi.advanceTimersByTime(75_000))
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run 1 minute ago')
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows a status indicator for each agent (collapsed)', () => {
@@ -989,6 +1056,25 @@ describe('UserMenu action for the current target', () => {
     expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
   })
 
+  it('replaces the footer Settings button with the user, holding Settings in its menu', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    renderWithProviders(<AppSidebar />)
+
+    const trigger = screen.getByTestId('user-menu-trigger')
+    expect(trigger).toHaveTextContent('Ada')
+    // One Settings entry, and it lives in the user's popover (rendered open by
+    // this file's Popover mock), not beside it in the footer.
+    const settings = screen.getByTestId('settings-button')
+    const popover = trigger.closest('[data-testid="popover"]')
+    expect(popover).not.toBeNull()
+    expect(settings.closest('[data-testid="popover"]')).toBe(popover)
+
+    await userEvent.click(settings)
+
+    expect(mockDialogContext.openSettings).toHaveBeenCalled()
+  })
+
   it('does not revoke the deployment session when that action is used', async () => {
     vi.stubGlobal('__AUTH_MODE__', false)
     setActiveTarget('cloud', null)
@@ -1209,7 +1295,6 @@ describe('AppSidebar — agent folders', () => {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-')
       )
       .map((id) =>
@@ -1225,17 +1310,14 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
-  it('renders a folder with its name, and how many agents are in it only while collapsed', () => {
+  it('renders a folder with its name and no member count, open or collapsed', () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
       agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
     })
     const { unmount } = renderWithProviders(<AppSidebar />)
-
-    // Expanded: the rows underneath say how many there are, so no count.
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
     unmount()
 
     mockUserSettings.mockReturnValue({
@@ -1245,8 +1327,50 @@ describe('AppSidebar — agent folders', () => {
       collapsedAgentFolders: ['f1'],
     })
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
+  })
+
+  it('creates a new agent filed into the folder whose + was pressed', async () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'f1' })
+    // Already open: nothing to expand, so no settings write from the sidebar.
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  it('opens a collapsed folder before creating an agent in it', async () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      { collapsedAgentFolders: [] },
+      expect.anything()
+    )
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'f1' })
+    expect(screen.getByTestId('agent-item-test-agent')).toBeVisible()
+  })
+
+  it('offers + on the default folder as well, creating an unfiled agent', async () => {
+    mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-root'))
+
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'root' })
   })
 
   it('defaults the default folder first before anything is arranged', () => {
@@ -1352,44 +1476,49 @@ describe('AppSidebar — agent folders', () => {
     return typeof arg === 'function' ? arg(settings) : arg
   }
 
-  it('adds a uniquely-named folder from the default folder’s header', async () => {
+  /** Make a folder the way users do: "Add section" at the end of the list. */
+  async function addSection() {
+    await userEvent.click(screen.getByTestId('add-section-button'))
+  }
+
+  it('adds a uniquely-named folder from Add section', async () => {
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
     const patch = patchWith({ agentFolders: [] })
     expect(patch.agentFolders).toHaveLength(1)
-    expect(patch.agentFolders[0].name).toBe('New Folder')
+    expect(patch.agentFolders[0].name).toBe('New Section')
     expect(patch.agentFolders[0].id).toBeTruthy()
   })
 
   it('does not reuse an existing folder name when adding another', async () => {
     const settings = {
       agentOrder: [],
-      agentFolders: [{ id: 'f1', name: 'New Folder' }],
+      agentFolders: [{ id: 'f1', name: 'New Section' }],
     }
     mockUserSettings.mockReturnValue(settings)
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     const patch = patchWith(settings)
-    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+    expect(patch.agentFolders[1].name).toBe('New Section 2')
   })
 
   it('names a created folder against the folder list at mutation run time', async () => {
     // A create queued behind an in-flight write resolves after it settles: if
-    // that write added "New Folder", this one must come out "New Folder 2" —
+    // that write added "New Section", this one must come out "New Section 2" —
     // and must carry the other write's folder rather than reverting it.
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
-    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Folder' }] })
+    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Section' }] })
     expect(patch.agentFolders).toHaveLength(2)
-    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Folder' })
-    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Section' })
+    expect(patch.agentFolders[1].name).toBe('New Section 2')
   })
 
   it('renders a folder with no recorded place at the end of the list', () => {
@@ -1405,30 +1534,55 @@ describe('AppSidebar — agent folders', () => {
     expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
   })
 
-  it('places a created folder directly above the default folder', async () => {
+  it('places a created folder last, right above Add section', async () => {
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     // Untouched install: no stored places yet, so root's marker is written
-    // too — without one it would default ahead of the new folder (place -1).
+    // too — without one it would default ahead of everything (place -1).
     const fresh = patchWith({ agentFolders: [] })
-    expect(fresh.agentListOrder).toEqual([
-      `agent-folder::${fresh.agentFolders[0].id}`,
-      ROOT,
-    ])
+    expect(fresh.agentListOrder).toEqual([ROOT, `agent-folder::${fresh.agentFolders[0].id}`])
 
-    // A root the user moved off the top stays put; the new folder splices in
-    // just above it and other folders keep their places.
+    // Arranged sections keep their places; the new one goes after them all.
     const arranged = patchWith({
       agentFolders: [FOLDERS[0]],
-      agentListOrder: ['agent-folder::f1', ROOT],
+      agentListOrder: [ROOT, 'agent-folder::f1'],
     })
     expect(arranged.agentListOrder).toEqual([
+      ROOT,
       'agent-folder::f1',
       `agent-folder::${arranged.agentFolders[1].id}`,
-      ROOT,
     ])
+  })
+
+  it('puts Add section at the end of the agent list, not in the footer', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const button = screen.getByTestId('add-section-button')
+    expect(button).toHaveTextContent('Add section')
+    // Styled as a section row (the headers' text), but as a plain action it
+    // keeps a hover fill — which the section headers deliberately lack.
+    for (const cls of ['text-xs', 'font-normal', 'text-sidebar-foreground/50', 'hover:bg-sidebar-accent']) {
+      expect(button.className).toContain(cls)
+    }
+    expect(button.className).not.toContain('hover:bg-transparent')
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    // After every section and agent row in the list…
+    const rows = document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    expect(follows(rows[rows.length - 1], button)).toBe(true)
+    // …and still ahead of the footer's Settings.
+    expect(follows(button, screen.getByTestId('settings-button'))).toBe(true)
+    // The same space above it as above each section header, so the gaps
+    // down the list stay uniform.
+    expect(button.closest('li')?.className).toContain('mt-2')
+    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-2')
   })
 
   it('still renders folders when the user has no agents at all', () => {
@@ -1457,7 +1611,8 @@ describe('AppSidebar — agent folders', () => {
     })
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByText('Drag agents here')).toBeInTheDocument()
+    expect(screen.getByText('No agents in here yet')).toBeInTheDocument()
+    expect(screen.getByText('Drag in or click + to add')).toBeInTheDocument()
   })
 })
 
@@ -1778,7 +1933,6 @@ describe('AppSidebar — drag orchestration', () => {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-') &&
           !id.startsWith('agent-folder-insert-indicator-')
       )

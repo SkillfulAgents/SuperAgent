@@ -528,6 +528,11 @@ export const agents = sqliteTable('agents', {
   slug: text('slug').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  // Constant SQL defaults permit SQLite's non-null column upgrade without
+  // rebuilding this referenced table. The migration backfills random values;
+  // every runtime insert supplies a random pair through the agent catalog.
+  avatarColor: text('avatar_color').notNull().default('tonal-blue'),
+  avatarShape: text('avatar_shape').notNull().default('circle'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   runtime: text('runtime').notNull().default('local'),
   workspaceHandle: text('workspace_handle'),
@@ -879,6 +884,8 @@ export const todos = sqliteTable('todos', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   startedAt: integer('started_at', { mode: 'timestamp_ms' }),
   completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+  // Files held with the item. A JSON list, validated when read.
+  attachments: text('attachments').notNull().default('[]'),
 }, (table) => ({
   userIdx: index('todos_user_idx').on(table.userId),
   // Session and agent deletion find the rows that point at them.

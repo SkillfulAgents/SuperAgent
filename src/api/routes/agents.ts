@@ -17,6 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -38,6 +39,7 @@ import {
   getAgent,
   getAgentRecord,
   updateAgent,
+  updateAgentAvatar,
   deleteAgent,
   agentExists,
   AgentContainerStopError,
@@ -1439,6 +1441,16 @@ agents.put('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     console.error('Failed to update agent:', error)
     return c.json({ error: 'Failed to update agent' }, 500)
   }
+})
+
+// Appearance is shared agent metadata, with the same permission as renaming.
+agents.put('/:id/avatar', ResolveAgent(), AgentAdmin(), zValidator('json', agentAvatarSchema), async (c) => {
+  const slug = getAgentId(c)
+  const avatar = await updateAgentAvatar(slug, c.req.valid('json'))
+  if (!avatar) return c.json({ error: 'Agent not found' }, 404)
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: ['avatar'] } })
+  messagePersister.broadcastGlobal({ type: 'agent_updated', agentSlug: slug })
+  return c.json(avatar)
 })
 
 // DELETE /api/agents/:id - Delete an agent

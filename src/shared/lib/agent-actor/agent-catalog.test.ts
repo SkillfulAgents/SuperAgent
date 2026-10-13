@@ -12,6 +12,8 @@ let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { createAgentCatalog } from './agent-catalog'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
+import * as avatarAssignment from './agent-avatar'
 import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentInstructionsPath } from '@shared/lib/utils/file-storage'
 import type { AgentCatalog } from './types'
 
@@ -94,6 +96,26 @@ describe('minting and resolving slugs', () => {
 })
 
 describe('records', () => {
+  it('assigns a random pair at insertion and keeps it through reads, renames and picker updates', async () => {
+    const first = agentAvatarSchema.parse({ color: 'tonal-red', shape: 'triangle' })
+    const second = agentAvatarSchema.parse({ color: 'tonal-teal', shape: 'arch' })
+    const assignment = vi.spyOn(avatarAssignment, 'randomAgentAvatar')
+      .mockReturnValueOnce(first).mockReturnValueOnce(second)
+    try {
+      expect((await catalog.insert({ slug: 'a', name: 'Same name', createdAt: new Date() })).avatar).toEqual(first)
+      expect((await catalog.insert({ slug: 'b', name: 'Same name', createdAt: new Date() })).avatar).toEqual(second)
+      expect((await catalog.get('a'))?.avatar).toEqual(first)
+      expect((await catalog.update('a', { name: 'Renamed' }))?.avatar).toEqual(first)
+      const chosen = agentAvatarSchema.parse({ color: 'duo-red-amber', shape: 'bloom' })
+      await catalog.update('a', { avatar: chosen })
+      expect((await createAgentCatalog().get('a'))?.avatar).toEqual(chosen)
+      expect(await rowFor('a')).toMatchObject({ avatarColor: chosen.color, avatarShape: chosen.shape })
+      expect(assignment).toHaveBeenCalledTimes(2)
+    } finally {
+      assignment.mockRestore()
+    }
+  })
+
   it('lists agents newest first and reads one back with its placement', async () => {
     await catalog.insert({ slug: 'older', name: 'Older', createdAt: new Date('2026-01-01T00:00:00Z') })
     await catalog.insert({
@@ -105,6 +127,7 @@ describe('records', () => {
     expect(await catalog.get('newer')).toEqual({
       slug: 'newer',
       name: 'Newer',
+      avatar: expect.objectContaining({ color: expect.any(String), shape: expect.any(String) }),
       description: 'The newer one',
       createdAt: new Date('2026-02-01T00:00:00Z'),
       placement: { runtime: 'local', workspaceHandle: null },

@@ -24,6 +24,7 @@ const FAMILY_LABELS: Record<string, string> = {
   'gpt-luna': 'GPT Luna',
   glm: 'GLM',
   deepseek: 'DeepSeek',
+  'muse-wonder': 'Muse Wonder',
   muse: 'Muse Spark',
   'muse-contributor': 'Muse Spark Contributor',
 }
@@ -73,7 +74,7 @@ export function vendorDefault(
  * keep one row per concrete model.
  */
 const LINEAGE_FAMILIES = new Set([
-  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse', 'muse-contributor',
+  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor',
   'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna',
 ])
 

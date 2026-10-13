@@ -1,5 +1,6 @@
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { handleUnauthorizedResponse, handleWorkspaceUnavailableResponse } from '@renderer/lib/api'
+import { HttpError } from './http-error'
 
 // 50MB — keeps each request under Cloudflare's 100MB request-body limit so
 // large files don't 413 at the edge before reaching the API.
@@ -125,7 +126,7 @@ function readError(res: UploadResponse, fallback: string): string {
 async function checkResponse(res: UploadResponse, url: string): Promise<void> {
   handleWorkspaceUnavailableResponse(url, res.header)
   await handleUnauthorizedResponse(res.status, url)
-  if (!res.ok) throw new Error(readError(res, 'Upload failed. Please try again.'))
+  if (!res.ok) throw new HttpError(res.status, readError(res, 'Upload failed.'))
 }
 
 interface UploadOptions {

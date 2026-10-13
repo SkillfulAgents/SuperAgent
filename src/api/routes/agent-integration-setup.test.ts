@@ -11,7 +11,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 const runtime = vi.hoisted(() => ({ add: vi.fn(async (_id: string) => {}), pause: vi.fn(async (_id: string) => {}), resume: vi.fn(async (_id: string) => {}) }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: {
-  addIntegration: runtime.add, pauseIntegration: runtime.pause, resumeIntegration: runtime.resume, integrationCreated: vi.fn(), isIntegrationConnected: () => false,
+  addIntegration: runtime.add, pauseIntegration: runtime.pause, resumeIntegration: runtime.resume, integrationCreated: vi.fn(), isIntegrationConnected: () => false, integrationTransport: () => null,
 } }))
 vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: () => owner ? 'owner' : 'user',
@@ -131,7 +131,7 @@ it('describes setup using the host callback without creating or connecting an in
   vi.stubEnv('HOST_PUBLIC_URL', 'https://public.example/')
   const response = await app.request('/api/agent-integrations/agents/agent/providers/test-oauth/setup?name=Release%20Assistant', { headers })
   expect(response.status).toBe(200)
-  expect(await response.json()).toEqual({ redirectUri: 'https://public.example/api/agent-integrations/providers/test-oauth/callback', creationUrl: 'https://provider.invalid/create?name=Release%20Assistant' })
+  expect(await response.json()).toEqual({ transports: ['direct'], redirectUri: 'https://public.example/api/agent-integrations/providers/test-oauth/callback', creationUrl: 'https://provider.invalid/create?name=Release%20Assistant' })
   expect(await listAgentIntegrations()).toEqual([])
   expect(prepare).not.toHaveBeenCalled()
   expect(runtime.add).not.toHaveBeenCalled()

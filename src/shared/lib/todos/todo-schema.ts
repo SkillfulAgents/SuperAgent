@@ -40,6 +40,33 @@ const runtimeFields = {
   speed: z.enum(SPEED_LEVELS).nullable().optional(),
 }
 
+const attachmentBase = {
+  id: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  mimeType: z.string().max(200),
+}
+
+/** A file or folder already in the draft agent's workspace, or a mount path bound at Start. */
+export const todoAttachmentSchema = z.discriminatedUnion('kind', [
+  z.object({ ...attachmentBase, kind: z.literal('file'), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ ...attachmentBase, kind: z.literal('folder'), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ ...attachmentBase, kind: z.literal('mount'), hostPath: z.string().min(1).max(4096) }).strict(),
+])
+export type TodoAttachment = z.infer<typeof todoAttachmentSchema>
+
+export const todoAttachmentsSchema = z.array(todoAttachmentSchema).max(100)
+
+/** The list on the row. A bad value reads as none, so one bad write cannot blank the board. */
+export function parseTodoAttachments(raw: string): TodoAttachment[] {
+  try {
+    const parsed = todoAttachmentsSchema.safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data : []
+  } catch {
+    return []
+  }
+}
+
 export const createTodoSchema = z
   .object({
     title: titleSchema,
@@ -67,9 +94,11 @@ export const updateTodoSchema = z
     agentSlug: agentSlugSchema.nullable().optional(),
     newAgent: z.boolean().optional(),
     ...runtimeFields,
+    attachments: todoAttachmentsSchema.optional(),
   })
   .strict()
   .refine((patch) => !(patch.newAgent && patch.agentSlug), { message: 'A todo goes to an agent or a new one, not both' })
+  .refine((patch) => !(patch.newAgent && patch.attachments?.length), { message: 'A new agent has no workspace to attach files to' })
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>
 
 /** Puts a session that already exists on the board, titled by the person (the session's name by default). */
@@ -210,6 +239,8 @@ export interface TodoView {
   ask: TodoAsk | null
   /** When its session is scheduled to resume on its own, if it is. */
   pendingWakeAt: number | null
+  /** Files held with the item. The list freezes at Start, like the brief. */
+  attachments: TodoAttachment[]
   createdAt: number
   updatedAt: number
   startedAt: number | null

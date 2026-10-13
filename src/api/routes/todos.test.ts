@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
   wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
+  workspace: new Map<string, Map<string, { kind: 'file' | 'directory'; bytes?: Uint8Array }>>(),
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -38,6 +39,19 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingWakesByAgent: async (slug: string) => state.wakes.filter((w) => w.agentSlug === slug),
 }))
+function workspaceOf(slug: string) {
+  let bucket = state.workspace.get(slug)
+  if (!bucket) {
+    bucket = new Map()
+    state.workspace.set(slug, bucket)
+  }
+  return bucket
+}
+
+function workspacePath(raw: string) {
+  return raw.replace(/^\/workspace\//, '').replace(/^\/+/, '')
+}
+
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
     get: (slug: string) => ({
@@ -47,6 +61,13 @@ vi.mock('@shared/lib/agent-actor', () => ({
         isAwaitingInput: (id: string) => state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
       },
       inputs: { snapshot: (id: string) => state.requests.get(`${slug}/${id}`) ?? [] },
+      files: {
+        stat: async (p: string) => {
+          const item = workspaceOf(slug).get(workspacePath(p))
+          if (!item) return null
+          return { kind: item.kind, size: item.bytes?.length ?? 0, mtimeMs: 0 }
+        },
+      },
     }),
   },
 }))
@@ -88,6 +109,7 @@ beforeEach(async () => {
   state.sessions = new Map()
   state.requests = new Map()
   state.wakes = []
+  state.workspace = new Map()
 })
 
 afterEach(async () => {
@@ -400,5 +422,73 @@ describe('ordering', () => {
     const draft = await createDraft()
     expect((await call(`/${draft.id}/position`, 'POST', { position: 'top' })).status).toBe(400)
     expect((await call(`/${draft.id}/position`, 'POST', { position: 1 }, 'bob')).status).toBe(404)
+  })
+})
+
+
+describe('attachments', () => {
+  const rel = 'uploads/note.txt'
+  const file = { id: '11111111-1111-4111-8111-111111111111', kind: 'file', name: 'note.txt', size: 3, mimeType: 'text/plain', path: `/workspace/${rel}` }
+  const mount = { id: '22222222-2222-4222-8222-222222222222', kind: 'mount', name: 'notes', size: 0, mimeType: 'inode/mount', hostPath: '/Users/me/notes' }
+  function seed(slug = 'agent-a') {
+    workspaceOf(slug).set(rel, { kind: 'file', bytes: new Uint8Array([1, 2, 3]) })
+  }
+  function attach(id: string, list: unknown[], user = 'alice') {
+    return call(`/${id}`, 'PATCH', { attachments: list }, user)
+  }
+
+  it('saves files that are uploads in the agent workspace, and a removal leaves the file there, as chat does', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    const res = await attach(draft.id, [file, mount])
+    expect(res.status).toBe(200)
+    expect((await res.json()).attachments).toEqual([file, mount])
+    const removed = await attach(draft.id, [])
+    expect((await removed.json()).attachments).toEqual([])
+    expect(workspaceOf('agent-a').has(rel)).toBe(true)
+  })
+
+  it('refuses a path outside the upload folder, a file that is not there, and a draft with no agent', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    expect((await attach(draft.id, [{ ...file, path: '/workspace/secrets/note.txt' }])).status).toBe(400)
+    expect((await attach(draft.id, [file])).status).toBe(400)
+    const unassigned = await createDraft({ title: 'Write the report' })
+    expect((await attach(unassigned.id, [mount])).status).toBe(400)
+  })
+
+  it('keeps saving a list whose stored file has since gone from the workspace', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await attach(draft.id, [file])).status).toBe(200)
+    workspaceOf('agent-a').delete(rel)
+    expect((await attach(draft.id, [file, mount])).status).toBe(200)
+    expect((await call(`/${draft.id}`, 'PATCH', { title: 'Still editable' })).status).toBe(200)
+    // A stored id with a new path is a new attachment, and is checked.
+    expect((await attach(draft.id, [{ ...file, path: '/workspace/secrets/note.txt' }, mount])).status).toBe(400)
+  })
+
+  it('does not attach to someone else\'s draft', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await attach(draft.id, [file], 'bob')).status).toBe(404)
+  })
+
+  it('refuses to change the agent while anything is attached', async () => {
+    const draft = await createDraft({ title: 'Read the notes', agentSlug: 'agent-a' })
+    expect((await attach(draft.id, [mount])).status).toBe(200)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-b' })).status).toBe(409)
+    expect((await call(`/${draft.id}`, 'PATCH', { newAgent: true })).status).toBe(409)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: null })).status).toBe(409)
+    expect((await call(`/${draft.id}`, 'PATCH', { agentSlug: 'agent-a', title: 'Renamed' })).status).toBe(200)
+  })
+
+  it('refuses to change what a started item has attached', async () => {
+    const draft = await createDraft({ title: 'Write the report', agentSlug: 'agent-a' })
+    seed()
+    expect((await attach(draft.id, [file])).status).toBe(200)
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: false })
+    const { claim } = await (await call(`/${draft.id}/claim`, 'POST', {})).json()
+    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1', claim })).status).toBe(200)
+    expect((await attach(draft.id, [])).status).toBe(409)
   })
 })
