@@ -647,7 +647,8 @@ const AgentMenuItemInner = React.forwardRef<
                   />
                   <ChevronRight
                     className={cn(
-                      'absolute h-3.5 w-3.5 text-sidebar-foreground opacity-0 transition-[opacity,transform] group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
+                      'absolute h-3.5 w-3.5 text-sidebar-foreground transition-[opacity,transform]',
+                      agent.avatar && 'opacity-0 group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
                       isOpen && !isDragActive && 'rotate-90'
                     )}
                   />

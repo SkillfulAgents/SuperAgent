@@ -55,6 +55,41 @@ afterEach(() => {
   clients.splice(0).forEach(client => client.clear())
 })
 
+it.each([undefined, null])('omits the avatar and picker when metadata is %s', avatar => {
+  const agent = { slug: 'legacy', name: 'Legacy Agent', avatar }
+  // An unavailable picker should not even require a mutation/query provider.
+  const { container } = render(<><AgentAvatar agent={agent} /><AgentAvatarPicker agent={agent} /></>)
+  expect(container).toBeEmptyDOMElement()
+  expect(apiFetch).not.toHaveBeenCalled()
+})
+
+it('mounts and unmounts avatar UI as refetches add and remove metadata', async () => {
+  second = { ...initialSecond }
+  delete second.avatar
+  mount()
+  await waitFor(() => expect(clients.at(-1)!.isFetching()).toBe(0))
+  expect(orbOf('second')).toBeUndefined()
+  expect(screen.queryByTestId('agent-avatar-picker')).toBeNull()
+
+  await act(async () => {
+    second = initialSecond
+    clients.at(-1)!.setQueryData(['agents'], [first, second])
+  })
+  await waitFor(() => expect(orbOf('second')).toBe('tonal-green'))
+  await userEvent.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await userEvent.click(screen.getByRole('button', { name: 'Bloom' }))
+
+  await act(async () => {
+    second = { ...initialSecond }
+    delete second.avatar
+    clients.at(-1)!.setQueryData(['agents'], [first, second])
+  })
+  await waitFor(() => expect(orbOf('second')).toBeUndefined())
+  expect(screen.queryByTestId('agent-avatar-picker')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Bloom' })).toBeNull()
+  expect(apiFetch).not.toHaveBeenCalled()
+})
+
 it('shows the persisted pair and opens with that color and shape selected', async () => {
   mount()
   expect(orbOf('first')).toBe('tonal-blue')
