@@ -38,9 +38,11 @@ import { listVolumes } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
+import { prepareVolumeStop } from './volume-stop'
 
 /**
  * Max age (in ms) of a cached 'running' status before ensureRunning re-verifies
@@ -101,6 +103,7 @@ async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[]
 }
 
 export class ContainerRuntime {
+  private volumesPresent: boolean | undefined
   private client: ContainerClient | null = null
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
@@ -142,6 +145,11 @@ export class ContainerRuntime {
    * every running runtime when a platform token changes; a stop clears it.
    */
   private stale = false
+  /**
+   * Whether webhooks could be received when this process built the
+   * container's env (WEBHOOK_RELAY_AVAILABLE); null until it has.
+   */
+  private webhookRelayAtStart: boolean | null = null
 
   constructor(
     readonly slug: string,
@@ -307,11 +315,24 @@ export class ContainerRuntime {
    */
   updateCachedStatus(status: 'running' | 'stopped', port: number | null): void {
     this.cached = { status, port, lastSyncedAt: Date.now() }
-    if (status === 'stopped') this.stale = false
+    if (status === 'stopped') {
+      this.stale = false
+      this.webhookRelayAtStart = null
+    }
   }
 
   markStale(): void {
     this.stale = true
+  }
+
+  /**
+   * Goes stale when the container's webhook tools no longer match whether
+   * webhooks can be received. A container this process didn't start is
+   * assumed to match the first availability it sees.
+   */
+  reconcileWebhookRelay(available: boolean): void {
+    if (this.webhookRelayAtStart === null) this.webhookRelayAtStart = available
+    else if (this.webhookRelayAtStart !== available) this.stale = true
   }
 
   isStale(): boolean {
@@ -349,6 +370,8 @@ export class ContainerRuntime {
     let stopped = true
 
     try {
+      const client = this.getClient()
+      if (this.volumesPresent !== false) await prepareVolumeStop(client, slug)
       // Stop the host browser before the container so it closes gracefully
       // instead of getting a "socket hang up" when the container dies
       const beforeStop = this.host.onBeforeContainerStop
@@ -358,7 +381,6 @@ export class ContainerRuntime {
         })
       }
 
-      const client = this.getClient()
       const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
       // Only an explicit `false` (stop+kill timed out with force-stop disabled)
@@ -629,10 +651,14 @@ export class ContainerRuntime {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
 
-    // Custom webhook endpoints live on the platform proxy, not Composio: a
-    // user with platform auth plus a personal Composio key must still get
-    // the endpoint tools (mirrors the teardown gate in
-    // webhook-trigger-service).
+    // Webhook tools (custom endpoints, and Composio triggers with the flag
+    // above) follow the relay, not Composio mode: a personal Composio key
+    // must not take the endpoint tools away.
+    // Always set, so a container can tell "unavailable" from a host too old to say.
+    this.webhookRelayAtStart = getWebhookRelay().snapshot().available
+    envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
+
+    // Platform services (media, enrichment, search) only need the token.
     if (getPlatformAccessToken()) {
       envVars['PLATFORM_AUTH_ACTIVE'] = 'true'
     }
@@ -672,6 +698,9 @@ export class ContainerRuntime {
     const info = startedInfo ?? await client.getInfoFromRuntime()
     this.assertCurrent(lifecycle)
     this.updateCachedStatus(info.status, info.port)
+    // Availability may have moved while the container started; the watcher
+    // only sees running agents, so this one checks itself.
+    if (info.status === 'running') this.reconcileWebhookRelay(getWebhookRelay().snapshot().available)
 
     // The start is the first mark on the idle clock: it floors stale session
     // timestamps from before the previous sleep. The alarm is armed by
@@ -688,6 +717,7 @@ export class ContainerRuntime {
     // A container already running got its volumes, and its banner, from an earlier start.
     // A runtime replaced meanwhile (a runner change) no longer owns the banner.
     if (alreadyRunning || this.disposed) return client
+    this.volumesPresent = !volumesDropped && volumes.length > 0
     let failed: NotMountedVolume[] = []
     if (volumesDropped) {
       failed = notMountedAll(volumes, 'start failed with folders')
@@ -781,6 +811,7 @@ export class ContainerRuntime {
    * stop the container.
    */
   dispose(): void {
+    this.volumesPresent = undefined
     this.disposed = true
     this.lifecycle++
     this.client = null
@@ -791,6 +822,7 @@ export class ContainerRuntime {
     this.stopping = false
     this.starting = null
     this.stale = false
+    this.webhookRelayAtStart = null
   }
 
   /**

@@ -30,6 +30,7 @@ vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: mockCanUseHo
 
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children, search }: { children: React.ReactNode; search: { volume: string } }) => <a href={`/settings/volumes?volume=${search.volume}`}>{children}</a> }))
 import { HomeVolumes } from './home-volumes'
 
 /**
@@ -152,12 +153,12 @@ describe('saved volume picker', () => {
     await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
     await userEvent.click(screen.getByRole('menuitem', { name: /new volume/i }))
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create and attach' })).toBeDisabled()
-    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/new/folder')
     await userEvent.click(screen.getByRole('button', { name: 'Create and attach' }))
     expect(window.electronAPI!.openDirectory).toHaveBeenCalledOnce()
-    expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'folder', path: '/new/folder', visibility: 'private' })
+    expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'folder', source: { type: 'local', config: { path: '/new/folder' } }, visibility: 'private' })
   })
   it('attaches saved volumes remotely without offering the native folder picker', async () => {
     mockCanUseHostFeatures.mockReturnValue(false)
@@ -176,10 +177,11 @@ describe('saved volume picker', () => {
     expect(create.previousElementSibling).toHaveAttribute('role', 'separator')
     expect(screen.getAllByRole('menuitem').at(-1)).toBe(create)
     await userEvent.click(create)
+    await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
+    await userEvent.clear(screen.getByLabelText('Name'))
     await userEvent.type(screen.getByLabelText('Name'), 'Reports')
-    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
     await userEvent.click(screen.getByRole('button', { name: 'Create and attach' }))
-    expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'Reports', path: '/new/folder', visibility: 'private' })
+    expect(volumes.handleCreateMount).toHaveBeenCalledWith({ name: 'Reports', source: { type: 'local', config: { path: '/new/folder' } }, visibility: 'private' })
     expect(volumes.handleAttach).not.toHaveBeenCalled()
   })
   it('hides attachment and removal controls from viewers', async () => {
@@ -190,4 +192,11 @@ describe('saved volume picker', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
     expect(screen.queryByRole('button', { name: /remove mount/i })).not.toBeInTheDocument()
   })
+})
+
+
+it('links mount settings to the shared definition rather than the attachment', async () => {
+  render(<HomeVolumes agentSlug="a1" />)
+  await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+  expect(screen.getByRole('link', { name: 'Volume settings' })).toHaveAttribute('href', '/settings/volumes?volume=v1')
 })

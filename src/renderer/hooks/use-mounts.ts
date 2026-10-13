@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
 import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
 import { useUser } from '@renderer/context/user-context'
+import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import type { VolumeSummary, MountSummaryWithHealth } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
@@ -32,8 +33,12 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; restart?: boolean } & ({ hostPath: string; volumeId?: never; name?: string; visibility?: 'public' | 'private' } | { volumeId: string; hostPath?: never; name?: never; visibility?: never })) => {
-      if (!data.volumeId && !data.hostPath) {
+    mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private' } & (
+      { hostPath: string; volumeId?: never; type?: never; config?: never }
+      | { volumeId: string; hostPath?: never; type?: never; config?: never }
+      | (VolumeSource & { volumeId?: never; hostPath?: never })
+    )) => {
+      if (!data.volumeId && !data.type && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
@@ -41,7 +46,7 @@ export function useAddMount() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
           ? { volumeId: data.volumeId, restart: data.restart }
-          : { type: 'local', config: { path: data.hostPath }, name: data.name, visibility: data.visibility, restart: data.restart }),
+          : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<VolumeSummary>
@@ -52,6 +57,7 @@ export function useAddMount() {
       // display-slug route, so a targeted key would miss it.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }
@@ -69,6 +75,7 @@ export function useRemoveMount() {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }
@@ -80,7 +87,7 @@ export function useVolumesManager(agentSlug: string) {
   const definitions = registry.data ?? []
   const { canUseAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
-  const canCreateMount = canModifyMounts && canUseHostFeatures()
+  const canCreateMount = canModifyMounts
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -98,14 +105,14 @@ export function useVolumesManager(agentSlug: string) {
     }
   }, [isAgentRunning, pendingRestart])
 
-  const handleCreateMount = async ({ name, path, visibility }: VolumeSettingsInput) => {
+  const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add volumes to this agent')
-    if (!canCreateMount) throw new Error('Select a folder in the desktop app')
-    if (!path) throw new Error('Select a folder')
+    const validatedSource = volumeConfigSchema.parse(source)
+    if (validatedSource.type === 'local' && !canUseHostFeatures()) throw new Error('Select a folder in the desktop app')
     setOperationError(null)
     // Create + attach through one atomic API operation. Let the dialog surface
     // errors and retain the form so retrying cannot leave an unused definition.
-    await addMount.mutateAsync({ agentSlug, hostPath: path, name, visibility })
+    await addMount.mutateAsync({ agentSlug, ...validatedSource, name, visibility })
     if (isAgentRunning) setPendingRestart(true)
   }
 
@@ -163,8 +170,8 @@ export function useVolumesManager(agentSlug: string) {
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // New local folders use the existing OS picker; saved volumes can be reused from any target.
-    canAddMount: canModifyMounts && (canCreateMount || definitions.some(v => !mounts.some(m => m.volumeId === v.id))),
+    // Dropbox creation and saved volumes work on every target. Local folders keep the OS picker.
+    canAddMount: canModifyMounts,
     handleCreateMount,
     handleAttach,
     handleRemove,

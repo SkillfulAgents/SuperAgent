@@ -10,6 +10,7 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import type { AgentAvatar } from './agent-avatar'
 
 export type { ApiAgentWidget }
 
@@ -26,6 +27,7 @@ export interface ApiAgent {
   /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
   displaySlug: string
   name: string
+  avatar: AgentAvatar
   description?: string
   instructions?: string // Only included in single-agent response
   createdAt: Date

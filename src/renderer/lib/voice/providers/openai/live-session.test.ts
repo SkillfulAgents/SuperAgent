@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({ fetch: vi.fn(), mic: vi.fn() }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mocks.fetch }))
 vi.mock('../../shared/audio-capture', () => ({ acquireMicStream: mocks.mic }))
 import { OpenAILiveConversation, LIVE_SPEECH_RELEASE_MS, LIVE_DISCONNECT_GRACE_MS } from './live-session'
+import { LIVE_TURN_COMPLETE_CUE } from '@shared/lib/voice/live-types'
 
 class FakeChannel {
   readyState = 'open'
@@ -47,7 +48,7 @@ class FakeAudioContext {
 }
 const track = { enabled: true, stop: vi.fn() }
 function setup(agentSlug?: string) {
-  const callbacks = { onReady: vi.fn(), onError: vi.fn(), onSpeaking: vi.fn(), onInputSpeaking: vi.fn(), onUtterance: vi.fn(), onRequest: vi.fn(async () => true) }
+  const callbacks = { onReady: vi.fn(), onClosed: vi.fn(), onError: vi.fn(), onSpeaking: vi.fn(), onInputSpeaking: vi.fn(), onUtterance: vi.fn(), onRequest: vi.fn(async () => true) }
   return { adapter: new OpenAILiveConversation(callbacks, [], agentSlug), callbacks }
 }
 const answer = () => new Response(JSON.stringify({ session: { id: 'live_1' }, transport: { sdp: 'answer' }, handle: 'owned-handle' }))
@@ -66,6 +67,36 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Live WebRTC lifecycle', () => {
+  it('flushes text at a message boundary without announcing completion', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    adapter.updateReply('I started the background research.', true)
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(sent.some(e => e.content === 'I started the background research.' && e.type === 'session.thinking.append')).toBe(true)
+    expect(sent.some(e => e.content === LIVE_TURN_COMPLETE_CUE)).toBe(false)
+    adapter.close()
+  })
+
+  it('releases the pause guard when microphone gating throws', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    const gate = vi.spyOn(adapter as unknown as { gateMicrophone(): void }, 'gateMicrophone')
+      .mockImplementationOnce(() => { throw new Error('Track detached') })
+    expect(() => adapter.setPaused(true)).toThrow('Track detached')
+    gate.mockRestore()
+    adapter.setPaused(false)
+    adapter.updateReply('Recovered.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.send.mock.calls.map(([text]) => JSON.parse(text)).some(e => e.content === LIVE_TURN_COMPLETE_CUE)).toBe(true)
+    adapter.close()
+  })
+
   it('announces each new input request once while paused, without reopening the mic or submitting an answer', async () => {
     const { adapter, callbacks } = setup()
     await adapter.start()
@@ -332,31 +363,101 @@ describe('Live WebRTC lifecycle', () => {
     expect(callbacks.onInputSpeaking).not.toHaveBeenCalled()
   })
 
-  it('flushes ordered commentary at coordinator-supplied message boundaries', async () => {
+  it('streams thinking across message boundaries and sends one completion cue even with no final text delta', async () => {
     const { adapter } = setup()
     await adapter.start()
     const channel = FakePeer.last.channel
     channel.receive({ type: 'session.started' })
     adapter.updateReply('First message.', false)
     adapter.nextReplySegment()
+    adapter.updateReply('Second message.', false)
+    await vi.advanceTimersByTimeAsync(1000)
+    const replies = () => channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
+      event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(replies()).toMatchObject([
+      { type: 'session.thinking.append', content: 'First message.' },
+      { type: 'session.thinking.append', content: 'Second message.' },
+    ])
+    adapter.updateReply('Second message.', true)
+    adapter.finishTurn('completed')
     adapter.updateReply('Second message.', true)
     await vi.advanceTimersByTimeAsync(1000)
-    const commentary = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
-    expect(commentary.map(event => event.content)).toEqual(['First message.', 'Second message.'])
+    expect(replies()).toMatchObject([
+      { type: 'session.thinking.append', content: 'First message.' },
+      { type: 'session.thinking.append', content: 'Second message.' },
+      { type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE },
+    ])
     adapter.close()
   })
 
-  it('discards buffered speech when the coordinator resets an interrupted reply', async () => {
+  it.each([
+    { complete: false, ready: true },
+    { complete: true, ready: true },
+    { complete: true, ready: false },
+  ])('discards buffered text and queued cues when resetting a reply (complete: $complete, ready: $ready)', async ({ complete, ready }) => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    if (ready) channel.receive({ type: 'session.started' })
+    adapter.updateReply('Obsolete response.', complete)
+    if (complete) adapter.finishTurn('completed')
+    if (!ready) await vi.advanceTimersByTimeAsync(0)
+    adapter.resetReply()
+    adapter.updateReply('Replacement response.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(1000)
+    if (!ready) channel.receive({ type: 'session.started' })
+    const replies = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
+      event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(replies).toMatchObject([
+      { type: 'session.thinking.append', content: 'Replacement response.' },
+      { type: 'session.commentary.append', content: LIVE_TURN_COMPLETE_CUE },
+    ])
+    adapter.close()
+  })
+
+  it('holds a completion queued before connection until the request card resumes', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    adapter.updateReply('The draft needs approval.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    adapter.setPaused(true)
+    adapter.setInputRequests([{ id: 'approval:1', message: 'Approve the $12 cost in the app.' }])
+    channel.receive({ type: 'session.started' })
+    const commentary = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
+    expect(commentary.map(event => event.content)).toEqual(['Application input request: Approve the $12 cost in the app.'])
+    adapter.setPaused(false)
+    adapter.setPaused(false)
+    const resumed = channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(resumed.filter(event => event.content === LIVE_TURN_COMPLETE_CUE)).toHaveLength(1)
+    const cueIndex = resumed.findIndex(event => event.content === LIVE_TURN_COMPLETE_CUE)
+    expect(resumed.slice(0, cueIndex).some(event => event.content?.includes('ready for voice conversation'))).toBe(true)
+    adapter.close()
+  })
+
+  it('delivers partial work before an execution error and discards only completion', async () => {
     const { adapter } = setup()
     await adapter.start()
     const channel = FakePeer.last.channel
     channel.receive({ type: 'session.started' })
-    adapter.updateReply('Obsolete response.', false)
-    adapter.resetReply()
-    adapter.updateReply('Replacement response.', true)
+    adapter.updateReply('Invoice 42 was sent.', true)
+    adapter.finishTurn('completed')
+    adapter.reportAgentError('Signing service unavailable.')
     await vi.advanceTimersByTimeAsync(1000)
-    const commentary = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.commentary.append')
-    expect(commentary.map(event => event.content)).toEqual(['Replacement response.'])
+    const replies = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event =>
+      event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(replies).toMatchObject([
+      { type: 'session.thinking.append', content: 'Invoice 42 was sent.' },
+      { type: 'session.commentary.append', content: 'The agent reported an error: Signing service unavailable.' },
+    ])
+    adapter.updateReply('Recovered.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    const recovered = channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(recovered.at(-2).content).toBe('Recovered.')
+    expect(recovered.at(-1).content).toBe(LIVE_TURN_COMPLETE_CUE)
     adapter.close()
   })
 
@@ -372,6 +473,158 @@ describe('Live WebRTC lifecycle', () => {
     expect(FakePeer.last.setRemoteDescription).not.toHaveBeenCalled()
     expect(mocks.fetch).toHaveBeenCalledWith('/api/voice/live/session/owned-handle', expect.objectContaining({ method: 'DELETE' }))
     expect(callbacks.onReady).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('keeps buffered and in-flight facts ahead of an error (summarizing: %s)', async (summarizing) => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    let finish!: (value: Response) => void
+    let signal: AbortSignal | undefined
+    mocks.fetch.mockImplementation((path: string, options?: RequestInit) => {
+      if (path.endsWith('/map')) {
+        signal = options?.signal as AbortSignal
+        return new Promise(resolve => { finish = resolve })
+      }
+      return Promise.resolve(new Response('{}'))
+    })
+    adapter.updateReply(summarizing ? 'Invoice 42 was sent. '.repeat(80) : 'Invoice 42 was sent.')
+    if (summarizing) await vi.advanceTimersByTimeAsync(0)
+    adapter.reportAgentError('Receipt upload failed.')
+    if (summarizing) {
+      expect(signal?.aborted).toBe(false)
+      finish(new Response(JSON.stringify({ text: 'Invoice 42 was sent.' })))
+    }
+    await vi.advanceTimersByTimeAsync(1000)
+    const sent = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.content && event.type !== 'session.instructions.append')
+    expect(sent.map(event => event.content)).toEqual(['Invoice 42 was sent.', 'The agent reported an error: Receipt upload failed.'])
+    adapter.close()
+  })
+
+  it.each([false, true])('cues a late final answer, coalescing an undelivered cue (ready: %s)', async (ready) => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    if (ready) channel.receive({ type: 'session.started' })
+    adapter.updateReply('The draft is saved.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    adapter.updateReply('The draft is saved. Nothing was sent.', true)
+    adapter.finishTurn('completed')
+    adapter.updateReply('The draft is saved. Nothing was sent.', true)
+    await vi.advanceTimersByTimeAsync(0)
+    if (!ready) channel.receive({ type: 'session.started' })
+    const sent = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.type === 'session.thinking.append' || event.type === 'session.commentary.append')
+    expect(sent.filter(event => event.content === LIVE_TURN_COMPLETE_CUE)).toHaveLength(ready ? 2 : 1)
+    expect(sent.at(-2).content).toBe(' Nothing was sent.')
+    expect(sent.at(-1).content).toBe(LIVE_TURN_COMPLETE_CUE)
+    adapter.close()
+  })
+
+  it.each([false, true])('retains a cue whose summary finishes while paused unless new work supersedes it (superseded: %s)', async (superseded) => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    let finish!: (value: Response) => void
+    mocks.fetch.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    adapter.updateReply('Detailed findings. '.repeat(100), true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    adapter.setPaused(true)
+    finish(new Response(JSON.stringify({ text: 'The draft was saved.' })))
+    await vi.advanceTimersByTimeAsync(0)
+    const cues = () => channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter(event => event.content === LIVE_TURN_COMPLETE_CUE)
+    expect(cues()).toHaveLength(0)
+    if (superseded) adapter.updateReply('Detailed findings. '.repeat(100) + ' Checking the signature.')
+    adapter.setPaused(false)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cues()).toHaveLength(superseded ? 0 : 1)
+    adapter.close()
+  })
+
+  it('keeps more than 128 wire chunks, pause instructions and the cue when summarization fails during startup', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    mocks.fetch.mockRejectedValue(new Error('Summarizer unavailable'))
+    // Five separate 12k segments previously exhausted the 128-command queue.
+    for (let index = 0; index < 5; index++) {
+      adapter.updateReply(`**Invoice ${index} sent.** ` + 'Reconciliation pending. '.repeat(490) + ` End ${index}.`)
+      adapter.nextReplySegment()
+    }
+    adapter.updateReply('Payment failed. Do not resend invoices.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    adapter.setPaused(true)
+    channel.receive({ type: 'session.started' })
+    const sent = () => channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    const context = sent().filter(event => event.type === 'session.thinking.append')
+    expect(context.length).toBeGreaterThan(128)
+    for (let index = 0; index < 5; index++) {
+      expect(context.map(event => event.content).join('')).toContain(`Invoice ${index} sent.`)
+      expect(context.map(event => event.content).join('')).toContain(`End ${index}.`)
+    }
+    expect(context.map(event => event.content).join('')).not.toContain('**')
+    expect(sent().some(event => event.type === 'session.input_audio.mute')).toBe(true)
+    expect(sent().some(event => event.content?.includes('waiting for user input'))).toBe(true)
+    expect(sent().some(event => event.content === LIVE_TURN_COMPLETE_CUE)).toBe(false)
+    adapter.setPaused(false)
+    expect(sent().filter(event => event.content === LIVE_TURN_COMPLETE_CUE)).toHaveLength(1)
+    expect(sent().filter(event => typeof event.content === 'string').every(event => new TextEncoder().encode(event.content).length <= 400)).toBe(true)
+    adapter.close()
+  })
+
+  it('reports buffer exhaustion instead of silently dropping outcome or control messages', async () => {
+    const { adapter, callbacks } = setup()
+    await adapter.start()
+    // No summarization: this is the maximum backlog from small streamed updates.
+    for (let index = 0; index < 700; index++) {
+      adapter.updateReply('A'.repeat(500))
+      adapter.nextReplySegment()
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.stringContaining('exceeded the connection buffer'))
+    expect(callbacks.onClosed).toHaveBeenCalledOnce()
+    expect(FakePeer.last.channel.send).not.toHaveBeenCalled()
+  })
+
+  it('uses delivery metadata rather than cue wording when resetting and pausing', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    adapter['bridge'].commentary(LIVE_TURN_COMPLETE_CUE)
+    adapter.resetReply()
+    adapter.setPaused(true)
+    FakePeer.last.channel.receive({ type: 'session.started' })
+    const sent = FakePeer.last.channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(sent.filter(event => event.content === LIVE_TURN_COMPLETE_CUE)).toHaveLength(1)
+    adapter.close()
+  })
+
+  it('reports a transport failure and closes even when the close command also fails', async () => {
+    const { adapter, callbacks } = setup()
+    await adapter.start()
+    FakePeer.last.channel.receive({ type: 'session.started' })
+    FakePeer.last.channel.send.mockImplementation(() => { throw new Error('Transport unavailable') })
+    adapter.updateReply('Invoice 42 sent.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callbacks.onError).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('Could not deliver voice updates'))
+    expect(callbacks.onClosed).toHaveBeenCalledOnce()
+    expect(FakePeer.last.close).toHaveBeenCalledOnce()
+  })
+
+  it('retracts a buffered cue when background work wakes even without new text', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    adapter.updateReply('Partial result.', true)
+    adapter.finishTurn('completed')
+    await vi.advanceTimersByTimeAsync(0)
+    adapter.setBusy(true)
+    FakePeer.last.channel.receive({ type: 'session.started' })
+    expect(FakePeer.last.channel.send.mock.calls.map(([text]) => JSON.parse(text).content)).not.toContain(LIVE_TURN_COMPLETE_CUE)
+    adapter.close()
   })
 
   it('releases the microphone and host session if Live never starts', async () => {

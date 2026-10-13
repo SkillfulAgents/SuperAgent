@@ -587,8 +587,8 @@ test.describe('File Preview', () => {
       // The compact overlay covers the chat outright, so the slide-over dim stays hidden.
       await expect(page.getByTestId('tray-drawer-scrim')).toHaveCSS('display', 'none')
 
-      // Poll while the full-width tray slides in. Compact mode replaces the
-      // right-side panel control with a left-side close button.
+      // Poll until the full-width tray finishes sliding in, including its
+      // alignment with the chat. Compact mode puts the close button on the left.
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
         const title = page.getByTestId('file-preview-title')
@@ -598,14 +598,13 @@ test.describe('File Preview', () => {
           expect(box).not.toBeNull()
           expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
         }
+        const containerBox = await page.getByTestId('file-preview-container').boundingBox()
+        const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
+        expect(containerBox).not.toBeNull()
+        expect(drawerBox).not.toBeNull()
+        expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
+        expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
       }).toPass({ timeout: 5000 })
-
-      const containerBox = await page.getByTestId('file-preview-container').boundingBox()
-      const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
-      expect(containerBox).not.toBeNull()
-      expect(drawerBox).not.toBeNull()
-      expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
-      expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
     })
   })
 
@@ -857,8 +856,8 @@ test.describe('File Preview', () => {
     ))
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
-    await getDeliveredFileRow(page, 'chart.png').first().click()
-    const image = page.getByTestId('tray-drawer').locator('img[alt="chart.png"]')
+    await page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true }).click()
+    const image = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth), { timeout: 10000 }).toBe(400)
     // The drawer grows in: measure the image once it has its size.
     await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(300)
@@ -904,10 +903,12 @@ test.describe('File Preview', () => {
     // second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
-    const chartPill = getDeliveredFileRow(page, 'chart.png').first()
-    await expect(chartPill).toBeVisible({ timeout: 10000 })
-    await chartPill.click()
-    await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 10000 })
+    const chartThumbnail = page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true })
+    await expect(chartThumbnail).toBeVisible({ timeout: 10000 })
+    await chartThumbnail.click()
+    // The inline thumbnail remains in the chat when the drawer changes tabs.
+    const previewImage = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
+    await expect(previewImage).toBeVisible({ timeout: 10000 })
 
     // Both files now have tabs.
     await expect(fileTab(page, 'report.md')).toBeVisible()
@@ -916,13 +917,13 @@ test.describe('File Preview', () => {
     // Switch back to the markdown tab → markdown content returns, image is gone.
     await fileTab(page, 'report.md').click()
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('img[alt="chart.png"]')).not.toBeVisible()
+    await expect(previewImage).not.toBeVisible()
 
     await expect(page.getByTestId('file-preview-copy')).toBeVisible()
 
     // Switch forward to the image tab again → image renderer returns.
     await fileTab(page, 'chart.png').click()
-    await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 5000 })
+    await expect(previewImage).toBeVisible({ timeout: 5000 })
 
     // A PNG has nothing copyable, so the header drops the action.
     await expect(page.getByTestId('file-preview-copy')).toHaveCount(0)

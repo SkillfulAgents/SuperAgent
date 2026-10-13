@@ -1,5 +1,12 @@
 const platformState = vi.hoisted(() => ({ connected: true }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: platformState }) }))
+const relayState = vi.hoisted(() => ({ available: true }))
+vi.mock('@renderer/hooks/use-webhook-relay', () => ({ useWebhookRelay: () => ({ data: relayState }) }))
+// A provider that only receives webhooks, alongside the real ones.
+vi.mock('@renderer/components/agent-integrations/setup-providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/components/agent-integrations/setup-providers')>()
+  return { ...actual, integrationSetupProviders: [...actual.integrationSetupProviders, { slug: 'hooks', label: 'Hooks', requiresRelay: true, Setup: () => null }] }
+})
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -180,4 +187,17 @@ it('offers Email to connected Platform owners', () => {
   mockUseChatIntegrations.mockReturnValue({ data: [] })
   renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
   expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
+})
+
+it('offers relay-only providers only while the webhook relay is available', () => {
+  mockCanManage.mockReturnValue(true)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  relayState.available = false
+  const { unmount } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.queryByRole('button', { name: 'Connect via Hooks' })).not.toBeInTheDocument()
+  unmount()
+
+  relayState.available = true
+  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Connect via Hooks' })).toBeInTheDocument()
 })

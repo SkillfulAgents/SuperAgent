@@ -14,8 +14,10 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
 import { onIntegrationAuthorizationLost, type IntegrationAuthorizationLost } from './lifecycle'
 import { integrationRequestEventSchema } from './runtime-schema'
 import type { AgentIntegration } from './agent-integration'
-import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
+import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
+import { integrationRelays } from './relay-transport'
+import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 import {
   listStartupIntegrations,
@@ -92,7 +94,11 @@ interface ManagedSession {
 // ── Manager ─────────────────────────────────────────────────────────────
 
 export class AgentIntegrationManager {
-  constructor(private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry) {}
+  constructor(
+    private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry,
+    /** The webhook relay for one connection, or null while the host has none available. */
+    private readonly relayHost: (integrationId: string) => IntegrationRelayHost | null = (integrationId) => integrationRelays.hostFor(integrationId),
+  ) {}
 
   private readonly deliveries = new IntegrationDeliveryQueue({
     connectedIds: () => this.isRunning ? [...this.connections.keys()].filter(id => !this.pausedIds.has(id) && this.connections.get(id)?.connector.isConnected()) : [],
@@ -543,6 +549,11 @@ export class AgentIntegrationManager {
     return conn?.connector.isConnected() ?? false
   }
 
+  /** The path the live connection runs on, if it has one and reports it. */
+  integrationTransport(integrationId: string): IntegrationTransport | null {
+    return this.connections.get(integrationId)?.connector.activeTransport() ?? null
+  }
+
   getActiveIntegrationIds(): string[] {
     return [...this.connections.keys()]
   }
@@ -577,8 +588,9 @@ export class AgentIntegrationManager {
     // Another window: creating the connector can await.
     if (this.generationOf(id) !== generation) return false
 
+    // The relay is offered once per connection; a provider that can use it does.
     connector.bindHost({ session: async externalId => this.connections.get(id)?.connector === connector
-      ? this.recoverSessionContext(id, externalId, generation) : undefined })
+      ? this.recoverSessionContext(id, externalId, generation) : undefined, relay: this.relayHost(id) })
 
     const conn: IntegrationConnection = {
       connector,
@@ -587,14 +599,18 @@ export class AgentIntegrationManager {
       errorUnsubscribe: null,
     }
 
-    conn.eventUnsubscribe = connector.onEvent(async event => {
+    conn.eventUnsubscribe = connector.onEvent(async (event): Promise<IntegrationInputResult | void> => {
       try {
-        if (this.connections.get(id) !== conn || this.generationOf(id) !== generation) return
+        // A replaced connection's events belong to its successor.
+        if (this.connections.get(id) !== conn || this.generationOf(id) !== generation) return event.type === 'input' ? 'retry' : undefined
         if (event.type === 'input') {
           const route = connector.resolveRoute(event)
-          if (route.externalId && await this.deliveries.accept(id, event, route) && this.connections.get(id) === conn && this.generationOf(id) === generation) {
+          if (!route.externalId) return 'rejected'
+          const result = await this.deliveries.accept(id, event, route)
+          if (result === 'accepted' && this.connections.get(id) === conn && this.generationOf(id) === generation) {
             void connector.acknowledgeInput(event).catch(error => reportError(error, 'acknowledge-input', { integrationId: id }))
           }
+          return result
         }
         else if (event.type === 'cancel') {
           if (!(await this.isAllowed(integration.id, event.externalId))) return

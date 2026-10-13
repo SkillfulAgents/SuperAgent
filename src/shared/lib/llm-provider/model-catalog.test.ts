@@ -714,6 +714,12 @@ describe('resolveModelForProvider', () => {
     }
   })
 
+  it('defaults the browser model to Haiku 5.5 on every Claude-catalog provider', () => {
+    for (const provider of ['anthropic', 'claude-subscription', 'openrouter', 'platform'] as const) {
+      expect(resolveModelForProvider('mystery', provider, 'browser')).toBe('claude-haiku-5-5')
+    }
+  })
+
   it('resolves a bare family alias to that family latest id', () => {
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5-5')

@@ -4,6 +4,9 @@ import type { AgentCapabilitySettings } from '../config/capability-policy-schema
 import { voiceHistorySchema, type VoiceHistory } from './conversation-types'
 export { voiceHistorySchema, type VoiceHistory, type VoiceTranscriptEntry } from './conversation-types'
 
+/** Application-owned commentary after all context for a backend turn has been sent. */
+export const LIVE_TURN_COMPLETE_CUE = 'The backend agent has finished this turn.'
+
 export const liveMappingSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('request'),

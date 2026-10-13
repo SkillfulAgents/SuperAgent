@@ -1871,11 +1871,11 @@ app.on('before-quit', async (event) => {
     event.preventDefault()
 
     // Hard deadline: force-exit if graceful shutdown hangs (e.g., stuck Lima VM)
-    // Must exceed the full escalation chain: stop(10s) + kill(5s) + forceStop(10s) = 25s
+    // Covers bounded upload preparation plus the existing stop/kill/force chain.
     const forceExitTimer = setTimeout(() => {
-      console.error('Graceful shutdown timed out after 35s — force exiting')
+      console.error('Graceful shutdown timed out after 60s — force exiting')
       process.exit(1)
-    }, 35000)
+    }, 60000)
     forceExitTimer.unref() // Don't keep the event loop alive just for this timer
 
     await gracefulShutdown()

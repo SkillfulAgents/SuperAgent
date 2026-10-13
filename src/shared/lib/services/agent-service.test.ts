@@ -59,6 +59,8 @@ import {
   listAgents,
   listAgentsWithStatus,
   createAgent,
+  createAgentFromExistingWorkspace,
+  updateAgentAvatar,
   updateAgent,
   deleteAgent,
   agentExists,
@@ -411,6 +413,22 @@ Instructions`
   // ============================================================================
 
   describe('createAgent', () => {
+    it('assigns stored avatars through both direct creation and the import/install entry point', async () => {
+      for (const create of [() => createAgent({ name: 'Direct' }), () => createAgentFromExistingWorkspace('Imported')]) {
+        const agent = await create()
+        expect(agent.avatar).toEqual((await getAgentRecord(agent.slug))?.avatar)
+        expect(agent.avatar.color).toBeTruthy()
+        expect(agent.avatar.shape).toBeTruthy()
+        const before = await getAgentInstructionsContent(agent.slug)
+        const chosen = { color: 'duo-red-amber', shape: 'bloom' } as const
+        expect(await updateAgentAvatar(agent.slug, chosen)).toEqual(chosen)
+        expect((await getAgentWithStatus(agent.slug))?.avatar).toEqual(chosen)
+        expect(await getAgentInstructionsContent(agent.slug)).toBe(before)
+        await updateAgent(agent.slug, { name: 'Renamed' })
+        expect((await getAgentRecord(agent.slug))?.avatar).toEqual(chosen)
+      }
+    })
+
     it('creates agent with name only', async () => {
       const agent = await createAgent({ name: 'New Agent' })
 

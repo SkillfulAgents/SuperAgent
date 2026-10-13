@@ -5,20 +5,16 @@ import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { prepareVolume } from '@shared/lib/volumes/volume-factory'
+import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
 
 export type VolumeViewer = { userId: string | null; admin: boolean }
 export type VolumeRow = typeof volumeDefinitions.$inferSelect
 
-export class VolumeError extends Error {
-  constructor(message: string, readonly status: 400 | 403 | 404 | 409) {
-    super(message)
-    this.name = 'VolumeError'
-  }
-}
+export { VolumeError } from '@shared/lib/volumes/volume-error'
 
 export function selectableVolumes(viewer: VolumeViewer) {
   return or(isNull(volumeDefinitions.userId), ...(viewer.userId ? [eq(volumeDefinitions.userId, viewer.userId)] : []))
@@ -58,8 +54,9 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   const userId = ownerFor(input.visibility, viewer)
   let prepared: Awaited<ReturnType<typeof prepareVolume>>
   try {
-    prepared = await prepareVolume(input.type, input.config)
+    prepared = await prepareVolume(input.type, input.config, viewer)
   } catch (error) {
+    if (error instanceof VolumeError) throw error
     throw new VolumeError(error instanceof Error ? error.message : 'Invalid volume configuration', 400)
   }
   const config = volumeConfigSchema.parse(prepared).config
@@ -122,4 +119,26 @@ export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): 
     throw new VolumeError('Detach this volume from all agents before deleting it', 409)
   }
   throw new VolumeError('Volume not found', 404)
+}
+
+/** User-facing access to a source, independent of any agent or running container. */
+export async function getVisibleVolumeDefinition(id: string, viewer: VolumeViewer): Promise<StoredVolume> {
+  const row = await db.select().from(volumeDefinitions)
+    .where(and(eq(volumeDefinitions.id, id), selectableVolumes(viewer))).get()
+  if (!row) throw new VolumeError('Volume not found', 404)
+  const stored = storedDefinition(row)
+  if (!stored) throw new VolumeError('Volume configuration is unavailable', 400)
+  return stored
+}
+
+export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
+  const volume = instantiateVolume(await getVisibleVolumeDefinition(id, viewer))
+  if (!volume) throw new VolumeError('Volume configuration is unavailable', 400)
+  return volume
+}
+
+export async function listVolumeAttachments(id: string, viewer: VolumeViewer) {
+  await getVisibleVolumeDefinition(id, viewer)
+  return db.select({ agentSlug: agentVolumes.agentSlug, mountId: agentVolumes.id })
+    .from(agentVolumes).where(eq(agentVolumes.volumeId, id)).all()
 }

@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { acquireMicStream } from '../../shared/audio-capture'
-import { OpenAILiveBridge } from './live-bridge'
+import { OpenAILiveBridge, liveTextChunks, type LiveDelivery } from './live-bridge'
 import type { LiveRequest, LiveSessionAnswer, VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 import type { VoiceInputRequest } from '../../contracts/conversation'
 
@@ -23,6 +23,9 @@ const AUDIO_METER_MS = 20
 const OUTPUT_SPEECH_RMS = 0.003
 // Only extends speech already confirmed by transcription; never opens the gate.
 const INPUT_SPEECH_RMS = 0.006
+
+interface PendingCommand { event: Record<string, unknown>; delivery?: LiveDelivery }
+const MAX_BUFFERED_CONTENT = 256_000
 
 function sampleRms(analyser: AnalyserNode, buffer: Float32Array<ArrayBuffer>): number {
   analyser.getFloatTimeDomainData(buffer)
@@ -55,7 +58,8 @@ export class OpenAILiveConversation {
   private ready = false
   private closed = false
   private paused = false
-  private commands: Record<string, unknown>[] = []
+  private updatingPause = false
+  private commands: PendingCommand[] = []
   private sessionId: string | null = null
   private bridge: OpenAILiveBridge
   private replyText = ''
@@ -68,7 +72,7 @@ export class OpenAILiveConversation {
     this.bridge = new OpenAILiveBridge({
       ...events,
       onInputTranscript: (delta) => this.detectInputWords(delta),
-      send: (event) => this.send(event),
+      send: (event, delivery) => this.send(event, delivery),
       map: async (input, signal) => {
         const res = await apiFetch('/api/voice/live/map', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal,
@@ -153,7 +157,6 @@ export class OpenAILiveConversation {
         if (event.type === 'session.started') {
           clearTimeout(this.startupTimer)
           this.ready = true
-          for (const command of this.commands.splice(0)) this.send(command)
           this.setPaused(this.paused)
           this.announceInputRequests()
           this.events.onReady()
@@ -252,13 +255,19 @@ export class OpenAILiveConversation {
 
   // A request card closes the mic only: the reply keeps playing, as chained speech reads its text to the end.
   setPaused(paused: boolean) {
-    this.paused = paused
-    if (paused) this.clearInputSpeech()
-    this.bridge.setPaused(paused)
-    this.gateMicrophone()
-    this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
-      ? 'The application is waiting for user input. Finish what you are saying and briefly announce any new application input requests supplied in commentary, then wait for the user to complete them in the application. Do not delegate until the application resumes.'
-      : 'The application is ready for voice conversation. Continue listening and responding normally.' })
+    this.updatingPause = true
+    try {
+      this.paused = paused
+      if (paused) this.clearInputSpeech()
+      this.bridge.setPaused(paused)
+      this.gateMicrophone()
+      this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
+        ? 'The application is waiting for user input. Finish what you are saying and briefly announce any new application input requests supplied in commentary, then wait for the user to complete them in the application. Do not delegate until the application resumes.'
+        : 'The application is ready for voice conversation. Continue listening and responding normally.' })
+    } finally {
+      this.updatingPause = false
+    }
+    this.drainCommands()
   }
 
   setInputRequests(requests: readonly VoiceInputRequest[]) {
@@ -302,26 +311,48 @@ export class OpenAILiveConversation {
 
   resetReply() {
     this.bridge.invalidateReplies()
+    // Replies can reach the transport queue while WebRTC is still connecting.
+    this.commands = this.commands.filter(command => !command.delivery || command.delivery.isCurrent())
     clearTimeout(this.replyTimer)
     this.replyText = ''
     this.replyFed = 0
   }
 
-  /** Receives the same cumulative text stream used by Deepgram read-aloud. */
+  /** A message boundary flushes text; only a separate outcome can finish work. */
   updateReply(text: string, complete = false) {
     if (this.closed) return
+    const changed = text !== this.replyText
+    if (changed || !complete) this.bridge.cancelCompletion()
     this.replyText = text
     clearTimeout(this.replyTimer)
     if (complete || text.length - this.replyFed >= 1200) this.flushReply()
     else this.replyTimer = setTimeout(() => this.flushReply(), 1000)
   }
 
+  finishTurn(outcome: 'completed' | 'cancelled') {
+    if (this.closed) return
+    clearTimeout(this.replyTimer)
+    this.flushReply()
+    this.bridge.cancelCompletion()
+    if (outcome === 'completed') this.bridge.completeReply()
+  }
+
   /** The shared coordinator supplies message boundaries; no text-prefix guessing here. */
   nextReplySegment() {
+    this.bridge.cancelCompletion()
     clearTimeout(this.replyTimer)
     this.flushReply()
     this.replyText = ''
     this.replyFed = 0
+  }
+
+  /** Execution errors need attention, without claiming the backend turn finished. */
+  reportAgentError(message: string) {
+    clearTimeout(this.replyTimer)
+    this.flushReply()
+    this.replyText = ''
+    this.replyFed = 0
+    this.bridge.reportAgentError(message)
   }
 
   private flushReply() {
@@ -339,10 +370,42 @@ export class OpenAILiveConversation {
     } else this.bridge.requestNow()
   }
 
-  private send(event: Record<string, unknown>) {
-    if (this.closed) return
-    if (this.ready && this.channel?.readyState === 'open') this.channel.send(JSON.stringify(event))
-    else if (this.commands.length < 128) this.commands.push(event)
+  private send(event: Record<string, unknown>, delivery?: LiveDelivery) {
+    if (this.closed || (delivery && !delivery.isCurrent())) return
+    // A whole logical append occupies one slot while connecting or paused.
+    // Wire chunks must never compete with pause/error/completion commands.
+    this.commands = this.commands.filter(command => !command.delivery || command.delivery.isCurrent())
+    this.commands.push({ event, delivery })
+    const size = this.commands.reduce((total, command) => total + (typeof command.event.content === 'string' ? command.event.content.length : 0), 0)
+    if (size > MAX_BUFFERED_CONTENT || this.commands.length > 1024) {
+      this.fail('Voice updates exceeded the connection buffer. Read the latest results in the app and reconnect voice mode.')
+      return
+    }
+    this.drainCommands()
+  }
+
+  private drainCommands() {
+    if (this.closed || this.updatingPause || !this.ready || this.channel?.readyState !== 'open') return
+    // Resume instructions and any newly arrived facts precede a held cue.
+    const commands = this.commands.splice(0)
+    const ordered = [...commands.filter(command => command.delivery?.kind !== 'completion'),
+      ...commands.filter(command => command.delivery?.kind === 'completion')]
+    for (const command of ordered) {
+      if (command.delivery && !command.delivery.isCurrent()) continue
+      if (this.paused && command.delivery?.kind === 'completion') {
+        this.commands.push(command)
+        continue
+      }
+      try {
+        const { event } = command
+        if (typeof event.content === 'string') {
+          for (const content of liveTextChunks(event.content)) this.channel.send(JSON.stringify({ ...event, content, event_id: crypto.randomUUID() }))
+        } else this.channel.send(JSON.stringify(event))
+      } catch {
+        this.fail('Could not deliver voice updates. Read the latest results in the app and reconnect voice mode.')
+        return
+      }
+    }
   }
 
   private fail(message: string) { this.events.onError(message); this.close() }
@@ -350,6 +413,7 @@ export class OpenAILiveConversation {
   close() {
     if (this.closed) return
     this.closed = true
+    this.commands = []
     window.removeEventListener('pagehide', this.onPageHide)
     clearTimeout(this.disconnectTimer)
     clearTimeout(this.expiryWarningTimer)
@@ -364,8 +428,10 @@ export class OpenAILiveConversation {
     if (this.audio) this.audio.muted = true
     this.events.onClosed?.()
     if (this.ready && this.channel?.readyState === 'open') {
-      this.channel.send(JSON.stringify({ type: 'session.close' }))
-      this.closingTimer = setTimeout(() => { this.releaseSession(); this.cleanup() }, 1500)
+      try {
+        this.channel.send(JSON.stringify({ type: 'session.close' }))
+        this.closingTimer = setTimeout(() => { this.releaseSession(); this.cleanup() }, 1500)
+      } catch { this.cleanup() }
     } else { this.releaseSession(); this.cleanup() }
   }
 

@@ -172,7 +172,13 @@ function resolveConstant(id) {
   return lit.startsWith('"') ? JSON.parse(Buffer.from(lit, 'latin1').toString('utf8')) : Number(lit);
 }
 
-/** Sandbox with every imported identifier stubbed: constants resolved from the binary, objects as {}, functions as () => false. */
+/**
+ * Sandbox with every imported identifier stubbed: constants resolved from the
+ * binary, objects as {}, functions as () => undefined. A called import is
+ * either a feature gate or an env getter (2.1.296: `QTe()` returns
+ * CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL and is tested with `!==void 0`), so
+ * "unset" must be undefined — a `false` stub reads as "set" there.
+ */
 function sandboxFor(source, entry, extra = {}) {
   const sandbox = { JSON, ...extra };
   for (const id of importedIdentifiers(source)) {
@@ -182,7 +188,7 @@ function sandboxFor(source, entry, extra = {}) {
     } else if (new RegExp(`(?<![\\w$])${id.replace(/\$/g, '\\$')}\\.`).test(source)) {
       sandbox[id] = {}; // used as an object (process.env-style lookups) — absent keys are fine
     } else if (new RegExp(`(?<![\\w$])${id.replace(/\$/g, '\\$')}\\(`).test(source)) {
-      sandbox[id] = () => false; // feature-flag / gate call
+      sandbox[id] = () => undefined; // feature gate or env getter, both unset
     } else {
       const value = resolveConstant(id);
       if (value === undefined) fail(`${entry.name}: cannot resolve imported identifier "${id}" to a literal — pin it under constants: {} in VENDORED`);

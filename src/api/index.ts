@@ -7,6 +7,7 @@ import xAgentIntegrations from './routes/x-agent-integrations'
 import webSearch from './routes/web-search'
 import volumes from './routes/volumes'
 import volumeDefinitions from './routes/volume-definitions'
+import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
@@ -32,6 +33,7 @@ import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
+import webhookRelayRouter from './routes/webhook-relay'
 import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
@@ -251,6 +253,7 @@ app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/volumes', volumes)
 app.route('/api/volume-definitions', volumeDefinitions)
+app.route('/api/volume-types', volumeTypes)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
 app.route('/api/browser', browser)
@@ -265,6 +268,7 @@ app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
+app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)

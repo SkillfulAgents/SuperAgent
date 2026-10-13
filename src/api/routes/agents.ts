@@ -1,4 +1,7 @@
-import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -14,6 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -35,6 +39,7 @@ import {
   getAgent,
   getAgentRecord,
   updateAgent,
+  updateAgentAvatar,
   deleteAgent,
   agentExists,
   AgentContainerStopError,
@@ -72,7 +77,7 @@ import type {
   UserInputRequestKind,
   UserInputRequestScope,
 } from '@shared/lib/tools/requests/request-schema'
-import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
+import { forkSession, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -1438,6 +1443,16 @@ agents.put('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   }
 })
 
+// Appearance is shared agent metadata, with the same permission as renaming.
+agents.put('/:id/avatar', ResolveAgent(), AgentAdmin(), zValidator('json', agentAvatarSchema), async (c) => {
+  const slug = getAgentId(c)
+  const avatar = await updateAgentAvatar(slug, c.req.valid('json'))
+  if (!avatar) return c.json({ error: 'Agent not found' }, 404)
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: ['avatar'] } })
+  messagePersister.broadcastGlobal({ type: 'agent_updated', agentSlug: slug })
+  return c.json(avatar)
+})
+
 // DELETE /api/agents/:id - Delete an agent
 agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   try {
@@ -1550,7 +1565,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
     const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    if (error instanceof LlmProviderNotFoundError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
     return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
@@ -2135,7 +2150,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       201
     )
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to create session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
   }
@@ -2789,7 +2805,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // mid-turn is queued by the agent loop rather than starting a new turn.
       const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-      agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      // A rejected fresh turn is undone so the retry starts a new turn, unless a
+      // concurrent send, turn, or output has taken the session over meanwhile.
+      let undoFreshTurn: (() => void) | undefined
+      if (wasQueued) agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      else undoFreshTurn = agentRegistry.get(agentSlug).sessions.markProvisionalActive(sessionId)
 
       // A mid-turn send must not carry model/effort/speed: the container treats a
       // parameter change as interrupt/restart of the in-flight query. The
@@ -2811,7 +2831,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      try {
+        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      } catch (error) {
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
+        throw error
+      }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
@@ -2865,7 +2890,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
     })
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
@@ -3095,9 +3121,8 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
     }
     return c.json(await forkSession(slug, sourceId, opts), 201)
   } catch (error) {
-    if (error instanceof ForkSessionError) {
-      return c.json({ error: error.message }, error.status)
-    }
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to fork session:', error)
     return c.json({ error: 'Failed to fork session' }, 500)
   }
@@ -3191,7 +3216,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
       let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
@@ -3213,7 +3237,8 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
-          isActive,
+          isActive: actor.sessions.isActive(sessionId),
+          turnOutcome: actor.sessions.turnOutcome(sessionId),
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           // Always the array, even empty: an absent list reads as "unchanged" to
@@ -3242,7 +3267,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         try {
           const currentIsActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
           await stream.writeSSE({
-            data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
+            data: JSON.stringify({
+              type: 'ping', isActive: currentIsActive,
+              turnOutcome: actor.sessions.turnOutcome(sessionId),
+            }),
             event: 'message',
           })
         } catch {

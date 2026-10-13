@@ -343,6 +343,29 @@ describe('AgentIntegration host contract', () => {
     expect(state.create).toHaveBeenCalledTimes(2)
   })
 
+  it('asks for a retry when the connection is replaced while its input is on the way', async () => {
+    await manager.start()
+    const input = adapter.input('racing')
+    const paused = manager.pauseIntegration('installation-a')
+    expect(await input).toBe('retry')
+    await paused
+    expect(state.create).not.toHaveBeenCalled()
+  })
+
+  it('combines several handlers into one result: taken if any handler took it', async () => {
+    const connector = new ObjectIntegration()
+    expect(await connector.input('nobody-listens')).toBe('retry')
+    connector.onEvent(() => 'rejected')
+    expect(await connector.input('rejected')).toBe('rejected')
+    connector.onEvent(() => 'retry')
+    expect(await connector.input('retry')).toBe('retry')
+    connector.onEvent(() => 'duplicate')
+    expect(await connector.input('duplicate')).toBe('duplicate')
+    // A handler that returns nothing took the input.
+    connector.onEvent(() => {})
+    expect(await connector.input('accepted')).toBe('accepted')
+  })
+
   it('reports a rejected response handler without marking the connection unhealthy', async () => {
     await manager.start()
     await vi.dynamicImportSettled()

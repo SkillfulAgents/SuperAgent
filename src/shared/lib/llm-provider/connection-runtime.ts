@@ -1,4 +1,5 @@
 import { getModelContextWindowMap } from './model-catalog'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'
@@ -38,17 +39,13 @@ export async function resolveConnectionRuntimeInherit(
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
-export class LlmSelectionAccessError extends Error {
-  constructor() { super('LLM provider not found') }
-}
-
 export async function assertConnectionSelectionAccess(
   llmProviderId: string | null | undefined,
   currentId?: string | null
 ) {
   if (!llmProviderId) return
   const row = await getConnection(llmProviderId)
-  if (!row) throw new LlmSelectionAccessError()
+  if (!row) throw new LlmProviderNotFoundError()
   if (
     !canSelectConnection(
       row,
@@ -56,7 +53,7 @@ export async function assertConnectionSelectionAccess(
       currentId ?? undefined
     )
   ) {
-    throw new LlmSelectionAccessError()
+    throw new LlmProviderNotFoundError()
   }
 }
 

@@ -2,6 +2,7 @@
 export function installLiveVoiceMocks() {
   const events: Array<{ type: string; content?: string }> = []
   let microphone: MediaStream | null = null
+  let channel: Channel | null = null
   // Patch the prototype: WebKit can lose an instance override before mic acquisition.
   MediaDevices.prototype.getUserMedia = async () => {
     microphone = new AudioContext().createMediaStreamDestination().stream
@@ -18,6 +19,7 @@ export function installLiveVoiceMocks() {
   }
   window.RTCPeerConnection = class {
     channel = new Channel()
+    constructor() { channel = this.channel }
     connectionState = 'connected'
     iceGatheringState = 'complete'
     localDescription = { type: 'offer', sdp: 'mock-offer' }
@@ -30,5 +32,9 @@ export function installLiveVoiceMocks() {
     addTrack() {}
     close() {}
   } as unknown as typeof RTCPeerConnection
-  return { events, microphoneEnabled: () => microphone?.getAudioTracks().some(track => track.enabled) ?? false }
+  return {
+    events,
+    microphoneEnabled: () => microphone?.getAudioTracks().some(track => track.enabled) ?? false,
+    receive: (event: Record<string, unknown>) => channel?.onmessage?.({ data: JSON.stringify(event) }),
+  }
 }

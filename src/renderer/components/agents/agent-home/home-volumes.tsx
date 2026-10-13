@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { AppLink } from '@renderer/components/ui/app-link'
+import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
@@ -14,7 +16,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import {
   MoreVertical,
-  Folder,
+  Settings2,
   FolderOpen,
   Copy,
   Trash2,
@@ -29,7 +31,7 @@ import { openableProps } from '@renderer/lib/openable'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
 import { VolumeStatusBadge } from '../volume-status-badge'
-import type { VolumeSummaryWithHealth } from '@shared/lib/types/mount'
+import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
 
 interface HomeVolumesProps {
   agentSlug: string
@@ -51,6 +53,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
             <VolumeRow
               key={mount.id}
               mount={mount}
+              agentSlug={agentSlug}
               onRemove={() => volumes.handleRemove(mount.id)}
               isRemovingMount={volumes.isRemovingMount}
               canRemove={volumes.canModifyMounts}
@@ -106,10 +109,10 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                     const attached = volumes.mounts.some(m => m.volumeId === volume.id)
                     return (
                       <DropdownMenuItem key={volume.id} disabled={attached} onSelect={() => { void volumes.handleAttach(volume.id) }}>
-                        <Folder className="h-4 w-4 shrink-0" />
+                        <VolumeIcon type={volume.type} className="h-4 w-4 shrink-0" />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate">{volume.name}</span>
-                          {volume.hostPath && <span className="block truncate text-xs text-muted-foreground">{volume.hostPath}</span>}
+                          {(volume.sourceLabel ?? volume.hostPath) && <span className="block truncate text-xs text-muted-foreground">{volume.sourceLabel ?? volume.hostPath}</span>}
                         </span>
                         {attached && <span className="text-xs text-muted-foreground">Mounted</span>}
                       </DropdownMenuItem>
@@ -146,13 +149,14 @@ function getFileManagerLabel(): string {
 }
 
 interface VolumeRowProps {
-  mount: VolumeSummaryWithHealth
+  agentSlug: string
+  mount: MountSummaryWithHealth
   onRemove: () => void
   isRemovingMount: boolean
   canRemove: boolean
 }
 
-function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowProps) {
+function VolumeRow({ mount, agentSlug, onRemove, isRemovingMount, canRemove }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const fileManagerLabel = getFileManagerLabel()
@@ -160,6 +164,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowPro
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
   const { hostPath } = mount
+  const sourceLabel = mount.sourceLabel ?? hostPath
   const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
@@ -186,13 +191,13 @@ function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowPro
         className={`group relative py-3 px-4 transition-colors ${canOpenInFileManager ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
       >
         <div className="flex items-center gap-2">
-          <Folder className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <VolumeIcon type={mount.type} className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <span className="text-xs font-medium truncate">{mount.name}</span>
           <VolumeStatusBadge health={mount.health} />
         </div>
-        {hostPath && (
-          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={hostPath}>
-            {hostPath}
+        {sourceLabel && (
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={sourceLabel}>
+            {sourceLabel}
           </div>
         )}
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
@@ -209,7 +214,12 @@ function VolumeRow({ mount, onRemove, isRemovingMount, canRemove }: VolumeRowPro
                 <MoreVertical className="h-3.5 w-3.5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-40 p-1">
+            <PopoverContent align="end" className="w-44 p-1">
+              <AppLink to="/settings/$tab" params={{ tab: 'volumes' }} search={{ volume: mount.volumeId, from: `/agents/${encodeURIComponent(agentSlug)}` }}
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                onClick={event => { event.stopPropagation(); setMenuOpen(false) }}>
+                <Settings2 className="h-3.5 w-3.5" />Volume settings
+              </AppLink>
               {canOpenInFileManager && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"

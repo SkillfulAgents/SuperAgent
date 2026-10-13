@@ -50,6 +50,23 @@ it('retries after failed handoff without advancing the cursor', async () => {
   await vi.advanceTimersByTimeAsync(30000)
   expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(1)
 })
+it('leaves the cursor on a message its replaced connection could not hand over, so the next one reads it', async () => {
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 1, type: 'message.received', messageId: message.id }, { cursor: 2, type: 'message.received', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
+  // The manager stopped listening to this connection mid-poll: nobody took the message.
+  const inputs = vi.fn().mockResolvedValue('retry')
+  connector.onEvent(inputs)
+  await connector.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(inputs).toHaveBeenCalledOnce()
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(0)
+  await connector.disconnect()
+
+  const next = new PlatformEmailAgentIntegration((await getAgentIntegration(id))!)
+  const taken = vi.fn().mockResolvedValue('accepted'); next.onEvent(taken)
+  await next.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(taken).toHaveBeenCalledTimes(2)
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(2)
+  await next.disconnect()
+})
 it('routes reconciled gateway threads through existing shared sessions, including after reconnect', async () => {
   await createAgentIntegrationSession({ integrationId: id, externalChatId: 'original', sessionId: 'session-1' })
   transport.canonicalThreadId.mockResolvedValue('canonical')
