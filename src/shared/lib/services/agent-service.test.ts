@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import {
   SAMPLE_INSTRUCTIONS,
   SAMPLE_INSTRUCTIONS_MINIMAL,
@@ -417,8 +418,7 @@ Instructions`
       for (const create of [() => createAgent({ name: 'Direct' }), () => createAgentFromExistingWorkspace('Imported')]) {
         const agent = await create()
         expect(agent.avatar).toEqual((await getAgentRecord(agent.slug))?.avatar)
-        expect(agent.avatar.color).toBeTruthy()
-        expect(agent.avatar.shape).toBeTruthy()
+        expect(agentAvatarSchema.safeParse(agent.avatar).success).toBe(true)
         const before = await getAgentInstructionsContent(agent.slug)
         const chosen = { color: 'duo-red-amber', shape: 'bloom' } as const
         expect(await updateAgentAvatar(agent.slug, chosen)).toEqual(chosen)

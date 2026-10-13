@@ -40,6 +40,7 @@ interface AvatarViewProps {
  * elsewhere carries the accessible status, since motion alone isn't one.
  */
 export function AgentAvatar({ agent, ...rest }: { agent: Pick<ApiAgent, 'slug' | 'avatar'> } & AvatarViewProps) {
+  if (!agent.avatar) return null
   return <AvatarView source={avatarSource(agent.avatar)} restingPhi={orbRestingPhi(agent.slug)} {...rest} />
 }
 
