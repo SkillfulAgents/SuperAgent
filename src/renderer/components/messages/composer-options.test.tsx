@@ -450,4 +450,59 @@ describe('drafted option picks', () => {
     act(() => latest.options.markSubmitted(sent))
     expect(latest.store.get('session:s-1')).toBeUndefined()
   })
+
+  it('sends the restored account with the restored model while connections are still loading', () => {
+    const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+    const global = { id: 'global', defaultModel: 'same', catalog: [model('same')] }
+    const personal = { id: 'personal', defaultModel: 'same', catalog: [model('same')] }
+    state.connections = { connections: [global, personal], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const args = { initialLlmProviderId: 'global', initialModel: 'same', draftKey: 'session:s-1' }
+    const { latest, remount } = renderDrafted(args)
+    act(() => latest.options.setConnection?.('personal'))
+
+    state.connections = undefined
+    remount()
+
+    expect(latest.options.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+  })
+
+  it('an earlier send completing does not clear a newer pick made after remounting', () => {
+    const { latest, remount } = renderDrafted(sessionArgs)
+    act(() => {
+      latest.options.setModel('haiku')
+      latest.options.setEffort('high')
+      latest.options.setSpeed('fast')
+    })
+    const staleInstance = latest.options
+    const sent = staleInstance.toRuntimeOptions()
+
+    // Navigate away and back while that send is still in flight, then pick again.
+    remount()
+    act(() => {
+      latest.options.setModel('sonnet')
+      latest.options.setEffort('low')
+      latest.options.setSpeed('normal')
+    })
+    act(() => staleInstance.markSubmitted(sent))
+
+    expect(latest.store.get('session:s-1')?.options).toEqual({ model: 'sonnet', effort: 'low', speed: 'normal' })
+  })
+
+  it('an earlier send completing does not clear a newer account pick', () => {
+    const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+    const global = { id: 'global', defaultModel: 'same', catalog: [model('same')] }
+    const personal = { id: 'personal', defaultModel: 'same', catalog: [model('same')] }
+    state.connections = { connections: [global, personal], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const args = { initialLlmProviderId: 'global', initialModel: 'same', draftKey: 'session:s-1' }
+    const { latest, remount } = renderDrafted(args)
+    act(() => latest.options.setConnection?.('personal'))
+    const staleInstance = latest.options
+    const sent = staleInstance.toRuntimeOptions()
+
+    remount()
+    act(() => latest.options.setConnection?.('global'))
+    act(() => staleInstance.markSubmitted(sent))
+
+    expect(latest.store.get('session:s-1')?.options).toMatchObject({ llmProviderId: 'global' })
+  })
 })

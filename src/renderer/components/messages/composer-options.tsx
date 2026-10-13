@@ -284,34 +284,44 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [connections, persistPicks])
 
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
+  // Until connections load nothing can be validated, so an explicitly picked
+  // account (e.g. restored from the draft) goes out as picked rather than being
+  // dropped in favor of the session's current account. The server authorizes it.
+  const sendLlmProviderId = effectiveLlmProviderId ?? (connectionData === undefined && connectionDirty.current ? llmProviderId : undefined)
 
   const markSubmitted = useCallback(
     (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }) => {
-      const sent: ComposerOptionPicks = {}
-      if (options.llmProviderId === effectiveLlmProviderId) {
-        connectionDirty.current = false
-        sent.llmProviderId = undefined
-      }
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
       // but the equality check keeps this helper correct for other callers.
-      if (options.effort !== undefined && options.effort === effort) {
-        effortDirtyRef.current = false
-        sent.effort = undefined
+      const accepted = {
+        llmProviderId: options.llmProviderId !== undefined && options.llmProviderId === sendLlmProviderId,
+        effort: options.effort !== undefined && options.effort === effort,
+        speed: options.speed !== undefined && options.speed === speed,
+        // Compare with what was sent: a restored pick whose account is gone
+        // resolved to the inherited model, and that stale pick must not linger.
+        model: options.model !== undefined && options.model === displayedModel,
       }
-      if (options.speed !== undefined && options.speed === speed) {
-        speedDirtyRef.current = false
-        sent.speed = undefined
-      }
-      // Compare with what was sent: a restored pick whose account is gone
-      // resolved to the inherited model, and that stale pick must not linger.
-      if (options.model !== undefined && options.model === displayedModel) {
-        modelDirtyRef.current = false
-        sent.model = undefined
-      }
-      if (Object.keys(sent).length > 0) persistPicks(sent)
+      if (accepted.llmProviderId) connectionDirty.current = false
+      if (accepted.effort) effortDirtyRef.current = false
+      if (accepted.speed) speedDirtyRef.current = false
+      if (accepted.model) modelDirtyRef.current = false
+
+      // The send can outlive this composer: navigate away and back, pick again,
+      // and the old completion must not wipe the newer pick. Clear a stored pick
+      // only while it is still the one this send came from.
+      const stored = draftKey ? draftsStore.get(draftKey)?.options : undefined
+      if (!stored) return
+      const fromThisSend = <T,>(storedValue: T | undefined, submitted: T | undefined, local: T | undefined) =>
+        storedValue !== undefined && (storedValue === submitted || storedValue === local)
+      const cleared: ComposerOptionPicks = {}
+      if (accepted.llmProviderId && fromThisSend(stored.llmProviderId, options.llmProviderId, llmProviderId)) cleared.llmProviderId = undefined
+      if (accepted.effort && fromThisSend(stored.effort, options.effort, effort)) cleared.effort = undefined
+      if (accepted.speed && fromThisSend(stored.speed, options.speed, speed)) cleared.speed = undefined
+      if (accepted.model && fromThisSend(stored.model, options.model, model)) cleared.model = undefined
+      if (Object.keys(cleared).length > 0) persistPicks(cleared)
     },
-    [effort, speed, displayedModel, effectiveLlmProviderId, persistPicks],
+    [effort, speed, model, llmProviderId, displayedModel, sendLlmProviderId, draftKey, draftsStore, persistPicks],
   )
 
   // ---- Default adoption ----
@@ -380,9 +390,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
-      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
+      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(sendLlmProviderId ? { llmProviderId: sendLlmProviderId } : {}) } : {}),
     }),
-    [effort, speed, displayedModel, effectiveLlmProviderId],
+    [effort, speed, displayedModel, sendLlmProviderId],
   )
 
   return useMemo(
