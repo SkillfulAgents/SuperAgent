@@ -263,4 +263,11 @@ describe('getToolRenderer with input', () => {
     const input = { command: 'curl "$PLATFORM_BASE_URL/v1/apollo/people/match"' }
     expect(getToolRenderer('Bash', input)).toBe(getToolRenderer('Bash', { ...input }))
   })
+
+  it('keeps a direct curl a Bash row, with the site icon after the description', () => {
+    const renderer = getToolRenderer('Bash', { command: 'curl -sS https://arxiv.org/abs/2401.1' })
+    expect(renderer?.displayName).toBe('Bash')
+    expect(renderer?.icon).toBe(getToolRenderer('Bash')?.icon)
+    expect(renderer?.CollapsedContent).toBeDefined()
+  })
 })

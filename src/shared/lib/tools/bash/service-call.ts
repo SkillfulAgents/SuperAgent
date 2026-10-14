@@ -62,3 +62,36 @@ export function identifyServiceCall(command: string): ServiceCall | null {
 
   return keys.size === 1 ? call : null
 }
+
+const FETCH_COMMAND = /(?:^|[\s;&|(`])(?:curl|wget)\s/
+const PLATFORM_VARIABLE = /\$\{?(?:PROXY|PLATFORM|ANTHROPIC)_BASE_URL\b/
+const LITERAL_URL = /https?:\/\/[^\s"'`<>;|&)]+/g
+// URL parsing accepts `${HOST}` as a hostname; a literal site is dotted labels.
+const SITE_HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/
+
+/** The website a direct (non-platform) curl or wget fetches, and the toolkit whose icon Gamut already ships for it. */
+export interface DirectSite {
+  origin: string
+  toolkit: string | null
+}
+
+/**
+ * The one site a direct curl or wget names, read from its literal URLs. Null when the command fetches
+ * nothing, names two sites, or touches a platform URL at all: identifyServiceCall decides those.
+ * Matching is by text, so a command built to mislead can show the wrong icon; the raw command stays one click away.
+ */
+export function identifyDirectSite(command: string): DirectSite | null {
+  if (!FETCH_COMMAND.test(command) || PLATFORM_VARIABLE.test(command)) return null
+  const urls: URL[] = []
+  for (const [text] of command.matchAll(LITERAL_URL)) {
+    try {
+      urls.push(new URL(text))
+    } catch {
+      return null
+    }
+  }
+  if (!urls.every((url) => SITE_HOSTNAME.test(url.hostname))) return null
+  if (new Set(urls.map((url) => url.hostname)).size !== 1) return null
+  const toolkits = new Set(urls.map((url) => toolkitFor(url.hostname, url.pathname)))
+  return { origin: urls[0].origin, toolkit: toolkits.size === 1 ? [...toolkits][0] : null }
+}

@@ -2077,6 +2077,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       '{"login":"octocat"}',
       'You are signed in as octocat.'
     )],
+    // A direct curl to a host Gamut ships an icon for: the row stays Bash and shows that icon
+    ['query linear directly', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -d @query.json', description: 'Query open issues' },
+      '{"data":{"issues":{"nodes":[]}}}',
+      'No open issues.'
+    )],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',

@@ -3,10 +3,9 @@ import { useMemo } from 'react'
 import { Globe } from 'lucide-react'
 import { Markdown } from '@renderer/components/ui/markdown'
 import { SiteFavicon } from '@renderer/components/ui/site-favicon'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { webFetchDef } from './definition'
 import { hostnameOf, parseFetchResult, stripLeadingTitle } from '../ui/web-result-parse'
-import { FieldLabel, NO_MARKDOWN_IMAGES, SourceMeta } from '../ui/shared'
+import { FieldLabel, HostTooltip, NO_MARKDOWN_IMAGES, SourceMeta } from '../ui/shared'
 import type { CollapsedContentProps, ToolRendererProps } from '../renderer-types'
 
 const BOX = 'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar'
@@ -19,22 +18,10 @@ function CollapsedContent({ result, isError }: CollapsedContentProps) {
     return { favicon: parsed.favicon, host: parsed.url ? hostnameOf(parsed.url) : null }
   }, [result, isError])
   if (!favicon) return null
-  const icon = (
-    <span aria-hidden className="flex items-center gap-1 shrink-0">
-      <SiteFavicon src={favicon} className="h-3.5 w-3.5" fallback="none" />
-    </span>
-  )
-  if (!host) return icon
-  // Radix rather than a native `title`: this window doesn't reliably surface native tooltips.
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>{icon}</TooltipTrigger>
-        <TooltipContent side="top" className="px-2 py-1">
-          {host}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <HostTooltip host={host}>
+      <SiteFavicon src={favicon} className="h-3.5 w-3.5" fallback="none" />
+    </HostTooltip>
   )
 }
 
