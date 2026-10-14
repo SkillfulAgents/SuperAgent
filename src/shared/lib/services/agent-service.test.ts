@@ -68,6 +68,7 @@ import {
   getAgentInstructionsContent,
   setAgentInstructionsContent,
   adoptAgentIdentityFromWorkspace,
+  syncAgentDescriptionFromWorkspace,
   writeAgentIdentityProjection,
 } from './agent-service'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
@@ -686,6 +687,29 @@ Instructions`
       await setAgentInstructionsContent(created.slug, 'No frontmatter\n')
       expect((await adoptAgentIdentityFromWorkspace(created.slug, { name: '' }))?.name).toBe('Override')
       expect(await adoptAgentIdentityFromWorkspace('nonexistent')).toBeNull()
+    })
+  })
+
+  describe('syncAgentDescriptionFromWorkspace', () => {
+    it('takes the description the agent wrote, keeps the name, and survives a later rename', async () => {
+      const created = await createAgent({ name: 'Inbox Helper' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Renamed By Agent\ndescription: Triages Gmail and drafts replies.\n---\nBody\n')
+
+      await syncAgentDescriptionFromWorkspace(created.slug)
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Helper', description: 'Triages Gmail and drafts replies.' })
+      await updateAgent(created.slug, { name: 'Mail Helper' })
+      expect(await getAgentInstructionsContent(created.slug)).toContain('description: Triages Gmail and drafts replies.')
+    })
+
+    it('leaves the row alone when the document has no description', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Inbox Helper\n---\nBody\n')
+
+      await syncAgentDescriptionFromWorkspace(created.slug)
+      await syncAgentDescriptionFromWorkspace('nonexistent')
+
+      expect((await getAgentRecord(created.slug))?.description).toBe('Triages Gmail.')
     })
   })
 

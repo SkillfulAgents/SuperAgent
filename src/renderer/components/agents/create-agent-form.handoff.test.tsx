@@ -103,7 +103,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 }))
 
 vi.mock('@renderer/lib/derive-agent-name', () => ({
-  deriveAgentName: vi.fn(async () => 'Test Agent'),
+  deriveAgentName: vi.fn(async () => ({ name: 'Test Agent' })),
 }))
 
 vi.mock('@renderer/hooks/use-typewriter-placeholder', () => ({
