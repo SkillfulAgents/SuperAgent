@@ -7,7 +7,7 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
-import { bestAllowedModel } from '@shared/lib/llm-provider/plan-model-policy'
+import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
 import { usePlanModelLock } from '@renderer/hooks/use-plan-model-lock'
 import { announcePlanFallback } from '@renderer/lib/plan-fallback-notice'
 import type { PlanLock } from './model-family-list'
@@ -360,7 +360,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // New chats only: an existing session runs on its own model (a trigger-created
   // one may carry none in its metadata), and a user pick is explicit; the 403
   // card covers both.
-  const planLock = usePlanModelLock(selectedConnection?.provider)
+  const planLock = usePlanModelLock(selectedConnection)
   const inheritedDefault = !sessionId && !currentSelection && !modelSeededRef.current
   const lockedDefault = planLock && inheritedDefault ? findCatalogModel(displayedModel, catalog) : undefined
   const planFallback = planLock && lockedDefault && planLock.isLocked(lockedDefault)

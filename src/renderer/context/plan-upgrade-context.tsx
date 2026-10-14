@@ -11,6 +11,8 @@ const PlanUpgradeDialog = lazy(() =>
 export interface PlanUpgradeRequest {
   /** The model that prompted the upgrade (a locked pick or a 403); none = "Change plan". */
   model?: string
+  /** Connection that supplied the restriction, for a fresh availability check. */
+  connectionId?: string
 }
 
 type OpenPlanUpgrade = (request?: PlanUpgradeRequest) => void

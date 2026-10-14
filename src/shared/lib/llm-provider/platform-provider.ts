@@ -2,6 +2,7 @@ import { fetchPlatformBillingInfo } from '../services/platform-billing-service'
 import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '../services/platform-billing-copy'
 import { usageSnapshot, type UsageLimit } from './usage-schema'
 import Anthropic from '@anthropic-ai/sdk'
+import { createHash } from 'node:crypto'
 import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
 import { orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
 import type { ProviderErrorPresentation } from './error-presentation'
@@ -9,6 +10,9 @@ import { rewriteLoopbackForContainer } from './container-url'
 import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
+import type { ModelAvailability } from './model-availability-schema'
+import { isDeniedByPlan } from './plan-model-policy'
+import { platformService } from '../services/platform-service'
 import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -86,6 +90,31 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
   getBuiltinCatalog(): ModelDefinition[] {
     return PLATFORM_CATALOG
+  }
+
+  override getModelAvailabilityRevision(): string | null {
+    const auth = getPlatformAuthStatus()
+    if (!auth.connected) return null
+    return createHash('sha256')
+      .update(JSON.stringify([getPlatformBaseUrl(), auth.orgId, auth.userId, auth.memberId, auth.updatedAt]))
+      .digest('hex')
+  }
+
+  override async getModelAvailability(catalog: ModelDefinition[]): Promise<ModelAvailability | null> {
+    if (!getPlatformAuthStatus().connected) return null
+    let billing
+    try {
+      billing = await platformService.refreshBilling()
+    } catch {
+      billing = platformService.getCachedBilling()
+    }
+    const denied = billing?.deniedModels ?? billing?.plan?.deniedModels ?? []
+    if (denied.length === 0) return null
+    return {
+      unavailableModelIds: catalog.filter(model => isDeniedByPlan(denied, model.id)).map(model => model.id),
+      restrictionName: billing?.plan?.name ?? null,
+      action: 'upgrade',
+    }
   }
 
   async getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>> {

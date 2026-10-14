@@ -23,9 +23,13 @@ vi.mock('@renderer/hooks/use-platform-plan', () => ({
   usePlatformPlan: () => ({
     plan: { id: 'pro-30', name: 'Pro 30', deniedModels: state.denied },
     excludedLabel: state.denied.length ? 'Claude Fable and GPT Astra' : null,
-    isDenied: (model: string) => isDeniedByPlan(state.denied, model),
-    updatedAt: state.updatedAt,
     refresh: state.refresh,
+  }),
+}))
+vi.mock('@renderer/hooks/use-provider-model-availability', () => ({
+  useProviderModelAvailability: () => ({
+    isUnavailable: (model: { id: string }) => isDeniedByPlan(state.denied, model.id),
+    updatedAt: state.updatedAt,
   }),
 }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: { role: state.role } }) }))
@@ -66,7 +70,7 @@ describe('PlatformModelNotInPlanCard', () => {
     const user = userEvent.setup()
     render(<PlatformModelNotInPlanCard message={ERROR} session={SESSION} />)
     await user.click(screen.getByTestId('model-not-in-plan-upgrade'))
-    expect(state.openUpgrade).toHaveBeenCalledWith({ model: 'claude-fable-5-1' })
+    expect(state.openUpgrade).toHaveBeenCalledWith({ model: 'claude-fable-5-1', connectionId: 'platform-conn' })
   })
 
   it('continues the chat on the best model the plan allows', async () => {

@@ -2,24 +2,23 @@ import { useMemo } from 'react'
 
 import type { PlanLock } from '@renderer/components/messages/model-family-list'
 import { usePlanUpgrade } from '@renderer/context/plan-upgrade-context'
-import { usePlatformPlan } from '@renderer/hooks/use-platform-plan'
+import { useProviderModelAvailability } from '@renderer/hooks/use-provider-model-availability'
+import type { ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 
 /**
- * The plan lock for a picker showing `provider`'s catalog. Only platform
- * connections are restricted by the workspace's plan; every other provider,
- * an unsubscribed workspace and a plan with an empty denylist get none.
+ * Adapt a provider's connection-scoped availability to the picker's lock UI.
  */
-export function usePlanModelLock(provider: string | undefined): PlanLock | undefined {
-  const isPlatform = provider === 'platform'
-  const { plan, deniedModels, isDenied } = usePlatformPlan(isPlatform)
+export function usePlanModelLock(connection: Pick<ConnectionInfo, 'id' | 'isConfigured' | 'modelAvailabilityRevision'> | undefined): PlanLock | undefined {
+  const { availability, isUnavailable } = useProviderModelAvailability(connection)
   const openUpgrade = usePlanUpgrade()
-  const planName = plan?.name
+  const unavailableModelIds = availability?.unavailableModelIds
+  const planName = availability?.restrictionName ?? undefined
   return useMemo(() => {
-    if (!isPlatform || deniedModels.length === 0) return undefined
+    if (!unavailableModelIds?.length) return undefined
     return {
-      isLocked: (model) => isDenied(model.id),
-      onLockedPick: (model) => openUpgrade({ model: model.id }),
+      isLocked: isUnavailable,
+      onLockedPick: (model) => openUpgrade({ model: model.id, connectionId: connection?.id }),
       planName,
     }
-  }, [isPlatform, deniedModels, isDenied, openUpgrade, planName])
+  }, [unavailableModelIds, isUnavailable, openUpgrade, planName, connection?.id])
 }

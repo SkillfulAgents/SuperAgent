@@ -8,12 +8,14 @@ import { Button } from '@renderer/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
 import type { PlanUpgradeRequest } from '@renderer/context/plan-upgrade-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { useLlmConnections } from '@renderer/hooks/use-llm-connections'
+import { useProviderModelAvailability } from '@renderer/hooks/use-provider-model-availability'
 import { pendingPlanChangeText, usePlatformPlan } from '@renderer/hooks/use-platform-plan'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
 import { orgBillingUrl } from '@shared/lib/llm-provider/platform-error-presentation'
-import { planModelLabel } from '@shared/lib/llm-provider/plan-model-policy'
+import { canonicalModelId, planModelLabel } from '@shared/lib/llm-provider/plan-model-policy'
 import { cn } from '@shared/lib/utils'
 
 /**
@@ -25,16 +27,22 @@ import { cn } from '@shared/lib/utils'
  */
 export function PlanUpgradeDialog({ request, onClose }: { request: PlanUpgradeRequest; onClose: () => void }) {
   const { data: platformAuth } = usePlatformAuthStatus()
-  const { plan, excludedLabel, pendingPlanChange, isDenied, updatedAt, refresh } = usePlatformPlan()
+  const { plan, excludedLabel, pendingPlanChange, refresh } = usePlatformPlan()
+  const { data: connections } = useLlmConnections()
+  const connection = connections?.connections.find(c => c.id === request.connectionId)
+  const { isUnavailable, updatedAt } = useProviderModelAvailability(connection)
   const [openedAt] = useState(() => Date.now())
   const [handedOff, setHandedOff] = useState(false)
   const inApp = !isElectron() && platformAuth?.platformControlled === true
   const role = platformAuth?.role
   const canManage = role == null || isPlatformOrgAdmin(role)
   const billingHref = orgBillingUrl(platformAuth?.platformBaseUrl, platformAuth?.orgId)
-  const modelLabel = request.model ? planModelLabel(request.model, PLATFORM_CATALOG) : null
+  const selectedModel = request.model
+    ? connection?.catalog.find(m => canonicalModelId(m.id) === canonicalModelId(request.model!))
+    : undefined
+  const modelLabel = request.model ? selectedModel?.label ?? planModelLabel(request.model, PLATFORM_CATALOG) : null
   // Only a snapshot fetched after opening may say the model is now allowed.
-  const unlocked = !!request.model && updatedAt > openedAt && !isDenied(request.model)
+  const unlocked = !!selectedModel && updatedAt > openedAt && !isUnavailable(selectedModel)
 
   // Re-read the plan on open (another window may have changed it) and whenever
   // the user comes back from the billing page in the browser.

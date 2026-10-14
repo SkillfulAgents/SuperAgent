@@ -4,6 +4,7 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { isDeniedByPlan } from '@shared/lib/llm-provider/plan-model-policy'
+import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
 
 const state = vi.hoisted(() => ({
   electron: false,
@@ -18,6 +19,13 @@ const state = vi.hoisted(() => ({
 vi.mock('@renderer/lib/env', () => ({ isElectron: () => state.electron }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl: state.openExternal }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: state.auth }) }))
+vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: {
+  connections: [{ id: 'platform-conn', provider: 'platform', isConfigured: true, catalog: PLATFORM_CATALOG }],
+} }) }))
+vi.mock('@renderer/hooks/use-provider-model-availability', () => ({ useProviderModelAvailability: () => ({
+  isUnavailable: (model: { id: string }) => isDeniedByPlan(state.denied, model.id),
+  updatedAt: state.updatedAt,
+}) }))
 vi.mock('@renderer/hooks/use-platform-plan', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@renderer/hooks/use-platform-plan')>()),
   usePlatformPlan: () => ({
@@ -25,8 +33,6 @@ vi.mock('@renderer/hooks/use-platform-plan', async (importOriginal) => ({
     pendingPlanChange: state.pending,
     deniedModels: state.denied,
     excludedLabel: state.denied.length ? 'Claude Fable and GPT Astra' : null,
-    isDenied: (model: string) => isDeniedByPlan(state.denied, model),
-    updatedAt: state.updatedAt,
     refresh: state.refresh,
   }),
 }))
@@ -45,7 +51,7 @@ beforeEach(() => {
 
 describe('PlanUpgradeDialog', () => {
   it('frames the full billing page on a cloud workspace, for the model that prompted it', () => {
-    render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1' }} onClose={vi.fn()} />)
+    render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1', connectionId: 'platform-conn' }} onClose={vi.fn()} />)
     expect(screen.getByText('Upgrade to use Fable 5.1')).toBeInTheDocument()
     expect(screen.getByText("Fable 5.1 isn't included in your Pro 30 plan. Upgrade the plan to use it.")).toBeInTheDocument()
     const src = new URL(screen.getByTestId('billing-embed-frame').getAttribute('src')!)
@@ -58,7 +64,7 @@ describe('PlanUpgradeDialog', () => {
   it('hands off to the browser on Electron and re-reads the plan when the window regains focus', async () => {
     state.electron = true
     const user = userEvent.setup()
-    render(<PlanUpgradeDialog request={{ model: 'gpt-6-astra' }} onClose={vi.fn()} />)
+    render(<PlanUpgradeDialog request={{ model: 'gpt-6-astra', connectionId: 'platform-conn' }} onClose={vi.fn()} />)
     expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /Open billing/ }))
     expect(state.openExternal).toHaveBeenCalledWith('https://platform.example.com/dashboard/organizations/org_1?tab=billing')
@@ -70,7 +76,7 @@ describe('PlanUpgradeDialog', () => {
 
   it('tells members to ask an admin instead of offering billing they cannot use', () => {
     state.auth = { ...state.auth, role: 'member' }
-    render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1' }} onClose={vi.fn()} />)
+    render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1', connectionId: 'platform-conn' }} onClose={vi.fn()} />)
     expect(screen.getByText(/Ask a workspace owner or admin to upgrade the plan/)).toBeInTheDocument()
     expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Open billing/ })).not.toBeInTheDocument()
@@ -79,10 +85,10 @@ describe('PlanUpgradeDialog', () => {
   it('says billing includes the model while access catches up, and re-reads on close', async () => {
     const onClose = vi.fn()
     const user = userEvent.setup()
-    const { rerender } = render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1' }} onClose={onClose} />)
+    const { rerender } = render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1', connectionId: 'platform-conn' }} onClose={onClose} />)
     state.denied = []
     state.updatedAt = Date.now() + 1000
-    rerender(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1' }} onClose={onClose} />)
+    rerender(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1', connectionId: 'platform-conn' }} onClose={onClose} />)
     expect(screen.getByText('Your plan now includes Fable 5.1')).toBeInTheDocument()
     expect(screen.getByText(/Model access may take a moment to update/)).toBeInTheDocument()
     state.refresh.mockClear()

@@ -71,7 +71,7 @@ describe('usePlatformPlan billing identity', () => {
   ])('does not show a cached plan for %s', async (_case, change) => {
     state.fetchBilling.mockResolvedValueOnce(response(RESTRICTED_BILLING))
     const view = renderPlan()
-    await waitFor(() => expect(view.result.current.isDenied('claude-fable-5-1')).toBe(true))
+    await waitFor(() => expect(view.result.current.deniedModels).toEqual(['claude-fable-']))
 
     let resolveNext: ((value: Response) => void) | undefined
     state.fetchBilling.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveNext = resolve }))
@@ -79,7 +79,7 @@ describe('usePlatformPlan billing identity', () => {
     view.rerender()
 
     expect(view.result.current.plan).toBeNull()
-    expect(view.result.current.isDenied('claude-fable-5-1')).toBe(false)
+    expect(view.result.current.deniedModels).toEqual([])
     resolveNext?.(response(OLD_BILLING))
     await waitFor(() => expect(view.result.current.updatedAt).toBeGreaterThan(0))
     expect(state.fetchBilling).toHaveBeenCalledTimes(2)
@@ -91,16 +91,15 @@ describe('usePlatformPlan billing identity', () => {
     await waitFor(() => expect(view.result.current.updatedAt).toBeGreaterThan(0))
     expect(view.result.current.plan).toBeNull()
     expect(view.result.current.deniedModels).toEqual([])
-    expect(view.result.current.isDenied('claude-fable-5-1')).toBe(false)
   })
 
   it('drops a cached plan when the platform disconnects', async () => {
     state.fetchBilling.mockResolvedValue(response(RESTRICTED_BILLING))
     const view = renderPlan()
-    await waitFor(() => expect(view.result.current.isDenied('claude-fable-5-1')).toBe(true))
+    await waitFor(() => expect(view.result.current.deniedModels).toEqual(['claude-fable-']))
     state.auth = { ...state.auth, connected: false }
     view.rerender()
     expect(view.result.current.plan).toBeNull()
-    expect(view.result.current.isDenied('claude-fable-5-1')).toBe(false)
+    expect(view.result.current.deniedModels).toEqual([])
   })
 })

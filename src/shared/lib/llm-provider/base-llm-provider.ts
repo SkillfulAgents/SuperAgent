@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ConnectionConfig } from './connection-schema'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { ModelAvailability } from './model-availability-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
@@ -137,6 +138,16 @@ export abstract class BaseLlmProvider {
    * See ./model-catalog.ts for how a stored selection resolves against this.
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
+
+  /** Current restrictions for a connection's catalog. Null means unrestricted. */
+  async getModelAvailability(_catalog: ModelDefinition[]): Promise<ModelAvailability | null> {
+    return null
+  }
+
+  /** Public cache identity for availability; changes when provider account context changes. */
+  getModelAvailabilityRevision(): string | null {
+    return null
+  }
 
   /**
    * Get the default model for a given purpose, as a bare family alias

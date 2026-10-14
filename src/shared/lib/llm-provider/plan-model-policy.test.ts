@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import { PLATFORM_CATALOG } from './builtin-catalogs'
 import {
-  bestAllowedModel,
   canonicalModelId,
   excludedModelsLabel,
   isDeniedByPlan,
@@ -11,6 +10,7 @@ import {
   planDeniedPrefix,
   planModelLabel,
 } from './plan-model-policy'
+import { bestAllowedModel } from './model-availability'
 
 // Pro 30's list as the proxy test has it; the app must never hard-code it.
 const PRO30 = ['claude-fable-', 'gpt-6-astra']

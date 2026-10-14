@@ -45,28 +45,6 @@ export function isDeniedByPlan(deniedModels: readonly string[], model: string): 
   return planDeniedPrefix(deniedModels, model) !== null
 }
 
-/**
- * The model to use instead of a denied one: the denied model's own vendor
- * default when allowed (Fable → Opus), then the catalog's defaults, then its
- * newest entries, then anything allowed. Undefined when the plan allows nothing
- * in this catalog. `isDenied` is the plan's verdict on a catalog entry.
- */
-export function bestAllowedModel(
-  catalog: readonly ModelDefinition[],
-  isDenied: (model: ModelDefinition) => boolean,
-  near?: Pick<ModelDefinition, 'icon'>,
-): ModelDefinition | undefined {
-  const allowed = catalog.filter((m) => !isDenied(m))
-  const sameVendor = near?.icon ? allowed.filter((m) => m.icon === near.icon) : []
-  return (
-    sameVendor.find((m) => m.isDefault) ??
-    sameVendor.find((m) => m.isLatest) ??
-    allowed.find((m) => m.isDefault) ??
-    allowed.find((m) => m.isLatest) ??
-    allowed[0]
-  )
-}
-
 // Brand words a family name leaves out ("Fable" is Claude's; "GPT Astra" already says it).
 const FAMILY_BRAND: Record<string, string> = { anthropic: 'Claude' }
 

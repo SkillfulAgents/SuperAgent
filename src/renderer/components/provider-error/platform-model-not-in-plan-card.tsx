@@ -9,10 +9,13 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSendMessage } from '@renderer/hooks/use-messages'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { usePlatformPlan } from '@renderer/hooks/use-platform-plan'
+import { useProviderModelAvailability } from '@renderer/hooks/use-provider-model-availability'
 import { useSession } from '@renderer/hooks/use-sessions'
 import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
-import { bestAllowedModel, canonicalModelId, parseModelNotInPlan, planModelLabel } from '@shared/lib/llm-provider/plan-model-policy'
+import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
+import { canonicalModelId, parseModelNotInPlan, planModelLabel } from '@shared/lib/llm-provider/plan-model-policy'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import type { ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 import { cn } from '@shared/lib/utils'
 
 import { isPlatformOrgAdmin } from './platform-paywall-cta'
@@ -30,7 +33,13 @@ type Session = NonNullable<ProviderErrorComponentProps['session']>
 export function PlatformModelNotInPlanCard({ message, live = true, dismissible = false, session }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const model = useMemo(() => parseModelNotInPlan(message)?.model ?? null, [message])
-  const { plan, excludedLabel, isDenied, updatedAt, refresh } = usePlatformPlan()
+  const { plan, excludedLabel, refresh } = usePlatformPlan()
+  const { data: sessionData } = useSession(session?.sessionId ?? null, session?.agentSlug ?? null)
+  const { data: connectionData } = useLlmConnections(session?.agentSlug, session?.sessionId, sessionData?.llmProviderId)
+  const connections = connectionData?.connections ?? []
+  const connection = connections.find(c => c.id === sessionData?.llmProviderId && c.provider === 'platform')
+    ?? connections.find(c => c.provider === 'platform' && c.isConfigured)
+  const { isUnavailable, updatedAt } = useProviderModelAvailability(connection)
   const { data: platformAuth } = usePlatformAuthStatus()
   const openUpgrade = usePlanUpgrade()
   const [seenAt] = useState(() => Date.now())
@@ -45,7 +54,8 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
 
   // Billing may reflect an upgrade before the proxy's cached model policy does.
   // Keep both a retry and a previously allowed alternative after a fresh snapshot.
-  const allowedNow = !!model && updatedAt > seenAt && !isDenied(model)
+  const refused = model && connection?.catalog.find(m => canonicalModelId(m.id) === canonicalModelId(model))
+  const allowedNow = !!refused && updatedAt > seenAt && !isUnavailable(refused)
 
   if (dismissed) return null
   return (
@@ -75,14 +85,15 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
           {session && (
             <ContinueButton
               session={session}
+              connection={connection}
               deniedModel={model}
               sameModel={allowedNow}
-              isDenied={isDenied}
+              isUnavailable={isUnavailable}
               onContinued={() => setDismissed(true)}
             />
           )}
           {!allowedNow && canManage && (
-            <Button size="sm" onClick={() => openUpgrade(model ? { model } : {})} data-testid="model-not-in-plan-upgrade">
+            <Button size="sm" onClick={() => openUpgrade(model ? { model, connectionId: connection?.id } : {})} data-testid="model-not-in-plan-upgrade">
               Upgrade plan
             </Button>
           )}
@@ -97,30 +108,26 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
  * recent proxy refusal still matters: let the user retry that model or use a
  * different family while the proxy's policy cache catches up.
  */
-function ContinueButton({ session, deniedModel, sameModel, isDenied, onContinued }: {
+function ContinueButton({ session, connection, deniedModel, sameModel, isUnavailable, onContinued }: {
   session: Session
+  connection: ConnectionInfo | undefined
   deniedModel: string | null
   sameModel: boolean
-  isDenied: (model: string) => boolean
+  isUnavailable: (model: ModelDefinition) => boolean
   onContinued: () => void
 }) {
   const { canUseAgent } = useUser()
-  const { data: sessionData } = useSession(session.sessionId, session.agentSlug)
-  const { data: connectionData } = useLlmConnections(session.agentSlug, session.sessionId, sessionData?.llmProviderId)
   const { isActive } = useMessageStream(session.sessionId, session.agentSlug)
   const { mutateAsync: sendMessage, isPending } = useSendMessage({ quiet: true })
   const [error, setError] = useState('')
 
-  const connections = connectionData?.connections ?? []
-  const connection = connections.find((c) => c.id === sessionData?.llmProviderId && c.provider === 'platform')
-    ?? connections.find((c) => c.provider === 'platform' && c.isConfigured)
   const denied: ModelDefinition | undefined = deniedModel && connection
     ? connection.catalog.find((m) => canonicalModelId(m.id) === canonicalModelId(deniedModel))
     : undefined
   const retryModel = sameModel ? denied : undefined
   const fallback = connection && bestAllowedModel(
     connection.catalog,
-    (m) => isDenied(m.id) ||
+    (m) => isUnavailable(m) ||
       (!!denied?.family && m.family === denied.family) ||
       (deniedModel !== null && canonicalModelId(m.id) === canonicalModelId(deniedModel)),
     denied,

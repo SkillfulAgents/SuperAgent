@@ -1,10 +1,11 @@
 import { useCallback, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { familyDisplayName } from '@renderer/components/messages/model-family-list'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
-import { excludedModelsLabel, isDeniedByPlan } from '@shared/lib/llm-provider/plan-model-policy'
+import { excludedModelsLabel } from '@shared/lib/llm-provider/plan-model-policy'
 import type { ParsedPlatformBillingInfo, ParsedPlatformPlan } from '@shared/lib/types/skillset-schema'
 
 export interface PlatformPlan {
@@ -15,7 +16,6 @@ export interface PlatformPlan {
   deniedModels: string[]
   /** "Claude Fable and GPT Astra", or null when the plan excludes nothing. */
   excludedLabel: string | null
-  isDenied: (model: string) => boolean
   /** When the billing snapshot was last fetched (0 before the first). */
   updatedAt: number
   /** Refetch the billing snapshot (plan changes made in the billing page). */
@@ -31,6 +31,7 @@ const NO_DENIED: string[] = []
  * for a platform connection.
  */
 export function usePlatformPlan(enabled = true): PlatformPlan {
+  const queryClient = useQueryClient()
   const { data: platformAuth } = usePlatformAuthStatus()
   const active = enabled && platformAuth?.connected === true
   const billingQuery = useBillingInfo(active)
@@ -41,15 +42,17 @@ export function usePlatformPlan(enabled = true): PlatformPlan {
   // `refetch` runs even for a disabled query, so only a connected workspace asks.
   const { refetch } = billingQuery
   const refresh = useCallback(async () => {
-    if (active) await refetch()
-  }, [active, refetch])
+    if (active) {
+      await refetch()
+      await queryClient.invalidateQueries({ queryKey: ['provider-model-availability'] })
+    }
+  }, [active, refetch, queryClient])
   return useMemo(
     () => ({
       plan,
       pendingPlanChange,
       deniedModels,
       excludedLabel: excludedModelsLabel(deniedModels, PLATFORM_CATALOG, familyDisplayName),
-      isDenied: (model: string) => isDeniedByPlan(deniedModels, model),
       updatedAt: billingQuery.dataUpdatedAt,
       refresh,
     }),

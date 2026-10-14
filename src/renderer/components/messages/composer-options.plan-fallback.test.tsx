@@ -19,10 +19,10 @@ vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () =>
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => ({ data: { llmProvider: 'platform', models: {}, llmProviderStatus: [] } }),
 }))
-// Only platform connections are restricted, as in the real hook.
+// Restriction data is scoped to the selected connection.
 vi.mock('@renderer/hooks/use-plan-model-lock', () => ({
-  usePlanModelLock: (provider: string | undefined) =>
-    provider === 'platform' && state.denied.length
+  usePlanModelLock: (connection: { id: string } | undefined) =>
+    connection?.id === 'platform-conn' && state.denied.length
       ? { isLocked: (m: ModelDefinition) => state.denied.some((p) => m.id.startsWith(p)), onLockedPick: state.onLockedPick, planName: 'Pro 30' }
       : undefined,
 }))

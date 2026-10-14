@@ -631,7 +631,7 @@ export function ConnectionEditor({
                 <div className="text-[11px] text-muted-foreground mt-0.5">{description}</div>
               </div>
               <ProviderModelPickerPopover
-                provider={provider}
+                connection={existing}
                 catalog={catalog}
                 model={model}
                 onPick={onPick}

@@ -40,7 +40,7 @@ interface ModelPickerPopoverProps {
   connection?: ConnectionInfo
   /** Adds a top row that stores '' — for hosts where "no model" means inherit. */
   emptyLabel?: string
-  /** Models the workspace's plan excludes (platform catalogs only). */
+  /** Model restrictions supplied by the selected connection's provider. */
   planLock?: PlanLock
   /** Show the effort picker alongside the model. Off by default for model-only knobs. */
   includeEffort?: boolean
@@ -112,8 +112,10 @@ function SettingsModelSelectImpl({
     () => onSelectionChange && selectedConnection ? selectedConnection.catalog : directApiOnly && connections?.connections.length ? [] : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
     [settings, activeProvider, selectedConnection, onSelectionChange, directApiOnly, connections?.connections.length],
   )
-  // Whose catalog is listed decides whether the workspace's plan applies.
-  const planLock = usePlanModelLock(onSelectionChange && selectedConnection ? selectedConnection.provider : activeProvider)
+  const availabilityConnection = onSelectionChange
+    ? selectedConnection
+    : choices.find(c => c.id === llmProviderId) ?? choices.find(c => c.provider === activeProvider)
+  const planLock = usePlanModelLock(availabilityConnection)
 
   return (
     <ModelPickerPopover
@@ -318,8 +320,8 @@ function AppDefaultFooter({ isOverride, onUseAppDefault, label = 'Reset to Globa
 
 export const SettingsModelSelect = memo(SettingsModelSelectImpl)
 
-/** {@link ModelPickerPopover} over one provider's catalog, locking what the workspace's plan excludes. */
-export function ProviderModelPickerPopover({ provider, ...props }: Omit<ModelPickerPopoverProps, 'planLock'> & { provider: string }) {
-  const planLock = usePlanModelLock(provider)
+/** {@link ModelPickerPopover} over one connection's catalog and availability. */
+export function ProviderModelPickerPopover({ connection, ...props }: Omit<ModelPickerPopoverProps, 'planLock'> & { connection?: ConnectionInfo }) {
+  const planLock = usePlanModelLock(connection)
   return <ModelPickerPopover {...props} planLock={planLock} />
 }

@@ -8,6 +8,11 @@ const requiresActingMember = vi.fn(() => false)
 const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
 const platformAccessToken = vi.fn((): string | null => 'platform-token')
+const refreshBilling = vi.fn()
+const getCachedBilling = vi.fn()
+vi.mock('../services/platform-service', () => ({
+  platformService: { refreshBilling: (...args: unknown[]) => refreshBilling(...args), getCachedBilling: () => getCachedBilling() },
+}))
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: {
     current: () => currentAttribution(),
@@ -43,6 +48,42 @@ beforeEach(() => {
   captureMessage.mockReset()
   platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
+  refreshBilling.mockReset()
+  getCachedBilling.mockReset().mockReturnValue(null)
+})
+
+describe('getModelAvailability', () => {
+  const catalog = provider.getBuiltinCatalog()
+  const fable = catalog.find(model => model.id === 'claude-fable-5-1')!
+
+  it('scopes the public cache revision without exposing the account identity', () => {
+    expect(provider.getModelAvailabilityRevision()).toMatch(/^[a-f0-9]{64}$/)
+    expect(provider.getModelAvailabilityRevision()).not.toContain('org_123')
+    platformAuthStatus.mockReturnValue({ connected: false })
+    expect(provider.getModelAvailabilityRevision()).toBeNull()
+  })
+
+  it('maps platform plan prefixes to concrete connection models', async () => {
+    refreshBilling.mockResolvedValue({ plan: { name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+    expect(await provider.getModelAvailability(catalog)).toMatchObject({
+      unavailableModelIds: expect.arrayContaining([fable.id]),
+      restrictionName: 'Pro 30',
+      action: 'upgrade',
+    })
+  })
+
+  it('leaves older billing responses without plan restrictions unrestricted', async () => {
+    refreshBilling.mockResolvedValue({ subscription: {}, seat: null })
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+  })
+
+  it('drops restrictions on disconnect and uses a cached snapshot on a transient failure', async () => {
+    refreshBilling.mockRejectedValue(new Error('offline'))
+    getCachedBilling.mockReturnValue({ plan: { name: 'Pro 30', deniedModels: ['claude-fable-'] } })
+    expect((await provider.getModelAvailability(catalog))?.unavailableModelIds).toContain(fable.id)
+    platformAuthStatus.mockReturnValue({ connected: false })
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+  })
 })
 
 describe('getContainerEnvVars auth token (cold start)', () => {
