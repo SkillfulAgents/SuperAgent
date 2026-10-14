@@ -5,6 +5,10 @@
 // same slot, so it lines up with the rows that will replace it.
 export const AGENT_AVATAR_SIZE = 27
 
+// The avatar's left edge in its row. The footer starts the user's avatar here
+// too, so the two line up down the sidebar.
+export const AGENT_AVATAR_LEFT = 4 + (32 - AGENT_AVATAR_SIZE) / 2
+
 // Avatars follow the cursor while it's over the sidebar, and go back to their
 // own motion (an orb's wander, its look at the viewer) when it leaves.
 export const SIDEBAR_FOLLOW_REGION = '[data-sidebar="sidebar"]'

@@ -82,11 +82,15 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
       {/* A session that is a Todo board item: back to the board. */}
       {sessionId && <TodoSessionBack agentSlug={slug} sessionId={sessionId} />}
       <div className="min-w-0 flex-1" data-testid="breadcrumb-drag-area">
+        {/* One 20px line (text-sm), the height of every crumb in it, so the
+            header's flex centring centres the crumbs. The icon crumbs are
+            20px boxes pinned to its top: `align-middle` would set them on the
+            baseline + half an x-height, which sits below the line's centre. */}
         <HoverScrollText
-          className="w-fit max-w-full app-no-drag"
+          className="w-fit max-w-full text-sm app-no-drag"
           data-testid="breadcrumb-trail"
         >
-        <ScrollAwareNavTitle className="items-center gap-2 align-middle">
+        <ScrollAwareNavTitle className="items-center gap-2 align-top">
           {/* Travels with the name when the page heading scrolls away; the
               picker stays on the page heading, so this one is display-only. */}
           {agent && <AgentAvatar agent={agent} state={agentAvatarState(agent, sessions)} />}
@@ -127,7 +131,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
             <>
               <BreadcrumbSeparator />
               {isLeaf ? (
-                <span className="inline-flex items-center gap-1 align-middle text-muted-foreground app-no-drag">
+                <span className="inline-flex items-center gap-1 align-top text-muted-foreground app-no-drag">
                   <Clock className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light text-foreground">
                     {taskCrumbName || 'Scheduled Task'}
@@ -138,7 +142,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                   to="/agents/$slug/tasks/$taskId"
                   params={{ slug, taskId: taskCrumbId }}
                   noDrag
-                  className="inline-flex items-center gap-1 align-middle text-muted-foreground hover:text-foreground transition-colors"
+                  className="inline-flex items-center gap-1 align-top text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Clock className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light">
@@ -158,7 +162,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
             <>
               <BreadcrumbSeparator />
               {isLeaf ? (
-                <span className="inline-flex items-center gap-1 align-middle text-muted-foreground app-no-drag">
+                <span className="inline-flex items-center gap-1 align-top text-muted-foreground app-no-drag">
                   <Zap className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light text-foreground">
                     {webhookCrumbName || 'Webhook Trigger'}
@@ -169,7 +173,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                   to="/agents/$slug/webhooks/$webhookId"
                   params={{ slug, webhookId: webhookCrumbId }}
                   noDrag
-                  className="inline-flex items-center gap-1 align-middle text-muted-foreground hover:text-foreground transition-colors"
+                  className="inline-flex items-center gap-1 align-top text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Zap className="h-4 w-4 shrink-0" />
                   <span className="text-sm font-light">

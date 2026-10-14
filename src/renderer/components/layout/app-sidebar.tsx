@@ -112,7 +112,7 @@ import {
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
-import { AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
+import { AGENT_AVATAR_LEFT, AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
 import {
   AgentDragOverlayRow,
@@ -803,6 +803,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
       <SidebarMenuButton
         onClick={onOpenSettings}
         className="w-auto"
+        style={{ paddingLeft: AGENT_AVATAR_LEFT }}
         data-testid="settings-button"
       >
         <Settings className="h-4 w-4" />
@@ -813,8 +814,12 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <SidebarMenuButton className="w-auto min-w-0" data-testid="user-menu-trigger">
-          <UserAvatar user={user} size={20} className="-ml-0.5" />
+        <SidebarMenuButton
+          className="w-auto min-w-0"
+          style={{ paddingLeft: AGENT_AVATAR_LEFT }}
+          data-testid="user-menu-trigger"
+        >
+          <UserAvatar user={user} size={20} />
           <span className="truncate">{user.name || user.email}</span>
         </SidebarMenuButton>
       </PopoverTrigger>
@@ -1808,12 +1813,16 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
+      {/* Full width like the agent rows, so its ends can line up with
+          theirs: the user's avatar starts where the agent avatars do (in
+          UserMenu), and the version ends 12px in, where the rows' status
+          icons end (a 10px icon centred in a 16px slot 8px in). */}
+      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-between gap-2">
           <UserMenu onOpenSettings={() => openSettings()} />
           {isCloud && versionState.showPair && versionState.cloudVersion ? (
             <div
-              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              className="flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0"
               data-testid="sidebar-version"
             >
               <button
@@ -1861,7 +1870,7 @@ export function AppSidebar() {
             <button
               type="button"
               onClick={() => openSettings('general')}
-              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              className="inline-flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0 hover:text-foreground"
               title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
               data-testid="sidebar-version"
             >
