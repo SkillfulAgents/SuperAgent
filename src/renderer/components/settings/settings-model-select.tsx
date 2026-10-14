@@ -9,8 +9,8 @@ import { Separator } from '@renderer/components/ui/separator'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
-import { ModelFamilyList, findCatalogModel, familyDisplayName, notInPlanText, type PlanLock } from '@renderer/components/messages/model-family-list'
-import { usePlanModelLock } from '@renderer/hooks/use-plan-model-lock'
+import { ModelFamilyList, findCatalogModel, familyDisplayName, type ModelLock } from '@renderer/components/messages/model-family-list'
+import { useModelLock } from '@renderer/hooks/use-model-lock'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { ModelTooltip } from '@renderer/components/messages/model-tooltip'
@@ -18,7 +18,7 @@ import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/co
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'connection' | 'emptyLabel' | 'planLock'> {
+interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'connection' | 'emptyLabel' | 'modelLock'> {
   agentSlug?: string
   llmProviderId?: string | null
   globalOnly?: boolean
@@ -41,7 +41,7 @@ interface ModelPickerPopoverProps {
   /** Adds a top row that stores '' — for hosts where "no model" means inherit. */
   emptyLabel?: string
   /** Model restrictions supplied by the selected connection's provider. */
-  planLock?: PlanLock
+  modelLock?: ModelLock
   /** Show the effort picker alongside the model. Off by default for model-only knobs. */
   includeEffort?: boolean
   effort?: EffortLevel
@@ -115,7 +115,7 @@ function SettingsModelSelectImpl({
   const availabilityConnection = onSelectionChange
     ? selectedConnection
     : choices.find(c => c.id === llmProviderId) ?? choices.find(c => c.provider === activeProvider)
-  const planLock = usePlanModelLock(availabilityConnection)
+  const modelLock = useModelLock(availabilityConnection)
 
   return (
     <ModelPickerPopover
@@ -124,7 +124,7 @@ function SettingsModelSelectImpl({
       model={selectedModel}
       onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
       webProvider={settings?.webProvider}
-      planLock={planLock}
+      modelLock={modelLock}
       connection={onSelectionChange ? selectedConnection : undefined}
       header={onSelectionChange && <ProviderSelect connections={providers} value={selectedConnection?.id} directApiOnly={directApiOnly} disabled={pickerProps.disabled} onChange={id => {
         const next = choices.find(c => c.id === id)
@@ -152,13 +152,14 @@ export function ModelPickerPopover({
   disabled,
   align = 'end',
   appDefault,
-  planLock,
+  modelLock,
 }: ModelPickerPopoverProps) {
   // Resolve the current selection for the trigger label.
   const resolved = findCatalogModel(model, catalog)
-  // A saved selection the plan now excludes (after a downgrade) runs nowhere:
-  // the trigger says so without being opened.
-  const lockedSelection = !!resolved && !!planLock?.isLocked(resolved)
+  // A saved selection the connection can no longer run (e.g. after a plan
+  // downgrade) runs nowhere: the trigger says so without being opened.
+  const lockedReason = resolved && modelLock?.isLocked(resolved) ? modelLock.reason(resolved) : undefined
+  const lockedSelection = lockedReason !== undefined
   const isLatestSelected = !!resolved?.isLatest && model !== resolved.id
   const selectedFamily = resolved?.family
 
@@ -182,7 +183,7 @@ export function ModelPickerPopover({
     // effort get set in one visit and the popover closes on outside click /
     // Escape / trigger toggle — so Radix owns the open state.
     <Popover>
-      <ModelTooltip line={resolved && triggerLabel ? `${triggerLabel}${isLatestSelected ? ` (${resolved.label})` : ''}${detail}${lockedSelection ? ` · ${notInPlanText(resolved.label, planLock?.planName)}` : ''}` : undefined} connection={connection}>
+      <ModelTooltip line={resolved && triggerLabel ? `${triggerLabel}${isLatestSelected ? ` (${resolved.label})` : ''}${detail}${lockedReason ? ` · ${lockedReason}` : ''}` : undefined} connection={connection}>
         <PopoverTrigger asChild>
           <Button
             type="button"
@@ -190,7 +191,7 @@ export function ModelPickerPopover({
             size="sm"
             disabled={disabled}
             className="h-[34px] gap-1.5 px-2 text-xs font-medium"
-            aria-label={`Model: ${triggerLabel ?? 'select'}${lockedSelection ? ', not in your plan' : ''}. Click to change.`}
+            aria-label={`Model: ${triggerLabel ?? 'select'}.${lockedReason ? ` ${lockedReason}` : ''} Click to change.`}
             data-testid="settings-model-trigger"
             data-locked={lockedSelection || undefined}
           >
@@ -239,7 +240,7 @@ export function ModelPickerPopover({
             onPick={onPick}
             offerLatest
             webProvider={webProvider}
-            planLock={planLock}
+            modelLock={modelLock}
           />
         </div>
         {includeEffort && (
@@ -321,7 +322,7 @@ function AppDefaultFooter({ isOverride, onUseAppDefault, label = 'Reset to Globa
 export const SettingsModelSelect = memo(SettingsModelSelectImpl)
 
 /** {@link ModelPickerPopover} over one connection's catalog and availability. */
-export function ProviderModelPickerPopover({ connection, ...props }: Omit<ModelPickerPopoverProps, 'planLock'> & { connection?: ConnectionInfo }) {
-  const planLock = usePlanModelLock(connection)
-  return <ModelPickerPopover {...props} planLock={planLock} />
+export function ProviderModelPickerPopover({ connection, ...props }: Omit<ModelPickerPopoverProps, 'modelLock'> & { connection?: ConnectionInfo }) {
+  const modelLock = useModelLock(connection)
+  return <ModelPickerPopover {...props} modelLock={modelLock} />
 }

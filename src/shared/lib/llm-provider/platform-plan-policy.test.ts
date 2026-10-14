@@ -3,19 +3,24 @@ import { describe, expect, it } from 'vitest'
 import { PLATFORM_CATALOG } from './builtin-catalogs'
 import {
   canonicalModelId,
+  effectiveDeniedModels,
   excludedModelsLabel,
   isDeniedByPlan,
   normalizeDeniedModels,
   parseModelNotInPlan,
   planDeniedPrefix,
   planModelLabel,
-} from './plan-model-policy'
+  platformModelAvailability,
+  PLATFORM_PLAN_UPGRADE_ACTION,
+  resolvePlanModel,
+} from './platform-plan-policy'
 import { bestAllowedModel } from './model-availability'
+import { PlatformBillingInfoSchema } from '@shared/lib/types/skillset-schema'
 
 // Pro 30's list as the proxy test has it; the app must never hard-code it.
 const PRO30 = ['claude-fable-', 'gpt-6-astra']
-const familyName = (family: string) =>
-  ({ fable: 'Fable', 'gpt-astra': 'GPT Astra', opus: 'Opus' } as Record<string, string>)[family] ?? family
+const BASE_BILLING = { configured: true, subscription: { status: 'active', paymentStatus: 'current' }, seat: null, orgPool: { poolBalanceCents: 0 } }
+const billing = (extra: Record<string, unknown>) => PlatformBillingInfoSchema.parse({ ...BASE_BILLING, ...extra })
 
 describe('planDeniedPrefix — the proxy\'s rule, mirrored', () => {
   it.each([
@@ -79,23 +84,65 @@ describe('bestAllowedModel', () => {
 
 describe('excludedModelsLabel', () => {
   it('names each denylist entry by the one family it covers', () => {
-    expect(excludedModelsLabel(PRO30, PLATFORM_CATALOG, familyName)).toBe('Claude Fable and GPT Astra')
+    expect(excludedModelsLabel(PRO30, PLATFORM_CATALOG)).toBe('Claude Fable and GPT Astra')
   })
   it('is null for an unrestricted plan', () => {
-    expect(excludedModelsLabel([], PLATFORM_CATALOG, familyName)).toBeNull()
+    expect(excludedModelsLabel([], PLATFORM_CATALOG)).toBeNull()
   })
   it('reads a prefix spanning several families, or none, from the prefix itself', () => {
-    expect(excludedModelsLabel(['gpt-6'], PLATFORM_CATALOG, familyName)).toBe('GPT 6')
-    expect(excludedModelsLabel(['claude-fable-', 'nova-', 'gpt-6-astra'], PLATFORM_CATALOG, familyName))
+    expect(excludedModelsLabel(['gpt-6'], PLATFORM_CATALOG)).toBe('GPT 6')
+    expect(excludedModelsLabel(['claude-fable-', 'nova-', 'gpt-6-astra'], PLATFORM_CATALOG))
       .toBe('Claude Fable, Nova and GPT Astra')
   })
 })
 
-describe('planModelLabel', () => {
+describe('planModelLabel / resolvePlanModel', () => {
   it('shows the catalog label for raw and vendor-prefixed ids', () => {
     expect(planModelLabel('claude-fable-5-1', PLATFORM_CATALOG)).toBe('Fable 5.1')
     expect(planModelLabel('bedrock.anthropic.claude-fable-5-1', PLATFORM_CATALOG)).toBe('Fable 5.1')
     expect(planModelLabel('mystery-model', PLATFORM_CATALOG)).toBe('mystery-model')
+  })
+
+  it('resolves the proxy\'s raw id to the catalog id the pickers use', () => {
+    expect(resolvePlanModel('bedrock.anthropic.claude-fable-5-1-20260601', PLATFORM_CATALOG)).toEqual({ id: 'claude-fable-5-1', label: 'Fable 5.1' })
+    expect(resolvePlanModel('mystery-model', PLATFORM_CATALOG)).toEqual({ id: 'mystery-model', label: 'mystery-model' })
+  })
+})
+
+describe('effectiveDeniedModels', () => {
+  it('prefers the workspace list, which covers a workspace with no plan', () => {
+    expect(effectiveDeniedModels(billing({ plan: null, deniedModels: PRO30 }))).toEqual(PRO30)
+    expect(effectiveDeniedModels(billing({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: PRO30 }))).toEqual(PRO30)
+  })
+
+  it('falls back to the plan\'s list, and to nothing from a proxy that predates both', () => {
+    expect(effectiveDeniedModels(billing({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: PRO30 } }))).toEqual(PRO30)
+    expect(effectiveDeniedModels(billing({}))).toEqual([])
+    expect(effectiveDeniedModels(null)).toEqual([])
+  })
+})
+
+describe('platformModelAvailability', () => {
+  const URL = 'https://platform.example.com/dashboard/organizations/org_1?tab=billing'
+
+  it('words each excluded model, the plan, and the upgrade for the pickers', () => {
+    const availability = platformModelAvailability(billing({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: PRO30 }, deniedModels: PRO30 }), PLATFORM_CATALOG, URL)
+    expect(availability?.unavailable).toContainEqual({ modelId: 'claude-fable-5-1', reason: "Fable 5.1 isn't included in your Pro 30 plan." })
+    expect(availability?.unavailable.map((entry) => entry.modelId)).not.toContain('claude-opus-5-5')
+    expect(availability?.summary).toBe('Pro 30 excludes Claude Fable and GPT Astra.')
+    expect(availability?.action).toEqual({ component: PLATFORM_PLAN_UPGRADE_ACTION, label: 'Upgrade', href: URL })
+  })
+
+  it('words a workspace with no plan (the free tier\'s list)', () => {
+    const availability = platformModelAvailability(billing({ plan: null, deniedModels: PRO30 }), PLATFORM_CATALOG, null)
+    expect(availability?.unavailable).toContainEqual({ modelId: 'gpt-6-astra', reason: "GPT-6 Astra isn't included in your workspace's plan." })
+    expect(availability?.summary).toBe("Without a plan, your workspace can't use Claude Fable and GPT Astra.")
+    expect(availability?.action?.href).toBeNull()
+  })
+
+  it('is null when nothing in the catalog is excluded, or the proxy predates plans', () => {
+    expect(platformModelAvailability(billing({ deniedModels: ['nova-'] }), PLATFORM_CATALOG, URL)).toBeNull()
+    expect(platformModelAvailability(billing({}), PLATFORM_CATALOG, URL)).toBeNull()
   })
 })
 

@@ -4,7 +4,10 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const openPlanUpgradeMock = vi.hoisted(() => vi.fn())
-vi.mock('@renderer/context/plan-upgrade-context', () => ({ usePlanUpgrade: () => openPlanUpgradeMock }))
+vi.mock('@renderer/hooks/use-platform-plan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-platform-plan')>()),
+  usePlatformPlanUpgrade: () => openPlanUpgradeMock,
+}))
 
 const useUserMock = vi.fn()
 const platformConnectMock = vi.fn()
@@ -180,9 +183,11 @@ describe('PlatformTab plan (SUP-1143)', () => {
     isConnected: true,
     platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', role, platformBaseUrl: 'https://platform.example.com' },
   })
-  const snapshot = (extra: Record<string, unknown>) => ({
+  // `excludedModels` is the server's wording; the tab shows it and never reads the denylist.
+  const snapshot = (extra: Record<string, unknown>, excludedModels: string | null = null) => ({
     data: {
       connected: true,
+      excludedModels,
       billing: {
         configured: true,
         subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: '2026-10-27T16:00:00Z', creditScope: 'seat' },
@@ -208,7 +213,7 @@ describe('PlatformTab plan (SUP-1143)', () => {
   })
 
   it('names a Pro 30 workspace\'s plan and the models it excludes, beside the workspace too', async () => {
-    billingInfoMock.mockReturnValue(snapshot({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-', 'gpt-6-astra'] } }))
+    billingInfoMock.mockReturnValue(snapshot({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-', 'gpt-6-astra'] } }, 'Claude Fable and GPT Astra'))
     render(<PlatformTab />)
     expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 30')
     expect(screen.getByTestId('billing-plan-excludes')).toHaveTextContent('Excludes Claude Fable and GPT Astra')

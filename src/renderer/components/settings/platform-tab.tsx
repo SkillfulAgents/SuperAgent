@@ -15,12 +15,8 @@ import { StaleAgentsNotice } from './stale-agents-notice'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
-import { pendingPlanChangeText } from '@renderer/hooks/use-platform-plan'
-import { usePlanUpgrade } from '@renderer/context/plan-upgrade-context'
-import { familyDisplayName } from '@renderer/components/messages/model-family-list'
+import { pendingPlanChangeText, usePlatformPlanUpgrade } from '@renderer/hooks/use-platform-plan'
 import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
-import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
-import { excludedModelsLabel } from '@shared/lib/llm-provider/plan-model-policy'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -90,8 +86,8 @@ function planLabel(b: ParsedPlatformBillingInfo, plan: NonNullable<ParsedPlatfor
 }
 
 // What the plan leaves out and what is about to change, under the plan's name.
-function PlanDetails({ billing }: { billing: ParsedPlatformBillingInfo }) {
-  const excluded = billing.plan ? excludedModelsLabel(billing.plan.deniedModels, PLATFORM_CATALOG, familyDisplayName) : null
+// `excluded` is worded by the server, which owns reading the plan's denylist.
+function PlanDetails({ billing, excluded }: { billing: ParsedPlatformBillingInfo; excluded: string | null }) {
   const pending = billing.pendingPlanChange ? pendingPlanChangeText(billing.pendingPlanChange) : null
   if (!excluded && !pending) return null
   return (
@@ -114,7 +110,7 @@ function PlatformBillingCard({
 }) {
   const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
   const billing = data?.billing
-  const openPlanUpgrade = usePlanUpgrade()
+  const openPlanUpgrade = usePlatformPlanUpgrade()
   const canChangePlan = role == null || isPlatformOrgAdmin(role)
 
   async function handleManageBilling() {
@@ -165,7 +161,7 @@ function PlatformBillingCard({
             {billing.plan ? (
               <SettingRow
                 name="Plan"
-                subtitle={<PlanDetails billing={billing} />}
+                subtitle={<PlanDetails billing={billing} excluded={data?.excludedModels ?? null} />}
                 right={
                   <>
                     <span className={VALUE_CLASS} data-testid="billing-plan-name">{planLabel(billing, billing.plan)}</span>

@@ -1,13 +1,21 @@
+import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+
 import type { ModelDefinition } from './model-catalog-schema'
+import type { ModelAvailability } from './model-availability-schema'
+import { familyDisplayName } from './model-family-names'
 import { parseFirstJsonObject } from './error-presentation'
 
 /**
  * Models a workspace's platform plan excludes (SUP-1143). The proxy's
- * `GET /v1/billing` sends `plan.deniedModels`: canonical model-id prefixes. A
- * model is denied when its canonical id starts with one of them, which is the
- * rule the proxy enforces with `403 model_not_in_plan`. An empty list or no
- * plan means no restriction. Plans and their lists are data, so nothing here
- * names a plan or a model.
+ * `GET /v1/billing` sends `deniedModels` (and `plan.deniedModels`): canonical
+ * model-id prefixes. A model is denied when its canonical id starts with one of
+ * them, which is the rule the proxy enforces with `403 model_not_in_plan`. An
+ * empty list means no restriction. Plans and their lists are data, so nothing
+ * here names a plan or a model.
+ *
+ * Platform-only: the Platform provider and its error presentation read the
+ * policy here and hand the app finished availability and wording, so nothing
+ * outside them interprets a denylist.
  */
 
 /**
@@ -60,38 +68,86 @@ function humanizePrefix(prefix: string): string {
 /**
  * Display name for one denylist entry: "Claude Fable" for `claude-fable-`, the
  * one family it covers in the catalog, or a readable form of the prefix when it
- * spans several families or none. `familyName` turns a family key into its
- * picker name, so this agrees with the model list.
+ * spans several families or none. Family names are the picker's, so this agrees
+ * with the model list.
  */
-export function deniedModelName(
-  prefix: string,
-  catalog: readonly ModelDefinition[],
-  familyName: (family: string) => string,
-): string {
+export function deniedModelName(prefix: string, catalog: readonly ModelDefinition[]): string {
   const matches = catalog.filter((m) => isDeniedByPlan([prefix], m.id))
   const families = new Set(matches.map((m) => m.family))
   const [family] = families
   if (families.size !== 1 || !family) return matches.length === 1 ? matches[0].label : humanizePrefix(prefix)
-  const name = familyName(family)
+  const name = familyDisplayName(family)
   const brand = FAMILY_BRAND[matches[0].icon ?? '']
   return brand && !name.startsWith(brand) ? `${brand} ${name}` : name
 }
 
 /** "Claude Fable and GPT Astra" for a plan's denylist; null when it excludes nothing. */
-export function excludedModelsLabel(
-  deniedModels: readonly string[],
-  catalog: readonly ModelDefinition[],
-  familyName: (family: string) => string,
-): string | null {
-  const names = [...new Set(deniedModels.map((prefix) => deniedModelName(prefix, catalog, familyName)))]
+export function excludedModelsLabel(deniedModels: readonly string[], catalog: readonly ModelDefinition[]): string | null {
+  const names = [...new Set(deniedModels.map((prefix) => deniedModelName(prefix, catalog)))]
   if (names.length === 0) return null
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
 }
 
+/**
+ * The catalog entry a raw model id (as the proxy names it) refers to, or the id
+ * itself as both id and label when the catalog has no such model.
+ */
+export function resolvePlanModel(model: string, catalog: readonly ModelDefinition[]): { id: string; label: string } {
+  const canonical = canonicalModelId(model)
+  const entry = catalog.find((m) => m.id === model) ?? catalog.find((m) => canonicalModelId(m.id) === canonical)
+  return entry ? { id: entry.id, label: entry.label } : { id: model, label: model }
+}
+
 /** Display label for a raw model id: its catalog label, else the id itself. */
 export function planModelLabel(model: string, catalog: readonly ModelDefinition[]): string {
-  const canonical = canonicalModelId(model)
-  return catalog.find((m) => m.id === model || canonicalModelId(m.id) === canonical)?.label ?? model
+  return resolvePlanModel(model, catalog).label
+}
+
+/**
+ * What this workspace is refused right now. The top-level list covers a
+ * workspace with no plan too (the free tier's list), so the proxy says to
+ * prefer it; `plan.deniedModels` is the fallback for a proxy without it.
+ */
+export function effectiveDeniedModels(billing: ParsedPlatformBillingInfo | null | undefined): string[] {
+  return billing?.deniedModels ?? billing?.plan?.deniedModels ?? []
+}
+
+/** "Claude Fable and GPT Astra": what the workspace's plan excludes, or null when nothing. */
+export function platformExcludedModels(
+  billing: ParsedPlatformBillingInfo | null | undefined,
+  catalog: readonly ModelDefinition[],
+): string | null {
+  return excludedModelsLabel(effectiveDeniedModels(billing), catalog)
+}
+
+/** "Fable 5.1 isn't included in your Pro 30 plan." */
+export function notInPlanText(label: string, planName: string | null | undefined): string {
+  return `${label} isn't included in ${planName ? `your ${planName} plan` : "your workspace's plan"}.`
+}
+
+// Renderer action-registry key for the plan upgrade dialog a locked pick opens.
+export const PLATFORM_PLAN_UPGRADE_ACTION = 'platform-plan-upgrade'
+
+/**
+ * The connection's availability under the workspace's plan: the catalog models
+ * the denylist covers, each with its reason, a one-line summary, and the
+ * upgrade flow. Null when the plan excludes nothing in this catalog.
+ */
+export function platformModelAvailability(
+  billing: ParsedPlatformBillingInfo | null | undefined,
+  catalog: readonly ModelDefinition[],
+  billingUrl: string | null,
+): ModelAvailability | null {
+  const denied = effectiveDeniedModels(billing)
+  const unavailable = catalog.filter((m) => isDeniedByPlan(denied, m.id))
+  if (unavailable.length === 0) return null
+  const planName = billing?.plan?.name ?? null
+  const excluded = excludedModelsLabel(denied, catalog)
+  return {
+    unavailable: unavailable.map((m) => ({ modelId: m.id, reason: notInPlanText(m.label, planName) })),
+    summary: excluded && (planName ? `${planName} excludes ${excluded}.` : `Without a plan, your workspace can't use ${excluded}.`),
+    action: { component: PLATFORM_PLAN_UPGRADE_ACTION, label: 'Upgrade', href: billingUrl },
+  }
 }
 
 export const MODEL_NOT_IN_PLAN_ERROR = 'model_not_in_plan'

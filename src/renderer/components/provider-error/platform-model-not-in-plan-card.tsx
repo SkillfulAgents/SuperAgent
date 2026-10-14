@@ -1,19 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2, Lock } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
-import { usePlanUpgrade } from '@renderer/context/plan-upgrade-context'
 import { useUser } from '@renderer/context/user-context'
 import { useLlmConnections } from '@renderer/hooks/use-llm-connections'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSendMessage } from '@renderer/hooks/use-messages'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { usePlatformPlan } from '@renderer/hooks/use-platform-plan'
+import { usePlatformPlanUpgrade } from '@renderer/hooks/use-platform-plan'
 import { useProviderModelAvailability } from '@renderer/hooks/use-provider-model-availability'
 import { useSession } from '@renderer/hooks/use-sessions'
-import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
 import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
-import { canonicalModelId, parseModelNotInPlan, planModelLabel } from '@shared/lib/llm-provider/plan-model-policy'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 import { cn } from '@shared/lib/utils'
@@ -22,6 +19,7 @@ import { isPlatformOrgAdmin } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 
 type Session = NonNullable<ProviderErrorComponentProps['session']>
+type RefusedModel = NonNullable<NonNullable<ProviderErrorComponentProps['presentation']>['model']>
 
 /**
  * The proxy refused a model the workspace's plan excludes (403
@@ -30,22 +28,22 @@ type Session = NonNullable<ProviderErrorComponentProps['session']>
  * generic error copy: name the model, re-read the plan, and offer the two ways
  * forward — upgrade, or continue this chat on the best model the plan allows.
  */
-export function PlatformModelNotInPlanCard({ message, live = true, dismissible = false, session }: ProviderErrorComponentProps) {
+export function PlatformModelNotInPlanCard({ presentation, live = true, dismissible = false, session }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
-  const model = useMemo(() => parseModelNotInPlan(message)?.model ?? null, [message])
-  const { plan, excludedLabel, refresh } = usePlatformPlan()
+  // The provider resolved the refused model to its catalog entry.
+  const model = presentation?.model ?? null
   const { data: sessionData } = useSession(session?.sessionId ?? null, session?.agentSlug ?? null)
   const { data: connectionData } = useLlmConnections(session?.agentSlug, session?.sessionId, sessionData?.llmProviderId)
-  const connections = connectionData?.connections ?? []
-  const connection = connections.find(c => c.id === sessionData?.llmProviderId && c.provider === 'platform')
-    ?? connections.find(c => c.provider === 'platform' && c.isConfigured)
-  const { isUnavailable, updatedAt } = useProviderModelAvailability(connection)
+  // The chat's own connection; one without a saved connection runs on the default.
+  const connectionId = sessionData?.llmProviderId ?? connectionData?.defaultSelection?.llmProviderId
+  const connection = connectionData?.connections.find(c => c.id === connectionId)
+  const { availability, isUnavailable, updatedAt, refresh } = useProviderModelAvailability(connection)
   const { data: platformAuth } = usePlatformAuthStatus()
-  const openUpgrade = usePlanUpgrade()
+  const openUpgrade = usePlatformPlanUpgrade()
   const [seenAt] = useState(() => Date.now())
   const role = platformAuth?.role
   const canManage = role == null || isPlatformOrgAdmin(role)
-  const label = model ? planModelLabel(model, PLATFORM_CATALOG) : 'This model'
+  const label = model?.label ?? 'This model'
 
   // The refusal means the plan changed under this client: re-read it now.
   useEffect(() => {
@@ -54,7 +52,7 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
 
   // Billing may reflect an upgrade before the proxy's cached model policy does.
   // Keep both a retry and a previously allowed alternative after a fresh snapshot.
-  const refused = model && connection?.catalog.find(m => canonicalModelId(m.id) === canonicalModelId(model))
+  const refused = model && connection?.catalog.find(m => m.id === model.id)
   const allowedNow = !!refused && updatedAt > seenAt && !isUnavailable(refused)
 
   if (dismissed) return null
@@ -74,7 +72,7 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
             <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
               {allowedNow
                 ? 'Model access may take a minute to update. Retry this model or continue with another.'
-                : `${plan && excludedLabel ? `${plan.name} excludes ${excludedLabel}. ` : ''}${canManage ? 'Upgrade to use it, or continue with a model your plan includes.' : 'Ask a workspace owner or admin to upgrade, or continue with a model your plan includes.'}`}
+                : `${availability?.summary ? `${availability.summary} ` : ''}${canManage ? 'Upgrade to use it, or continue with a model your plan includes.' : 'Ask a workspace owner or admin to upgrade, or continue with a model your plan includes.'}`}
             </p>
           </div>
         </div>
@@ -111,7 +109,7 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
 function ContinueButton({ session, connection, deniedModel, sameModel, isUnavailable, onContinued }: {
   session: Session
   connection: ConnectionInfo | undefined
-  deniedModel: string | null
+  deniedModel: RefusedModel | null
   sameModel: boolean
   isUnavailable: (model: ModelDefinition) => boolean
   onContinued: () => void
@@ -122,14 +120,14 @@ function ContinueButton({ session, connection, deniedModel, sameModel, isUnavail
   const [error, setError] = useState('')
 
   const denied: ModelDefinition | undefined = deniedModel && connection
-    ? connection.catalog.find((m) => canonicalModelId(m.id) === canonicalModelId(deniedModel))
+    ? connection.catalog.find((m) => m.id === deniedModel.id)
     : undefined
   const retryModel = sameModel ? denied : undefined
   const fallback = connection && bestAllowedModel(
     connection.catalog,
     (m) => isUnavailable(m) ||
       (!!denied?.family && m.family === denied.family) ||
-      (deniedModel !== null && canonicalModelId(m.id) === canonicalModelId(deniedModel)),
+      (deniedModel !== null && m.id === deniedModel.id),
     denied,
   )
 

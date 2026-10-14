@@ -8,8 +8,8 @@ import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
 import { connectionInfoSchema } from '@shared/lib/llm-provider/connection-schema'
 
-// The workspace's plan locks nothing here (plan locks have their own tests).
-vi.mock('@renderer/hooks/use-plan-model-lock', () => ({ usePlanModelLock: () => undefined }))
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD: EffortLevel[] = ['low', 'medium', 'high']

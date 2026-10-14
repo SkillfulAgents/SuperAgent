@@ -12,8 +12,8 @@ import { RuntimeOptionsCard } from './runtime-options-card'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
 
-// The workspace's plan locks nothing here (plan locks have their own tests).
-vi.mock('@renderer/hooks/use-plan-model-lock', () => ({ usePlanModelLock: () => undefined }))
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
 
 const STD: EffortLevel[] = ['low', 'medium', 'high']
 const CATALOG: ModelDefinition[] = [

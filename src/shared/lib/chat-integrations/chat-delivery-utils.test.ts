@@ -194,17 +194,15 @@ describe('buildSessionName', () => {
 // ── friendlyErrorMessage ────────────────────────────────────────────────
 
 describe('friendlyErrorMessage', () => {
-  const NOT_IN_PLAN = 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"claude-fable-5-1 is not included in your workspace\'s plan.","model":"claude-fable-5-1"}}'
-
-  it('names the model a plan refuses instead of blaming the integration\'s credentials', () => {
-    // The CLI may tag the 403 as an auth failure.
-    expect(friendlyErrorMessage('authentication_failed', NOT_IN_PLAN)).toBe(
-      "⚠️ Fable 5.1 isn't included in your workspace's plan. Upgrade the plan, or pick another model for this integration.",
-    )
+  it('uses the session provider\'s chat wording over the code-based message', () => {
+    // The CLI may tag a plan's 403 as an auth failure; the provider recognized it.
+    const presentation = { severity: 'warning', icon: 'lock', message: '**Fable 5.1 isn\'t included in your plan**', chatText: '⚠️ Fable 5.1 isn\'t included in your workspace\'s plan.' }
+    expect(friendlyErrorMessage('authentication_failed', presentation)).toBe("⚠️ Fable 5.1 isn't included in your workspace's plan.")
   })
 
-  it('keeps the code-based message for every other error', () => {
-    expect(friendlyErrorMessage('authentication_failed', 'API Error: 401 invalid token')).toContain('could not authenticate')
+  it('keeps the code-based message when the provider has no chat wording', () => {
+    expect(friendlyErrorMessage('authentication_failed', { severity: 'error', icon: 'info', message: '**LLM Provider Error:** 401' })).toContain('could not authenticate')
+    expect(friendlyErrorMessage('authentication_failed', null)).toContain('could not authenticate')
     expect(friendlyErrorMessage('rate_limit')).toContain('rate limit')
   })
 })

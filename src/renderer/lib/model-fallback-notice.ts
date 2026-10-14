@@ -2,7 +2,7 @@ import { toast } from 'sonner'
 
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-const STORAGE_PREFIX = 'superagent:plan-fallback-notice:'
+const STORAGE_PREFIX = 'superagent:model-fallback-notice:'
 // Composers mount several at once (agent home, quick dispatch); one notice per page load.
 const shownThisSession = new Set<string>()
 
@@ -25,22 +25,23 @@ function markShown(key: string): void {
 }
 
 /**
- * Tell the user, once per plan and model, that a saved default the plan
- * excludes was swapped for an allowed model in new chats. The saved default is
- * kept, so upgrading brings it back without another notice.
+ * Tell the user, once per reason, that a saved default the connection cannot
+ * run was swapped for an available model in new chats. The saved default is
+ * kept, so it comes back without another notice once it can run again.
+ * `reason` is the provider's sentence; a new reason (another plan) notifies again.
  */
-export function announcePlanFallback(input: {
+export function announceModelFallback(input: {
   locked: ModelDefinition
   fallback: ModelDefinition
-  planName: string | undefined
-  onUpgrade: () => void
+  reason: string
+  action?: { label: string; run: () => void }
 }): void {
-  const key = `${input.planName ?? 'plan'}:${input.locked.id}`
+  const key = `${input.locked.id}:${input.reason}`
   if (alreadyShown(key)) return
   markShown(key)
-  toast(`${input.locked.label} isn't included in ${input.planName ? `your ${input.planName} plan` : "your workspace's plan"}`, {
-    description: `New chats use ${input.fallback.label} until you upgrade. Your default isn't changed.`,
-    action: { label: 'Upgrade', onClick: input.onUpgrade },
+  toast(input.reason, {
+    description: `New chats use ${input.fallback.label} instead. Your default isn't changed.`,
+    ...(input.action && { action: { label: input.action.label, onClick: input.action.run } }),
     duration: 10_000,
   })
 }

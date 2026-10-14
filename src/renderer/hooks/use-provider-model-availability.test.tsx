@@ -18,20 +18,28 @@ function wrapper(client: QueryClient) {
   }
 }
 
+const RESTRICTED = {
+  unavailable: [{ modelId: 'model-a', reason: "Model A isn't included in your Pro plan." }],
+  summary: 'Pro excludes Model A.',
+  action: { component: 'some-flow', label: 'Upgrade', href: null },
+}
+
 beforeEach(() => fetchAvailability.mockReset())
 
 describe('useProviderModelAvailability', () => {
-  it('uses the provider response for model decisions', async () => {
-    fetchAvailability.mockResolvedValue(response({ unavailableModelIds: ['model-a'], restrictionName: 'Pro', action: 'upgrade' }))
+  it('uses the provider response for model decisions and wording', async () => {
+    fetchAvailability.mockResolvedValue(response(RESTRICTED))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { result } = renderHook(() => useProviderModelAvailability({ id: 'conn-a', isConfigured: true, supportsModelAvailability: true }), { wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.isUnavailable(model('model-a'))).toBe(true))
     expect(result.current.isUnavailable(model('model-b'))).toBe(false)
+    expect(result.current.reasonFor(model('model-a'))).toBe("Model A isn't included in your Pro plan.")
+    expect(result.current.reasonFor(model('model-b'))).toBeUndefined()
     expect(fetchAvailability).toHaveBeenCalledWith('/api/llm-connections/conn-a/model-availability')
   })
 
   it('never shows one connection’s cached policy for another', async () => {
-    fetchAvailability.mockResolvedValueOnce(response({ unavailableModelIds: ['model-a'], restrictionName: 'Pro', action: 'upgrade' }))
+    fetchAvailability.mockResolvedValueOnce(response(RESTRICTED))
     let resolveNext: ((value: Response) => void) | undefined
     fetchAvailability.mockImplementationOnce(() => new Promise<Response>(resolve => { resolveNext = resolve }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -45,7 +53,7 @@ describe('useProviderModelAvailability', () => {
   })
 
   it('drops cached policy on account revision and disconnect', async () => {
-    fetchAvailability.mockResolvedValueOnce(response({ unavailableModelIds: ['model-a'], restrictionName: 'Pro', action: 'upgrade' }))
+    fetchAvailability.mockResolvedValueOnce(response(RESTRICTED))
       .mockResolvedValueOnce(response(null))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { result, rerender } = renderHook(({ isConfigured, modelAvailabilityRevision }) =>
@@ -60,11 +68,12 @@ describe('useProviderModelAvailability', () => {
     expect(result.current.availability).toBeNull()
   })
 
-  it('does not request policy for providers without availability support', () => {
+  it('does not request policy for providers without availability support, even on refresh', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { result } = renderHook(() => useProviderModelAvailability({ id: 'ordinary-conn', isConfigured: true, supportsModelAvailability: false }),
       { wrapper: wrapper(client) })
     expect(result.current.availability).toBeNull()
+    await result.current.refresh()
     expect(fetchAvailability).not.toHaveBeenCalled()
   })
 })

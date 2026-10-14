@@ -63,12 +63,12 @@ describe('getModelAvailability', () => {
     expect(provider.getModelAvailabilityRevision()).toBeNull()
   })
 
-  it('maps platform plan prefixes to concrete connection models', async () => {
+  it('maps platform plan prefixes to concrete connection models, worded by the platform', async () => {
     refreshBilling.mockResolvedValue({ plan: { name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
     expect(await provider.getModelAvailability(catalog)).toMatchObject({
-      unavailableModelIds: expect.arrayContaining([fable.id]),
-      restrictionName: 'Pro 30',
-      action: 'upgrade',
+      unavailable: expect.arrayContaining([{ modelId: fable.id, reason: "Fable 5.1 isn't included in your Pro 30 plan." }]),
+      summary: 'Pro 30 excludes Claude Fable.',
+      action: { component: 'platform-plan-upgrade', label: 'Upgrade', href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing' },
     })
   })
 
@@ -80,7 +80,7 @@ describe('getModelAvailability', () => {
   it('drops restrictions on disconnect and uses a cached snapshot on a transient failure', async () => {
     refreshBilling.mockRejectedValue(new Error('offline'))
     getCachedBilling.mockReturnValue({ plan: { name: 'Pro 30', deniedModels: ['claude-fable-'] } })
-    expect((await provider.getModelAvailability(catalog))?.unavailableModelIds).toContain(fable.id)
+    expect((await provider.getModelAvailability(catalog))?.unavailable.map(entry => entry.modelId)).toContain(fable.id)
     platformAuthStatus.mockReturnValue({ connected: false })
     expect(await provider.getModelAvailability(catalog)).toBeNull()
   })
@@ -229,8 +229,10 @@ describe('presentationForTurnError', () => {
         severity: 'warning',
         icon: 'lock',
         message: "**Fable 5.1 isn't included in your plan** Upgrade your workspace's plan to use it, or continue with a model your plan includes.",
+        chatText: "⚠️ Fable 5.1 isn't included in your workspace's plan. Upgrade the plan, or pick another model for this integration.",
         component: 'platform-model-not-in-plan',
         placement: 'composer',
+        model: { id: 'claude-fable-5-1', label: 'Fable 5.1' },
         href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
       })
     })
@@ -242,6 +244,7 @@ describe('presentationForTurnError', () => {
     it('still names no model when the body omits it', async () => {
       const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"Not in plan."}}', 'unknown')
       expect(parsed?.message).toMatch(/^\*\*This model isn't included in your plan\*\*/)
+      expect(parsed?.model).toBeUndefined()
     })
 
     it('leaves other 403s to the generic banner', async () => {

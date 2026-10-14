@@ -14,6 +14,10 @@ export const providerErrorPresentationSchema = z.object({
   component: z.string().optional(),
   /** Final CTA URL for the component, resolved by the provider. Unset = no link to offer. */
   href: z.string().optional(),
+  /** The catalog model the error is about, resolved by the provider (e.g. the one a plan refused). */
+  model: z.object({ id: z.string(), label: z.string() }).optional(),
+  /** Plain-text notice for chat integrations. Unset = their generic message for the error code. */
+  chatText: z.string().optional(),
 })
 
 export type ProviderErrorPresentation = z.infer<typeof providerErrorPresentationSchema>

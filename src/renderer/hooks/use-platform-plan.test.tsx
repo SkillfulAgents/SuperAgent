@@ -36,7 +36,9 @@ const RESTRICTED_BILLING = PlatformBillingInfoSchema.parse({
 })
 
 function response(billing: typeof OLD_BILLING) {
-  return { ok: true, json: async () => ({ connected: true, billing }) } as Response
+  // The server words what the plan excludes; the hook never reads the denylist.
+  const excludedModels = billing.plan ? 'Claude Fable' : null
+  return { ok: true, json: async () => ({ connected: true, billing, excludedModels }) } as Response
 }
 
 function wrapper(client: QueryClient) {
@@ -71,7 +73,7 @@ describe('usePlatformPlan billing identity', () => {
   ])('does not show a cached plan for %s', async (_case, change) => {
     state.fetchBilling.mockResolvedValueOnce(response(RESTRICTED_BILLING))
     const view = renderPlan()
-    await waitFor(() => expect(view.result.current.deniedModels).toEqual(['claude-fable-']))
+    await waitFor(() => expect(view.result.current.excludedLabel).toBe('Claude Fable'))
 
     let resolveNext: ((value: Response) => void) | undefined
     state.fetchBilling.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveNext = resolve }))
@@ -79,7 +81,7 @@ describe('usePlatformPlan billing identity', () => {
     view.rerender()
 
     expect(view.result.current.plan).toBeNull()
-    expect(view.result.current.deniedModels).toEqual([])
+    expect(view.result.current.excludedLabel).toBeNull()
     resolveNext?.(response(OLD_BILLING))
     await waitFor(() => expect(view.result.current.updatedAt).toBeGreaterThan(0))
     expect(state.fetchBilling).toHaveBeenCalledTimes(2)
@@ -90,16 +92,16 @@ describe('usePlatformPlan billing identity', () => {
     const view = renderPlan()
     await waitFor(() => expect(view.result.current.updatedAt).toBeGreaterThan(0))
     expect(view.result.current.plan).toBeNull()
-    expect(view.result.current.deniedModels).toEqual([])
+    expect(view.result.current.excludedLabel).toBeNull()
   })
 
   it('drops a cached plan when the platform disconnects', async () => {
     state.fetchBilling.mockResolvedValue(response(RESTRICTED_BILLING))
     const view = renderPlan()
-    await waitFor(() => expect(view.result.current.deniedModels).toEqual(['claude-fable-']))
+    await waitFor(() => expect(view.result.current.excludedLabel).toBe('Claude Fable'))
     state.auth = { ...state.auth, connected: false }
     view.rerender()
     expect(view.result.current.plan).toBeNull()
-    expect(view.result.current.deniedModels).toEqual([])
+    expect(view.result.current.excludedLabel).toBeNull()
   })
 })

@@ -1,21 +1,19 @@
 import { useEffect, useState } from 'react'
 import { ArrowUpRight, Loader2 } from 'lucide-react'
 
-import { notInPlanText } from '@renderer/components/messages/model-family-list'
 import { BillingEmbedFrame } from '@renderer/components/provider-error/billing-embed-frame'
 import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
-import type { PlanUpgradeRequest } from '@renderer/context/plan-upgrade-context'
+import type { ModelAvailabilityActionProps } from '@renderer/context/model-availability-action-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useLlmConnections } from '@renderer/hooks/use-llm-connections'
 import { useProviderModelAvailability } from '@renderer/hooks/use-provider-model-availability'
 import { pendingPlanChangeText, usePlatformPlan } from '@renderer/hooks/use-platform-plan'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
-import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
 import { orgBillingUrl } from '@shared/lib/llm-provider/platform-error-presentation'
-import { canonicalModelId, planModelLabel } from '@shared/lib/llm-provider/plan-model-policy'
+import { notInPlanText } from '@shared/lib/llm-provider/platform-plan-policy'
 import { cn } from '@shared/lib/utils'
 
 /**
@@ -25,7 +23,7 @@ import { cn } from '@shared/lib/utils'
  * browser. Either way the plan is re-read on return and on close, because the
  * billing page's plan change does not tell the host it happened.
  */
-export function PlanUpgradeDialog({ request, onClose }: { request: PlanUpgradeRequest; onClose: () => void }) {
+export function PlanUpgradeDialog({ request, onClose }: ModelAvailabilityActionProps) {
   const { data: platformAuth } = usePlatformAuthStatus()
   const { plan, excludedLabel, pendingPlanChange, refresh } = usePlatformPlan()
   const { data: connections } = useLlmConnections()
@@ -36,11 +34,10 @@ export function PlanUpgradeDialog({ request, onClose }: { request: PlanUpgradeRe
   const inApp = !isElectron() && platformAuth?.platformControlled === true
   const role = platformAuth?.role
   const canManage = role == null || isPlatformOrgAdmin(role)
-  const billingHref = orgBillingUrl(platformAuth?.platformBaseUrl, platformAuth?.orgId)
-  const selectedModel = request.model
-    ? connection?.catalog.find(m => canonicalModelId(m.id) === canonicalModelId(request.model!))
-    : undefined
-  const modelLabel = request.model ? selectedModel?.label ?? planModelLabel(request.model, PLATFORM_CATALOG) : null
+  const billingHref = request.action.href ?? orgBillingUrl(platformAuth?.platformBaseUrl, platformAuth?.orgId)
+  // The request names a catalog id (a picker row, or a refusal the provider resolved).
+  const selectedModel = request.model ? connection?.catalog.find(m => m.id === request.model!.id) : undefined
+  const modelLabel = request.model ? selectedModel?.label ?? request.model.label : null
   // Only a snapshot fetched after opening may say the model is now allowed.
   const unlocked = !!selectedModel && updatedAt > openedAt && !isUnavailable(selectedModel)
 

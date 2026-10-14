@@ -4,14 +4,15 @@ import { renderHook, act } from '@testing-library/react'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
 
-// SUP-1143: a saved default the workspace's plan now excludes (a downgrade)
-// falls back to the best allowed model in new chats, which is sent explicitly
-// so the server's own default resolution can't put the excluded one on the wire.
+// SUP-1143: a saved default the connection can no longer run (a plan
+// downgrade) falls back to the best available model in new chats, which is sent
+// explicitly so the server's own default resolution can't put the unavailable
+// one on the wire.
 
 const state = vi.hoisted(() => ({
   connections: undefined as unknown,
   denied: ['claude-fable-'] as string[],
-  onLockedPick: vi.fn(),
+  run: vi.fn(),
   announce: vi.fn(),
 }))
 
@@ -20,13 +21,17 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => ({ data: { llmProvider: 'platform', models: {}, llmProviderStatus: [] } }),
 }))
 // Restriction data is scoped to the selected connection.
-vi.mock('@renderer/hooks/use-plan-model-lock', () => ({
-  usePlanModelLock: (connection: { id: string } | undefined) =>
+vi.mock('@renderer/hooks/use-model-lock', () => ({
+  useModelLock: (connection: { id: string } | undefined) =>
     connection?.id === 'platform-conn' && state.denied.length
-      ? { isLocked: (m: ModelDefinition) => state.denied.some((p) => m.id.startsWith(p)), onLockedPick: state.onLockedPick, planName: 'Pro 30' }
+      ? {
+          isLocked: (m: ModelDefinition) => state.denied.some((p) => m.id.startsWith(p)),
+          reason: (m: ModelDefinition) => `${m.label} isn't included in your Pro 30 plan.`,
+          action: { label: 'Upgrade', run: state.run },
+        }
       : undefined,
 }))
-vi.mock('@renderer/lib/plan-fallback-notice', () => ({ announcePlanFallback: state.announce }))
+vi.mock('@renderer/lib/model-fallback-notice', () => ({ announceModelFallback: state.announce }))
 
 const model = (id: string, extra: Partial<ModelDefinition> = {}): ModelDefinition =>
   ({ id, label: id, icon: 'anthropic', supportedEfforts: ['medium'], ...extra })
@@ -47,22 +52,26 @@ function render(initialProps: UseComposerOptionsArgs) {
 
 beforeEach(() => {
   state.denied = ['claude-fable-']
-  state.onLockedPick.mockReset()
+  state.run.mockReset()
   state.announce.mockReset()
   state.connections = { connections: [PLATFORM, ANTHROPIC], defaultSelection: { llmProviderId: 'platform-conn', model: 'claude-fable-5-1' } }
 })
 
-describe('useComposerOptions plan fallback', () => {
-  it('shows and sends the best allowed model when the global default is excluded, and says so once', () => {
+describe('useComposerOptions availability fallback', () => {
+  it('shows and sends the best allowed model when the global default is excluded, and says so in the provider\'s words', () => {
     const { result } = render({})
     expect(result.current.model).toBe('claude-opus-5-5')
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform-conn', model: 'claude-opus-5-5' })
-    expect(result.current.planLock?.planName).toBe('Pro 30')
+    expect(result.current.modelLock).toBeDefined()
     expect(state.announce).toHaveBeenCalledWith(expect.objectContaining({
       locked: expect.objectContaining({ id: 'claude-fable-5-1' }),
       fallback: expect.objectContaining({ id: 'claude-opus-5-5' }),
-      planName: 'Pro 30',
+      reason: "claude-fable-5-1 isn't included in your Pro 30 plan.",
+      action: expect.objectContaining({ label: 'Upgrade' }),
     }))
+    // The notice's action runs the provider's action for the locked default.
+    state.announce.mock.calls[0][0].action.run()
+    expect(state.run).toHaveBeenCalledWith(expect.objectContaining({ id: 'claude-fable-5-1' }))
   })
 
   it('falls back from an excluded agent default too', () => {
@@ -104,7 +113,7 @@ describe('useComposerOptions plan fallback', () => {
     state.connections = { connections: [ANTHROPIC], defaultSelection: { llmProviderId: 'anthropic-conn', model: 'claude-fable-5-1' } }
     const { result } = render({})
     expect(result.current.model).toBe('claude-fable-5-1')
-    expect(result.current.planLock).toBeUndefined()
+    expect(result.current.modelLock).toBeUndefined()
     expect(result.current.toRuntimeOptions()).toEqual({})
   })
 })

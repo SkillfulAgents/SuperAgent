@@ -1,28 +1,24 @@
 import { useCallback, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
-import { familyDisplayName } from '@renderer/components/messages/model-family-list'
+import { useModelAvailabilityAction, type ModelAvailabilityActionRequest } from '@renderer/context/model-availability-action-context'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { PLATFORM_CATALOG } from '@shared/lib/llm-provider/builtin-catalogs'
-import { excludedModelsLabel } from '@shared/lib/llm-provider/plan-model-policy'
+import { orgBillingUrl } from '@shared/lib/llm-provider/platform-error-presentation'
+import { PLATFORM_PLAN_UPGRADE_ACTION } from '@shared/lib/llm-provider/platform-plan-policy'
 import type { ParsedPlatformBillingInfo, ParsedPlatformPlan } from '@shared/lib/types/skillset-schema'
 
 export interface PlatformPlan {
   /** The workspace's plan; null when not subscribed, unknown, or not on the platform. */
   plan: ParsedPlatformPlan | null
   pendingPlanChange: ParsedPlatformBillingInfo['pendingPlanChange']
-  /** Canonical model-id prefixes the plan excludes; empty = no restriction. */
-  deniedModels: string[]
-  /** "Claude Fable and GPT Astra", or null when the plan excludes nothing. */
+  /** "Claude Fable and GPT Astra", worded by the server; null when the plan excludes nothing. */
   excludedLabel: string | null
   /** When the billing snapshot was last fetched (0 before the first). */
   updatedAt: number
   /** Refetch the billing snapshot (plan changes made in the billing page). */
   refresh: () => Promise<void>
 }
-
-const NO_DENIED: string[] = []
 
 /**
  * The connected workspace's plan, from the same billing snapshot the Account
@@ -35,10 +31,10 @@ export function usePlatformPlan(enabled = true): PlatformPlan {
   const { data: platformAuth } = usePlatformAuthStatus()
   const active = enabled && platformAuth?.connected === true
   const billingQuery = useBillingInfo(active)
-  const billing = active ? billingQuery.data?.billing : undefined
-  const plan = billing?.plan ?? null
-  const deniedModels = billing?.deniedModels ?? plan?.deniedModels ?? NO_DENIED
-  const pendingPlanChange = billing?.pendingPlanChange ?? null
+  const data = active ? billingQuery.data : undefined
+  const plan = data?.billing?.plan ?? null
+  const pendingPlanChange = data?.billing?.pendingPlanChange ?? null
+  const excludedLabel = data?.excludedModels ?? null
   // `refetch` runs even for a disabled query, so only a connected workspace asks.
   const { refetch } = billingQuery
   const refresh = useCallback(async () => {
@@ -48,15 +44,23 @@ export function usePlatformPlan(enabled = true): PlatformPlan {
     }
   }, [active, refetch, queryClient])
   return useMemo(
-    () => ({
-      plan,
-      pendingPlanChange,
-      deniedModels,
-      excludedLabel: excludedModelsLabel(deniedModels, PLATFORM_CATALOG, familyDisplayName),
-      updatedAt: billingQuery.dataUpdatedAt,
-      refresh,
-    }),
-    [plan, pendingPlanChange, deniedModels, billingQuery.dataUpdatedAt, refresh],
+    () => ({ plan, pendingPlanChange, excludedLabel, updatedAt: billingQuery.dataUpdatedAt, refresh }),
+    [plan, pendingPlanChange, excludedLabel, billingQuery.dataUpdatedAt, refresh],
+  )
+}
+
+/**
+ * Opens the plan upgrade flow from the platform's own surfaces (Account's
+ * "Change plan", the 403 card), which have no availability action to hand.
+ */
+export function usePlatformPlanUpgrade(): (request?: Omit<ModelAvailabilityActionRequest, 'action'> & { label?: string }) => void {
+  const openAction = useModelAvailabilityAction()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const href = orgBillingUrl(platformAuth?.platformBaseUrl, platformAuth?.orgId)
+  return useCallback(
+    ({ label = 'Upgrade', ...request } = {}) =>
+      openAction({ ...request, action: { component: PLATFORM_PLAN_UPGRADE_ACTION, label, href } }),
+    [openAction, href],
   )
 }
 

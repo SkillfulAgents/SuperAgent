@@ -8,9 +8,9 @@ import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
-import { usePlanModelLock } from '@renderer/hooks/use-plan-model-lock'
-import { announcePlanFallback } from '@renderer/lib/plan-fallback-notice'
-import type { PlanLock } from './model-family-list'
+import { useModelLock } from '@renderer/hooks/use-model-lock'
+import { announceModelFallback } from '@renderer/lib/model-fallback-notice'
+import type { ModelLock } from './model-family-list'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -45,8 +45,8 @@ export interface ComposerOptionsState {
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
-  /** Models the workspace's plan excludes on the selected connection (platform only). */
-  planLock?: PlanLock
+  /** Models the selected connection's provider says cannot run (e.g. a plan excludes them). */
+  modelLock?: ModelLock
   /**
    * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
    * explicit user pick, no session-seeded value) are OMITTED, not serialized:
@@ -351,31 +351,32 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
 
-  // ---- Plan fallback ----
-  // An inherited default the workspace's plan now excludes (a downgrade since it
-  // was saved) would be refused on every send. New chats show the best model the
-  // plan allows instead and send it explicitly, so the server's own default
-  // resolution can't put the excluded one on the wire. Derived, not stored: the
-  // saved default is untouched and comes back as soon as the plan allows it.
+  // ---- Availability fallback ----
+  // An inherited default the connection can no longer run (e.g. a plan
+  // downgrade since it was saved) would be refused on every send. New chats show
+  // the best available model instead and send it explicitly, so the server's own
+  // default resolution can't put the unavailable one on the wire. Derived, not
+  // stored: the saved default is untouched and comes back as soon as it can run.
   // New chats only: an existing session runs on its own model (a trigger-created
-  // one may carry none in its metadata), and a user pick is explicit; the 403
-  // card covers both.
-  const planLock = usePlanModelLock(selectedConnection)
+  // one may carry none in its metadata), and a user pick is explicit; the
+  // provider's error card covers both.
+  const modelLock = useModelLock(selectedConnection)
   const inheritedDefault = !sessionId && !currentSelection && !modelSeededRef.current
-  const lockedDefault = planLock && inheritedDefault ? findCatalogModel(displayedModel, catalog) : undefined
-  const planFallback = planLock && lockedDefault && planLock.isLocked(lockedDefault)
-    ? bestAllowedModel(catalog, planLock.isLocked, lockedDefault)
+  const lockedDefault = modelLock && inheritedDefault ? findCatalogModel(displayedModel, catalog) : undefined
+  const availabilityFallback = modelLock && lockedDefault && modelLock.isLocked(lockedDefault)
+    ? bestAllowedModel(catalog, modelLock.isLocked, lockedDefault)
     : undefined
-  const planFallbackId = planFallback?.id
+  const availabilityFallbackId = availabilityFallback?.id
   useEffect(() => {
-    if (!planLock || !lockedDefault || !planFallback) return
-    announcePlanFallback({
+    if (!modelLock || !lockedDefault || !availabilityFallback) return
+    const { action } = modelLock
+    announceModelFallback({
       locked: lockedDefault,
-      fallback: planFallback,
-      planName: planLock.planName,
-      onUpgrade: () => planLock.onLockedPick(lockedDefault),
+      fallback: availabilityFallback,
+      reason: modelLock.reason(lockedDefault),
+      ...(action && { action: { label: action.label, run: () => action.run(lockedDefault) } }),
     })
-  }, [planLock, lockedDefault, planFallback])
+  }, [modelLock, lockedDefault, availabilityFallback])
 
   const toRuntimeOptions = useCallback(
     () => ({
@@ -383,11 +384,11 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       ...(speedSeededRef.current ? { speed } : {}),
       ...(modelSeededRef.current && displayedModel
         ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
-        : planFallbackId
-          ? { model: planFallbackId, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
+        : availabilityFallbackId
+          ? { model: availabilityFallbackId, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
           : {}),
     }),
-    [effort, speed, displayedModel, effectiveLlmProviderId, planFallbackId],
+    [effort, speed, displayedModel, effectiveLlmProviderId, availabilityFallbackId],
   )
 
   return useMemo(
@@ -399,16 +400,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setEffort,
       speed,
       setSpeed,
-      model: planFallbackId ?? displayedModel,
+      model: availabilityFallbackId ?? displayedModel,
       setModel,
       catalog,
       defaultModel: fallbackModel,
       webProvider: settings?.webProvider,
-      planLock,
+      modelLock,
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, planFallbackId, setModel, catalog, fallbackModel, settings, planLock, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, availabilityFallbackId, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
   )
 }
 

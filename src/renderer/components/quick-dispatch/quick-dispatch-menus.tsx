@@ -118,7 +118,7 @@ export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsSt
         {/* webProvider silences the web-tools warning when a configured host
             vendor already makes web tools work on any model — without it this
             picker contradicted the composer's. */}
-        <ModelFamilyList catalog={catalog} value={model} onPick={setModel} webProvider={webProvider} planLock={state.planLock} />
+        <ModelFamilyList catalog={catalog} value={model} onPick={setModel} webProvider={webProvider} modelLock={state.modelLock} />
       </div>
       <div className="shrink-0 px-1 pb-1 pt-2">
         <EffortSection levels={efforts} value={effort} onChange={setEffort} />

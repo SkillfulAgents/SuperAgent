@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-// The workspace's plan locks nothing here (plan locks have their own tests).
-vi.mock('@renderer/hooks/use-plan-model-lock', () => ({ usePlanModelLock: () => undefined }))
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
 
 const useSettingsMock = vi.fn()
 vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: undefined }) }))

@@ -1,7 +1,7 @@
 import { lazyRouteComponent, Outlet, useRouterState } from '@tanstack/react-router'
 import { Suspense, useCallback, useState, useEffect, useRef } from 'react'
 import { DialogProvider } from '@renderer/context/dialog-context'
-import { PlanUpgradeProvider } from '@renderer/context/plan-upgrade-context'
+import { ModelAvailabilityActionProvider } from '@renderer/context/model-availability-action-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
@@ -140,7 +140,7 @@ export function RootLayout() {
 
   return (
     <DialogProvider onOpenWizard={openWizard}>
-      <PlanUpgradeProvider>
+      <ModelAvailabilityActionProvider>
         <UpdateStatusProvider>
           <OnboardingProvider>
             {/* Real-time + native-nav handlers live HERE (root, above the
@@ -179,7 +179,7 @@ export function RootLayout() {
             )}
           </OnboardingProvider>
         </UpdateStatusProvider>
-      </PlanUpgradeProvider>
+      </ModelAvailabilityActionProvider>
     </DialogProvider>
   )
 }

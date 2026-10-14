@@ -7,6 +7,8 @@ import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schem
 export interface BillingInfoResponse {
   connected: boolean
   billing?: ParsedPlatformBillingInfo
+  /** What the workspace's plan excludes ("Claude Fable and GPT Astra"), worded by the server; null = nothing. */
+  excludedModels?: string | null
   /** True when the snapshot is a cached fallback after a live-fetch failure. */
   stale?: boolean
   /** ISO timestamp the cached snapshot was last fetched (present when stale). */

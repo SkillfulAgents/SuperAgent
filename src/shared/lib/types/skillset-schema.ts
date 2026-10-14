@@ -9,7 +9,7 @@
 
 import { z } from 'zod'
 
-import { normalizeDeniedModels } from '@shared/lib/llm-provider/plan-model-policy'
+import { normalizeDeniedModels } from '@shared/lib/llm-provider/platform-plan-policy'
 
 export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 

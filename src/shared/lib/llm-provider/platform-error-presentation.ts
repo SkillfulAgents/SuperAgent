@@ -5,7 +5,7 @@ import {
   type ProviderErrorPresentation,
 } from './error-presentation'
 import { PLATFORM_CATALOG } from './builtin-catalogs'
-import { parseModelNotInPlan, planModelLabel } from './plan-model-policy'
+import { parseModelNotInPlan, resolvePlanModel } from './platform-plan-policy'
 
 // Registry key for the platform-billing-aware paywall card. Platform-only: the card
 // reads the platform billing snapshot, so other providers must register their own key.
@@ -90,9 +90,13 @@ function paywallMessage(subscriptionRequired: boolean | undefined): string {
 
 // Copy for the plan's refusal; the card component renders its own, this is the
 // markdown every other surface (and an older client) falls back to.
-export function modelNotInPlanMessage(model: string | null): string {
-  const name = model ? planModelLabel(model, PLATFORM_CATALOG) : 'This model'
-  return `**${name} isn't included in your plan** Upgrade your workspace's plan to use it, or continue with a model your plan includes.`
+export function modelNotInPlanMessage(label: string | null): string {
+  return `**${label ?? 'This model'} isn't included in your plan** Upgrade your workspace's plan to use it, or continue with a model your plan includes.`
+}
+
+// The same refusal as a chat integration says it.
+export function modelNotInPlanChatText(label: string | null): string {
+  return `⚠️ ${label ?? 'This model'} isn't included in your workspace's plan. Upgrade the plan, or pick another model for this integration.`
 }
 
 // Null = not a platform-specific error class; the base provider applies the
@@ -106,12 +110,16 @@ export function parsePlatformErrorResponse(
   // history rows carry no status, and a 403 here is never a credential problem.
   const notInPlan = parseModelNotInPlan(body)
   if (notInPlan) {
+    // Resolved to the catalog here, so the card matches it by id and names it by label.
+    const model = notInPlan.model ? resolvePlanModel(notInPlan.model, PLATFORM_CATALOG) : null
     return {
       severity: 'warning',
       icon: 'lock',
-      message: modelNotInPlanMessage(notInPlan.model),
+      message: modelNotInPlanMessage(model?.label ?? null),
+      chatText: modelNotInPlanChatText(model?.label ?? null),
       component: PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT,
       placement: 'composer',
+      ...(model && { model }),
       ...(billingUrl && { href: billingUrl }),
     }
   }
