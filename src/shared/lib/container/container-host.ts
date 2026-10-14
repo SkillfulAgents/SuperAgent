@@ -212,6 +212,14 @@ export class ContainerHost {
     })
   }
 
+  /** Calls back with the agent's slug each time one of its sessions goes idle. Returns the unsubscribe. */
+  onSessionIdle(callback: (agentSlug: string) => void): () => void {
+    return messagePersister.addGlobalNotificationClient((event: unknown) => {
+      const data = event as { type?: unknown; agentSlug?: unknown }
+      if (data?.type === 'session_idle' && typeof data.agentSlug === 'string') callback(data.agentSlug)
+    })
+  }
+
   /**
    * Create runtimes for the given agent slugs and sync their statuses.
    * Call this on app startup with the list of all agent slugs.
