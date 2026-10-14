@@ -135,7 +135,7 @@ describe('useStartTodo', () => {
     expect(state.calls[0]).toEqual({ path: '/api/todos/t1', method: 'PATCH', body: { agentSlug: 'churn-analyst' } })
     expect(state.calls[1]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
     expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'churn-analyst', message: 'Churn\n\nWhy did it spike?' })
-    expect(state.track).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'todo' }))
+    expect(state.track).toHaveBeenCalledWith('agent_created', expect.objectContaining({ surface: 'todo' }))
   })
 
   it('creates nothing when the new agent could not be made', async () => {

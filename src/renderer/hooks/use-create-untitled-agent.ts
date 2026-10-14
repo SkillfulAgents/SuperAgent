@@ -30,7 +30,11 @@ export function useCreateUntitledAgent() {
   const createUntitledAgent = useCallback(async (options?: CreateUntitledAgentOptions) => {
     try {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
-      track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
+      track('agent_created', {
+        source: 'new',
+        surface: options?.folderId ? 'section_plus' : 'nav',
+        num_skills_added_at_creation: 0,
+      })
 
       // Wait for the filing before navigating. Resolve the assignment against
       // the latest settings when the serialized write runs.
