@@ -302,6 +302,11 @@ export const PlatformBillingInfoSchema = z.object({
     .nullish()
     .catch(null)
     .transform((v) => v ?? null),
+  // The models this workspace may not use, plan or not (an unsubscribed
+  // workspace gets the free tier's list). Null from a proxy that predates it.
+  deniedModels: z
+    .unknown()
+    .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
   // A plan switch scheduled for a later date (a downgrade applies at renewal).
   pendingPlanChange: z
     .object({

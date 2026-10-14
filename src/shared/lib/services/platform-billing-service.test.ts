@@ -50,8 +50,20 @@ describe('fetchPlatformBillingInfo', () => {
       ...VALID_SNAPSHOT,
       subscription: { ...VALID_SNAPSHOT.subscription, creditScope: 'seat' },
       plan: null,
+      deniedModels: null,
       pendingPlanChange: null,
     })
+  })
+
+  it('reads the workspace denylist for a workspace with no plan (free tier)', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      ...VALID_SNAPSHOT,
+      plan: null,
+      deniedModels: ['claude-fable-', 'gpt-6-astra'],
+    }))
+    const result = await fetchPlatformBillingInfo()
+    expect(result.plan).toBeNull()
+    expect(result.deniedModels).toEqual(['claude-fable-', 'gpt-6-astra'])
   })
 
   it('reads the plan and normalizes its denylist the way the proxy does (SUP-1143)', async () => {

@@ -36,7 +36,7 @@ export function usePlatformPlan(enabled = true): PlatformPlan {
   const billingQuery = useBillingInfo(active)
   const billing = enabled ? billingQuery.data?.billing : undefined
   const plan = billing?.plan ?? null
-  const deniedModels = plan?.deniedModels ?? NO_DENIED
+  const deniedModels = billing?.deniedModels ?? plan?.deniedModels ?? NO_DENIED
   const pendingPlanChange = billing?.pendingPlanChange ?? null
   // `refetch` runs even for a disabled query, so only a connected workspace asks.
   const { refetch } = billingQuery
