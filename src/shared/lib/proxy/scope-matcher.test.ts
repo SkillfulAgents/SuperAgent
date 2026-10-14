@@ -235,6 +235,24 @@ describe('matchScopes', () => {
     )
   })
 
+  it('endpointDescription: undefined when equally specific endpoints disagree', () => {
+    const result = matchScopes('linear', 'POST', '/graphql')
+    expect(result.matched).toBe(true)
+    expect(result.endpointDescription).toBeUndefined()
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
+  it('endpointDescription: undefined for a disagreeing tie outside GraphQL', () => {
+    const result = matchScopes('xero', 'POST', '/api.xro/2.0/Invoices/inv-1')
+    expect(result.endpointDescription).toBeUndefined()
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
+  it('endpointDescription: kept when equally specific endpoints agree', () => {
+    expect(matchScopes('salesforce', 'GET', '/services/data/v59.0/sobjects/Widget__c/describe').endpointDescription)
+      .toBe('Describe an SObject (metadata, fields, relationships)')
+  })
+
   it('endpointDescription: undefined for unmatched requests', () => {
     const result = matchScopes('gmail', 'GET', '/gmail/v1/unknown/path')
     expect(result.endpointDescription).toBeUndefined()

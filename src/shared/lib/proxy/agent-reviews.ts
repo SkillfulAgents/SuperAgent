@@ -74,6 +74,7 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
     matchedScopes: Array.isArray(p.matchedScopes) ? (p.matchedScopes as string[]) : [],
     scopeDescriptions,
     ...(endpointDescription !== undefined ? { endpointDescription } : {}),
+    ...(typeof p.requestBody === 'string' ? { requestBody: p.requestBody } : {}),
     ...(Array.isArray(p.ruleOutcomes) && p.ruleOutcomes.length > 0
       ? { ruleOutcomes: p.ruleOutcomes as ReviewDetails['ruleOutcomes'] }
       : {}),
@@ -83,6 +84,10 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
       : {}),
     displayText,
   }
+}
+
+function withoutAmbiguity<T extends { endpointAmbiguous?: boolean }>({ endpointAmbiguous: _ambiguous, ...details }: T): Omit<T, 'endpointAmbiguous'> {
+  return details
 }
 
 /**
@@ -218,6 +223,7 @@ export class AgentReviews {
         details.targetPath,
         details.scopeDescriptions,
         details.endpointDescription,
+        details.endpointAmbiguous,
       )
 
       // Reviews are agent-scoped — no sessionId in the proxied call, so the
@@ -231,7 +237,8 @@ export class AgentReviews {
         scope: { agentSlug: this.slug },
         blocking: true,
         autoApproved: false,
-        payload: { ...details, agentSlug: this.slug, displayText },
+        // The ambiguity only shapes displayText; nothing reads it back from the envelope.
+        payload: { ...withoutAmbiguity(details), agentSlug: this.slug, displayText },
       })
       if (!registered) {
         // Can't happen with our own envelope construction, but if the registry

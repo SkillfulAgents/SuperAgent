@@ -67,6 +67,16 @@ describe('resolveApiPolicy', () => {
     expect(result.resolvedFrom).toBe('scope_policy')
   })
 
+  it('carries the matcher\'s endpoint ambiguity to the review', async () => {
+    setupPolicies([])
+    const result = await resolveApiPolicy(
+      'acc-1',
+      { ...makeMatchResult(true, ['read']), endpointAmbiguous: true },
+      'user-1'
+    )
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
   it('explicit scope policy "block" returns "block"', async () => {
     setupPolicies([{ scope: 'gmail.full', decision: 'block' }])
     const result = await resolveApiPolicy(

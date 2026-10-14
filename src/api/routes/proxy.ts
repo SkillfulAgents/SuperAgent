@@ -4,6 +4,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
+import { requestBodyPreview } from '@shared/lib/proxy/review-display'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
@@ -354,6 +355,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
         endpointDescription: policyResult.endpointDescription,
+        endpointAmbiguous: policyResult.endpointAmbiguous,
+        requestBody: requestBodyPreview(await readBody(), c.req.header('content-type')),
         ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
       }, c.req.raw.signal, {
         // When an "always" decision on another card changes the policy, this

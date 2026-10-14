@@ -16,6 +16,8 @@ export interface ScopeMatchResult {
    * not a broader scope-level summary that may be alarming.
    */
   endpointDescription?: string
+  /** Equally specific endpoints disagree on what the call does, so none is named. */
+  endpointAmbiguous?: boolean
 }
 
 /**
@@ -144,14 +146,17 @@ function matchProvider(
     }
   }
 
-  // The first matching endpoint's description summarizes the call itself.
-  const endpointDescription = bestMatches.find((m) => m.entry.description)?.entry.description
+  // The matched endpoint's description summarizes the call itself, unless
+  // equally specific endpoints disagree on what it does (RPC-style providers like Linear and Monday).
+  const endpointDescriptions = new Set(bestMatches.flatMap((m) => m.entry.description ?? []))
+  const endpointDescription = endpointDescriptions.size === 1 ? [...endpointDescriptions][0] : undefined
 
   return {
     matched: true,
     scopes: Array.from(scopeSet),
     descriptions,
     endpointDescription,
+    ...(endpointDescriptions.size > 1 && { endpointAmbiguous: true }),
   }
 }
 

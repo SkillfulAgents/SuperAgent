@@ -29,6 +29,10 @@ export interface ReviewDetails {
    * Preferred over scopeDescriptions when generating the prompt headline.
    */
   endpointDescription?: string
+  /** Several endpoints match equally and disagree, so the scope wording would misdescribe the call. */
+  endpointAmbiguous?: boolean
+  /** What the request sends, as text, for the card's request details. Absent for no body or a binary one. */
+  requestBody?: string
   /** Proxy rules that ran on this request and did not allow it. */
   ruleOutcomes?: ReviewRuleOutcome[]
   /** Set when the review asks a person to confirm an agent's proxy rule. */
@@ -68,7 +72,8 @@ export function humanizeActionName(name: string): string {
  *
  * Priority:
  *  1. The matched endpoint description (describes the specific call)
- *  2. The first scope description (fallback when endpoint is uncurated)
+ *  2. The first scope description (fallback when endpoint is uncurated, skipped when
+ *     several endpoints match and disagree)
  *  3. A generic "Allow <method> request to <Toolkit>?" string
  *
  * Note: do NOT default to scope descriptions for the headline. Scope-level
@@ -82,8 +87,9 @@ export function generateReviewDisplayText(
   targetPath: string,
   scopeDescriptions: Record<string, string>,
   endpointDescription?: string,
+  endpointAmbiguous?: boolean,
 ): string {
-  const candidate = endpointDescription || Object.values(scopeDescriptions)[0]
+  const candidate = endpointDescription || (endpointAmbiguous ? undefined : Object.values(scopeDescriptions)[0])
   if (candidate) {
     if (candidate.endsWith('?')) return candidate
     // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
@@ -102,4 +108,43 @@ export function generateReviewDisplayText(
 
   // Fallback: generic description using toolkit name
   return `Allow ${method} request to ${toolkitDisplay}?`
+}
+
+const PREVIEW_MAX_CHARS = 2000
+// Bodies past this size are shown from their start, unparsed.
+const PARSE_MAX_BYTES = 64_000
+const TEXT_BODY = /json|text\/|x-www-form-urlencoded|graphql|xml/i
+const GRAPHQL_KEYS = new Set(['query', 'variables', 'operationName'])
+
+/** A GraphQL request: a `query` string and nothing beyond the standard GraphQL fields. */
+function isGraphqlRequest(json: unknown): json is { query: string; variables?: unknown; operationName?: unknown } {
+  return !!json && typeof json === 'object' && !Array.isArray(json) &&
+    'query' in json && typeof json.query === 'string' &&
+    Object.keys(json).every((key) => GRAPHQL_KEYS.has(key))
+}
+
+/**
+ * The request body as the approval card shows it: a GraphQL query as written with its operation and variables,
+ * other JSON pretty-printed, other text as sent. Binary and blank bodies have no preview.
+ */
+export function requestBodyPreview(body: ArrayBuffer | null, contentType: string | undefined): string | undefined {
+  if (!body || !contentType || !TEXT_BODY.test(contentType)) return undefined
+  let text = new TextDecoder().decode(body.byteLength > PARSE_MAX_BYTES ? body.slice(0, PARSE_MAX_BYTES) : body)
+  if (!text.trim()) return undefined
+  if (body.byteLength <= PARSE_MAX_BYTES) {
+    try {
+      const json: unknown = JSON.parse(text)
+      text = isGraphqlRequest(json)
+        ? [
+            typeof json.operationName === 'string' ? `operation: ${json.operationName}` : '',
+            json.query.trim(),
+            json.variables ? JSON.stringify(json.variables, null, 2) : '',
+          ].filter(Boolean).join('\n\n')
+        : JSON.stringify(json, null, 2)
+    } catch {
+      // Not JSON: show it as sent.
+    }
+  }
+  if (!text.trim()) return undefined
+  return text.length > PREVIEW_MAX_CHARS ? `${text.slice(0, PREVIEW_MAX_CHARS)}…` : text
 }

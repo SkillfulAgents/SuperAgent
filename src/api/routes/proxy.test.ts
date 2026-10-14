@@ -1209,6 +1209,33 @@ describe('proxy policy enforcement', () => {
     )
   })
 
+  it('review → passes endpoint ambiguity and what the request sends to the review', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['read'], descriptions: {}, endpointAmbiguous: true })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['read'],
+      scopeDescriptions: {},
+      endpointAmbiguous: true,
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const body = '{"query":"mutation { issueDelete(id: \\"LIN-1\\") { success } }"}'
+
+    await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { method: 'POST', body, headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' } }
+    )
+    expect(mockRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ endpointAmbiguous: true, requestBody: 'mutation { issueDelete(id: "LIN-1") { success } }' }),
+      expect.anything(),
+      expect.anything(),
+    )
+    // The body read for the card is the one forwarded.
+    expect(new TextDecoder().decode(mockMakeApiCall.mock.calls[0][0].body)).toBe(body)
+  })
+
   it('review → user denies → returns 403, error: "denied_by_user"', async () => {
     setupThroughHostValidation()
     mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })

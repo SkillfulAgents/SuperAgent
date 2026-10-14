@@ -13,6 +13,7 @@ export interface PolicyResult {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   endpointDescription?: string
+  endpointAmbiguous?: boolean
   resolvedFrom:
     | 'scope_policy'
     | 'account_label_default'
@@ -126,6 +127,7 @@ export async function resolveApiPolicy(
     matchedScopes: matchResult.scopes,
     scopeDescriptions: matchResult.descriptions,
     endpointDescription: matchResult.endpointDescription,
+    endpointAmbiguous: matchResult.endpointAmbiguous,
     resolvedFrom,
   }
 }
