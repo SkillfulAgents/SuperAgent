@@ -28,7 +28,7 @@ import {
 // ── Types ───────────────────────────────────────────────────────────────
 
 export interface IncomingMessage {
-  externalMessageId: string    // Platform-specific ID (Telegram update_id, Slack message ts)
+  externalMessageId: string    // Platform-specific ID (Telegram message_id, unique per chat; Slack message ts)
   text: string
   chatId: string               // Telegram chat_id or Slack channel_id
   userId: string               // Telegram user_id or Slack user_id

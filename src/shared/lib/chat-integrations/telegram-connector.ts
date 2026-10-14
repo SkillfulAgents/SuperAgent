@@ -1,25 +1,37 @@
 /**
  * TelegramConnector — Telegram Bot API integration via grammY.
  *
- * Uses long polling (no webhooks) for Electron compatibility.
+ * Each connection receives updates one of two ways. With the host's webhook
+ * relay, the bot's webhook is the installation's relay endpoint, and updates
+ * (including those sent while the host was offline) arrive through it.
+ * Without one, or if the webhook can't be set, it long-polls. See
+ * telegram-webhooks.ts.
+ *
  * Streams Bot API 10.1 rich messages: animated sendRichMessageDraft in DMs,
  * throttled sendRichMessage + editMessageText in groups, with a markdownToTelegramHtml
  * fallback for the rich-send error path and the richMessages rollback flag.
  * User request cards rendered as inline keyboards.
  */
 
-import { Bot, type Context as GrammyContext } from 'grammy'
+import { Bot, BotError, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
+import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
+import type { IntegrationRelayAttachment, IntegrationRelayHost } from '../agent-integrations/transport'
+import { relayAcceptResult } from '../agent-integrations/relay-transport'
+import { IntegrationSetupError } from '../agent-integrations/setup-types'
+import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
 import {
   ChatAgentIntegration,
   isMultiPartyChatType,
   type ChatClassifyContext,
   type ChatConversationType,
+  type IncomingMessage,
   type OutgoingMessage,
   type SystemPromptContext,
 } from './chat-agent-integration'
+import { TELEGRAM_UPDATE_TYPES, checkTelegramWebhook, ensureTelegramWebhook, telegramSecretToken, telegramTimeout } from './telegram-webhooks'
 import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
@@ -41,6 +53,8 @@ export interface TelegramConfig {
 
 const FIRST_POLL_BATCH_DELAY_MS = 500
 const RICH_DRAFT_SENTINEL_PREFIX = 'draft:'
+/** How long setting the webhook may take before the connection long-polls instead. */
+const WEBHOOK_SETUP_TIMEOUT_MS = 10_000
 
 // ── Markdown → Telegram HTML ─────────────────────────────────────────────
 
@@ -144,6 +158,81 @@ export function buildTelegramSystemPrompt(message: SystemPromptContext): string 
   })
 }
 
+// ── Open cards ──────────────────────────────────────────────────────────
+
+/** A pending multi-question request: answers accumulate until all questions are answered. */
+interface PendingQuestion {
+  totalQuestions: number
+  answers: Record<string, string> // { questionText: selectedAnswer }
+  chatId: string
+  // Single-select sub-cards of this multi-question card (multiSelect sub-cards live in
+  // pendingMultiSelect); tracked so dismissOpenCards can strip every keyboard on cancel and so
+  // a tap can rebuild its confirmation from the stored question text (rich messages carry none).
+  cards: Array<{ messageId: string; cbIds: string[]; questionText: string }>
+  ts: number
+}
+
+/** An open multiSelect question: the redraw state + the accumulating checked set. */
+interface PendingMultiSelect {
+  chatId: string
+  messageId: string
+  questionText: string
+  options: Array<{ label: string; cbId: string }>
+  doneCbId: string
+  checked: Set<string>
+  ts: number
+}
+
+/** The open single-question AskUserQuestion card of a chat. */
+interface OpenQuestionCard {
+  toolUseId: string
+  question: string
+  questionText: string
+  messageId: string
+  multiSelect: boolean
+  cbIds: string[]
+  ts: number
+}
+
+/**
+ * An installation's open cards and what their buttons mean. They outlive a
+ * connection, as the cards stay in the chat: a tap can arrive after a
+ * reconnect (a settings change, or updates Telegram or the relay held while
+ * the host was away). A restart forgets them, and taps on older cards do nothing.
+ */
+interface TelegramCards {
+  // Callback ids → their toolUseId mappings (Telegram callback_data is limited to 64 bytes)
+  callbacks: Map<string, { toolUseId: string; value: unknown; ts: number }>
+  nextCallbackId: number
+  pendingQuestions: Map<string, PendingQuestion>
+  // Keyed by `${toolUseId} ${question}` (toolUseId has no spaces, so the join is unambiguous).
+  // In-memory only — never encoded into callback_data, which Telegram caps at 64 bytes.
+  pendingMultiSelect: Map<string, PendingMultiSelect>
+  // Per chat, so a free-typed message can be resolved as the "Other" answer. Set only for
+  // single-question cards (multi-question falls through to cancel); cleared synchronously when
+  // the card is answered by any path.
+  openQuestionCard: Map<string, OpenQuestionCard>
+}
+
+const cardsByInstallation = new Map<string, TelegramCards>()
+
+function newCards(): TelegramCards {
+  return { callbacks: new Map(), nextCallbackId: 0, pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map() }
+}
+
+/** The installation's open cards; a connector without one keeps its own. */
+function cardsFor(integrationId: string | undefined): TelegramCards {
+  if (!integrationId) return newCards()
+  let cards = cardsByInstallation.get(integrationId)
+  if (!cards) cardsByInstallation.set(integrationId, cards = newCards())
+  return cards
+}
+
+/** The installation is gone. */
+export function forgetTelegramCards(integrationId: string): void {
+  cardsByInstallation.delete(integrationId)
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class TelegramConnector extends ChatAgentIntegration {
@@ -161,45 +250,12 @@ export class TelegramConnector extends ChatAgentIntegration {
   // First-poll batching: accumulate messages before sending them all at once
   private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: 'private' | 'group' | 'supergroup' }> = new Map()
 
-  // Track callback_query toolUseId mappings (Telegram callback_data is limited to 64 bytes)
-  private callbackDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
-  private nextCallbackId = 0
+  private readonly cards: TelegramCards
+  private readonly callbackDataMap: TelegramCards['callbacks']
   private static readonly CALLBACK_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
-
-  // Track pending multi-question requests: accumulate answers until all questions are answered
-  private pendingQuestions: Map<string, {
-    totalQuestions: number
-    answers: Record<string, string> // { questionText: selectedAnswer }
-    chatId: string
-    // Single-select sub-cards of this multi-question card (multiSelect sub-cards live in
-    // pendingMultiSelect); tracked so dismissOpenCards can strip every keyboard on cancel and so
-    // a tap can rebuild its confirmation from the stored question text (rich messages carry none).
-    cards: Array<{ messageId: string; cbIds: string[]; questionText: string }>
-  }> = new Map()
-
-  // Track open multiSelect questions: the redraw state + the accumulating checked set,
-  // keyed by `${toolUseId} ${question}` (toolUseId has no spaces, so the join is unambiguous).
-  // In-memory only — never encoded into callback_data, which Telegram caps at 64 bytes.
-  private pendingMultiSelect: Map<string, {
-    chatId: string
-    messageId: string
-    questionText: string
-    options: Array<{ label: string; cbId: string }>
-    doneCbId: string
-    checked: Set<string>
-  }> = new Map()
-
-  // Track the open single-question AskUserQuestion card per chat, so a free-typed message can
-  // be resolved as the "Other" answer. Set only for single-question cards (multi-question falls
-  // through to cancel); cleared synchronously when the card is answered by any path.
-  private openQuestionCard: Map<string, {
-    toolUseId: string
-    question: string
-    questionText: string
-    messageId: string
-    multiSelect: boolean
-    cbIds: string[]
-  }> = new Map()
+  private readonly pendingQuestions: TelegramCards['pendingQuestions']
+  private readonly pendingMultiSelect: TelegramCards['pendingMultiSelect']
+  private readonly openQuestionCard: TelegramCards['openQuestionCard']
 
   // Animated DM draft streaming: per-chat non-zero draft id.
   private nextDraftId = 1
@@ -208,8 +264,32 @@ export class TelegramConnector extends ChatAgentIntegration {
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
 
-  constructor(private config: TelegramConfig, private appLink?: AppLinkContext) {
+  /** Bumped by each connect and disconnect; relayed updates for an older connection are retried. */
+  private generation = 0
+  /** How this connection receives updates, chosen as it connects. */
+  private mode: 'polling' | 'webhooks' | null = null
+  private relayAttachment?: IntegrationRelayAttachment
+  /** Relayed updates are handled one at a time, in the order the relay hands them over. */
+  private processing: Promise<unknown> = Promise.resolve()
+  /** What the host did with each update's message, for a relayed update to report back. */
+  private readonly inputResults = new WeakMap<object, Promise<IntegrationInputResult>>()
+
+  /**
+   * `integration` is the installation this connects for. Without it the relay
+   * is never used (its endpoint is saved on the installation), and open cards
+   * last only as long as this connector.
+   */
+  constructor(
+    private config: TelegramConfig,
+    private appLink?: AppLinkContext,
+    private integration?: Pick<AgentIntegrationRecord, 'id' | 'agentSlug' | 'createdByUserId'>,
+  ) {
     super()
+    this.cards = cardsFor(integration?.id)
+    this.callbackDataMap = this.cards.callbacks
+    this.pendingQuestions = this.cards.pendingQuestions
+    this.pendingMultiSelect = this.cards.pendingMultiSelect
+    this.openQuestionCard = this.cards.openQuestionCard
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -217,16 +297,59 @@ export class TelegramConnector extends ChatAgentIntegration {
   async connect(): Promise<void> {
     this.disconnecting = false
     this.startupError = null
-    this.bot = new Bot(this.config.botToken)
+    const generation = ++this.generation
+    const bot = this.bot = new Bot(this.config.botToken)
+    this.registerHandlers(bot)
 
+    // The webhook whenever the host has a relay as this connection starts;
+    // long polling otherwise, or if the webhook can't be set right now.
+    const relay = this.integration ? this.host.relay : null
+    if (relay && this.integration && await this.connectWebhooks(bot, relay, this.integration, generation)) return
+    if (generation !== this.generation) return
+    this.mode = 'polling'
+    await this.startPolling(bot)
+  }
+
+  /** Receives through the relay. False leaves this connection to long polling. */
+  private async connectWebhooks(bot: Bot, relay: IntegrationRelayHost, integration: NonNullable<TelegramConnector['integration']>, generation: number): Promise<boolean> {
+    let webhook: Awaited<ReturnType<typeof ensureTelegramWebhook>>
+    let secretToken: string
+    try {
+      webhook = await ensureTelegramWebhook(integration)
+      if (!webhook || generation !== this.generation) return false
+      secretToken = telegramSecretToken(webhook.secret, this.config.botToken)
+      const signal = telegramTimeout(WEBHOOK_SETUP_TIMEOUT_MS)
+      // handleUpdate needs the bot's own profile, which polling fetches as it starts.
+      bot.botInfo = await bot.api.getMe(signal)
+      // Every connect: the same webhook again is a no-op, and setting it moves
+      // the updates held for getUpdates to it.
+      await bot.api.setWebhook(webhook.relay.url, {
+        secret_token: secretToken, allowed_updates: [...TELEGRAM_UPDATE_TYPES], drop_pending_updates: false,
+      }, signal)
+    } catch (error) {
+      if (error instanceof IntegrationSetupError) console.warn(`[TelegramConnector] Long polling for ${integration.id}: ${error.message}`)
+      else this.report(error, 'telegram-webhooks')
+      return false
+    }
+    if (generation !== this.generation) return false
+    this.mode = 'webhooks'
+    // Updates held while the host was away aren't batched: each is acknowledged on its own.
+    this.hasCompletedFirstPoll = true
+    this.relayAttachment = relay.attach(webhook.relay, events => this.acceptRelayed(events, secretToken, generation))
+    this.connected = true
+    console.log(`[TelegramConnector] Receiving through the webhook for ${integration.id}`)
+    return true
+  }
+
+  private registerHandlers(bot: Bot): void {
     // Handle text messages
-    this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx))
+    bot.on('message:text', (ctx) => this.handleTextMessage(ctx))
 
     // Handle callback queries (inline keyboard button clicks)
-    this.bot.on('callback_query:data', (ctx) => this.handleCallbackQuery(ctx))
+    bot.on('callback_query:data', (ctx) => this.handleCallbackQuery(ctx))
 
     // Handle photo messages (images sent directly, not as documents)
-    this.bot.on('message:photo', async (ctx) => {
+    bot.on('message:photo', async (ctx) => {
       const photos = ctx.message.photo
       if (!photos || photos.length === 0) return
 
@@ -237,13 +360,13 @@ export class TelegramConnector extends ChatAgentIntegration {
       const chatId = String(ctx.chat.id)
       let url = ''
       try {
-        const file = await this.bot!.api.getFile(largest.file_id)
+        const file = await bot.api.getFile(largest.file_id)
         url = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`
       } catch { /* fallback to file_id */ }
 
       const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || undefined
 
-      void this.emitMessage({
+      this.forward(ctx, {
         externalMessageId: String(ctx.message.message_id),
         text: ctx.message.caption || '',
         chatId,
@@ -261,20 +384,20 @@ export class TelegramConnector extends ChatAgentIntegration {
     })
 
     // Handle document uploads (for file request resolution)
-    this.bot.on('message:document', async (ctx) => {
+    bot.on('message:document', async (ctx) => {
       const doc = ctx.message.document
       const chatType = ctx.chat.type
 
       const chatId = String(ctx.chat.id)
       let url = ''
       try {
-        const file = await this.bot!.api.getFile(doc.file_id)
+        const file = await bot.api.getFile(doc.file_id)
         url = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`
       } catch { /* fallback */ }
 
       const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || undefined
 
-      void this.emitMessage({
+      this.forward(ctx, {
         externalMessageId: String(ctx.message.message_id),
         text: ctx.message.caption || '',
         chatId,
@@ -290,15 +413,19 @@ export class TelegramConnector extends ChatAgentIntegration {
         timestamp: new Date(ctx.message.date * 1000),
       })
     })
+  }
 
+  private async startPolling(bot: Bot): Promise<void> {
     // Start long polling
     // Use runner pattern: bot.start() returns a promise that resolves once
     // the first getUpdates succeeds (proving the token is valid)
     // A rejection here (e.g. grammY 409 Conflict from duplicate pollers) must
     // be caught — otherwise it bubbles up to process.unhandledRejection and
     // crashes the Electron app.
-    this.bot.start({
-      allowed_updates: ['message', 'callback_query'],
+    // Before its first getUpdates, grammY deletes any webhook (an earlier
+    // connection's), keeping the updates held for it.
+    bot.start({
+      allowed_updates: [...TELEGRAM_UPDATE_TYPES],
       drop_pending_updates: false,
       onStart: () => {
         this.connected = true
@@ -344,14 +471,19 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.disconnecting = true
     this.connected = false
     this.hasCompletedFirstPoll = false
+    this.generation++
+    this.mode = null
+    this.relayAttachment?.detach()
+    this.relayAttachment = undefined
 
     // Flush any pending batches
     this.flushAllPendingBatches()
-    this.callbackDataMap.clear()
-    this.pendingQuestions.clear()
+    // Open cards stay with the installation, for the next connection.
     this.activeDrafts.clear()
     this.workingActivity.clear()
 
+    // Relayed updates mid-handling finish (or come back as retries) before the next connection starts.
+    await this.processing.catch(() => {})
     if (this.bot) {
       await this.bot.stop()
       this.bot = null
@@ -360,7 +492,13 @@ export class TelegramConnector extends ChatAgentIntegration {
   }
 
   isConnected(): boolean {
-    return this.connected
+    // Through the webhook, updates wait on the relay while it's down, so being attached is enough.
+    return this.mode === 'webhooks' ? !!this.relayAttachment?.isAttached() : this.connected
+  }
+
+  activeTransport() {
+    if (this.mode === 'webhooks') return this.relayAttachment?.isAttached() ? 'relay' as const : null
+    return this.connected ? 'direct' as const : null
   }
 
   // ── Message sending ─────────────────────────────────────────────────
@@ -562,6 +700,7 @@ export class TelegramConnector extends ChatAgentIntegration {
             answers: {},
             chatId,
             cards: [],
+            ts: Date.now(),
           })
         }
 
@@ -584,12 +723,12 @@ export class TelegramConnector extends ChatAgentIntegration {
             keyboard.push([{ text: 'Done', callback_data: doneCbId }])
             lastMessageId = await this.sendRichOrHtml(chatId, text, { reply_markup: { inline_keyboard: keyboard } })
             this.pendingMultiSelect.set(this.multiSelectKey(event.toolUseId, q.question), {
-              chatId, messageId: lastMessageId, questionText: text, options, doneCbId, checked: new Set(),
+              chatId, messageId: lastMessageId, questionText: text, options, doneCbId, checked: new Set(), ts: Date.now(),
             })
             if (singleQuestionCard) {
               this.openQuestionCard.set(chatId, {
                 toolUseId: event.toolUseId, question: q.question, questionText: text,
-                messageId: lastMessageId, multiSelect: true, cbIds: [...options.map((o) => o.cbId), doneCbId],
+                messageId: lastMessageId, multiSelect: true, cbIds: [...options.map((o) => o.cbId), doneCbId], ts: Date.now(),
               })
             }
             continue
@@ -617,7 +756,7 @@ export class TelegramConnector extends ChatAgentIntegration {
           if (singleQuestionCard) {
             this.openQuestionCard.set(chatId, {
               toolUseId: event.toolUseId, question: q.question, questionText: text,
-              messageId: lastMessageId, multiSelect: false, cbIds,
+              messageId: lastMessageId, multiSelect: false, cbIds, ts: Date.now(),
             })
           } else if (hasOptions) {
             // Multi-question single-select sub-card: track its message + callbacks so a cancel can
@@ -658,9 +797,9 @@ export class TelegramConnector extends ChatAgentIntegration {
    *  toast can fire (a callback can be answered exactly once). */
   private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
     const data = ctx.callbackQuery?.data
-    if (!data) { await ctx.answerCallbackQuery(); return }
+    if (!data) { await this.answerTap(ctx); return }
     const mapping = this.callbackDataMap.get(data)
-    if (!mapping) { await ctx.answerCallbackQuery(); return }
+    if (!mapping) { await this.answerTap(ctx); return }
     const val = mapping.value as { kind?: 'multiToggle' | 'multiDone'; question: string; answer?: string; label?: string }
 
     if (val.kind === 'multiToggle') { await this.handleMultiSelectToggle(ctx, mapping.toolUseId, val.question, val.label ?? ''); return }
@@ -685,7 +824,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // multi-question sub-card must not wipe a different single-question card's tracking.
     if (currentCard) this.openQuestionCard.delete(chatId)
 
-    await ctx.answerCallbackQuery()
+    await this.answerTap(ctx)
     // Rebuild the confirmation from the STORED question text: on the default rich-message path
     // ctx.callbackQuery.message.text is empty, so reading it would drop the question (only the
     // richMessages=false HTML fallback carries readable text).
@@ -698,7 +837,7 @@ export class TelegramConnector extends ChatAgentIntegration {
   /** Toggle a multiSelect option's ✅ and redraw the keyboard; does not resolve. */
   private async handleMultiSelectToggle(ctx: GrammyContext, toolUseId: string, question: string, label: string): Promise<void> {
     const state = this.pendingMultiSelect.get(this.multiSelectKey(toolUseId, question))
-    if (!state) { await ctx.answerCallbackQuery(); return }
+    if (!state) { await this.answerTap(ctx); return }
     if (state.checked.has(label)) state.checked.delete(label)
     else state.checked.add(label)
 
@@ -713,15 +852,15 @@ export class TelegramConnector extends ChatAgentIntegration {
       const m = err instanceof Error ? err.message : String(err)
       if (!m.includes('message is not modified')) console.error('[TelegramConnector] multi-select redraw failed:', err)
     }
-    await ctx.answerCallbackQuery()
+    await this.answerTap(ctx)
   }
 
   /** Resolve a multiSelect question with the checked options, joined by ", ". */
   private async handleMultiSelectDone(ctx: GrammyContext, toolUseId: string, question: string): Promise<void> {
     const state = this.pendingMultiSelect.get(this.multiSelectKey(toolUseId, question))
-    if (!state) { await ctx.answerCallbackQuery(); return }
+    if (!state) { await this.answerTap(ctx); return }
     if (state.checked.size === 0) {
-      await ctx.answerCallbackQuery({ text: 'Select at least one option, then tap Done.' })
+      await this.answerTap(ctx, 'Select at least one option, then tap Done.')
       return
     }
     const answer = [...state.checked].join(', ')
@@ -737,7 +876,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     const openCard = this.openQuestionCard.get(state.chatId)
     if (openCard && openCard.toolUseId === toolUseId) this.openQuestionCard.delete(state.chatId)
 
-    await ctx.answerCallbackQuery()
+    await this.answerTap(ctx)
 
     await this.confirmAndEmit(state.chatId, state.messageId, state.questionText, toolUseId, question, answer)
   }
@@ -873,7 +1012,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     }
 
     // Normal flow: forward immediately
-    void this.emitMessage({
+    this.forward(ctx, {
       externalMessageId: messageId,
       text,
       chatId,
@@ -913,17 +1052,75 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.pendingFirstPollMessages.clear()
   }
 
+  // ── Relay ────────────────────────────────────────────────────────────
+
+  /** Webhook posts the relay claimed, each checked, then handled like a polled update. */
+  private async acceptRelayed(events: readonly RelayEvent[], secretToken: string, generation: number): Promise<Map<string, RelayAcceptResult>> {
+    const results = new Map<string, RelayAcceptResult>()
+    for (const event of events) {
+      const handled = this.processing.then(() => this.acceptRelayedEvent(event, secretToken, generation))
+      this.processing = handled.catch(() => {})
+      results.set(event.id, await handled)
+    }
+    return results
+  }
+
+  private async acceptRelayedEvent(event: RelayEvent, secretToken: string, generation: number): Promise<RelayAcceptResult> {
+    // A replaced or stopped connection's updates belong to its successor.
+    if (generation !== this.generation || !this.bot) return 'retry'
+    // Anyone with the URL can post to it; only Telegram has the secret token.
+    const check = checkTelegramWebhook(event, secretToken)
+    if (!check.ok) {
+      if (check.reason !== 'handshake') console.warn(`[TelegramConnector] Discarding relayed post ${event.id}: ${check.reason}`)
+      return 'discard'
+    }
+    const { update } = check
+    try {
+      await this.bot.handleUpdate(update)
+    } catch (error) {
+      // A handler failed, not the host's acceptance (which resolves): it would fail the same way again.
+      this.report(error instanceof BotError ? error.error : error, 'telegram-relayed-update')
+      return 'discard'
+    }
+    const result = this.inputResults.get(update)
+    // An update with no message for the host (a button tap) was handled in full.
+    return result ? relayAcceptResult(await result) : 'accepted'
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────
 
-  private registerCallback(toolUseId: string, value: unknown): string {
-    // Evict stale callbacks to prevent unbounded growth
-    const now = Date.now()
-    for (const [key, entry] of this.callbackDataMap) {
-      if (now - entry.ts > TelegramConnector.CALLBACK_TTL_MS) {
-        this.callbackDataMap.delete(key)
-      }
+  /** Hands a message to the host. A relayed update waits for the result to report it; a polled one doesn't. */
+  private forward(ctx: GrammyContext, message: IncomingMessage): void {
+    const result = this.emitMessage(message)
+    if (ctx.update) this.inputResults.set(ctx.update, result)
+  }
+
+  /**
+   * Stops the button's spinner. Best-effort: Telegram refuses an answer to a
+   * tap that waited too long (for a poll or the relay), which mustn't stop
+   * the tap from resolving the card.
+   */
+  private async answerTap(ctx: GrammyContext, text?: string): Promise<void> {
+    try {
+      await ctx.answerCallbackQuery(text ? { text } : undefined)
+    } catch (error) {
+      console.warn('[TelegramConnector] Could not answer a button tap:', error instanceof Error ? error.message : error)
     }
-    const id = `cb_${this.nextCallbackId++}`
+  }
+
+  private report(error: unknown, operation: string): void {
+    console.error(`[TelegramConnector] ${operation} failed:`, error)
+    captureException(error, { tags: { component: 'chat-integration', operation }, extra: { provider: 'telegram', integrationId: this.integration?.id } })
+  }
+
+  private registerCallback(toolUseId: string, value: unknown): string {
+    // Evict stale cards and callbacks to prevent unbounded growth: they outlive connections.
+    const now = Date.now()
+    const stale = (entry: { ts: number }) => now - entry.ts > TelegramConnector.CALLBACK_TTL_MS
+    for (const map of [this.callbackDataMap, this.pendingQuestions, this.pendingMultiSelect, this.openQuestionCard]) {
+      for (const [key, entry] of map) if (stale(entry)) map.delete(key)
+    }
+    const id = `cb_${this.cards.nextCallbackId++}`
     this.callbackDataMap.set(id, { toolUseId, value, ts: now })
     return id
   }

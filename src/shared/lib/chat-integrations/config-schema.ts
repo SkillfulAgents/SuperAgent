@@ -14,6 +14,10 @@ export const telegramConfigSchema = z.object({
   richMessages: z.boolean().optional(),        // global rollback switch (default: rich)
   draftStreaming: z.boolean().optional(),       // animated DM streaming (default: on)
   skipEntityDetection: z.boolean().optional(),  // default: false (auto-detection ON)
+  /** The relay endpoint set as the bot's webhook; minted on the first connect with a relay. */
+  ...integrationRelayConfigShape,
+  /** The webhook's secret_token, which Telegram sends back on every post. Generated with the endpoint and never shown. */
+  webhookSecret: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional(),
 })
 
 export const slackConfigSchema = z.object({
@@ -52,6 +56,7 @@ export const imessageConfigSchema = z.object({
 
 /** Config the host writes itself; a settings patch or setup input can't supply it. */
 const HOST_OWNED_FIELDS: Partial<Record<string, readonly string[]>> = {
+  telegram: ['relay', 'webhookSecret'],
   imessage: ['relay', 'webhookSecret'],
 }
 
