@@ -3,8 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; volumeId?: string; name: string; type: string; hostPath: string | null; health?: unknown }[],
-  definitions: [] as { id: string; name: string; hostPath: string }[],
+  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown }[],
+  definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
   operationError: null as string | null,
   handleAttach: vi.fn(),
@@ -22,6 +22,10 @@ const volumes = vi.hoisted(() => ({
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useVolumesManager: () => volumes }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
+const { navigate, save, toastError } = vi.hoisted(() => ({ navigate: vi.fn(), save: vi.fn(), toastError: vi.fn() }))
+vi.mock('sonner', () => ({ toast: { error: toastError } }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@renderer/hooks/use-volume-definitions', () => ({ useSaveVolumeDefinition: () => ({ mutateAsync: save }) }))
 
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
   mockCanUseHostFeatures: vi.fn(() => true),
@@ -30,7 +34,6 @@ vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: mockCanUseHo
 
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children, search }: { children: React.ReactNode; search: { volume: string } }) => <a href={`/settings/volumes?volume=${search.volume}`}>{children}</a> }))
 import { HomeVolumes } from './home-volumes'
 
 /**
@@ -38,7 +41,7 @@ import { HomeVolumes } from './home-volumes'
  * the selected API target and can also be attached from browsers/cloud windows.
  */
 
-const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', type: 'local', hostPath: '/Users/joe/code' }
+const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', volumeName: 'code', type: 'local', hostPath: '/Users/joe/code' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -76,7 +79,7 @@ describe('driving this computer', () => {
 
 describe('a volume with no local folder', () => {
   it('lists it by name, with no path, open or copy action', async () => {
-    volumes.mounts = [{ id: 'd1', name: 'drive', type: 'gdrive', hostPath: null }]
+    volumes.mounts = [{ id: 'd1', name: 'drive', volumeName: 'drive', type: 'gdrive', hostPath: null }]
     render(<HomeVolumes agentSlug="a1" />)
 
     expect(screen.getByText('drive')).toBeInTheDocument()
@@ -104,6 +107,7 @@ describe('driving a cloud workspace', () => {
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByText('code')).toBeInTheDocument()
     expect(screen.getByText('/Users/joe/code')).toBeInTheDocument()
+    expect(screen.queryByText('/mounts/code')).not.toBeInTheDocument()
   })
 
   it('drops the open-in-file-manager action', async () => {
@@ -115,13 +119,18 @@ describe('driving a cloud workspace', () => {
     expect(screen.getByRole('button', { name: /copy path/i })).toBeInTheDocument()
   })
 
-  it('does not leave the row looking clickable', () => {
+  it('opens the volume settings from the row, back to this agent', async () => {
+    volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code' }]
     render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByText('code'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: '/agents/a1' } })
+  })
 
-    // The row is the primary open-in-Finder target. Left as a focusable
-    // role=button it would promise an action this window cannot perform.
-    const rows = screen.queryAllByRole('button').filter((el) => el.textContent?.includes('code'))
-    expect(rows).toHaveLength(0)
+  it('leaves the row inert when this viewer cannot open the volume\'s settings', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByText('code'))
+    expect(navigate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Open code volume settings' })).not.toBeInTheDocument()
   })
 
   it('does not show a local-folder creation flow when there are no saved volumes or mounts', () => {
@@ -195,8 +204,43 @@ describe('saved volume picker', () => {
 })
 
 
-it('links mount settings to the shared definition rather than the attachment', async () => {
-  render(<HomeVolumes agentSlug="a1" />)
-  await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
-  expect(screen.getByRole('link', { name: 'Volume settings' })).toHaveAttribute('href', '/settings/volumes?volume=v1')
+describe('renaming', () => {
+  it('renames the volume, not this agent\'s attachment', async () => {
+    volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code', canManage: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    await userEvent.clear(await screen.findByRole('textbox', { name: 'Rename volume' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rename volume' }), 'Code base{Enter}')
+    expect(save).toHaveBeenCalledWith({ id: 'v1', name: 'Code base' })
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('rejects a name with a slash before saving, and Escape makes the row clickable again', async () => {
+    volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code', canManage: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Rename volume' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rename volume' }), 'a/b{Enter}')
+    expect(save).not.toHaveBeenCalled()
+    expect(toastError).toHaveBeenCalledWith('Failed to rename volume', { description: 'Use a single folder name' })
+    expect(screen.queryByRole('button', { name: 'Open code volume settings' })).not.toBeInTheDocument()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'Open code volume settings' })).toBeInTheDocument()
+  })
+
+  it('hides Rename from people who cannot manage the volume', async () => {
+    volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code', canManage: false }]
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+    expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument()
+  })
+
+  it('shows the volume name, and the agent\'s folder path once they differ', () => {
+    volumes.mounts = [{ ...MOUNT, volumeName: 'Code base' }]
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText('Code base')).toBeInTheDocument()
+    expect(screen.getByText('/mounts/code')).toBeInTheDocument()
+  })
 })

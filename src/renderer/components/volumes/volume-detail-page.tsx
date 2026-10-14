@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { ChevronLeft, Globe, Lock, Trash2 } from 'lucide-react'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { useHideSettingsHeader, useFullWidthSettingsContent } from '@renderer/components/settings/settings-page'
@@ -10,8 +11,9 @@ import { useAgents } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
 import { useSaveVolumeDefinition, useVolumeAgents } from '@renderer/hooks/use-volume-definitions'
+import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { VolumeDetailsFields } from './volume-setup-layout'
-import { volumeDetailsSchema, type VolumeDetails } from './volume-details-schema'
+import { parseVolumeName, type VolumeDetails } from './volume-details-schema'
 import { VolumeIcon } from './volume-icon'
 import { VolumeFileBrowser } from './volume-file-browser'
 
@@ -49,24 +51,22 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
 }
 
 function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSummary; onDelete: () => void }) {
+  const { isAuthMode, isAdmin } = useUser()
   const save = useSaveVolumeDefinition()
-  const [details, setDetails] = useState<VolumeDetails>({ name: volume.name, visibility: volume.userId === null ? 'public' : 'private' })
+  const [visibility, setVisibility] = useState<VolumeDetails['visibility']>(volume.userId === null ? 'public' : 'private')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const submit = async () => {
     setError(null); setSaved(false)
-    const input = volumeDetailsSchema.safeParse(details)
-    if (!input.success) { setError(input.error.issues[0].message); return }
-    try { await save.mutateAsync({ id: volume.id, ...input.data }); setSaved(true) }
+    try { await save.mutateAsync({ id: volume.id, visibility }); setSaved(true) }
     catch (err) { setError(err instanceof Error ? err.message : 'Could not save volume') }
   }
   return <section className="space-y-2">
     <h3 className="text-xs font-normal text-muted-foreground">Settings</h3>
     <form className="rounded-xl border bg-background p-4 space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
-      <VolumeDetailsFields value={details} onChange={next => { setDetails(next); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
+      <VolumeDetailsFields showName={false} value={{ name: volume.name, visibility }} onChange={next => { setVisibility(next.visibility); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
         <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
       </VolumeDetailsFields>
-      <p className="text-xs text-muted-foreground">Renaming this volume keeps existing agents’ mount paths.</p>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={onDelete}
@@ -74,22 +74,43 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
           <Trash2 className="h-3.5 w-3.5" />Delete volume
         </Button>
         <span className="flex-1 text-xs text-muted-foreground" role="status">{saved ? 'Saved' : ''}</span>
-        <Button type="submit" size="sm" disabled={save.isPending || !details.name.trim()}>{save.isPending ? 'Saving…' : 'Save changes'}</Button>
+        {isAuthMode && isAdmin && volume.attachmentCount === 0 && <Button type="submit" size="sm" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save changes'}</Button>}
       </div>
     </form>
   </section>
 }
 
-export function VolumeDetailPage({ volume, onBack, onDelete }: { volume: VolumeDefinitionSummary; onBack: () => void; onDelete: () => void }) {
+export function VolumeDetailPage({ volume, onBack, backLabel = 'Volumes', onDelete }: { volume: VolumeDefinitionSummary; onBack: () => void; backLabel?: string; onDelete: () => void }) {
   useHideSettingsHeader(true)
   useFullWidthSettingsContent(true)
+  const save = useSaveVolumeDefinition()
   return <div className="space-y-4 w-full max-w-6xl mx-auto" data-testid="volume-detail-page">
-    <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"><ChevronLeft className="h-3.5 w-3.5 mr-1" />Volumes</Button>
+    <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"><ChevronLeft className="h-3.5 w-3.5 mr-1" />{backLabel}</Button>
     <div className="flex items-center gap-3">
       <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center shrink-0"><VolumeIcon type={volume.type} className="h-5 w-5" /></div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2"><h2 className="text-base font-medium truncate">{volume.name}</h2><VolumeStatusBadge health={volume.health} /></div>
+        <div className="flex items-center gap-2">
+          <InlineEditableTitle
+            value={volume.name}
+            canEdit={volume.canManage}
+            isSaving={save.isPending}
+            onSave={async name => { await save.mutateAsync({ id: volume.id, name: parseVolumeName(name) }) }}
+            onError={error => {
+              toast.error('Failed to rename volume', { description: error instanceof Error ? error.message : 'Please try again.' })
+            }}
+            readOnlyAs="h2"
+            displayClassName="text-base font-medium"
+            inputClassName="h-8 text-base font-medium"
+            saveButtonClassName="h-7 w-7"
+            ariaLabel="Rename volume"
+            saveAriaLabel="Save name"
+            displayTestId="volume-title"
+            inputTestId="volume-title-input"
+          />
+          <VolumeStatusBadge health={volume.health} />
+        </div>
         <p className="text-xs text-muted-foreground truncate">{volume.sourceLabel ?? volume.hostPath}</p>
+        {volume.canManage && volume.attachmentCount > 0 && <p className="text-xs text-muted-foreground">Renaming this volume keeps existing agents’ mount paths.</p>}
       </div>
       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">{volume.userId === null ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}{volume.userId === null ? 'Public' : 'Private'}</span>
     </div>

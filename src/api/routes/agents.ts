@@ -6346,7 +6346,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
       throw err
     }
-    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName }
 
     if (restart) {
       const cachedInfo = agentRegistry.get(agentSlug).container.status()

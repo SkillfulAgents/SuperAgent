@@ -39,7 +39,7 @@ describe('SQLite mount attachments', () => {
     expect(await getMounts('test-agent')).toEqual([])
     const hostPath = folder('myapp')
     const mount = await add(hostPath)
-    expect(mount).toEqual({ id: expect.any(String), volumeId: expect.any(String), name: 'myapp', type: 'local', config: { path: hostPath } })
+    expect(mount).toEqual({ id: expect.any(String), volumeId: expect.any(String), name: 'myapp', volumeName: 'myapp', type: 'local', config: { path: hostPath } })
     expect(mount.volumeId).not.toBe(mount.id)
     expect(await getMounts('test-agent')).toEqual([mount])
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
@@ -74,7 +74,8 @@ describe('SQLite mount attachments', () => {
   it('keeps mount paths and URLs when a definition is renamed', async () => {
     const original = await add(folder('notes'))
     await updateVolumeDefinition(original.volumeId, { name: 'renamed' }, viewer)
-    expect(await getMounts('test-agent')).toEqual([original])
+    expect(await getMounts('test-agent')).toEqual([{ ...original, volumeName: 'renamed' }])
+    expect((await getMountsWithHealth('test-agent')).map(m => [m.name, m.volumeName])).toEqual([['notes', 'renamed']])
     expect((await attachMount('agent-b', original.volumeId, viewer)).name).toBe('renamed')
     expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: original.id, name: 'notes', cacheMode: 'local' }])
   })
