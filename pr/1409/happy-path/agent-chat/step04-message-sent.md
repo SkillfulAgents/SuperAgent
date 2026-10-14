@@ -1,0 +1,131 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e164]:
+            - link "Discover New Agents New" [ref=e165] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e166]
+              - generic [ref=e169]: Discover New Agents
+              - generic [ref=e170]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - img [ref=e45]
+            - button "New agent in Your Agents" [ref=e47] [cursor=pointer]:
+              - img [ref=e48]
+            - list [ref=e50]:
+              - button "QA-20261014-182812-xhsv Last run less than a minute ago Open QA-20261014-182812-xhsv Expand" [ref=e490] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20261014-182812-xhsv Last run less than a minute ago" [ref=e491]:
+                    - /url: /agents/qa-20261014-182812-xhsv-91vtlo6pzu
+                    - generic [ref=e54]: QA-20261014-182812-xhsv
+                    - generic [ref=e55]: Last run less than a minute ago
+                  - link "Open QA-20261014-182812-xhsv" [ref=e56]:
+                    - /url: /agents/qa-20261014-182812-xhsv-91vtlo6pzu
+                    - img "working" [ref=e492]:
+                      - img "working" [ref=e493]
+                  - button "Expand" [ref=e497]:
+                    - img [ref=e511]
+              - button "QA-20261014-182811-3x0n Last run less than a minute ago Open QA-20261014-182811-3x0n Collapse Simple Arithmetic Question" [ref=e513] [cursor=pointer]:
+                - generic [ref=e68]:
+                  - link "QA-20261014-182811-3x0n Last run less than a minute ago" [ref=e389]:
+                    - /url: /agents/qa-20261014-182811-3x0n-elt9xn53r7
+                    - generic [ref=e70]: QA-20261014-182811-3x0n
+                    - generic [ref=e71]: Last run less than a minute ago
+                  - link "Open QA-20261014-182811-3x0n" [ref=e72]:
+                    - /url: /agents/qa-20261014-182811-3x0n-elt9xn53r7
+                    - img "idle" [ref=e514]:
+                      - img [ref=e515]
+                  - button "Collapse" [expanded] [ref=e395]:
+                    - img [ref=e406]
+                - list [ref=e409]:
+                  - listitem [ref=e410]:
+                    - link "Simple Arithmetic Question" [ref=e524]:
+                      - /url: /agents/elt9xn53r7/sessions/c6b2252c-9ad2-4b22-8a68-e69b65179a0c
+                      - generic [ref=e413]: Simple Arithmetic Question
+          - status [ref=e171]
+          - listitem [ref=e83]:
+            - button "Add section" [ref=e84] [cursor=pointer]:
+              - img [ref=e86]
+              - generic [ref=e87]: Add section
+      - generic [ref=e89]:
+        - button "Settings" [ref=e90] [cursor=pointer]:
+          - img [ref=e91]
+          - generic [ref=e94]: Settings
+        - button "0.5.40" [ref=e95] [cursor=pointer]:
+          - generic [ref=e96]: 0.5.40
+      - button "Toggle Sidebar" [ref=e97]
+    - main [ref=e98]:
+      - generic [ref=e176]:
+        - generic [ref=e177]:
+          - button "Toggle Sidebar" [ref=e178] [cursor=pointer]:
+            - img
+            - generic [ref=e179]: Toggle Sidebar
+          - generic [ref=e182]:
+            - link "QA-20261014-182811-3x0n" [ref=e433]:
+              - /url: /agents/qa-20261014-182811-3x0n-elt9xn53r7
+            - text: /Simple Arithmetic Question
+          - generic [ref=e183]:
+            - generic [ref=e184]:
+              - img [ref=e525]
+              - generic [ref=e194]: idle
+            - button "Stop Agent" [ref=e196] [cursor=pointer]:
+              - img
+        - generic [ref=e440]:
+          - region "Messages" [ref=e442]:
+            - log [ref=e444]:
+              - time [ref=e446]: Today at 6:28 PM
+              - paragraph [ref=e451]: Hello! What is 2+2?
+              - paragraph [ref=e538]: 2 + 2 = 4.
+          - generic [ref=e463]:
+            - generic [ref=e467]:
+              - textbox "Type a message..." [ref=e539]:
+                - text: Type a message...
+                - paragraph [ref=e471]
+              - generic [ref=e472]:
+                - generic [ref=e473]:
+                  - button "Add files" [ref=e474] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e475] [cursor=pointer]':
+                    - generic [ref=e476]:
+                      - text: Opus 5.5
+                      - generic [ref=e477]: · Medium
+                    - img
+                - generic [ref=e478]:
+                  - button "Set up voice input" [ref=e479] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e483]:
+              - generic [ref=e540]:
+                - generic [ref=e541]: Context Usage
+                - img [ref=e543]
+              - generic [ref=e484]:
+                - generic [ref=e485]: ↵
+                - generic [ref=e486]: Send
+                - generic [ref=e487]: ·
+                - generic [ref=e488]: ⇧↵
+                - generic [ref=e489]: New line
+  - region "Notifications alt+T"
