@@ -32,7 +32,21 @@ export interface SubscribePlan {
   seatPriceCents: number
   /** The plan the quote is for (`pro-200`); absent from platforms before plans. */
   planId?: string
+  /** The plans to choose from, when the platform offers several. */
+  options?: PlanOption[]
 }
+
+/** A plan the subscribe CTA offers; prices per seat per month, promo applied. */
+export interface PlanOption {
+  id: string
+  name: string
+  priceCents: number
+  grantCents: number
+  /** Canonical model-id prefixes the plan excludes. */
+  deniedModels: string[]
+}
+
+const MAX_PLAN_OPTIONS = 6
 
 // Plan ids are catalog slugs; anything else is dropped rather than rendered.
 const PLAN_ID = /^[a-z0-9][a-z0-9-]{0,40}$/
@@ -49,17 +63,45 @@ interface EmbedMessage {
   pending: boolean
 }
 
-function readPlan(seats: unknown, seatPriceCents: unknown, planId: unknown): SubscribePlan | undefined {
+function isCents(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_SEAT_PRICE_CENTS
+}
+
+// All or nothing: one malformed option drops the list, so the card falls back to one quote.
+function readPlanOptions(raw: unknown): PlanOption[] | undefined {
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > MAX_PLAN_OPTIONS) return undefined
+  const options: PlanOption[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) return undefined
+    const o = entry as Record<string, unknown>
+    if (typeof o.id !== 'string' || !PLAN_ID.test(o.id)) return undefined
+    if (typeof o.name !== 'string' || o.name.length === 0 || o.name.length > 40) return undefined
+    if (!isCents(o.priceCents) || !isCents(o.grantCents)) return undefined
+    const deniedModels = Array.isArray(o.deniedModels)
+      ? o.deniedModels.filter((d): d is string => typeof d === 'string' && d.length > 0 && d.length <= 80)
+      : []
+    options.push({ id: o.id, name: o.name, priceCents: o.priceCents, grantCents: o.grantCents, deniedModels })
+  }
+  return options
+}
+
+function readPlan(seats: unknown, seatPriceCents: unknown, planId: unknown, plans: unknown): SubscribePlan | undefined {
   if (typeof seats !== 'number' || !Number.isInteger(seats) || seats < 1 || seats > MAX_SEATS) return undefined
-  if (typeof seatPriceCents !== 'number' || !Number.isInteger(seatPriceCents) || seatPriceCents < 0 || seatPriceCents > MAX_SEAT_PRICE_CENTS) return undefined
-  return { seats, seatPriceCents, ...(typeof planId === 'string' && PLAN_ID.test(planId) ? { planId } : {}) }
+  if (!isCents(seatPriceCents)) return undefined
+  const options = readPlanOptions(plans)
+  return {
+    seats,
+    seatPriceCents,
+    ...(typeof planId === 'string' && PLAN_ID.test(planId) ? { planId } : {}),
+    ...(options ? { options } : {}),
+  }
 }
 
 function readEmbedMessage(data: unknown): EmbedMessage | null {
   if (typeof data !== 'object' || data === null) return null
   const record = data as {
     type?: unknown; event?: unknown; orgId?: unknown; height?: unknown; hint?: unknown; label?: unknown
-    seats?: unknown; seatPriceCents?: unknown; planId?: unknown; pending?: unknown
+    seats?: unknown; seatPriceCents?: unknown; planId?: unknown; plans?: unknown; pending?: unknown
   }
   if (record.type !== BILLING_EMBED_MESSAGE_TYPE) return null
   if (
@@ -72,7 +114,7 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,
     hint: typeof record.hint === 'string' && record.hint.length <= 300 ? record.hint : undefined,
     label: typeof record.label === 'string' && record.label.length <= 40 ? record.label : undefined,
-    plan: readPlan(record.seats, record.seatPriceCents, record.planId),
+    plan: readPlan(record.seats, record.seatPriceCents, record.planId, record.plans),
     pending: record.pending === true,
   }
 }
@@ -98,6 +140,8 @@ export interface BillingEmbedFrameProps {
   onHintChange?: (hint: string) => void
   /** Subscribe CTA only: the seat count and per-seat price the platform will bill. */
   onPlanChange?: (plan: SubscribePlan) => void
+  /** Subscribe CTA only: the plan the user picked on the card; the frame bills that one. */
+  selectedPlanId?: string
   /** The panel to open; none = the full billing page (plan, usage, payment). Not for launchers. */
   view?: BillingEmbedView
   orgId: string | null
@@ -119,7 +163,7 @@ export const BRAND_BUTTON_CLASS = 'bg-brand text-white hover:bg-brand/90'
 
 export function BillingEmbedFrame({
   intent, cta, launcher = false, expanded = false, stretch = false, tone = 'default', label = 'Open billing',
-  onOpenBilling, onClose, onHintChange, onPlanChange,
+  onOpenBilling, onClose, onHintChange, onPlanChange, selectedPlanId,
   view, orgId, platformBaseUrl, fallbackHref, onBillingUpdated, onOpenExternal,
 }: BillingEmbedFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -185,6 +229,12 @@ export function BillingEmbedFrame({
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [orgId, platformOrigin, onBillingUpdated, launcher, expanded, onOpenBilling, onClose, onPlanChange, view, sendTheme])
+
+  // The card draws the plan options; the pick goes to the frame, which holds the button.
+  useEffect(() => {
+    if (!launcher || view !== 'subscribe' || !frameReady || !selectedPlanId || !platformOrigin || !orgId) return
+    iframeRef.current?.contentWindow?.postMessage({ type: 'gamut-billing-select-plan', orgId, planId: selectedPlanId }, platformOrigin)
+  }, [launcher, view, frameReady, selectedPlanId, platformOrigin, orgId])
 
   useEffect(() => {
     if (frameReady || failure) return
