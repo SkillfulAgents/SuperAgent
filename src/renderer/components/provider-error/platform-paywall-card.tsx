@@ -90,13 +90,6 @@ const EMBED_VIEW: Record<PaywallCta['kind'], BillingEmbedView | undefined> = {
 const PRO_BENEFITS = [
   'Unlimited agents, agentic apps and account connections',
   'Team cloud + private desktop workspaces',
-  '$200 of monthly usage included per seat. Pay-as-you-go past that.',
-]
-// Same plan for an org whose monthly credit is pooled: the seats fund one shared allowance.
-const PRO_BENEFITS_POOLED = [
-  PRO_BENEFITS[0],
-  PRO_BENEFITS[1],
-  'A shared pool of monthly usage: $200 for every seat on your plan. Pay-as-you-go past that.',
 ]
 
 function formatDollars(cents: number): string {
@@ -186,14 +179,14 @@ function PaywallActions({
 // below `sm` the quote stacks under the benefits. The quote comes from the platform CTA
 // (seat count and per-seat price), so it is absent until that arrives and on Electron.
 // An expanded CTA panel (promo code) drops below both columns at full width.
-function SubscribeBody({ plan, hint, actions, expanded, pooled }: { plan: SubscribePlan | null; hint: string; actions: ReactNode; expanded: boolean; pooled: boolean }) {
+function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan | null; hint: string; actions: ReactNode; expanded: boolean }) {
   return (
     <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6" data-testid="paywall-subscribe">
       <div className="min-w-0 flex-1">
         <p className="text-base font-medium leading-6 text-muted-foreground">Your trial has ended.</p>
         <p className="text-base font-medium leading-6 text-foreground">Upgrade to Pro to keep going.</p>
         <ul className="mt-4 flex flex-col gap-1.5 text-[13px] leading-[18px] text-muted-foreground">
-          {(pooled ? PRO_BENEFITS_POOLED : PRO_BENEFITS).map((benefit) => (
+          {PRO_BENEFITS.map((benefit) => (
             <li key={benefit} className="flex items-start gap-2">
               <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand" aria-hidden="true" />
               {benefit}
@@ -433,7 +426,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           )}
         >
           {subscribeLayout ? (
-            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} pooled={billing.creditScope === 'org'} />
+            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} />
           ) : (
             <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-3', !showHeader && 'justify-end')}>
               {showHeader && (

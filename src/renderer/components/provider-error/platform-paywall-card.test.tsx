@@ -363,12 +363,12 @@ describe('PlatformPaywallCard', () => {
       expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({ ctaKind: 'ask_admin', blocked: true, placement: 'composer' }))
     })
 
-    it('describes the plan\'s usage as shared when a pooled org is asked to subscribe', async () => {
+    it('names no usage amount when a pooled org is asked to subscribe; plans differ', async () => {
       platformAuth.role = 'owner'
       fetchBilling.mockResolvedValue(billing({ subscription: { ...POOLED, status: 'cancelled' } }))
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByRole('button', { name: 'Upgrade to Pro' })
-      expect(screen.getByText('A shared pool of monthly usage: $200 for every seat on your plan. Pay-as-you-go past that.')).toBeInTheDocument()
+      expect(screen.queryByText(/\$200/)).not.toBeInTheDocument()
       expect(screen.queryByText(/per seat/)).not.toBeInTheDocument()
     })
 
