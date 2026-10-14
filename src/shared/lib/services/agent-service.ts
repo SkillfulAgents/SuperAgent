@@ -399,18 +399,25 @@ export async function adoptAgentIdentityFromWorkspace(
 }
 
 /**
- * Take the description the agent wrote into its own `AGENTS.md` frontmatter
- * into the row. Only the description: the name stays the user's to change.
- * A missing or blank description leaves the row alone.
+ * Take the name and description the agent wrote into its own `AGENTS.md`
+ * frontmatter into the row. A missing or blank field leaves that column alone.
+ * Returns whether the row changed.
  */
-export async function syncAgentDescriptionFromWorkspace(slug: string): Promise<void> {
-  await withIdentityLock(slug, async () => {
+export async function syncAgentIdentityFromWorkspace(slug: string): Promise<boolean> {
+  return withIdentityLock(slug, async () => {
     const record = await agentCatalog.get(slug)
-    if (!record) return
+    if (!record) return false
     const document = await readInstructionsDocument(slug)
-    const description = document && identityFromInstructions(document.raw).description?.trim()
-    if (!description || description === record.description) return
-    await agentCatalog.update(slug, { description })
+    if (!document) return false
+    const carried = identityFromInstructions(document.raw)
+    const changes: { name?: string; description?: string } = {}
+    const name = carried.name?.trim()
+    const description = carried.description?.trim()
+    if (name && name !== record.name) changes.name = name
+    if (description && description !== record.description) changes.description = description
+    if (!changes.name && !changes.description) return false
+    await agentCatalog.update(slug, changes)
+    return true
   })
 }
 
