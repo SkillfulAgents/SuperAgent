@@ -31,6 +31,7 @@ itself important.
 - `session-history.md`
 - `scheduling-and-resuming.md`
 - `webhooks.md`
+- `hooks.md`
 - `media-generation.md`
 - `lead-enrichment.md`
 - `chat-integrations.md`
