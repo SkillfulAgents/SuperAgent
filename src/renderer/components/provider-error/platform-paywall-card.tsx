@@ -179,7 +179,15 @@ function PaywallActions({
 // below `sm` the quote stacks under the benefits. The quote comes from the platform CTA
 // (seat count and per-seat price), so it is absent until that arrives and on Electron.
 // An expanded CTA panel (promo code) drops below both columns at full width.
-function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan | null; hint: string; actions: ReactNode; expanded: boolean }) {
+function SubscribeBody({ plan, hint, actions, expanded, selectedPlanId, onSelectPlan }: {
+  plan: SubscribePlan | null
+  hint: string
+  actions: ReactNode
+  expanded: boolean
+  selectedPlanId: string | null
+  onSelectPlan: (planId: string) => void
+}) {
+  const chosenId = selectedPlanId ?? plan?.planId
   return (
     <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6" data-testid="paywall-subscribe">
       <div className="min-w-0 flex-1">
@@ -193,6 +201,33 @@ function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan 
             </li>
           ))}
         </ul>
+        {plan?.options && (
+          <div role="radiogroup" aria-label="Choose a plan" className="mt-4 grid grid-cols-3 gap-2" data-testid="paywall-plan-options">
+            {plan.options.map((option) => {
+              const selected = option.id === chosenId
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => onSelectPlan(option.id)}
+                  className={cn(
+                    'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                    selected ? 'border-brand bg-brand/5' : 'border-border/70 hover:bg-muted/50',
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-1 text-[13px] font-medium leading-[18px] text-foreground">
+                    {option.name}
+                    {selected && <Check className="h-3.5 w-3.5 shrink-0 text-brand" aria-hidden="true" />}
+                  </span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{formatDollars(option.grantCents)} usage / seat</span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{option.deniedModels.length > 0 ? 'Excludes premium models' : 'All models'}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         {hint && <p className="mt-3 text-[11px] leading-4 text-muted-foreground" data-testid="billing-cta-hint">{hint}</p>}
       </div>
       <div
@@ -211,7 +246,7 @@ function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan 
           <div data-testid="paywall-plan">
             {plan.planId && (
               <p className="mb-1 text-[11px] font-medium leading-4 text-muted-foreground" data-testid="paywall-plan-name">
-                {planNameFromId(plan.planId)}
+                {plan.options?.find((o) => o.id === plan.planId)?.name ?? planNameFromId(plan.planId)}
               </p>
             )}
             <p className="text-xl font-medium leading-6 text-foreground">
@@ -250,6 +285,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   const [panelHold, setPanelHold] = useState(false)
   const [ctaHint, setCtaHint] = useState('')
   const [plan, setPlan] = useState<SubscribePlan | null>(null)
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   const billingChanged = useRef(false)
   const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
@@ -359,6 +395,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           label={CTA_LABELS[billing.cta.kind]}
           onHintChange={setCtaHint}
           onPlanChange={setPlan}
+          selectedPlanId={selectedPlanId ?? undefined}
           cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
           intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
           view={view}
@@ -426,7 +463,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           )}
         >
           {subscribeLayout ? (
-            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} />
+            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} selectedPlanId={selectedPlanId} onSelectPlan={setSelectedPlanId} />
           ) : (
             <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-3', !showHeader && 'justify-end')}>
               {showHeader && (

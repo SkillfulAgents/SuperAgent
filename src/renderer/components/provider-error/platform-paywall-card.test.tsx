@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState, type ComponentProps, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -679,6 +679,43 @@ describe('PlatformPaywallCard', () => {
       postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 3000, planId: '<b>Pro</b>' })
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$30/mo')
       expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
+    })
+
+    it('draws the plans the platform offers and sends the pick to the frame', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      const post = vi.spyOn(frameWindow(), 'postMessage')
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready')
+      const plans = [
+        { id: 'pro-30', name: 'Pro 30', priceCents: 3000, grantCents: 3000, deniedModels: ['claude-fable'] },
+        { id: 'pro-100', name: 'Pro 100', priceCents: 10000, grantCents: 10000, deniedModels: [] },
+        { id: 'pro-200', name: 'Pro 200', priceCents: 20000, grantCents: 20000, deniedModels: [] },
+      ]
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200', plans })
+      const tiles = within(screen.getByTestId('paywall-plan-options')).getAllByRole('radio')
+      expect(tiles.map((t) => t.textContent)).toEqual([
+        'Pro 30$30 usage / seatExcludes premium models',
+        'Pro 100$100 usage / seatAll models',
+        'Pro 200$200 usage / seatAll models',
+      ])
+      expect(tiles[2]).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(tiles[0])
+      expect(tiles[0]).toHaveAttribute('aria-checked', 'true')
+      expect(post).toHaveBeenLastCalledWith({ type: 'gamut-billing-select-plan', orgId: 'org_123', planId: 'pro-30' }, PLATFORM_ORIGIN)
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 3000, planId: 'pro-30', plans })
+      expect(screen.getByTestId('paywall-plan-name')).toHaveTextContent('Pro 30')
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$30/mo')
+    })
+
+    it('keeps the single quote when the plan list is malformed', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', {
+        label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200',
+        plans: [{ id: 'pro-30', name: 'Pro 30', priceCents: 3000, grantCents: 3000 }, { id: '<b>x</b>', name: 'X', priceCents: 1, grantCents: 1 }],
+      })
+      expect(screen.queryByTestId('paywall-plan-options')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$200/mo')
     })
 
     it('sizes the subscribe CTA box for the promo line the platform draws under the button', async () => {
