@@ -5,6 +5,9 @@ import { useComposerOptions, type UseComposerOptionsArgs } from './composer-opti
 
 // No provider locks a model here (model locks have their own tests).
 vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+vi.mock('@renderer/hooks/use-provider-model-availability', () => ({
+  useModelAvailabilities: () => ({ reasonFor: () => undefined, availabilityOf: () => null }),
+}))
 
 // Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.

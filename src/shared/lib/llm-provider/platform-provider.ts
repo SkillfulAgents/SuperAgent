@@ -11,8 +11,9 @@ import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import type { ModelAvailability } from './model-availability-schema'
-import { platformModelAvailability } from './platform-plan-policy'
-import { platformService } from '../services/platform-service'
+import { parseModelNotInPlan, platformModelAvailability } from './platform-plan-policy'
+import { actingPlanPolicy } from './platform-plan-account'
+import { platformPlanCache } from './platform-plan-cache'
 import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -101,16 +102,18 @@ export class PlatformLlmProvider extends BaseLlmProvider {
       .digest('hex')
   }
 
-  override async getModelAvailability(catalog: ModelDefinition[]): Promise<ModelAvailability | null> {
+  // The acting account's plan policy, cached per account and read with its
+  // identity from `/v1/account`; model selection reads it on every turn.
+  override async getModelAvailability(catalog: ModelDefinition[], options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
     const auth = getPlatformAuthStatus()
     if (!auth.connected) return null
-    let billing
-    try {
-      billing = await platformService.refreshBilling()
-    } catch {
-      billing = platformService.getCachedBilling()
-    }
-    return platformModelAvailability(billing, catalog, orgBillingUrl(getPlatformBaseUrl(), auth.orgId))
+    return platformModelAvailability(await actingPlanPolicy(options), catalog, orgBillingUrl(getPlatformBaseUrl(), auth.orgId))
+  }
+
+  // A plan refusal proves a cached policy stale (a downgrade, or a policy read
+  // before one): forget them all, so the next selection reads the account again.
+  override noteTurnError(_status: number | undefined, body: unknown): void {
+    if (parseModelNotInPlan(body)) platformPlanCache.clear()
   }
 
   async getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>> {

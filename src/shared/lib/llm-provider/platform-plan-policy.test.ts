@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { PLATFORM_CATALOG } from './builtin-catalogs'
 import {
+  accountPlanPolicy,
+  billingPlanPolicy,
   canonicalModelId,
   effectiveDeniedModels,
   excludedModelsLabel,
@@ -15,7 +17,7 @@ import {
   resolvePlanModel,
 } from './platform-plan-policy'
 import { bestAllowedModel } from './model-availability'
-import { PlatformBillingInfoSchema } from '@shared/lib/types/skillset-schema'
+import { PlatformAccountInfoSchema, PlatformBillingInfoSchema } from '@shared/lib/types/skillset-schema'
 
 // Pro 30's list as the proxy test has it; the app must never hard-code it.
 const PRO30 = ['claude-fable-', 'gpt-6-astra']
@@ -122,11 +124,30 @@ describe('effectiveDeniedModels', () => {
   })
 })
 
+describe('plan policy from platform responses', () => {
+  const IDENTITY = { memberId: 'sub_1', orgId: 'org_1', userId: 'user_1' }
+
+  it('reads an account\'s policy from /v1/account, and its absence as unknown', () => {
+    expect(accountPlanPolicy(PlatformAccountInfoSchema.parse({ ...IDENTITY, plan: { id: 'pro-30', name: 'Pro 30' }, deniedModels: ['  Claude-Fable- '] })))
+      .toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(accountPlanPolicy(PlatformAccountInfoSchema.parse({ ...IDENTITY, plan: null, deniedModels: [] })))
+      .toEqual({ planName: null, deniedModels: [] })
+    // An older proxy, or billing unreachable: the account said nothing.
+    expect(accountPlanPolicy(PlatformAccountInfoSchema.parse(IDENTITY))).toBeNull()
+  })
+
+  it('reads the same policy from a billing snapshot, preferring the workspace list', () => {
+    expect(billingPlanPolicy(billing({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: PRO30 })))
+      .toEqual({ planName: 'Pro 30', deniedModels: PRO30 })
+    expect(billingPlanPolicy(billing({}))).toBeNull()
+  })
+})
+
 describe('platformModelAvailability', () => {
   const URL = 'https://platform.example.com/dashboard/organizations/org_1?tab=billing'
 
   it('words each excluded model, the plan, and the upgrade for the pickers', () => {
-    const availability = platformModelAvailability(billing({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: PRO30 }, deniedModels: PRO30 }), PLATFORM_CATALOG, URL)
+    const availability = platformModelAvailability({ planName: 'Pro 30', deniedModels: PRO30 }, PLATFORM_CATALOG, URL)
     expect(availability?.unavailable).toContainEqual({ modelId: 'claude-fable-5-1', reason: "Fable 5.1 isn't included in your Pro 30 plan." })
     expect(availability?.unavailable.map((entry) => entry.modelId)).not.toContain('claude-opus-5-5')
     expect(availability?.summary).toBe('Pro 30 excludes Claude Fable and GPT Astra.')
@@ -134,15 +155,15 @@ describe('platformModelAvailability', () => {
   })
 
   it('words a workspace with no plan (the free tier\'s list)', () => {
-    const availability = platformModelAvailability(billing({ plan: null, deniedModels: PRO30 }), PLATFORM_CATALOG, null)
+    const availability = platformModelAvailability({ planName: null, deniedModels: PRO30 }, PLATFORM_CATALOG, null)
     expect(availability?.unavailable).toContainEqual({ modelId: 'gpt-6-astra', reason: "GPT-6 Astra isn't included in your workspace's plan." })
     expect(availability?.summary).toBe("Without a plan, your workspace can't use Claude Fable and GPT Astra.")
     expect(availability?.action?.href).toBeNull()
   })
 
-  it('is null when nothing in the catalog is excluded, or the proxy predates plans', () => {
-    expect(platformModelAvailability(billing({ deniedModels: ['nova-'] }), PLATFORM_CATALOG, URL)).toBeNull()
-    expect(platformModelAvailability(billing({}), PLATFORM_CATALOG, URL)).toBeNull()
+  it('is null when nothing in the catalog is excluded, or the policy is unknown', () => {
+    expect(platformModelAvailability({ planName: 'Pro 30', deniedModels: ['nova-'] }, PLATFORM_CATALOG, URL)).toBeNull()
+    expect(platformModelAvailability(null, PLATFORM_CATALOG, URL)).toBeNull()
   })
 })
 

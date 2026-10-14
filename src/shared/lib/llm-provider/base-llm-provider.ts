@@ -142,10 +142,18 @@ export abstract class BaseLlmProvider {
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
 
-  /** Current restrictions for a connection's catalog. Null means unrestricted. */
-  async getModelAvailability(_catalog: ModelDefinition[]): Promise<ModelAvailability | null> {
+  /**
+   * Current restrictions for a connection's catalog, for the account the
+   * current request or run is attributed to. Null means unrestricted. Model
+   * selection treats an unavailable model like an unset one. `fresh` re-reads
+   * the provider's source instead of its cache.
+   */
+  async getModelAvailability(_catalog: ModelDefinition[], _options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
     return null
   }
+
+  /** A live turn failed with this error; a provider may drop state it proves stale. */
+  noteTurnError(_status: number | undefined, _body: unknown): void {}
 
   /** Public cache identity for availability; changes when provider account context changes. */
   getModelAvailabilityRevision(): string | null {

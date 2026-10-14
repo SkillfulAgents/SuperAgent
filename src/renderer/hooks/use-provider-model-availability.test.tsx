@@ -68,6 +68,16 @@ describe('useProviderModelAvailability', () => {
     expect(result.current.availability).toBeNull()
   })
 
+  it('refresh asks the provider for a fresh read and shows it (after an upgrade)', async () => {
+    fetchAvailability.mockResolvedValueOnce(response(RESTRICTED)).mockResolvedValueOnce(response(null))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useProviderModelAvailability({ id: 'conn-a', isConfigured: true, supportsModelAvailability: true }), { wrapper: wrapper(client) })
+    await waitFor(() => expect(result.current.isUnavailable(model('model-a'))).toBe(true))
+    await result.current.refresh()
+    expect(fetchAvailability).toHaveBeenLastCalledWith('/api/llm-connections/conn-a/model-availability?fresh=1')
+    await waitFor(() => expect(result.current.isUnavailable(model('model-a'))).toBe(false))
+  })
+
   it('does not request policy for providers without availability support, even on refresh', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { result } = renderHook(() => useProviderModelAvailability({ id: 'ordinary-conn', isConfigured: true, supportsModelAvailability: false }),

@@ -5,6 +5,7 @@ import { withGlobalModelPricing } from './global-pricing'
 import { findAdminOnlyProviderEnvVars, isProviderEnvVar } from './provider-env'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
+import { bestAllowedModel } from './model-availability'
 import { parseConnectionJson } from './connection-schema'
 import { randomUUID } from 'node:crypto'
 import { legacyLlmProviderId, providerCredentialFields } from './provider-settings'
@@ -372,16 +373,46 @@ export async function resolveGlobalSelection(): Promise<ResolvedConnection | nul
   return null
 }
 
+// Catalog ids the connection's provider says cannot run now (e.g. the acting
+// account's plan excludes them). Execution only: settings show saved values.
+async function unavailableModelIds(row: ConnectionRow): Promise<Set<string>> {
+  const availability = await providerForConnection(row).getModelAvailability(connectionCatalog(row))
+  return new Set(availability?.unavailable.map(entry => entry.modelId))
+}
+
+async function isRunnable(resolved: ResolvedConnection): Promise<boolean> {
+  return !(await unavailableModelIds(resolved.connection)).has(resolved.wireModel)
+}
+
+// The connection's default for this purpose when it can run, else the best
+// model it can run; null when it can run nothing.
+async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer' = 'agent') {
+  const preferred = defaultSelectionForConnection(row, purpose)
+  const unavailable = await unavailableModelIds(row)
+  if (!preferred || !unavailable.has(preferred.wireModel)) return preferred
+  const model = bestAllowedModel(connectionCatalog(row), m => unavailable.has(m.id))
+  return model ? { llmProviderId: row.id, model: model.id, wireModel: model.id, connection: row, provider: preferred.provider } : null
+}
+
+/**
+ * The model a run uses: the first candidate that resolves (an explicit pick,
+ * the trigger's or session's model, the agent default), then the global
+ * default, then the global connection's own default. A model the provider
+ * says cannot run now counts as unset, like a retired one, so the list keeps
+ * going. With nothing runnable the global default stands, and the provider's
+ * refusal says why.
+ */
 export async function resolveSelectionHierarchy(
   ...candidates: (StoredModelSelection | null | undefined)[]
 ): Promise<ResolvedConnection> {
   for (const candidate of candidates) {
     const resolved = await resolveConnectionSelection(candidate, true)
-    if (resolved) return resolved
+    if (resolved && await isRunnable(resolved)) return resolved
   }
   const root = await resolveGlobalSelection()
   if (!root) throw new Error('Configure a global default connection and model in Settings → LLM')
-  return root
+  if (await isRunnable(root)) return root
+  return (await runnableDefaultForConnection(root.connection)) ?? root
 }
 
 export const resolveExecutionSelection = resolveSelectionHierarchy
@@ -412,11 +443,17 @@ export async function resolveSummarizerSelection(): Promise<ResolvedConnection |
   return defaultSelectionForConnection(row, 'summarizer')
 }
 
+// A helper the provider says cannot run now falls back to its connection's summarizer default.
+async function runnableHelper(selection: ResolvedConnection): Promise<ResolvedConnection> {
+  if (await isRunnable(selection)) return selection
+  return (await runnableDefaultForConnection(selection.connection, 'summarizer')) ?? selection
+}
+
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
   const override = await resolveSummarizerSelection()
-  if (isHelperSelection(override)) return override
+  if (isHelperSelection(override)) return runnableHelper(override)
   const root = await resolveGlobalSelection()
-  if (isHelperSelection(root)) return root
+  if (isHelperSelection(root)) return runnableHelper(root)
   if (!root) throw new HelperConfigurationError('Configure a global default provider and model in Settings → Model Providers')
   throw new HelperConfigurationError()
 }

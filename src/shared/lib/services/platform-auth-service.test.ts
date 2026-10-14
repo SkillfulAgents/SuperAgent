@@ -73,6 +73,7 @@ import {
   verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
 import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
 import {
   readCloudWorkspaceRecord,
   writeCloudWorkspaceRecord,
@@ -592,6 +593,33 @@ describe('platform-auth-service', () => {
     })
     // env-managed connections have no "last changed" anchor; updatedAt stays null.
     expect(status.updatedAt).toBeNull()
+  })
+
+  it('keeps the plan policy a member\'s account read carries, keyed by that member (SUP-1124)', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+    platformPlanCache.clear()
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_2',
+          orgId: 'org_env',
+          userId: 'user_2',
+          plan: { id: 'pro-30', name: 'Pro 30' },
+          deniedModels: ['claude-fable-'],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user-plan')
+
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get(platformPlanCache.key('org_env', 'sub_member_2'), load))
+      .toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(load).not.toHaveBeenCalled()
   })
 
   it('returns a null workspace icon when /v1/account has no icon field', async () => {

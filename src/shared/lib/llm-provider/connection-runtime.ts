@@ -75,9 +75,14 @@ export const LLM_ENV_KEYS = [
 export async function connectionRuntime(resolved: ResolvedConnection, agentId: string) {
   const { connection, provider, wireModel } = resolved
   const catalog = connectionCatalog(connection)
+  // Models the provider says cannot run now (e.g. the plan excludes them) count
+  // as unset: a helper model falls back to the main one, and subagents are not offered them.
+  const availability = await provider.getModelAvailability(catalog)
+  const unavailable = new Set(availability?.unavailable.map(entry => entry.modelId))
+  const runnableCatalog = catalog.filter(model => !unavailable.has(model.id))
   const subagent = (selection: string | null) =>
     resolveSelection(selection ? { llmProviderId: connection.id, model: selection } : null, [
-      { id: connection.id, catalog },
+      { id: connection.id, catalog: runnableCatalog },
     ])?.wireModel ?? wireModel
   const env = Object.fromEntries(LLM_ENV_KEYS.map((key) => [key, '']))
   for (const [key, value] of Object.entries(await provider.getContainerEnvVars({ id: agentId }))) {
@@ -102,7 +107,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
     browserModel: subagent(connection.browserModel),
     dashboardBuilderModel: subagent(connection.dashboardModel),
     modelPromptHints: [...getContainerModelPromptHints(wireModel, catalog), ...(provider.mediaPrompt ? [provider.mediaPrompt] : [])],
-    subagentModels: getSubagentModelCatalog(catalog),
+    subagentModels: getSubagentModelCatalog(runnableCatalog),
     modelContextWindows: getModelContextWindowMap(catalog),
     env,
   }

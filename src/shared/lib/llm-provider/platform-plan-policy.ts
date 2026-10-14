@@ -1,6 +1,7 @@
-import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+import type { ParsedPlatformAccountInfo, ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 
 import type { ModelDefinition } from './model-catalog-schema'
+import type { PlatformPlanPolicy } from './platform-plan-cache'
 import type { ModelAvailability } from './model-availability-schema'
 import { familyDisplayName } from './model-family-names'
 import { parseFirstJsonObject } from './error-presentation'
@@ -112,6 +113,17 @@ export function effectiveDeniedModels(billing: ParsedPlatformBillingInfo | null 
   return billing?.deniedModels ?? billing?.plan?.deniedModels ?? []
 }
 
+/** The policy a `/v1/account` response carries; null when the proxy did not say. */
+export function accountPlanPolicy(account: ParsedPlatformAccountInfo): PlatformPlanPolicy | null {
+  return account.deniedModels === null ? null : { planName: account.plan?.name ?? null, deniedModels: account.deniedModels }
+}
+
+/** The policy a `/v1/billing` snapshot carries; null from a proxy that predates plans. */
+export function billingPlanPolicy(billing: ParsedPlatformBillingInfo): PlatformPlanPolicy | null {
+  if (billing.deniedModels == null && !billing.plan) return null
+  return { planName: billing.plan?.name ?? null, deniedModels: effectiveDeniedModels(billing) }
+}
+
 /** "Claude Fable and GPT Astra": what the workspace's plan excludes, or null when nothing. */
 export function platformExcludedModels(
   billing: ParsedPlatformBillingInfo | null | undefined,
@@ -129,19 +141,20 @@ export function notInPlanText(label: string, planName: string | null | undefined
 export const PLATFORM_PLAN_UPGRADE_ACTION = 'platform-plan-upgrade'
 
 /**
- * The connection's availability under the workspace's plan: the catalog models
+ * The connection's availability under the account's plan: the catalog models
  * the denylist covers, each with its reason, a one-line summary, and the
- * upgrade flow. Null when the plan excludes nothing in this catalog.
+ * upgrade flow. Null when the plan excludes nothing in this catalog, or when
+ * the policy is unknown (the proxy refuses nothing it has not published).
  */
 export function platformModelAvailability(
-  billing: ParsedPlatformBillingInfo | null | undefined,
+  policy: PlatformPlanPolicy | null,
   catalog: readonly ModelDefinition[],
   billingUrl: string | null,
 ): ModelAvailability | null {
-  const denied = effectiveDeniedModels(billing)
+  const denied = policy?.deniedModels ?? []
   const unavailable = catalog.filter((m) => isDeniedByPlan(denied, m.id))
   if (unavailable.length === 0) return null
-  const planName = billing?.plan?.name ?? null
+  const planName = policy?.planName ?? null
   const excluded = excludedModelsLabel(denied, catalog)
   return {
     unavailable: unavailable.map((m) => ({ modelId: m.id, reason: notInPlanText(m.label, planName) })),

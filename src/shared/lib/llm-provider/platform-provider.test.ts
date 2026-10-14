@@ -8,11 +8,7 @@ const requiresActingMember = vi.fn(() => false)
 const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
 const platformAccessToken = vi.fn((): string | null => 'platform-token')
-const refreshBilling = vi.fn()
-const getCachedBilling = vi.fn()
-vi.mock('../services/platform-service', () => ({
-  platformService: { refreshBilling: (...args: unknown[]) => refreshBilling(...args), getCachedBilling: () => getCachedBilling() },
-}))
+const fetchActingAccount = vi.fn()
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: {
     current: () => currentAttribution(),
@@ -26,6 +22,8 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => platformAccessToken(),
   getPlatformAuthStatus: () => platformAuthStatus(),
+  getStoredPlatformMemberId: () => null,
+  fetchActingPlatformAccount: () => fetchActingAccount(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
@@ -37,6 +35,7 @@ vi.mock('../config/settings', () => ({
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
+import { platformPlanCache } from './platform-plan-cache'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
@@ -48,8 +47,8 @@ beforeEach(() => {
   captureMessage.mockReset()
   platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
-  refreshBilling.mockReset()
-  getCachedBilling.mockReset().mockReturnValue(null)
+  fetchActingAccount.mockReset()
+  platformPlanCache.clear()
 })
 
 describe('getModelAvailability', () => {
@@ -63,26 +62,71 @@ describe('getModelAvailability', () => {
     expect(provider.getModelAvailabilityRevision()).toBeNull()
   })
 
-  it('maps platform plan prefixes to concrete connection models, worded by the platform', async () => {
-    refreshBilling.mockResolvedValue({ plan: { name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+  const account = (memberId: string, policy: { plan?: { id: string; name: string } | null; deniedModels?: string[] | null }) => ({
+    memberId, orgId: 'org_123', userId: `user_${memberId}`, orgName: null, orgIconUrl: null, role: null, email: null,
+    plan: policy.plan ?? null, deniedModels: policy.deniedModels ?? null,
+  })
+  const PRO_30 = { plan: { id: 'pro-30', name: 'Pro 30' }, deniedModels: ['claude-fable-'] }
+  const actAs = (memberId: string) => currentAttribution.mockReturnValue({ actingMemberId: () => memberId })
+
+  it('reads the acting account\'s policy with its identity once, and words it', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValue(account('member_a', PRO_30))
     expect(await provider.getModelAvailability(catalog)).toMatchObject({
       unavailable: expect.arrayContaining([{ modelId: fable.id, reason: "Fable 5.1 isn't included in your Pro 30 plan." }]),
       summary: 'Pro 30 excludes Claude Fable.',
       action: { component: 'platform-plan-upgrade', label: 'Upgrade', href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing' },
     })
+    // Cached: the next selection does not wait on the platform.
+    await provider.getModelAvailability(catalog)
+    expect(fetchActingAccount).toHaveBeenCalledTimes(1)
   })
 
-  it('leaves older billing responses without plan restrictions unrestricted', async () => {
-    refreshBilling.mockResolvedValue({ subscription: {}, seat: null })
+  it('keeps one policy per account, so seats in one workspace can differ', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValueOnce(account('member_a', PRO_30))
+    expect(await provider.getModelAvailability(catalog)).not.toBeNull()
+    actAs('member_b')
+    fetchActingAccount.mockResolvedValueOnce(account('member_b', { plan: { id: 'pro-200', name: 'Pro 200' }, deniedModels: [] }))
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+    actAs('member_a')
+    expect(await provider.getModelAvailability(catalog)).not.toBeNull()
+    expect(fetchActingAccount).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves an account unrestricted when the proxy does not say (an older proxy, or billing unreachable)', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValue(account('member_a', {}))
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+    fetchActingAccount.mockRejectedValue(new Error('offline'))
+    platformPlanCache.clear()
     expect(await provider.getModelAvailability(catalog)).toBeNull()
   })
 
-  it('drops restrictions on disconnect and uses a cached snapshot on a transient failure', async () => {
-    refreshBilling.mockRejectedValue(new Error('offline'))
-    getCachedBilling.mockReturnValue({ plan: { name: 'Pro 30', deniedModels: ['claude-fable-'] } })
-    expect((await provider.getModelAvailability(catalog))?.unavailable.map(entry => entry.modelId)).toContain(fable.id)
+  it('re-reads the account when asked for a fresh answer (after an upgrade)', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValueOnce(account('member_a', PRO_30))
+    expect(await provider.getModelAvailability(catalog)).not.toBeNull()
+    fetchActingAccount.mockResolvedValueOnce(account('member_a', { plan: { id: 'pro-200', name: 'Pro 200' }, deniedModels: [] }))
+    expect(await provider.getModelAvailability(catalog, { fresh: true })).toBeNull()
+  })
+
+  it('forgets every policy when a turn is refused for the plan, and only then', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValue(account('member_a', PRO_30))
+    await provider.getModelAvailability(catalog)
+    provider.noteTurnError(429, 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}')
+    await provider.getModelAvailability(catalog)
+    expect(fetchActingAccount).toHaveBeenCalledTimes(1)
+    provider.noteTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"no","model":"claude-fable-5-1"}}')
+    await provider.getModelAvailability(catalog)
+    expect(fetchActingAccount).toHaveBeenCalledTimes(2)
+  })
+
+  it('drops restrictions on disconnect', async () => {
     platformAuthStatus.mockReturnValue({ connected: false })
     expect(await provider.getModelAvailability(catalog)).toBeNull()
+    expect(fetchActingAccount).not.toHaveBeenCalled()
   })
 })
 

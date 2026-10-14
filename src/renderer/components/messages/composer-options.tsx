@@ -9,6 +9,8 @@ import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
 import { useModelLock } from '@renderer/hooks/use-model-lock'
+import { useModelAvailabilities } from '@renderer/hooks/use-provider-model-availability'
+import { useModelAvailabilityAction } from '@renderer/context/model-availability-action-context'
 import { announceModelFallback } from '@renderer/lib/model-fallback-notice'
 import type { ModelLock } from './model-family-list'
 
@@ -157,7 +159,32 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const localSelection = resolveSelection(llmProviderId && model ? { llmProviderId, model } : null, connections)
   // Validate the pair before falling back. Never combine a removed account's
   // model with another account merely because both happen to expose that ID.
-  const effectiveSelection = localSelection ?? inheritedSelection
+  const savedSelection = localSelection ?? inheritedSelection
+
+  // ---- Availability ----
+  // A model the provider says cannot run now (e.g. the plan excludes it) counts
+  // as unset, exactly as on the server: the list goes on to the chat's model,
+  // the agent default, the global default, then the global connection's own
+  // default and any model it can run. Derived, not stored: saved choices come
+  // back as soon as they can run. The pickers never offer a locked model, so
+  // only an inherited or saved one is ever substituted.
+  const availabilities = useModelAvailabilities(connections)
+  const globalSelection = resolveSelection(connectionData?.defaultSelection, connections)
+  const lockedReason = availabilities.reasonFor(savedSelection?.llmProviderId, savedSelection?.wireModel)
+  const runnable = (selection: typeof savedSelection): selection is NonNullable<typeof savedSelection> =>
+    !!selection && !availabilities.reasonFor(selection.llmProviderId, selection.wireModel)
+  const connectionDefault = (selection: typeof savedSelection) => {
+    const connection = selection && connections.find(c => c.id === selection.llmProviderId)
+    if (!connection) return null
+    const preferred = resolveSelection(connection.defaultModel ? { llmProviderId: connection.id, model: connection.defaultModel } : null, connections)
+    if (runnable(preferred)) return preferred
+    const best = bestAllowedModel(connection.catalog, m => !!availabilities.reasonFor(connection.id, m.id))
+    return best ? { llmProviderId: connection.id, model: best.id, wireModel: best.id } : null
+  }
+  const substituteSelection = lockedReason
+    ? [currentSelection, agentSelection, globalSelection].find(runnable) ?? connectionDefault(globalSelection ?? savedSelection)
+    : null
+  const effectiveSelection = substituteSelection ?? savedSelection
   const effectiveLlmProviderId = effectiveSelection?.llmProviderId
   const selectedConnection = connections.find(c => c.id === effectiveLlmProviderId)
   useEffect(() => {
@@ -351,44 +378,43 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
 
-  // ---- Availability fallback ----
-  // An inherited default the connection can no longer run (e.g. a plan
-  // downgrade since it was saved) would be refused on every send. New chats show
-  // the best available model instead and send it explicitly, so the server's own
-  // default resolution can't put the unavailable one on the wire. Derived, not
-  // stored: the saved default is untouched and comes back as soon as it can run.
-  // New chats only: an existing session runs on its own model (a trigger-created
-  // one may carry none in its metadata), and a user pick is explicit; the
-  // provider's error card covers both.
+  // The selected connection's restrictions, for the picker's lock badges.
   const modelLock = useModelLock(selectedConnection)
-  const inheritedDefault = !sessionId && !currentSelection && !modelSeededRef.current
-  const lockedDefault = modelLock && inheritedDefault ? findCatalogModel(displayedModel, catalog) : undefined
-  const availabilityFallback = modelLock && lockedDefault && modelLock.isLocked(lockedDefault)
-    ? bestAllowedModel(catalog, modelLock.isLocked, lockedDefault)
+  // Say once, in the provider's words, that a saved choice was passed over.
+  const openAvailabilityAction = useModelAvailabilityAction()
+  const lockedConnection = connections.find(c => c.id === savedSelection?.llmProviderId)
+  const lockedModel = lockedReason ? lockedConnection?.catalog.find(m => m.id === savedSelection?.wireModel) : undefined
+  const substituteModel = substituteSelection
+    ? connections.find(c => c.id === substituteSelection.llmProviderId)?.catalog.find(m => m.id === substituteSelection.wireModel)
     : undefined
-  const availabilityFallbackId = availabilityFallback?.id
+  const lockedAction = lockedConnection ? availabilities.availabilityOf(lockedConnection.id)?.action ?? null : null
   useEffect(() => {
-    if (!modelLock || !lockedDefault || !availabilityFallback) return
-    const { action } = modelLock
+    if (!lockedModel || !substituteModel || !lockedReason) return
     announceModelFallback({
-      locked: lockedDefault,
-      fallback: availabilityFallback,
-      reason: modelLock.reason(lockedDefault),
-      ...(action && { action: { label: action.label, run: () => action.run(lockedDefault) } }),
+      locked: lockedModel,
+      fallback: substituteModel,
+      reason: lockedReason,
+      ...(lockedAction && {
+        action: {
+          label: lockedAction.label,
+          run: () => openAvailabilityAction({
+            action: lockedAction,
+            model: { id: lockedModel.id, label: lockedModel.label },
+            connectionId: lockedConnection?.id,
+          }),
+        },
+      }),
     })
-  }, [modelLock, lockedDefault, availabilityFallback])
+  }, [lockedModel, substituteModel, lockedReason, lockedAction, lockedConnection?.id, openAvailabilityAction])
 
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
-      ...(modelSeededRef.current && displayedModel
-        ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
-        : availabilityFallbackId
-          ? { model: availabilityFallbackId, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) }
-          : {}),
+      // An untouched new chat sends nothing: the server walks the same list.
+      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
     }),
-    [effort, speed, displayedModel, effectiveLlmProviderId, availabilityFallbackId],
+    [effort, speed, displayedModel, effectiveLlmProviderId],
   )
 
   return useMemo(
@@ -400,7 +426,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setEffort,
       speed,
       setSpeed,
-      model: availabilityFallbackId ?? displayedModel,
+      model: displayedModel,
       setModel,
       catalog,
       defaultModel: fallbackModel,
@@ -409,7 +435,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, availabilityFallbackId, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
   )
 }
 

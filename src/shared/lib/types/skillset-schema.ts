@@ -249,6 +249,18 @@ export const PlatformAccountInfoSchema = z.object({
   role: z.string().nullish().transform((v) => v ?? null),
   userId: z.string(),
   email: z.string().nullish().transform((v) => v ?? null),
+  // The account's plan policy, sent with its identity by a proxy with plans
+  // (SUP-1124), in the shape `/v1/billing` uses. `deniedModels: null` means the
+  // proxy did not say (an older proxy, or billing was unreachable): unknown,
+  // which is not the same as nothing refused.
+  plan: z
+    .object({ id: z.string(), name: z.string() })
+    .nullish()
+    .catch(null)
+    .transform((v) => v ?? null),
+  deniedModels: z
+    .unknown()
+    .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
 })
 export type ParsedPlatformAccountInfo = z.infer<typeof PlatformAccountInfoSchema>
 
