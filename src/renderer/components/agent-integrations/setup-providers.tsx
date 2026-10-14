@@ -1,6 +1,7 @@
 import { EmailIntegrationMessage } from './messages/email-message'
 import { EmailIntegrationSetupForm } from './email-integration-setup-form'
 import { EmailSettingsCard } from './email-settings-card'
+import { EmailDeliveryCard } from './email-delivery-card'
 import type { ComponentType } from 'react'
 import { LinearSetupForm, LinearConnectionSettings, LinearIntegrationSettings } from './linear-setup'
 import { ChatIntegrationSettingsCard } from './chat-integration-settings-card'
@@ -20,7 +21,10 @@ function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<
 
 /** Composition point for provider UI; the home list, dialog and transcript only consume definitions. */
 export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
-  { slug: 'platform-email', label: 'Email', managementAccess: 'owner', Setup: EmailIntegrationSetupForm, Settings: EmailSettingsCard, Message: EmailIntegrationMessage },
+  { slug: 'platform-email', label: 'Email', managementAccess: 'owner', Setup: EmailIntegrationSetupForm, Message: EmailIntegrationMessage, Settings: props => <>
+    <EmailSettingsCard {...props} />
+    <EmailDeliveryCard integration={props.integration} />
+  </> },
   chatProvider('telegram', 'Telegram', TelegramIntegrationMessage),
   chatProvider('slack', 'Slack', SlackIntegrationMessage),
   chatProvider('imessage', 'iMessage', IMessageIntegrationMessage, props => <>

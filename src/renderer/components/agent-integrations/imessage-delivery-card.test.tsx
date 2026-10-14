@@ -26,30 +26,30 @@ describe('IMessageDeliveryCard', () => {
     Object.assign(state, { transport: 'relay', relayAvailable: true })
     render(<IMessageDeliveryCard integration={integration} />, { wrapper })
 
-    await waitFor(() => expect(screen.getByTestId('imessage-delivery-path')).toHaveTextContent('Through webhooks'))
-    expect(screen.queryByTestId('imessage-delivery-next')).toBeNull()
+    await waitFor(() => expect(screen.getByTestId('delivery-path')).toHaveTextContent('Through webhooks'))
+    expect(screen.queryByTestId('delivery-next')).toBeNull()
   })
 
   it('shows the live connection, with the gateway holding offline messages', async () => {
     render(<IMessageDeliveryCard integration={integration} />, { wrapper })
 
-    await waitFor(() => expect(screen.getByTestId('imessage-delivery-path')).toHaveTextContent('live connection to the iMessage gateway'))
-    expect(screen.getByTestId('imessage-delivery-path')).toHaveTextContent('up to 24 hours')
-    expect(screen.queryByTestId('imessage-delivery-next')).toBeNull()
+    await waitFor(() => expect(screen.getByTestId('delivery-path')).toHaveTextContent('live connection to the iMessage gateway'))
+    expect(screen.getByTestId('delivery-path')).toHaveTextContent('up to 24 hours')
+    expect(screen.queryByTestId('delivery-next')).toBeNull()
   })
 
   it('says webhooks start on the next connect when a relay appeared after this one', async () => {
     state.relayAvailable = true
     render(<IMessageDeliveryCard integration={integration} />, { wrapper })
 
-    await waitFor(() => expect(screen.getByTestId('imessage-delivery-next')).toHaveTextContent('next time it connects'))
+    await waitFor(() => expect(screen.getByTestId('delivery-next')).toHaveTextContent('next time it connects'))
   })
 
   it('says when it is not connected', async () => {
     Object.assign(state, { connected: false, transport: null, relayAvailable: true })
     render(<IMessageDeliveryCard integration={integration} />, { wrapper })
 
-    await waitFor(() => expect(screen.getByTestId('imessage-delivery-path')).toHaveTextContent('Not connected'))
-    expect(screen.queryByTestId('imessage-delivery-next')).toBeNull()
+    await waitFor(() => expect(screen.getByTestId('delivery-path')).toHaveTextContent('Not connected'))
+    expect(screen.queryByTestId('delivery-next')).toBeNull()
   })
 })
