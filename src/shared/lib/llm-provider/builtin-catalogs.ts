@@ -747,6 +747,28 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
+    // Bare id matches the platform proxy's gemini-* → gemini route (Gemini API
+    // OpenAI-compatible chat). Measured against gemini-4-argon on 2026-10-14:
+    // efforts are low/medium/high only (xhigh/max 400, so the proxy caps them);
+    // no speed tier is offered; the proxy drops server tools, so search and
+    // fetch need a Settings → Web vendor; images and PDFs are read.
+    id: 'gemini-4-argon',
+    label: 'Gemini 4 Argon',
+    blurb: 'Google flagship, served via Platform',
+    family: 'gemini-argon',
+    isLatest: true,
+    isDefault: true,
+    icon: 'gemini',
+    supportedEfforts: STANDARD_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
+    pricing: pricingFor('gemini-4-argon'),
+    // Unified input + output limit (ai.google.dev/gemini-api/docs/models/gemini-4-argon).
+    contextWindow: 1_048_576,
+  },
+  {
     // Bare id matches the platform proxy's kimi-* → fireworks route.
     id: 'kimi-k3',
     label: 'Kimi K3',
