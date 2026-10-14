@@ -14,6 +14,8 @@ vi.mock('@shared/lib/services/platform-billing-service', () => ({
 vi.mock('@shared/lib/services/cloud-workspace-service', () => ({
   refreshCloudWorkspace: () => mockRefreshCloudWorkspace(),
 }))
+// The acting account is attribution's business; here it is one fixed account.
+vi.mock('@shared/lib/llm-provider/platform-plan-account', () => ({ actingPlanCacheKey: async () => 'acting-account' }))
 
 let mockIsAuthMode = false
 let mockConnected = true
@@ -23,6 +25,7 @@ const mockFetchBilling = vi.fn()
 const mockRefreshCloudWorkspace = vi.fn(async () => undefined)
 
 import { platformService } from './platform-service'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
 
 const SNAPSHOT = {
   configured: true,
@@ -106,6 +109,27 @@ describe('PlatformService', () => {
     await platformService.refresh()
     expect(mockRefreshAccount).not.toHaveBeenCalled()
     expect(platformService.getCachedBilling()).toBeNull()
+  })
+
+  it('keeps the plan policy a billing read carries for the acting account, and forgets it on an account change (SUP-1124)', async () => {
+    platformPlanCache.clear()
+    mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+    await platformService.refreshBilling()
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(load).not.toHaveBeenCalled()
+    platformService.onAuthChanged(false)
+    expect(await platformPlanCache.get('acting-account', load)).toBeNull()
+    expect(load).toHaveBeenCalled()
+  })
+
+  it('does not record a policy from a proxy that predates plans', async () => {
+    platformPlanCache.clear()
+    mockFetchBilling.mockResolvedValue(SNAPSHOT)
+    await platformService.refreshBilling()
+    const load = vi.fn(async () => ({ planName: 'Pro 200', deniedModels: [] }))
+    expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 200', deniedModels: [] })
+    expect(load).toHaveBeenCalled()
   })
 
   it('onAuthChanged(false) clears the cache', async () => {

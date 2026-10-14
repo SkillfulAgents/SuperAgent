@@ -1,5 +1,18 @@
 export type BillingEmbedView = 'topup' | 'subscribe' | 'payment'
 
+/**
+ * Display name for a plan the embed names only by id: `pro-200` → "Pro 200".
+ * The CTA's quote carries just the id; the billing snapshot's `plan.name` is
+ * the source everywhere a subscribed workspace has one.
+ */
+export function planNameFromId(planId: string): string {
+  return planId
+    .split('-')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
 export function platformOriginFromBaseUrl(platformBaseUrl: string | null | undefined): string | null {
   if (!platformBaseUrl) return null
   try {

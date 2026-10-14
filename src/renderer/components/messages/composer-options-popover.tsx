@@ -110,6 +110,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
               value={model}
               onPick={setModel}
               webProvider={webProvider}
+              modelLock={state.modelLock}
             />
             {includeEffort && <Separator className="my-2 bg-border/50" />}
           </>

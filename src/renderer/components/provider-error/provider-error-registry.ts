@@ -5,9 +5,10 @@ import {
   type ProviderErrorPlacement,
   type ProviderErrorPresentation,
 } from '@shared/lib/llm-provider/error-presentation'
-import { PLATFORM_PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
+import { PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT, PLATFORM_PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 
+import { PlatformModelNotInPlanCard } from './platform-model-not-in-plan-card'
 import { PlatformPaywallCard } from './platform-paywall-card'
 
 export interface ProviderErrorComponentProps {
@@ -29,6 +30,7 @@ export const DEFAULT_ERROR_COMPONENT = 'default'
 const REGISTRY: Record<string, ComponentType<ProviderErrorComponentProps>> = {
   [DEFAULT_ERROR_COMPONENT]: ProviderErrorCard,
   [PLATFORM_PAYWALL_COMPONENT]: PlatformPaywallCard,
+  [PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT]: PlatformModelNotInPlanCard,
 }
 
 export interface ResolvedProviderError {

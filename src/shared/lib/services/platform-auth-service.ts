@@ -4,7 +4,7 @@ import { eq, and, desc } from 'drizzle-orm'
 import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
-import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema } from '@shared/lib/types/skillset-schema'
+import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
@@ -14,6 +14,8 @@ import { authAccount } from '@shared/lib/db/schema'
 import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { isPrivateHost, tryParseUrl } from '@shared/lib/utils/url-safety'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import { accountPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -109,7 +111,7 @@ interface SavePlatformAuthInput {
  * (status 400) on an invalid/revoked key or (5xx) an unreachable platform.
  */
 async function fetchPlatformAccountInfo(token: string) {
-  return fetchPlatformJson({
+  return rememberAccountPolicy(await fetchPlatformJson({
     path: '/v1/account',
     token,
     schema: PlatformAccountInfoSchema,
@@ -119,7 +121,32 @@ async function fetchPlatformAccountInfo(token: string) {
       status === 400 || status === 401 || status === 403
         ? { message: 'This access key is invalid or has been revoked.', status: 400 }
         : { message: 'Could not validate this access key right now. Please try again.', status: 502 },
-  })
+  }))
+}
+
+// Every account read carries the account's plan policy (SUP-1124): keep it for
+// model selection, keyed by the account it describes.
+function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): T {
+  platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
+  return account
+}
+
+/**
+ * The account behind the connected platform token, as the current request or
+ * run is attributed (the fetch interceptor adds the acting member). Feeds the
+ * plan policy cache like every account read. Throws on a platform failure.
+ */
+export async function fetchActingPlatformAccount(): Promise<ParsedPlatformAccountInfo> {
+  const token = getPlatformAccessToken()
+  if (!token) throw new Error('Platform is not connected')
+  return rememberAccountPolicy(await fetchPlatformJson({
+    path: '/v1/account',
+    token,
+    schema: PlatformAccountInfoSchema,
+    area: 'platform-auth',
+    reportErrors: false,
+    mapStatusError: (status) => ({ message: 'Account read failed', status }),
+  }))
 }
 
 function buildTokenPreview(token: string): string {
@@ -419,7 +446,7 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
   const token = getPlatformAccessToken()
   if (!token) return null
   try {
-    const account = await runWithRequestUser(userId, () =>
+    const account = rememberAccountPolicy(await runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
         token,
@@ -427,7 +454,7 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
         area: 'platform-auth',
         mapStatusError: (status) => ({ message: 'Account introspection failed', status }),
       }),
-    )
+    ))
     return {
       email: account.email,
       orgName: account.orgName,
