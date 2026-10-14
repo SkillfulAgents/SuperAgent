@@ -231,7 +231,7 @@ export function useStartTodo() {
       let agentSlug = todo.agentSlug
       if (!agentSlug && todo.newAgent) {
         const agent = await createAgentForPrompt(todoPrompt(todo))
-        track('agent_created', { surface: 'todo', num_skills_added_at_creation: 0 })
+        track('agent_created', { source: 'new', surface: 'todo', num_skills_added_at_creation: 0 })
         putTodo(queryClient, await send<TodoView>(`/api/todos/${todo.id}`, 'PATCH', { agentSlug: agent.slug }, 'The agent was created, but the todo could not be given to it'))
         agentSlug = agent.slug
       }

@@ -1494,7 +1494,7 @@ export function AppSidebar() {
   const handleCreateAgentInFolder = useCallback((folderId: string) => {
     if (isCreatingAgent) return
     if ((collapsedFolders ?? []).includes(folderId)) handleToggleFolder(folderId)
-    void createUntitledAgent({ folderId })
+    void createUntitledAgent({ surface: 'section_plus', folderId })
   }, [isCreatingAgent, collapsedFolders, handleToggleFolder, createUntitledAgent])
 
   const isOnline = useIsOnline()
@@ -1677,7 +1677,7 @@ export function AppSidebar() {
                 )}
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={() => { void createUntitledAgent() }}
+                    onClick={() => { void createUntitledAgent({ surface: 'nav' }) }}
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >

@@ -10,7 +10,11 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
 
+/** Where the create was started, for `agent_created`'s `surface`. */
+export type CreateUntitledAgentSurface = 'nav' | 'section_plus' | 'home' | 'app_menu'
+
 export interface CreateUntitledAgentOptions {
+  surface: CreateUntitledAgentSurface
   /**
    * The left-nav folder to file the new agent into. Omitted (or the default
    * folder) leaves it unfiled, the way the nav's own "New Agent" does.
@@ -27,18 +31,18 @@ export function useCreateUntitledAgent() {
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
 
-  const createUntitledAgent = useCallback(async (options?: CreateUntitledAgentOptions) => {
+  const createUntitledAgent = useCallback(async (options: CreateUntitledAgentOptions) => {
     try {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
       track('agent_created', {
         source: 'new',
-        surface: options?.folderId ? 'section_plus' : 'nav',
+        surface: options.surface,
         num_skills_added_at_creation: 0,
       })
 
       // Wait for the filing before navigating. Resolve the assignment against
       // the latest settings when the serialized write runs.
-      if (options?.folderId) {
+      if (options.folderId) {
         const folderId = options.folderId
         try {
           await updateSettings.mutateAsync((current) => ({
