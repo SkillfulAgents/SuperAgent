@@ -6,7 +6,7 @@ export function fallbackNameFromPrompt(prompt: string): string {
   return prompt.trim().split(/\s+/).slice(0, 5).join(' ').slice(0, 50)
 }
 
-export async function deriveAgentName(prompt: string): Promise<string> {
+export async function deriveAgentName(prompt: string): Promise<{ name: string; description?: string }> {
   try {
     const res = await apiFetch('/api/agents/generate-name', {
       method: 'POST',
@@ -14,12 +14,13 @@ export async function deriveAgentName(prompt: string): Promise<string> {
       body: JSON.stringify({ prompt: prompt.trim() }),
     })
     if (res.ok) {
-      const data = (await res.json()) as { name?: string }
+      const data = (await res.json()) as { name?: string; description?: string }
       const generated = data.name?.trim() ?? ''
-      if (generated) return generated
+      const description = data.description?.trim() || undefined
+      if (generated) return { name: generated, description }
     }
   } catch {
     // fall through
   }
-  return fallbackNameFromPrompt(prompt) || FALLBACK_NAME
+  return { name: fallbackNameFromPrompt(prompt) || FALLBACK_NAME }
 }

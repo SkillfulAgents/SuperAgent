@@ -6,7 +6,8 @@
  * the `AGENTS.md` in its workspace, read and written through the agent
  * actor's `config` document `instructions`. The frontmatter of that document
  * is a projection of the catalog row that the host writes on create and
- * rename, so the agent still sees who it is and exports still carry it.
+ * rename, so the agent still sees who it is and exports still carry it. The
+ * agent may edit the description there; the host reads it back after a turn.
  */
 
 import {
@@ -394,6 +395,22 @@ export async function adoptAgentIdentityFromWorkspace(
       return (await agentCatalog.update(slug, { name, description })) ?? record
     }
     return commitIdentity(record, { name, description }, document, document.body)
+  })
+}
+
+/**
+ * Take the description the agent wrote into its own `AGENTS.md` frontmatter
+ * into the row. Only the description: the name stays the user's to change.
+ * A missing or blank description leaves the row alone.
+ */
+export async function syncAgentDescriptionFromWorkspace(slug: string): Promise<void> {
+  await withIdentityLock(slug, async () => {
+    const record = await agentCatalog.get(slug)
+    if (!record) return
+    const document = await readInstructionsDocument(slug)
+    const description = document && identityFromInstructions(document.raw).description?.trim()
+    if (!description || description === record.description) return
+    await agentCatalog.update(slug, { description })
   })
 }
 
