@@ -181,6 +181,7 @@ export function useUpdateAgent() {
 
 export function useUpdateAgentAvatar() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
   return useMutation({
     mutationFn: async ({ slug, avatar }: { slug: string; avatar: AgentAvatar }) => {
       const res = await apiFetch(`/api/agents/${slug}/avatar`, {
@@ -194,6 +195,10 @@ export function useUpdateAgentAvatar() {
     onSuccess: (avatar, { slug }) => {
       updateAgentAvatarCache(queryClient, slug, avatar)
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      track('agent_avatar_changed', { color: avatar.color, shape: avatar.shape })
+    },
+    onError: (_, { avatar }) => {
+      track('agent_avatar_change_failed', { color: avatar.color, shape: avatar.shape })
     },
   })
 }
