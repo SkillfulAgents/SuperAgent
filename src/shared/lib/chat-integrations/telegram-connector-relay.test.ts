@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { inspect } from 'node:util'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-/** Every Bot API call the connector makes, answered here instead of by Telegram. */
+/**
+ * Every Bot API call the connector makes, answered here instead of by Telegram.
+ * A failure is Telegram's refusal, every time, or a thrown error, once.
+ */
 const telegram = vi.hoisted(() => ({
   calls: [] as Array<{ method: string; payload: Record<string, any> }>,
-  failures: new Map<string, { error_code: number; description: string }>(),
+  failures: new Map<string, { error_code: number; description: string } | Error>(),
   nextMessageId: 1000,
 }))
 
@@ -25,6 +29,7 @@ vi.mock('grammy', async (importOriginal) => {
       this.api.config.use(async (_prev, method, payload) => {
         telegram.calls.push({ method, payload: (payload ?? {}) as Record<string, any> })
         const failure = telegram.failures.get(method)
+        if (failure instanceof Error) { telegram.failures.delete(method); throw failure }
         if (failure) return { ok: false, ...failure } as never
         return { ok: true, result: await answer(method, (payload ?? {}) as Record<string, any>) } as never
       })
@@ -63,6 +68,8 @@ let inputs: IncomingMessage[]
 let responses: IntegrationResponseEvent[]
 let inputResult: (event: IntegrationEvent) => IntegrationInputResult | Promise<IntegrationInputResult>
 let nextUpdateId: number
+
+afterEach(() => { vi.useRealTimers() })
 
 beforeEach(() => {
   telegram.calls.length = 0
@@ -209,6 +216,53 @@ describe('TelegramConnector through the webhook', () => {
     await second.disconnect()
   })
 
+  it('acts once on an update the relay offers again, unless it was left for a retry', async () => {
+    const instance = await connected()
+    const kept = textUpdate('kept', 50)
+    const retried = textUpdate('retried', 51)
+    inputResult = event => event.type === 'input' && (event.payload as IncomingMessage).text === 'retried' ? 'retry' : 'accepted'
+    await deliver(kept, retried)
+
+    inputResult = () => 'accepted'
+    expect([...(await deliver(kept, retried)).values()]).toEqual(['duplicate', 'accepted'])
+    expect(inputs.map(input => input.text)).toEqual(['kept', 'retried', 'retried'])
+
+    // A multi-select toggle offered twice stays checked.
+    await instance.sendUserRequestCard(String(CHAT), { type: 'question_request', toolUseId: 'toolu_3', questions: [{ question: 'Which?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }] } as never)
+    const keyboard = telegram.calls.filter(call => call.method === 'sendRichMessage').at(-1)!.payload.reply_markup.inline_keyboard as Array<Array<{ callback_data: string }>>
+    const toggle = tapUpdate(keyboard[0][0].callback_data, telegram.nextMessageId)
+    await deliver(toggle)
+    await deliver(toggle)
+    const redraws = telegram.calls.filter(call => call.method === 'editMessageReplyMarkup')
+    expect(redraws).toHaveLength(1)
+    expect(redraws[0].payload.reply_markup.inline_keyboard[0][0].text).toBe('✅ A')
+    await instance.disconnect()
+  })
+
+  it('gives every button its own random callback id, within Telegram’s 64 bytes', async () => {
+    const instance = await connected()
+    const first = await sendCard(instance, 'toolu_4')
+    const second = await sendCard(instance, 'toolu_5')
+    const ids = [...first.buttons, ...second.buttons]
+    expect(new Set(ids).size).toBe(4)
+    for (const id of ids) expect(id).toMatch(/^cb_[A-Za-z0-9_-]{16}$/)
+    await instance.disconnect()
+  })
+
+  it('keeps the bot token out of what it logs and reports when Telegram can’t be reached', async () => {
+    const { HttpError } = await import('grammy')
+    telegram.failures.set('getMe', new HttpError("Network request for 'getMe' failed!", new Error(`request to https://api.telegram.org/bot${BOT_TOKEN}/getMe failed, reason: getaddrinfo ENOTFOUND`)) as never)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const instance = await connected()
+
+    expect(instance.activeTransport()).toBe('direct')
+    expect(vi.mocked(captureException)).toHaveBeenCalled()
+    expect(inspect([error.mock.calls, vi.mocked(captureException).mock.calls], { depth: 10 })).not.toContain(BOT_TOKEN)
+    error.mockRestore()
+    await instance.disconnect()
+  })
+
   it('leaves updates claimed after a disconnect to the next connection', async () => {
     const instance = await connected()
     await instance.disconnect()
@@ -240,6 +294,24 @@ describe('TelegramConnector long polling', () => {
     expect(instance.activeTransport()).toBe('direct')
     expect(relay.consumers.has(CONSUMER)).toBe(false)
     expect(captureException).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ tags: expect.objectContaining({ operation: 'telegram-webhooks' }) }))
+    error.mockRestore()
+    await instance.disconnect()
+  })
+
+  it('polls when creating the endpoint takes too long', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.mocked(ensureTelegramWebhook).mockReturnValue(new Promise(() => {}))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const instance = connector()
+    const connecting = instance.connect()
+    await vi.advanceTimersByTimeAsync(10_000)
+    vi.useRealTimers()
+    await connecting
+
+    expect(methods()).not.toContain('setWebhook')
+    expect(methods()).toContain('deleteWebhook')
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'Creating the webhook endpoint timed out' }), expect.anything())
     error.mockRestore()
     await instance.disconnect()
   })

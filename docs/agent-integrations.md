@@ -231,10 +231,11 @@ a header, which no relay verification profile can check (they all sign the
 body), so the host compares it itself. The token is the secret bound to the
 bot's id, so a bot the installation no longer uses can't post as the current
 one. Relayed updates go through `bot.handleUpdate()` one at a time, into the
-same handlers as polled ones, without the first-poll batching. Each reports
-what `emitEvent` did with its message. Open cards and their buttons belong to
-the installation, not the connection, so a tap that arrives after a reconnect
-still answers. A restart forgets them. Deleting the installation deletes the
+same handlers as polled ones, without the first-poll batching, and are
+deduplicated on `update_id`. Each reports what `emitEvent` did with its message.
+Open cards and their buttons belong to the installation, not the connection,
+so a tap that arrives after a reconnect still answers. A restart forgets them,
+and callback ids are random, so an old card's button can't match a new card. Deleting the installation deletes the
 bot's webhook if it still points at the endpoint, before the endpoint is disabled.
 
 ## Task managers

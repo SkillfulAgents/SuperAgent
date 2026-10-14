@@ -13,7 +13,8 @@
  * User request cards rendered as inline keyboards.
  */
 
-import { Bot, BotError, type Context as GrammyContext } from 'grammy'
+import { randomBytes } from 'node:crypto'
+import { Bot, BotError, HttpError, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
@@ -53,8 +54,10 @@ export interface TelegramConfig {
 
 const FIRST_POLL_BATCH_DELAY_MS = 500
 const RICH_DRAFT_SENTINEL_PREFIX = 'draft:'
-/** How long setting the webhook may take before the connection long-polls instead. */
+/** How long each step of setting the webhook may take before the connection long-polls instead. */
 const WEBHOOK_SETUP_TIMEOUT_MS = 10_000
+/** Relayed updates handled recently, so one the relay offers again acts once. */
+const MAX_HANDLED_UPDATES = 1000
 
 // ── Markdown → Telegram HTML ─────────────────────────────────────────────
 
@@ -158,6 +161,14 @@ export function buildTelegramSystemPrompt(message: SystemPromptContext): string 
   })
 }
 
+/** Rejects after `ms`; `promise` still settles on its own, unobserved. */
+function within<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms) })
+  promise.catch(() => {})
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
 // ── Open cards ──────────────────────────────────────────────────────────
 
 /** A pending multi-question request: answers accumulate until all questions are answered. */
@@ -198,12 +209,12 @@ interface OpenQuestionCard {
  * An installation's open cards and what their buttons mean. They outlive a
  * connection, as the cards stay in the chat: a tap can arrive after a
  * reconnect (a settings change, or updates Telegram or the relay held while
- * the host was away). A restart forgets them, and taps on older cards do nothing.
+ * the host was away). A restart forgets them, and taps on older cards do nothing:
+ * callback ids are random, so a new card's can't match an old one's.
  */
 interface TelegramCards {
   // Callback ids → their toolUseId mappings (Telegram callback_data is limited to 64 bytes)
   callbacks: Map<string, { toolUseId: string; value: unknown; ts: number }>
-  nextCallbackId: number
   pendingQuestions: Map<string, PendingQuestion>
   // Keyed by `${toolUseId} ${question}` (toolUseId has no spaces, so the join is unambiguous).
   // In-memory only — never encoded into callback_data, which Telegram caps at 64 bytes.
@@ -217,7 +228,7 @@ interface TelegramCards {
 const cardsByInstallation = new Map<string, TelegramCards>()
 
 function newCards(): TelegramCards {
-  return { callbacks: new Map(), nextCallbackId: 0, pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map() }
+  return { callbacks: new Map(), pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map() }
 }
 
 /** The installation's open cards; a connector without one keeps its own. */
@@ -273,6 +284,8 @@ export class TelegramConnector extends ChatAgentIntegration {
   private processing: Promise<unknown> = Promise.resolve()
   /** What the host did with each update's message, for a relayed update to report back. */
   private readonly inputResults = new WeakMap<object, Promise<IntegrationInputResult>>()
+  /** update_ids of relayed updates acted on: a redelivered button tap would toggle twice. */
+  private readonly handledUpdates = new Set<number>()
 
   /**
    * `integration` is the installation this connects for. Without it the relay
@@ -315,7 +328,8 @@ export class TelegramConnector extends ChatAgentIntegration {
     let webhook: Awaited<ReturnType<typeof ensureTelegramWebhook>>
     let secretToken: string
     try {
-      webhook = await ensureTelegramWebhook(integration)
+      // A slow platform mustn't hold up the connections that start after this one.
+      webhook = await within(ensureTelegramWebhook(integration), WEBHOOK_SETUP_TIMEOUT_MS, 'Creating the webhook endpoint timed out')
       if (!webhook || generation !== this.generation) return false
       secretToken = telegramSecretToken(webhook.secret, this.config.botToken)
       const signal = telegramTimeout(WEBHOOK_SETUP_TIMEOUT_MS)
@@ -482,7 +496,8 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.activeDrafts.clear()
     this.workingActivity.clear()
 
-    // Relayed updates mid-handling finish (or come back as retries) before the next connection starts.
+    // Relayed updates mid-handling finish before the next connection starts. A message the
+    // manager no longer takes comes back as a retry; a button tap is lost, as when polling.
     await this.processing.catch(() => {})
     if (this.bot) {
       await this.bot.stop()
@@ -1075,16 +1090,23 @@ export class TelegramConnector extends ChatAgentIntegration {
       return 'discard'
     }
     const { update } = check
+    if (this.handledUpdates.has(update.update_id)) return 'duplicate'
+    let result: RelayAcceptResult
     try {
       await this.bot.handleUpdate(update)
+      const input = this.inputResults.get(update)
+      // An update with no message for the host (a button tap) was handled in full.
+      result = input ? relayAcceptResult(await input) : 'accepted'
     } catch (error) {
       // A handler failed, not the host's acceptance (which resolves): it would fail the same way again.
       this.report(error instanceof BotError ? error.error : error, 'telegram-relayed-update')
-      return 'discard'
+      result = 'discard'
     }
-    const result = this.inputResults.get(update)
-    // An update with no message for the host (a button tap) was handled in full.
-    return result ? relayAcceptResult(await result) : 'accepted'
+    if (result !== 'retry') {
+      this.handledUpdates.add(update.update_id)
+      if (this.handledUpdates.size > MAX_HANDLED_UPDATES) this.handledUpdates.delete(this.handledUpdates.values().next().value!)
+    }
+    return result
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────
@@ -1109,6 +1131,8 @@ export class TelegramConnector extends ChatAgentIntegration {
   }
 
   private report(error: unknown, operation: string): void {
+    // A network failure's cause carries the request URL, which holds the bot token.
+    if (error instanceof HttpError) error = new Error(error.message)
     console.error(`[TelegramConnector] ${operation} failed:`, error)
     captureException(error, { tags: { component: 'chat-integration', operation }, extra: { provider: 'telegram', integrationId: this.integration?.id } })
   }
@@ -1120,7 +1144,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     for (const map of [this.callbackDataMap, this.pendingQuestions, this.pendingMultiSelect, this.openQuestionCard]) {
       for (const [key, entry] of map) if (stale(entry)) map.delete(key)
     }
-    const id = `cb_${this.cards.nextCallbackId++}`
+    const id = `cb_${randomBytes(12).toString('base64url')}`
     this.callbackDataMap.set(id, { toolUseId, value, ts: now })
     return id
   }
