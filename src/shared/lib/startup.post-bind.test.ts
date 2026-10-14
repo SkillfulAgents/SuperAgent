@@ -64,6 +64,7 @@ vi.mock('./container/container-host', async () => {
       startStatusSync: vi.fn(),
       startHealthMonitor: vi.fn(),
       onBeforeContainerStop: null,
+      onSessionIdle: vi.fn(() => () => {}),
       stopStatusSync: vi.fn(),
       stopHealthMonitor: vi.fn(),
       stopAll: () => Promise.resolve(),

@@ -19,7 +19,6 @@ import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents, syncAgentDescriptionFromWorkspace } from './services/agent-service'
-import { messagePersister } from './container/message-persister'
 import { isAuthMode } from './auth/mode'
 import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -202,10 +201,8 @@ async function initializeServicesInner() {
   }
 
   // The agent may have rewritten its description in AGENTS.md during the turn.
-  messagePersister.addGlobalNotificationClient((event: unknown) => {
-    const data = event as { type?: unknown; agentSlug?: unknown }
-    if (data?.type !== 'session_idle' || typeof data.agentSlug !== 'string') return
-    syncAgentDescriptionFromWorkspace(data.agentSlug).catch((error) => {
+  containerHost.onSessionIdle((agentSlug) => {
+    syncAgentDescriptionFromWorkspace(agentSlug).catch((error) => {
       captureException(error, { tags: { component: 'startup', operation: 'sync-agent-description' } })
     })
   })
