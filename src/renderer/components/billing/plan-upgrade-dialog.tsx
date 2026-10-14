@@ -61,8 +61,8 @@ export function PlanUpgradeDialog({ request, onClose }: { request: PlanUpgradeRe
   let title: string
   let description: string
   if (unlocked && modelLabel) {
-    title = `${modelLabel} is unlocked`
-    description = `Your workspace's plan now includes ${modelLabel}. Pick it from the model menu.`
+    title = `Your plan now includes ${modelLabel}`
+    description = `Model access may take a moment to update. Try ${modelLabel} from the model menu.`
   } else if (modelLabel) {
     title = `Upgrade to use ${modelLabel}`
     description = `${notInPlanText(modelLabel, plan?.name)}${canManage ? ' Upgrade the plan to use it.' : ' Ask a workspace owner or admin to upgrade the plan.'}${pending}`

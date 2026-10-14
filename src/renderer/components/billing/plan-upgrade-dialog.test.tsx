@@ -76,14 +76,15 @@ describe('PlanUpgradeDialog', () => {
     expect(screen.queryByRole('button', { name: /Open billing/ })).not.toBeInTheDocument()
   })
 
-  it('says the model is unlocked once a fresh plan includes it, and re-reads on close', async () => {
+  it('says billing includes the model while access catches up, and re-reads on close', async () => {
     const onClose = vi.fn()
     const user = userEvent.setup()
     const { rerender } = render(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1' }} onClose={onClose} />)
     state.denied = []
     state.updatedAt = Date.now() + 1000
     rerender(<PlanUpgradeDialog request={{ model: 'claude-fable-5-1' }} onClose={onClose} />)
-    expect(screen.getByText('Fable 5.1 is unlocked')).toBeInTheDocument()
+    expect(screen.getByText('Your plan now includes Fable 5.1')).toBeInTheDocument()
+    expect(screen.getByText(/Model access may take a moment to update/)).toBeInTheDocument()
     state.refresh.mockClear()
     await user.click(screen.getByRole('button', { name: 'Done' }))
     expect(state.refresh).toHaveBeenCalled()

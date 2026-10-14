@@ -52,7 +52,7 @@ describe('subscription allowance reads', () => {
     })
   }
   it('reports Platform seat consumption and distinct balances, including exhausted/negative credit', async () => {
-    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z', creditScope: 'seat' }, seat: { balanceCents: -100, startingBalanceCents: 1000 }, orgPool: { poolBalanceCents: 0 }, plan: null, pendingPlanChange: null })
+    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z', creditScope: 'seat' }, seat: { balanceCents: -100, startingBalanceCents: 1000 }, orgPool: { poolBalanceCents: 0 }, plan: null, deniedModels: null, pendingPlanChange: null })
     const usage = await new PlatformLlmProvider().getUsage()
     expect(usage.limits[0]).toMatchObject({ label: 'Seat allowance' })
     expect(usage.limits[0].kind === 'window' && usage.limits[0].usedPercent).toBeCloseTo(110)
@@ -62,7 +62,7 @@ describe('subscription allowance reads', () => {
     ])
   })
   it('labels a pooled org\'s shared subscription credit as the team plan, with the same ids', async () => {
-    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z', creditScope: 'org' }, seat: { balanceCents: 30000, startingBalanceCents: 40000 }, orgPool: { poolBalanceCents: 500 }, plan: null, pendingPlanChange: null })
+    vi.mocked(fetchPlatformBillingInfo).mockResolvedValue({ configured: true, subscription: { status: 'active', paymentStatus: null, currentPeriodEnd: '2026-10-01T00:00:00Z', creditScope: 'org' }, seat: { balanceCents: 30000, startingBalanceCents: 40000 }, orgPool: { poolBalanceCents: 500 }, plan: null, deniedModels: null, pendingPlanChange: null })
     const usage = await new PlatformLlmProvider().getUsage()
     expect(usage.limits[0]).toMatchObject({ kind: 'window', id: 'seat', label: 'Team plan allowance', resetsAt: '2026-10-01T00:00:00Z' })
     expect(usage.limits.slice(1)).toEqual([

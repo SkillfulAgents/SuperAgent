@@ -34,7 +34,7 @@ export function usePlatformPlan(enabled = true): PlatformPlan {
   const { data: platformAuth } = usePlatformAuthStatus()
   const active = enabled && platformAuth?.connected === true
   const billingQuery = useBillingInfo(active)
-  const billing = enabled ? billingQuery.data?.billing : undefined
+  const billing = active ? billingQuery.data?.billing : undefined
   const plan = billing?.plan ?? null
   const deniedModels = billing?.deniedModels ?? plan?.deniedModels ?? NO_DENIED
   const pendingPlanChange = billing?.pendingPlanChange ?? null

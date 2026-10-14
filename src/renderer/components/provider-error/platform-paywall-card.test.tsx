@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
-import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
+import { platformBillingQueryKey, type BillingInfoResponse } from '@renderer/hooks/use-billing-info'
+import type { PlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 
 import { FRAME_READY_TIMEOUT_MS } from './billing-embed-frame'
 import { PlatformPaywallCard } from './platform-paywall-card'
@@ -28,6 +29,7 @@ const platformAuth = {
   platformControlled: undefined as boolean | undefined,
   platformBaseUrl: PLATFORM_BASE_URL as string | null,
 }
+const billingKey = () => platformBillingQueryKey(platformAuth as PlatformAuthStatus)
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
@@ -513,7 +515,7 @@ describe('PlatformPaywallCard', () => {
   })
 
   it('does not clear a live 402 on an allowed snapshot cached before it appeared', async () => {
-    client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
+    client.setQueryData(billingKey(), billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard()
     await act(async () => {})
@@ -522,7 +524,7 @@ describe('PlatformPaywallCard', () => {
   })
 
   it('clears a persisted 402 from the current allowed snapshot (session switch after top-up)', async () => {
-    client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
+    client.setQueryData(billingKey(), billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard('API Error: 402 {"error":"insufficient_balance"}', false)
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
@@ -862,7 +864,7 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
       expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
-      act(() => { client.setQueryData(['platform-billing'], billing({ access: ALLOWED, hasPaymentMethod: false })) })
+      act(() => { client.setQueryData(billingKey(), billing({ access: ALLOWED, hasPaymentMethod: false })) })
       await act(async () => {})
       expect(mocks.track.mock.calls.filter(([event]) => event === 'paywall_cleared')).toHaveLength(1)
     })

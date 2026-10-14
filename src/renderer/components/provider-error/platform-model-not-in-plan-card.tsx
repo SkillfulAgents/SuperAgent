@@ -43,7 +43,8 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
     if (live) void refresh()
   }, [live, refresh])
 
-  // A snapshot newer than this card that allows the model: an upgrade went through.
+  // Billing may reflect an upgrade before the proxy's cached model policy does.
+  // Keep both a retry and a previously allowed alternative after a fresh snapshot.
   const allowedNow = !!model && updatedAt > seenAt && !isDenied(model)
 
   if (dismissed) return null
@@ -62,7 +63,7 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
             </p>
             <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
               {allowedNow
-                ? 'Continue to pick this chat back up.'
+                ? 'Model access may take a minute to update. Retry this model or continue with another.'
                 : `${plan && excludedLabel ? `${plan.name} excludes ${excludedLabel}. ` : ''}${canManage ? 'Upgrade to use it, or continue with a model your plan includes.' : 'Ask a workspace owner or admin to upgrade, or continue with a model your plan includes.'}`}
             </p>
           </div>
@@ -92,8 +93,9 @@ export function PlatformModelNotInPlanCard({ message, live = true, dismissible =
 }
 
 /**
- * Sends "Continue" on the chat's platform connection: on the refused model once
- * the plan allows it, otherwise on the best model the plan does allow.
+ * Sends "Continue" on the chat's platform connection. After an upgrade, a
+ * recent proxy refusal still matters: let the user retry that model or use a
+ * different family while the proxy's policy cache catches up.
  */
 function ContinueButton({ session, deniedModel, sameModel, isDenied, onContinued }: {
   session: Session
@@ -115,14 +117,17 @@ function ContinueButton({ session, deniedModel, sameModel, isDenied, onContinued
   const denied: ModelDefinition | undefined = deniedModel && connection
     ? connection.catalog.find((m) => canonicalModelId(m.id) === canonicalModelId(deniedModel))
     : undefined
-  const target = !connection
-    ? undefined
-    : sameModel && denied
-      ? denied
-      : bestAllowedModel(connection.catalog, (m) => isDenied(m.id), denied)
+  const retryModel = sameModel ? denied : undefined
+  const fallback = connection && bestAllowedModel(
+    connection.catalog,
+    (m) => isDenied(m.id) ||
+      (!!denied?.family && m.family === denied.family) ||
+      (deniedModel !== null && canonicalModelId(m.id) === canonicalModelId(deniedModel)),
+    denied,
+  )
 
-  if (!connection || !target || !canUseAgent(session.agentSlug)) return null
-  const continueChat = async () => {
+  if (!connection || (!retryModel && !fallback) || !canUseAgent(session.agentSlug)) return null
+  const continueChat = async (target: ModelDefinition) => {
     setError('')
     try {
       const sent = await sendMessage({
@@ -144,17 +149,31 @@ function ContinueButton({ session, deniedModel, sameModel, isDenied, onContinued
   return (
     <>
       {error && <p role="alert" className="basis-full text-xs text-destructive">{error}</p>}
-      <Button
-        size="sm"
-        variant={sameModel ? 'default' : 'outline'}
-        className={cn(isPending && 'gap-1.5')}
-        disabled={isPending || isActive}
-        onClick={() => void continueChat()}
-        data-testid="model-not-in-plan-continue"
-      >
-        {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-        {sameModel ? 'Continue' : `Continue with ${target.label}`}
-      </Button>
+      {retryModel && (
+        <Button
+          size="sm"
+          className={cn(isPending && 'gap-1.5')}
+          disabled={isPending || isActive}
+          onClick={() => void continueChat(retryModel)}
+          data-testid="model-not-in-plan-retry"
+        >
+          {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+          Retry with {retryModel.label}
+        </Button>
+      )}
+      {fallback && (
+        <Button
+          size="sm"
+          variant="outline"
+          className={cn(isPending && 'gap-1.5')}
+          disabled={isPending || isActive}
+          onClick={() => void continueChat(fallback)}
+          data-testid="model-not-in-plan-continue"
+        >
+          {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+          Continue with {fallback.label}
+        </Button>
+      )}
     </>
   )
 }
