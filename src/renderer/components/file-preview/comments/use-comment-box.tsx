@@ -62,7 +62,8 @@ export function useCommentBox(
   /** A chip opens only for a press that can start a selection: a button or the line gutter keeps the old one live. */
   const pressedInFile = useRef(false)
   const latest = useRef({ surface, pending })
-  useEffect(() => { latest.current = { surface, pending } })
+  // Layout, not passive: a press right after the chip paints must already see it.
+  useLayoutEffect(() => { latest.current = { surface, pending } })
 
   useEffect(() => {
     if (!enabled) setPending(null)
