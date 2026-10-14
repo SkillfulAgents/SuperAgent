@@ -19,7 +19,8 @@ import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
-import { agentActivity } from '@shared/lib/types/agent-activity-status'
+import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
 import { ForkedFromIndicator } from './forked-from-indicator'
 import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/todo-session-chrome'
@@ -85,7 +86,10 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
           className="w-fit max-w-full app-no-drag"
           data-testid="breadcrumb-trail"
         >
-        <ScrollAwareNavTitle>
+        <ScrollAwareNavTitle className="items-center gap-2 align-middle">
+          {/* Travels with the name when the page heading scrolls away; the
+              picker stays on the page heading, so this one is display-only. */}
+          {agent && <AgentAvatar agent={agent} state={agentAvatarState(agent, sessions)} />}
           {agent ? (
             <AgentContextMenu agent={agent}>
               <AppLink

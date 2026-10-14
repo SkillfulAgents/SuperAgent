@@ -444,6 +444,23 @@ describe('AgentIntegration host contract', () => {
     await expect(manager.ensureSession('installation-a', 'object-7')).rejects.toThrow('not allowed')
   })
 
+  it('evaluates availability without constructing connections and isolates failed checks', async () => {
+    let available = false
+    const create = vi.fn()
+    const registry = new AgentIntegrationRegistry([
+      { definition: adapter.definition, policy: adapter, create, isAvailable: async () => available },
+      { definition: { ...adapter.definition, provider: 'broken' }, policy: adapter, create, isAvailable: () => { throw new Error('unavailable') } },
+      { definition: { ...adapter.definition, provider: 'default' }, policy: adapter, create },
+    ])
+    expect(AgentIntegration.isAvailable()).toBe(true)
+    expect(await registry.isAvailable('unknown')).toBe(false)
+    expect((await registry.listAvailableDefinitions()).map(item => item.provider)).toEqual(['default'])
+    available = true
+    expect((await registry.listAvailableDefinitions()).map(item => item.provider)).toEqual(['test-objects', 'default'])
+    expect(create).not.toHaveBeenCalled()
+    expect(registry.getDefinition('broken')).toBeDefined()
+  })
+
   it('exposes provider metadata without creating a connection and rejects duplicate registration', async () => {
     const create = vi.fn()
     const metadataOnly = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create }])

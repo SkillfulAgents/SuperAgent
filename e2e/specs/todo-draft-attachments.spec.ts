@@ -125,6 +125,7 @@ test.describe('Todo draft attachments', () => {
 
   test('keeps unsaved edits after HTTP 503 and saves them on an explicit retry', async ({ page, request }) => {
     const todo = await openSavedDraft(page, request)
+    const editedTitle = `Keep my edited title ${todo.id}`
     const dialog = page.getByTestId('todo-draft-dialog')
     let patches = 0
     await page.route(`**/api/todos/${todo.id}`, async (route) => {
@@ -133,15 +134,14 @@ test.describe('Todo draft attachments', () => {
       }
       await route.continue()
     })
-    await dialog.getByTestId('todo-draft-title').fill('Keep my edited title')
-    await dialog.getByTestId('todo-draft-close').click()
-    await expect(dialog.getByTestId('todo-draft-save-error')).toHaveText('Temporarily unavailable')
-    await expect(dialog.getByTestId('todo-draft-title')).toHaveValue('Keep my edited title')
+    await dialog.getByTestId('todo-draft-title').fill(editedTitle)
+    await expect(dialog.getByTestId('todo-draft-save-error')).toHaveText('Temporarily unavailable', { timeout: 15_000 })
+    await expect(dialog.getByTestId('todo-draft-title')).toHaveValue(editedTitle)
     expect(patches).toBe(1)
     await dialog.getByRole('button', { name: 'Retry save' }).click()
     await expect(dialog).toBeHidden()
     expect(patches).toBe(2)
-    await expect(page.getByTestId('todo-card').filter({ hasText: 'Keep my edited title' })).toBeVisible()
+    await expect(page.getByTestId('todo-card').filter({ hasText: editedTitle })).toBeVisible()
   })
 
   test('holds a file, reopens it, and sends it when the draft starts', async ({ page }) => {

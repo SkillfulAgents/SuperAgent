@@ -271,6 +271,13 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(readBootstrapEnv('agent-xyz')).toMatchObject({ FOO: 'bar' })
   })
 
+  it('mounts volumes: no run flags, and the volume list reaches the VM in its boot env', async () => {
+    const client = newClient()
+    expect(client.volumeRunFlags()).not.toBeNull()
+    await client.start({ volumes: [{ volumeId: 'v1', name: 'notes' }] })
+    expect(readBootstrapEnv('agent-xyz')).toMatchObject({ SUPERAGENT_VOLUMES: '[{"volumeId":"v1","name":"notes"}]' })
+  })
+
   it('routes MicroVM ops through the security service (not the SDK) when MICROVM_PROXY_URL + TOKEN are set', async () => {
     process.env.MICROVM_PROXY_URL = 'https://mvm.internal'
     process.env.MICROVM_PROXY_TOKEN = 'org-a-token'

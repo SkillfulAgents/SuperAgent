@@ -16,6 +16,7 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
 
 /** Standalone gateway transport; credentials are resolved from Platform for each request. */
 export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
+  static override isAvailable() { return platformConnected() }
   readonly provider = 'platform-email'
   protected isAvailable() { return platformConnected() }
   readonly definition = emailDefinition
