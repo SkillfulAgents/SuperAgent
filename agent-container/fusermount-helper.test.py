@@ -74,7 +74,7 @@ class FusermountHelperTests(unittest.TestCase):
             fuse = helper._mount(path, "allow_other,fsname=:webdav{x}:,subtype=rclone,max_read=1048576,suid")
         os.close(fuse)
         argv = calls[0]
-        self.assertEqual(argv[:5], ["mount", "-i", "--no-canonicalize", "-t", "fuse.rclone"])
+        self.assertEqual(argv[:5], ["/usr/bin/mount", "-i", "--no-canonicalize", "-t", "fuse.rclone"])
         self.assertTrue(argv[6].endswith(",nosuid,nodev,max_read=1048576"))
         self.assertNotIn("allow_other", argv[6])
         self.assertEqual(argv[7], "rclone")
@@ -108,7 +108,7 @@ class FusermountHelperTests(unittest.TestCase):
             with self.subTest(mnt_id=mnt_id), patch("builtins.open", side_effect=opener(mnt_id)), patch.object(helper, "_run") as run:
                 if allowed:
                     helper._unmount(path)
-                    self.assertEqual(run.call_args.args[0][:3], ["umount", "-l", "--no-canonicalize"])
+                    self.assertEqual(run.call_args.args[0][:3], ["/usr/bin/umount", "-l", "--no-canonicalize"])
                     self.assertTrue(run.call_args.args[0][3].startswith("/proc/self/fd/"))
                 else:
                     with self.assertRaises(ValueError):
@@ -119,6 +119,16 @@ class FusermountHelperTests(unittest.TestCase):
             helper._unmount(os.path.join(self.mounts, "evil"))
         with self.assertRaises(ValueError):
             helper._unmount("/workspace")
+
+    def test_runs_isolated_so_root_never_loads_the_agents_python_files(self):
+        with open(_spec.origin) as source:
+            self.assertEqual(source.readline().strip(), "#!/usr/bin/python3 -I")
+
+    def test_root_commands_get_a_fixed_env_not_the_agents(self):
+        with patch.object(helper.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            helper._run(["/usr/bin/umount", "-l", "/mounts/x"])
+        self.assertEqual(run.call_args.kwargs["env"], {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"})
 
     @unittest.skipUnless(hasattr(socket, "SO_PEERCRED"), "Linux only")
     def test_server_refuses_a_caller_that_is_not_the_agent(self):

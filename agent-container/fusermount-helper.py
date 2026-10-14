@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 # fusermount3 for runtimes with no-new-privs, where the setuid copy cannot mount.
 # start.sh runs `serve` as root and binds this file over fusermount3, so rclone runs the client side as the agent.
 import json, os, re, socket, struct, subprocess, sys, threading
@@ -8,10 +8,12 @@ AGENT_GID = 1000
 FUSE_SOCK = "/run/gamut/fuse.sock"
 MOUNTS_DIR = "/mounts"
 _NAME_RE = re.compile(r"^(?!\.\.?\Z)[^/\\\x00]+\Z")
+# -I keeps Python off the agent's site-packages. start.sh starts serve with a clean env, and mount/umount get this one.
+_ROOT_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
 
 
 def _run(argv, **kwargs):
-    done = subprocess.run(argv, capture_output=True, timeout=10, **kwargs)
+    done = subprocess.run(argv, capture_output=True, timeout=10, env=_ROOT_ENV, **kwargs)
     if done.returncode != 0:
         raise ValueError(f"{argv[0]} rc={done.returncode} {done.stderr.decode(errors='replace').strip()[:500]}")
 
@@ -37,7 +39,7 @@ def _mount(path, opts):
             kernel += f",max_read={asked['max_read']}"
         # Mount on the opened folder, so a symlink swapped in after the check cannot redirect it. --no-canonicalize
         # stops mount(8) resolving the fd back to a path the agent could swap.
-        _run(["mount", "-i", "--no-canonicalize", "-t", "fuse.rclone", "-o", kernel, "rclone", f"/proc/self/fd/{dfd}"], pass_fds=(fuse, dfd))
+        _run(["/usr/bin/mount", "-i", "--no-canonicalize", "-t", "fuse.rclone", "-o", kernel, "rclone", f"/proc/self/fd/{dfd}"], pass_fds=(fuse, dfd))
         return fuse
     except BaseException:
         if fuse is not None:
@@ -58,7 +60,7 @@ def _unmount(path):
             row = next((r for r in (line.rstrip(b"\n").split(b" ") for line in table) if r[0] == mnt_id), None)
         if not row or row[row.index(b"-") + 1] != b"fuse.rclone" or f"user_id={AGENT_UID}".encode() not in row[-1].split(b","):
             raise ValueError(f"{path!r} is not an agent FUSE mount")
-        _run(["umount", "-l", "--no-canonicalize", f"/proc/self/fd/{dfd}"], pass_fds=(dfd,))
+        _run(["/usr/bin/umount", "-l", "--no-canonicalize", f"/proc/self/fd/{dfd}"], pass_fds=(dfd,))
     finally:
         os.close(dfd)
 

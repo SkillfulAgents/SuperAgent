@@ -228,7 +228,7 @@ RUN chmod -R a-w /opt/gamut/bin && chmod a+rx /opt/gamut/bin/*.py
 # image as root (Apple Container, whose /dev/fuse is root-only).
 RUN install -m 4755 /usr/bin/fusermount3 /usr/local/bin/fusermount3
 # Under no-new-privs that setuid copy cannot mount; start.sh binds this helper over it.
-COPY --chown=root:root fusermount-helper.py /usr/local/lib/gamut/fusermount-helper
+COPY --chown=root:root --chmod=0755 fusermount-helper.py /usr/local/lib/gamut/fusermount-helper
 # fusermount3 unmounts for a non-root user only with /etc/mtab, which Docker
 # creates at run time and Apple Container does not.
 RUN ln -sf /proc/self/mounts /etc/mtab
