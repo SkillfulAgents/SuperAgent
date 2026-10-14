@@ -99,8 +99,8 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
 
 ## Safety
 
-- Add a hook only when the user asks for one. Tell them what it does and when
-  it runs.
+- Add a hook only when the user asks for one or agrees to your proposal. Tell
+  them what it does and when it runs.
 - A `UserPromptSubmit` hook runs before every message, the user's included. If
   it blocks, the agent stops responding until the hook is removed. Make one
   block only when the user explicitly wants that.

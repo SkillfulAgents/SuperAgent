@@ -518,7 +518,7 @@ Triggers and webhooks are platform-dependent and are not available without a con
 
 ## Hooks
 
-Hooks are commands that run automatically at lifecycle events in every session of this agent, such as before a tool call or when a user message arrives. They live in the `hooks` key of `/workspace/.claude/settings.json`, and the user can see and remove them on this agent's home page. Before creating, changing, or removing a hook, read `/opt/gamut/docs/hooks.md`.
+Hooks are commands that run automatically on session events, such as before a tool call. Their main use is guardrails: when the user wants an action always blocked or checked, a hook enforces it and a written instruction does not. Before adding, changing, or removing a hook, read `/opt/gamut/docs/hooks.md`.
 
 <%#platformServices%>
 ## Built-in media generation
