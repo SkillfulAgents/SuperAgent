@@ -1,26 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, extracted the page title \"Example Domain\", and reported back with the correct information.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back to the user.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing the \"Your Agents\" panel with two agents listed.",
-    "Clicked on \"QA-20261014-172538-ugcv\" agent in the sidebar — Successfully opened the agent's configuration page showing the agent settings, connections, skills, and message input area.",
-    "Typed and initially attempted to send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was entered in the textbox but was not initially sent properly; message remained in the input field.",
-    "Navigated back to home page — Successfully returned to the home page showing both agents with \"Last run never\" status.",
-    "Clicked on the agent again to reopen it — Successfully opened the agent page again with the message still in the input textbox.",
-    "Clicked the \"Send message\" button — Successfully sent the message and created a new session with title \"Check Example.com Page Title\". The agent immediately started working (status changed to \"working\").",
-    "Waited for agent response (up to 60 seconds) — Agent successfully completed the task and provided response: \"The page title is \"Example Domain\". https://example.com loaded normally with HTTP 200, and I've closed the browser.\"",
-    "Verified response mentions \"Example Domain\" and took final screenshot — Response clearly displays \"The page title is \\\"Example Domain\\\"\" along with additional details about the HTTP 200 status and browser closure. The screenshot confirms successful completion with the browser preview visible during execution."
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut application and sidebar showing available agents.",
+    "Found and clicked the \"QA-20261014-182314-lf13\" agent in the sidebar — Successfully navigated to the agent's chat page with empty message history.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed into the input field and sent using the Send button.",
+    "Waited up to 3 minutes for a response — Agent completed processing in 12 seconds after using 3 tool calls and 152,506 tokens.",
+    "Verified the response mentions \"Example Domain\" — Response text clearly states: \"The page title is \"Example Domain\". The page loaded normally, and I closed the browser afterwards.\"",
+    "Took a screenshot showing the successful response — Screenshot captured and saved showing the complete conversation with the agent's response displaying \"Example Domain\" as the page title."
   ],
   "bugs": [],
-  "durationMs": 216821,
-  "sessionId": "761c4b9e-ba85-439e-ad84-3e5ef16a90ad",
+  "durationMs": 142510,
+  "sessionId": "a4915e6b-1503-4411-b207-47be255a07ee",
   "cost": {
-    "inputTokens": 788,
-    "outputTokens": 20019,
-    "cacheCreationTokens": 104711,
-    "cacheReadTokens": 2645559,
+    "inputTokens": 368,
+    "outputTokens": 10822,
+    "cacheCreationTokens": 66513,
+    "cacheReadTokens": 991357,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.496328
+    "totalCostUsd": 0.236755
   }
 }
