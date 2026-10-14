@@ -1785,21 +1785,23 @@ export function AppSidebar() {
                   button's hover fill (the Electron vibrancy rules supply the
                   translucent one there) and its text and + darken on hover.
                 */}
-                <SidebarMenuItem className="mt-2">
-                  <SidebarMenuButton
-                    onClick={handleCreateFolder}
-                    className={cn(
-                      SECTION_ROW_CLASS,
-                      'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
-                    )}
-                    data-testid="add-section-button"
-                  >
-                    <span className="flex shrink-0 items-center">
-                      <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
-                    </span>
-                    <span>Add section</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+                {(agents?.length ?? 0) > 0 && (
+                  <SidebarMenuItem className="mt-2">
+                    <SidebarMenuButton
+                      onClick={handleCreateFolder}
+                      className={cn(
+                        SECTION_ROW_CLASS,
+                        'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
+                      )}
+                      data-testid="add-section-button"
+                    >
+                      <span className="flex shrink-0 items-center">
+                        <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                      </span>
+                      <span>Add section</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
