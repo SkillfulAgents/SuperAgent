@@ -59,6 +59,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   }
 
   override readonly supportsUsage = true
+  override readonly supportsModelAvailability = true
 
   override async getUsage() {
     // Fetch within the request's member attribution scope. Never cache globally.

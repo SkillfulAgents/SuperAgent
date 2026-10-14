@@ -24,7 +24,7 @@ describe('useProviderModelAvailability', () => {
   it('uses the provider response for model decisions', async () => {
     fetchAvailability.mockResolvedValue(response({ unavailableModelIds: ['model-a'], restrictionName: 'Pro', action: 'upgrade' }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const { result } = renderHook(() => useProviderModelAvailability({ id: 'conn-a', isConfigured: true }), { wrapper: wrapper(client) })
+    const { result } = renderHook(() => useProviderModelAvailability({ id: 'conn-a', isConfigured: true, supportsModelAvailability: true }), { wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.isUnavailable(model('model-a'))).toBe(true))
     expect(result.current.isUnavailable(model('model-b'))).toBe(false)
     expect(fetchAvailability).toHaveBeenCalledWith('/api/llm-connections/conn-a/model-availability')
@@ -35,7 +35,7 @@ describe('useProviderModelAvailability', () => {
     let resolveNext: ((value: Response) => void) | undefined
     fetchAvailability.mockImplementationOnce(() => new Promise<Response>(resolve => { resolveNext = resolve }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const { result, rerender } = renderHook(({ id }) => useProviderModelAvailability({ id, isConfigured: true }),
+    const { result, rerender } = renderHook(({ id }) => useProviderModelAvailability({ id, isConfigured: true, supportsModelAvailability: true }),
       { initialProps: { id: 'conn-a' }, wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.isUnavailable(model('model-a'))).toBe(true))
     rerender({ id: 'conn-b' })
@@ -49,7 +49,7 @@ describe('useProviderModelAvailability', () => {
       .mockResolvedValueOnce(response(null))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { result, rerender } = renderHook(({ isConfigured, modelAvailabilityRevision }) =>
-      useProviderModelAvailability({ id: 'conn-a', isConfigured, modelAvailabilityRevision }),
+      useProviderModelAvailability({ id: 'conn-a', isConfigured, supportsModelAvailability: true, modelAvailabilityRevision }),
     { initialProps: { isConfigured: true, modelAvailabilityRevision: 'org-a' }, wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.isUnavailable(model('model-a'))).toBe(true))
     rerender({ isConfigured: true, modelAvailabilityRevision: 'org-b' })
@@ -58,5 +58,13 @@ describe('useProviderModelAvailability', () => {
     expect(result.current.availability).toBeNull()
     rerender({ isConfigured: false, modelAvailabilityRevision: 'org-b' })
     expect(result.current.availability).toBeNull()
+  })
+
+  it('does not request policy for providers without availability support', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useProviderModelAvailability({ id: 'ordinary-conn', isConfigured: true, supportsModelAvailability: false }),
+      { wrapper: wrapper(client) })
+    expect(result.current.availability).toBeNull()
+    expect(fetchAvailability).not.toHaveBeenCalled()
   })
 })

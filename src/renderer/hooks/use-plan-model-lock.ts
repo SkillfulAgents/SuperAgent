@@ -8,7 +8,7 @@ import type { ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 /**
  * Adapt a provider's connection-scoped availability to the picker's lock UI.
  */
-export function usePlanModelLock(connection: Pick<ConnectionInfo, 'id' | 'isConfigured' | 'modelAvailabilityRevision'> | undefined): PlanLock | undefined {
+export function usePlanModelLock(connection: Pick<ConnectionInfo, 'id' | 'isConfigured' | 'supportsModelAvailability' | 'modelAvailabilityRevision'> | undefined): PlanLock | undefined {
   const { availability, isUnavailable } = useProviderModelAvailability(connection)
   const openUpgrade = usePlanUpgrade()
   const unavailableModelIds = availability?.unavailableModelIds

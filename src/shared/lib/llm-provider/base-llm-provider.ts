@@ -83,6 +83,9 @@ export abstract class BaseLlmProvider {
 
   readonly supportsUsage: boolean = false
 
+  /** Whether model availability may need a provider-backed policy request. */
+  readonly supportsModelAvailability: boolean = false
+
   /** Read-only allowance snapshot; never gates inference or model selection. */
   async getUsage(): Promise<ProviderUsage> {
     return { status: 'unsupported', observedAt: new Date().toISOString(), limits: [] }
