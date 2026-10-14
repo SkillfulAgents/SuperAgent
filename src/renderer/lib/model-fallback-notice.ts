@@ -25,10 +25,11 @@ function markShown(key: string): void {
 }
 
 /**
- * Tell the user, once per reason, that a saved default the connection cannot
- * run was swapped for an available model in new chats. The saved default is
- * kept, so it comes back without another notice once it can run again.
- * `reason` is the provider's sentence; a new reason (another plan) notifies again.
+ * Tell the user, once per reason, that a saved model the connection cannot
+ * run (a default, or a chat's own) was passed over for the next one that can.
+ * Saved defaults are kept, so they come back without another notice once they
+ * can run again. `reason` is the provider's sentence; a new reason (another
+ * plan) notifies again.
  */
 export function announceModelFallback(input: {
   locked: ModelDefinition
@@ -40,7 +41,7 @@ export function announceModelFallback(input: {
   if (alreadyShown(key)) return
   markShown(key)
   toast(input.reason, {
-    description: `New chats use ${input.fallback.label} instead. Your default isn't changed.`,
+    description: `Using ${input.fallback.label} instead.`,
     ...(input.action && { action: { label: input.action.label, onClick: input.action.run } }),
     duration: 10_000,
   })
