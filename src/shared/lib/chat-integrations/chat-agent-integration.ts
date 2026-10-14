@@ -6,7 +6,7 @@
  */
 
 import { AgentIntegration } from '../agent-integrations/agent-integration'
-import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
@@ -425,10 +425,15 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   // ── Protected helpers for subclasses ────────────────────────────────
 
-  protected emitMessage(message: IncomingMessage): void {
-    // The manager reports acceptance failures. They do not imply the provider
-    // transport is unhealthy (and must not flip its connection status).
-    void this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message }).catch(() => {})
+  /**
+   * Hands a message to the host and resolves to what it did with it, for
+   * transports that acknowledge or redeliver. A handler failure resolves
+   * `retry`: the manager reports it, and it does not imply the provider
+   * transport is unhealthy (it must not flip its connection status).
+   */
+  protected emitMessage(message: IncomingMessage): Promise<IntegrationInputResult> {
+    return this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message })
+      .catch((): IntegrationInputResult => 'retry')
   }
 
   protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {

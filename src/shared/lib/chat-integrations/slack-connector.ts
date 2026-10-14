@@ -527,7 +527,7 @@ export class SlackConnector extends ChatAgentIntegration {
         mimeType: f.mimetype,
       }))
 
-      this.emitMessage({
+      void this.emitMessage({
         externalMessageId: ts,
         text,
         chatId: effectiveChatId,

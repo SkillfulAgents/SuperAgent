@@ -7,7 +7,7 @@ import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-inte
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
 import { resolveAppLinkContext, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { toPublicChatIntegration } from './public'
-import { mergeChatIntegrationConfig } from './config-schema'
+import { mergeChatIntegrationConfig, parseChatIntegrationConfig, type IMessageConfig } from './config-schema'
 import type { ChatIntegration } from '../db/schema'
 import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy } from './chat-policy'
@@ -28,6 +28,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     appLink: AppLinkContext,
     record: AgentIntegrationRecord,
   ) => ChatAgentIntegration | Promise<ChatAgentIntegration>,
+  cleanup?: IntegrationProvider['cleanup'],
 ): IntegrationProvider {
   const identityField = provider === 'imessage' ? 'phoneNumber' : 'botToken'
   const identitySchema = z.object({ [identityField]: z.string().min(1) })
@@ -58,6 +59,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
       const appLink = resolveAppLinkContext(record.agentSlug)
       return instantiate ? instantiate(Connector, config, appLink, record) : new Connector(config, appLink)
     },
+    cleanup,
     async describeTarget(externalId) {
       const Connector = await load()
       return { type: Connector.classifyChatId?.({ chatId: externalId }) }
@@ -74,5 +76,15 @@ export const chatProviders: IntegrationProvider[] = [
       return new Connector(config, appLink, createSlackThreadStateStore(record.id))
     },
   ),
-  chatProvider('imessage', imessageConfigSchema, async () => (await import('./imessage-connector')).IMessageConnector),
+  chatProvider(
+    'imessage', imessageConfigSchema, async () => (await import('./imessage-connector')).IMessageConnector,
+    (Connector, config, appLink, record) => new Connector(config, appLink, record),
+    async record => {
+      // The gateway holds events for the socket again; the endpoint itself is disabled after this.
+      const config = parseChatIntegrationConfig('imessage', record.config) as IMessageConfig | null
+      if (!config?.relay) return
+      const { deleteGatewayWebhook } = await import('./imessage-gateway-client')
+      await deleteGatewayWebhook(config)
+    },
+  ),
 ]

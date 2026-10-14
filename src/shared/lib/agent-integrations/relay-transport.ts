@@ -11,6 +11,7 @@ import {
   type WebhookRelayService,
 } from '../webhook-relay'
 import { WebhookEndpointsApiError } from '../webhook-relay/platform-endpoints-client'
+import type { VerificationProfile } from '../services/webhook-endpoint-schema'
 import { IntegrationSetupError } from './setup-types'
 import {
   integrationRelayBindingSchema,
@@ -37,11 +38,14 @@ export function integrationRelayName(providerName: string, agentSlug: string): s
   return `${providerName} integration for ${agentSlug}`
 }
 
-/** Mints the public URL an integration's webhooks will arrive at. */
-export async function provisionIntegrationRelay(name: string, userId?: string): Promise<IntegrationRelayBinding> {
+/**
+ * Mints the public URL an integration's webhooks will arrive at. With a
+ * verification profile, the relay rejects deliveries that don't match it.
+ */
+export async function provisionIntegrationRelay(name: string, userId?: string, verification?: VerificationProfile): Promise<IntegrationRelayBinding> {
   const scope = await integrationRelayScope(userId)
   try {
-    const endpoint = await getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200) })
+    const endpoint = await getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200), ...(verification ? { verification } : {}) })
     return integrationRelayBindingSchema.parse({ endpointId: endpoint.id, url: endpoint.url, scope })
   } catch (error) {
     if (error instanceof WebhookRelayUnavailableError) throw new IntegrationSetupError(error.message)
