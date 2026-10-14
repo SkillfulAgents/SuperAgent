@@ -24,6 +24,7 @@ const FAMILY_LABELS: Record<string, string> = {
   'gpt-luna': 'GPT Luna',
   glm: 'GLM',
   deepseek: 'DeepSeek',
+  'gemini-argon': 'Gemini Argon',
   'muse-wonder': 'Muse Wonder',
   muse: 'Muse Spark',
   'muse-contributor': 'Muse Spark Contributor',
@@ -75,7 +76,7 @@ export function vendorDefault(
  */
 const LINEAGE_FAMILIES = new Set([
   'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor',
-  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna',
+  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-argon',
 ])
 
 /**
