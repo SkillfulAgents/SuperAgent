@@ -58,11 +58,14 @@ link to that agent's page instead. Your own slug is in
 `mcp__agents__list_agents`.
 
 ```markdown
-Mount the folder from the Volumes section on [your agent's home page](/agents/sales-helper).
+Mount the folder from the Volumes section on [your agent's home page](/agents/sales-helper). If you don't see it, scroll down.
 ```
 
 The same rules apply: exact path, no host, query string, or trailing slash,
 and in-app chat only. Any other agent path is treated as a normal web link.
+`/agents/<slug>` opens the top of the agent home, so name the section the user
+needs (e.g. "Volumes", "Triggers", "Skills") and say it may be further down the
+page: "If you don't see it, scroll down."
 
 | Path | Page | Main controls |
 |---|---|---|
