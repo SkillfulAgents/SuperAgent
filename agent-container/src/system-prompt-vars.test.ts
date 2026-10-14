@@ -89,7 +89,6 @@ describe('generateSystemPrompt rendering', () => {
     expect(out).toContain('<mount-index path="/mounts/team">\n# Team\n')
     expect(out.split('</mount-index>')).toHaveLength(3)
     expect(out).toContain('<mount-index path="/mounts/big" truncated="true">\n# Big\n</mount-index>')
-    expect(out.split('root `INDEX.md`, if it has one, is shown below')).toHaveLength(2)
   })
 
   // Trigger gating across every env combination, in one table so each case is

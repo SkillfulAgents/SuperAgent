@@ -348,7 +348,6 @@ export interface SystemPromptVars {
   envVars: string[];
   hasMounts: boolean;
   mountPathsJoined: string;
-  hasMountIndexes: boolean;
   mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
@@ -386,7 +385,6 @@ export function buildSystemPromptVars(
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
   const mountPaths = mountedVolumePaths();
-  const mountIndexes = mountedVolumeIndexes();
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
@@ -418,8 +416,7 @@ export function buildSystemPromptVars(
     // Each path is rendered as a JSON string literal. A folder name is user
     // bytes, and a raw newline or `#` in it would read as prompt structure.
     mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
-    hasMountIndexes: mountIndexes.length > 0,
-    mountIndexes: mountIndexes.map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
+    mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };

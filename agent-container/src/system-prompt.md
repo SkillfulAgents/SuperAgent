@@ -593,10 +593,6 @@ Your main working directory is `/workspace`. It persists across restarts and ses
 
 Mounted folders: <%mountPathsJoined%>
 These are the only folders mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
-<%#hasMountIndexes%>
-
-Each mounted folder's root `INDEX.md`, if it has one, is shown below. Use it to find files before you search the folder. The files are the source of truth, so fix a wrong entry.
-<%/hasMountIndexes%>
 <%#mountIndexes%>
 
 <mount-index path=<%pathJson%><%#truncated%> truncated="true"<%/truncated%>>

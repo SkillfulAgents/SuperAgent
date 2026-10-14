@@ -9,6 +9,10 @@ function indexHint(roots: string[]): string | undefined {
   return `Folder index: ${indexes}. Update the index if this change makes an entry wrong or missing.`
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function indexedRoots(): string[] {
   return mountedVolumeIndexes().map((m) => m.path)
 }
@@ -18,8 +22,10 @@ export function mountIndexCommandHint(command: unknown): string | undefined {
   if (typeof command !== 'string') return undefined
   const unescaped = command.replace(/\\(.)/g, '$1')
   if (!FILE_CHANGING_COMMAND.test(unescaped)) return undefined
-  return indexHint(indexedRoots().filter((root) =>
-    new RegExp(`(^|[\\s"'=])${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[/\\s"';|&)]|$)`).test(unescaped)))
+  return indexHint(indexedRoots().filter((root) => {
+    const rest = unescaped.replace(new RegExp(`${escapeRegExp(indexPath(root))}(?=[\\s"';|&)]|$)`, 'g'), '')
+    return new RegExp(`(^|[\\s"'=])${escapeRegExp(root)}(?=[/\\s"';|&)]|$)`).test(rest)
+  }))
 }
 
 export class MountIndexFileHook extends FileHook {
