@@ -739,7 +739,7 @@ function buildSecretDecorationsPlugin(
 const endWidgetKey = new PluginKey<HTMLElement | null>('composer-end-widget')
 
 function buildEndWidgetPlugin(): Plugin<HTMLElement | null> {
-  return new Plugin({
+  return new Plugin<HTMLElement | null>({
     key: endWidgetKey,
     state: {
       init: () => null,
