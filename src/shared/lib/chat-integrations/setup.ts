@@ -1,7 +1,7 @@
 import type { ZodType } from 'zod'
 import type { IntegrationProviderSetup } from '../agent-integrations/setup-types'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
-import { IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from './config-schema'
+import { IMESSAGE_GATEWAY_URL, imessageSetupSchema, withoutHostOwnedConfig, type ChatProvider } from './config-schema'
 
 import { inputSchema, telegramResultSchema, slackResultSchema, tokenResultSchema, telegramTestInputSchema, slackTestInputSchema } from './setup-schema'
 
@@ -10,7 +10,7 @@ export function chatProviderSetup(provider: ChatProvider, schema: ZodType): Inte
   return {
     allowAgentCreation: true,
     async prepare(input) {
-      let config = inputSchema.parse(input)
+      let config = withoutHostOwnedConfig(provider, inputSchema.parse(input))
       if (provider === 'imessage' && config.code && !config.token) {
         const parsed = imessageSetupSchema.parse({ phoneNumber: config.phoneNumber, code: config.code })
         const response = await fetch(`${IMESSAGE_GATEWAY_URL}/auth/exchange`, {

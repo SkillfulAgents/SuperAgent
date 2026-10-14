@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
-import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
+import { platformBillingQueryKey, type BillingInfoResponse } from '@renderer/hooks/use-billing-info'
+import type { PlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 
 import { FRAME_READY_TIMEOUT_MS } from './billing-embed-frame'
 import { PlatformPaywallCard } from './platform-paywall-card'
@@ -28,6 +29,7 @@ const platformAuth = {
   platformControlled: undefined as boolean | undefined,
   platformBaseUrl: PLATFORM_BASE_URL as string | null,
 }
+const billingKey = () => platformBillingQueryKey(platformAuth as PlatformAuthStatus)
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
@@ -361,12 +363,12 @@ describe('PlatformPaywallCard', () => {
       expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({ ctaKind: 'ask_admin', blocked: true, placement: 'composer' }))
     })
 
-    it('describes the plan\'s usage as shared when a pooled org is asked to subscribe', async () => {
+    it('names no usage amount when a pooled org is asked to subscribe; plans differ', async () => {
       platformAuth.role = 'owner'
       fetchBilling.mockResolvedValue(billing({ subscription: { ...POOLED, status: 'cancelled' } }))
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByRole('button', { name: 'Upgrade to Pro' })
-      expect(screen.getByText('A shared pool of monthly usage: $200 for every seat on your plan. Pay-as-you-go past that.')).toBeInTheDocument()
+      expect(screen.queryByText(/\$200/)).not.toBeInTheDocument()
       expect(screen.queryByText(/per seat/)).not.toBeInTheDocument()
     })
 
@@ -513,7 +515,7 @@ describe('PlatformPaywallCard', () => {
   })
 
   it('does not clear a live 402 on an allowed snapshot cached before it appeared', async () => {
-    client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
+    client.setQueryData(billingKey(), billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard()
     await act(async () => {})
@@ -522,7 +524,7 @@ describe('PlatformPaywallCard', () => {
   })
 
   it('clears a persisted 402 from the current allowed snapshot (session switch after top-up)', async () => {
-    client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
+    client.setQueryData(billingKey(), billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard('API Error: 402 {"error":"insufficient_balance"}', false)
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
@@ -659,12 +661,24 @@ describe('PlatformPaywallCard', () => {
       postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 2, seatPriceCents: 20000 })
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$400/mo')
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent(/2 seats\s*×\s*\$200\/mo/)
+      // A platform before plans names none.
+      expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('w-full')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.'))
       expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    })
+
+    it('names the plan the subscribe quote is for, and drops an id that is not a plan slug (SUP-1143)', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200' })
+      expect(screen.getByTestId('paywall-plan-name')).toHaveTextContent('Pro 200')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 3000, planId: '<b>Pro</b>' })
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$30/mo')
+      expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
     })
 
     it('sizes the subscribe CTA box for the promo line the platform draws under the button', async () => {
@@ -850,7 +864,7 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
       expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
-      act(() => { client.setQueryData(['platform-billing'], billing({ access: ALLOWED, hasPaymentMethod: false })) })
+      act(() => { client.setQueryData(billingKey(), billing({ access: ALLOWED, hasPaymentMethod: false })) })
       await act(async () => {})
       expect(mocks.track.mock.calls.filter(([event]) => event === 'paywall_cleared')).toHaveLength(1)
     })

@@ -97,6 +97,10 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.resetQueries({ queryKey: ['platform-billing'] })
+      queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'models'] })
       // A changed token marks running agents stale; nothing else refetches the agent list for it.
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
@@ -179,6 +183,10 @@ export function useRedeemDownloadNonce() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.resetQueries({ queryKey: ['platform-billing'] })
+      queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'models'] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
@@ -235,6 +243,10 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.resetQueries({ queryKey: ['platform-billing'] })
+      queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'models'] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data

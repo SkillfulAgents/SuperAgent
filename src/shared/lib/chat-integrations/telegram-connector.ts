@@ -243,7 +243,7 @@ export class TelegramConnector extends ChatAgentIntegration {
 
       const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || undefined
 
-      this.emitMessage({
+      void this.emitMessage({
         externalMessageId: String(ctx.message.message_id),
         text: ctx.message.caption || '',
         chatId,
@@ -274,7 +274,7 @@ export class TelegramConnector extends ChatAgentIntegration {
 
       const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || undefined
 
-      this.emitMessage({
+      void this.emitMessage({
         externalMessageId: String(ctx.message.message_id),
         text: ctx.message.caption || '',
         chatId,
@@ -873,7 +873,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     }
 
     // Normal flow: forward immediately
-    this.emitMessage({
+    void this.emitMessage({
       externalMessageId: messageId,
       text,
       chatId,
@@ -890,7 +890,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     if (!pending || pending.texts.length === 0) return
 
     const combined = pending.texts.join('\n\n---\n\n')
-    this.emitMessage({
+    void this.emitMessage({
       externalMessageId: lastMessageId,
       text: combined,
       chatId,

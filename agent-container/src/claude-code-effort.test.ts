@@ -100,6 +100,7 @@ vi.mock('./tools/computer-use', () => ({
 vi.mock('./file-hooks', () => ({
   fileHooks: {},
   resolveToolFilePath: () => '',
+  mountIndexCommandHint: (command: string) => (command === 'rm /mounts/notes/a.md' ? 'index hint' : undefined),
 }))
 
 vi.mock('./input-manager', () => ({
@@ -560,5 +561,24 @@ describe('ClaudeCodeProcess dashboard browser tools', () => {
     expect(tools).toContain('mcp__browser__browser_get_state')
     expect(tools).toContain('mcp__browser__browser_click')
     expect(tools).toContain('mcp__browser__browser_close')
+  })
+})
+
+describe('ClaudeCodeProcess mount index Bash hook', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('returns the mount index hint after a matching command', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'test-mount-index-hook', workingDirectory: '/tmp' })
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PostToolUse: Array<{ matcher: string; hooks: Array<(input: unknown) => Promise<Record<string, unknown>>> }>
+    }
+    const bashHook = hooks.PostToolUse.find((hook) => hook.matcher === 'Bash')!
+    await expect(bashHook.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'rm /mounts/notes/a.md' } })).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'index hint' },
+    })
+    await expect(bashHook.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'ls' } })).resolves.toEqual({})
   })
 })

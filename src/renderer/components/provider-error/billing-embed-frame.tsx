@@ -11,6 +11,9 @@ type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resi
 const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
 const FRAME_DEFAULT_HEIGHT = 300
+// The full billing page (no `view`) never reports its height, so it gets a fixed,
+// tall box and scrolls inside it.
+const FULL_PAGE_HEIGHT = 640
 // The expanded launcher sits in the bottom-pinned composer footer, so it must fit the
 // viewport minus the app header and card chrome; the embed document scrolls past this.
 export const LAUNCHER_MAX_HEIGHT = 'calc(100dvh - 160px)'
@@ -27,7 +30,12 @@ export const PROMO_LINK_LABEL = 'Have a promo code?'
 export interface SubscribePlan {
   seats: number
   seatPriceCents: number
+  /** The plan the quote is for (`pro-200`); absent from platforms before plans. */
+  planId?: string
 }
+
+// Plan ids are catalog slugs; anything else is dropped rather than rendered.
+const PLAN_ID = /^[a-z0-9][a-z0-9-]{0,40}$/
 
 interface EmbedMessage {
   event: BillingEmbedEvent
@@ -41,17 +49,17 @@ interface EmbedMessage {
   pending: boolean
 }
 
-function readPlan(seats: unknown, seatPriceCents: unknown): SubscribePlan | undefined {
+function readPlan(seats: unknown, seatPriceCents: unknown, planId: unknown): SubscribePlan | undefined {
   if (typeof seats !== 'number' || !Number.isInteger(seats) || seats < 1 || seats > MAX_SEATS) return undefined
   if (typeof seatPriceCents !== 'number' || !Number.isInteger(seatPriceCents) || seatPriceCents < 0 || seatPriceCents > MAX_SEAT_PRICE_CENTS) return undefined
-  return { seats, seatPriceCents }
+  return { seats, seatPriceCents, ...(typeof planId === 'string' && PLAN_ID.test(planId) ? { planId } : {}) }
 }
 
 function readEmbedMessage(data: unknown): EmbedMessage | null {
   if (typeof data !== 'object' || data === null) return null
   const record = data as {
     type?: unknown; event?: unknown; orgId?: unknown; height?: unknown; hint?: unknown; label?: unknown
-    seats?: unknown; seatPriceCents?: unknown; pending?: unknown
+    seats?: unknown; seatPriceCents?: unknown; planId?: unknown; pending?: unknown
   }
   if (record.type !== BILLING_EMBED_MESSAGE_TYPE) return null
   if (
@@ -64,7 +72,7 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,
     hint: typeof record.hint === 'string' && record.hint.length <= 300 ? record.hint : undefined,
     label: typeof record.label === 'string' && record.label.length <= 40 ? record.label : undefined,
-    plan: readPlan(record.seats, record.seatPriceCents),
+    plan: readPlan(record.seats, record.seatPriceCents, record.planId),
     pending: record.pending === true,
   }
 }
@@ -90,7 +98,8 @@ export interface BillingEmbedFrameProps {
   onHintChange?: (hint: string) => void
   /** Subscribe CTA only: the seat count and per-seat price the platform will bill. */
   onPlanChange?: (plan: SubscribePlan) => void
-  view: BillingEmbedView
+  /** The panel to open; none = the full billing page (plan, usage, payment). Not for launchers. */
+  view?: BillingEmbedView
   orgId: string | null
   platformBaseUrl: string | null
   fallbackHref: string | null
@@ -162,11 +171,11 @@ export function BillingEmbedFrame({
       const message = readEmbedMessage(event.data)
       if (!message || message.orgId !== orgId) return
       if (message.event === 'ready') { setFrameReady(true); sendTheme() }
-      else if (message.event === 'open-billing' && launcher && EXPANDABLE_VIEWS.has(view)) onOpenBilling?.()
+      else if (message.event === 'open-billing' && launcher && view && EXPANDABLE_VIEWS.has(view)) onOpenBilling?.()
       else if (message.event === 'close' && launcher) onClose?.()
       else if (message.event === 'billing-updated') onBillingUpdated({ pending: message.pending })
       else if (message.event === 'session-expired') setFailure('expired')
-      else if (message.event === 'resize' && (!launcher || expanded) && message.height !== undefined) setHeight(clampHeight(message.height))
+      else if (message.event === 'resize' && view && (!launcher || expanded) && message.height !== undefined) setHeight(clampHeight(message.height))
       else if (message.event === 'cta-state' && launcher) {
         if (message.hint !== undefined) setHint(message.hint)
         if (message.label) setFrameLabel(message.label)
@@ -222,7 +231,7 @@ export function BillingEmbedFrame({
   )
 
   return (
-    <div className="relative min-h-0 w-full overflow-hidden" style={{ height: failure ? undefined : height, maxHeight: 'calc(90dvh - 120px)' }} data-testid="billing-embed-body">
+    <div className="relative min-h-0 w-full overflow-hidden" style={{ height: failure ? undefined : view ? height : FULL_PAGE_HEIGHT, maxHeight: 'calc(90dvh - 120px)' }} data-testid="billing-embed-body">
       {failure ? (
         <div className="flex flex-col items-start gap-3 py-2">
           <p className="text-sm text-muted-foreground">{FAILURE_MESSAGE[failure]}</p>

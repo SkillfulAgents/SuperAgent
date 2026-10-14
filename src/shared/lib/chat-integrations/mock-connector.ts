@@ -31,7 +31,7 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
 
   /** Simulate an incoming message from an external user. */
   simulateIncomingMessage(text: string, chatId = 'mock-chat-1', userId = 'mock-user-1', opts?: { userName?: string; chatName?: string }): void {
-    this.emitMessage({
+    void this.emitMessage({
       externalMessageId: `mock-msg-${this.nextMessageId++}`,
       text,
       chatId,

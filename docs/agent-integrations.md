@@ -189,6 +189,28 @@ down. Relayed events go through the same `emitEvent` handoff as direct input;
 `relayAcceptResult()` maps its result to what the relay acknowledges (`rejected`
 becomes `discard`; `retry` is never acknowledged).
 
+iMessage sets its webhooks up itself, and with a relay it opens no socket. The
+first connect offered a relay mints the endpoint, with a verification profile
+for the gateway's signature and a secret the host generates. Every such connect
+registers the endpoint as the phone's gateway webhook (`PUT`, which is
+idempotent), then receives every event through the relay and sends commands
+over the gateway's HTTP API. Existing installations switch on their next connect
+with no step from the user. Without a relay, or if the endpoint or registration
+fails, the connection uses the gateway socket for both directions as before,
+acking each event once `emitEvent` resolves to anything but `retry`. The
+registered webhook stays in place, so events the socket misses wait on the
+relay for a later connect.
+
+The webhook takes every event type the gateway would otherwise hold for a
+socket, since held events count toward the gateway's 1,000-event cap. Events
+are handled one at a time and deduplicated on the gateway event id; messages
+are also deduplicated by the delivery queue on their message id. Send
+confirmations arriving through the relay are ignored. Instead, each HTTP send
+returns Linq's message id, and a reaction answers an approval only if it is on
+that approval's own message, so a stale reaction can't answer a newer approval.
+Deleting the installation removes the gateway webhook before the endpoint is
+disabled.
+
 ## Task managers
 
 `TaskManagerAgentIntegration` maps each work item to a session and prepares issue
