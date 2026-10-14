@@ -832,6 +832,11 @@ html[data-keyboard-open] [data-composer-footer] {
   color: black;
 }
 
+/* Commented text in the file drawer (CSS Custom Highlight API) */
+::highlight(file-comment) {
+  background-color: hsl(var(--primary) / 0.12);
+}
+
 /*
   Staggered slide-in for AgentHome sections when landing on a freshly
   created agent. Left column (title → composer → cards) slides in from the
