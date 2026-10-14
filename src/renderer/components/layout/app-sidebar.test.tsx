@@ -564,7 +564,7 @@ describe('AppSidebar — layout & top nav', () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
     await user.click(screen.getByTestId('new-agent-button'))
-    expect(mockCreateUntitledAgent).toHaveBeenCalled()
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'nav' })
   })
 
   it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
@@ -1340,7 +1340,7 @@ describe('AppSidebar — agent folders', () => {
 
     await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
 
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'f1' })
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
     // Already open: nothing to expand, so no settings write from the sidebar.
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
@@ -1360,7 +1360,7 @@ describe('AppSidebar — agent folders', () => {
       { collapsedAgentFolders: [] },
       expect.anything()
     )
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'f1' })
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
     expect(screen.getByTestId('agent-item-test-agent')).toBeVisible()
   })
 
@@ -1370,7 +1370,7 @@ describe('AppSidebar — agent folders', () => {
 
     await userEvent.click(screen.getByTestId('new-agent-in-folder-root'))
 
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ folderId: 'root' })
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'root' })
   })
 
   it('defaults the default folder first before anything is arranged', () => {

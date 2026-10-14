@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, HelpCircle, Settings, TriangleAlert } from 'lucide-react'
+import { Check, HelpCircle, Lock, Settings, TriangleAlert } from 'lucide-react'
 import { ModelIcon, isUploadedIcon } from '@renderer/components/ui/model-icon'
 import {
   Tooltip,
@@ -10,29 +10,12 @@ import {
 import { cn } from '@shared/lib/utils'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
+import { familyDisplayName } from '@shared/lib/llm-provider/model-family-names'
+
+export { familyDisplayName }
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
-}
-
-// Acronym families that shouldn't be title-cased (e.g. 'gpt' → 'GPT', not 'Gpt').
-const FAMILY_LABELS: Record<string, string> = {
-  gpt: 'GPT',
-  'gpt-astra': 'GPT Astra',
-  'gpt-sol': 'GPT Sol',
-  'gpt-terra': 'GPT Terra',
-  'gpt-luna': 'GPT Luna',
-  glm: 'GLM',
-  deepseek: 'DeepSeek',
-  'gemini-argon': 'Gemini Argon',
-  'muse-wonder': 'Muse Wonder',
-  muse: 'Muse Spark',
-  'muse-contributor': 'Muse Spark Contributor',
-}
-
-/** Display name for a family key, special-casing acronyms. */
-export function familyDisplayName(family: string): string {
-  return FAMILY_LABELS[family] ?? capitalize(family)
 }
 
 // Vendor tabs are keyed by the catalog entry's brand-icon key, same as the
@@ -235,6 +218,29 @@ interface FamilyGroup {
   lineage: boolean
 }
 
+/**
+ * Models the selected connection's provider says cannot run right now (e.g. a
+ * plan excludes them). They stay listed so users can find what the provider's
+ * action unlocks, but greyed, and picking one runs that action instead of
+ * selecting it. All wording is the provider's.
+ */
+export interface ModelLock {
+  isLocked: (model: ModelDefinition) => boolean
+  /** The provider's reason, a full sentence ("Fable 5.1 isn't included in your Pro 30 plan."). */
+  reason: (model: ModelDefinition) => string
+  /** What a locked pick does (e.g. open the upgrade flow); absent = nothing, the pick is ignored. */
+  action?: { label: string; run: (model: ModelDefinition) => void }
+}
+
+function LockBadge({ label }: { label: string | undefined }) {
+  return (
+    <span className="flex shrink-0 items-center gap-0.5 rounded-sm border border-border px-1 text-[10px] leading-4 text-muted-foreground">
+      <Lock className="h-2.5 w-2.5" aria-hidden="true" />
+      {label}
+    </span>
+  )
+}
+
 interface ModelFamilyListProps {
   catalog: ModelDefinition[]
   /** Raw selection — a concrete id, or (when offerLatest) a bare family alias. */
@@ -252,6 +258,8 @@ interface ModelFamilyListProps {
    * a vendor (Exa) clears the warning. Undefined / 'native' = no host vendor.
    */
   webProvider?: string
+  /** Models the connection's provider says cannot run; unset = nothing is locked. */
+  modelLock?: ModelLock
 }
 
 function Row({
@@ -259,6 +267,8 @@ function Row({
   icon,
   isSelected,
   indent,
+  locked = false,
+  lockLabel,
   onClick,
   testId,
 }: {
@@ -269,6 +279,10 @@ function Row({
   icon?: ReactNode
   isSelected: boolean
   indent?: boolean
+  /** Unavailable on this connection: greyed, badged, and the click runs the provider's action. */
+  locked?: boolean
+  /** The provider action's label for the badge ("Upgrade"); none = a bare lock. */
+  lockLabel?: string
   onClick: () => void
   testId: string
 }) {
@@ -276,6 +290,7 @@ function Row({
     <button
       type="button"
       data-testid={testId}
+      data-locked={locked || undefined}
       onClick={onClick}
       className={cn(
         'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
@@ -283,11 +298,14 @@ function Row({
         isSelected && 'bg-accent'
       )}
     >
-      <span className="flex min-w-0 items-center gap-2">
+      <span className={cn('flex min-w-0 items-center gap-2', locked && 'text-muted-foreground')}>
         {icon}
         <span className="truncate">{label}</span>
       </span>
-      {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
+      <span className="flex shrink-0 items-center gap-1.5">
+        {locked && <LockBadge label={lockLabel} />}
+        {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
+      </span>
     </button>
   )
 }
@@ -317,12 +335,18 @@ function LineRow({
   chipLabel,
   onPickModel,
   latestChip,
+  locked = false,
+  lock,
 }: {
   label: string
   models: ModelDefinition[]
   rowTestId: string
   onRowPick: () => void
   selected: boolean
+  /** The row's own pick is unavailable on this connection (greyed and badged). */
+  locked?: boolean
+  /** Per-version availability, for the pin chips and the touch version menu. */
+  lock?: ModelLock
   /** Concrete id whose chip renders highlighted (the pinned selection). */
   activeId?: string
   chipLabel: (m: ModelDefinition) => string
@@ -359,8 +383,9 @@ function LineRow({
         <button
           type="button"
           data-testid={rowTestId}
+          data-locked={locked || undefined}
           onClick={onRowPick}
-          className="flex min-w-0 items-center py-1 pl-2 text-left text-xs"
+          className={cn('flex min-w-0 items-center py-1 pl-2 text-left text-xs', locked && 'text-muted-foreground')}
         >
           <span className="truncate">{label}</span>
         </button>
@@ -381,18 +406,24 @@ function LineRow({
               Latest
             </button>
           )}
-          {models.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              data-testid={`model-pinned-${m.id}`}
-              aria-label={m.label}
-              onClick={() => onPickModel(m.id)}
-              className={chipClass(activeId === m.id)}
-            >
-              {chipLabel(m)}
-            </button>
-          ))}
+          {models.map((m) => {
+            const reason = lock?.isLocked(m) ? lock.reason(m) : undefined
+            const chipLocked = reason !== undefined
+            return (
+              <button
+                key={m.id}
+                type="button"
+                data-testid={`model-pinned-${m.id}`}
+                data-locked={chipLocked || undefined}
+                aria-label={reason || m.label}
+                title={reason || undefined}
+                onClick={() => onPickModel(m.id)}
+                className={cn(chipClass(activeId === m.id), chipLocked && 'opacity-50')}
+              >
+                {chipLabel(m)}
+              </button>
+            )
+          })}
         </span>
         {/* The rest of the row is also a "pick the default" target, so clicking
             anywhere that isn't a version chip selects the latest. A plain div —
@@ -403,6 +434,7 @@ function LineRow({
           onClick={onRowPick}
           className="h-6 min-w-0 flex-1 cursor-pointer"
         />
+        {locked && <LockBadge label={lock?.action?.label} />}
         {/* No gear for a bare alias row (models=[]) — there's nothing to pin. */}
         {selected && models.length > 0 && (
           <button
@@ -425,6 +457,8 @@ function LineRow({
             testId={`${rowTestId}-menu-latest`}
             label={<span>{label} <span className="text-muted-foreground">· latest</span></span>}
             isSelected={!pinnedVersionShown}
+            locked={locked}
+            lockLabel={lock?.action?.label}
             onClick={onRowPick}
           />
           {models.map((m) => (
@@ -434,6 +468,8 @@ function LineRow({
               testId={`model-version-${m.id}`}
               label={m.label}
               isSelected={activeId === m.id}
+              locked={lock?.isLocked(m)}
+              lockLabel={lock?.action?.label}
               onClick={() => onPickModel(m.id)}
             />
           ))}
@@ -466,10 +502,25 @@ export function ModelFamilyList({
   onPick,
   offerLatest = false,
   webProvider,
+  modelLock,
 }: ModelFamilyListProps) {
   // Resolve the current selection (exact id, or a bare alias → its latest) for
   // highlighting and default vendor tab.
   const resolved = findCatalogModel(value, catalog)
+
+  // A model the connection cannot run runs the provider's action instead of
+  // being picked. `stored` is what a pick saves: the model's id, or a bare alias resolving to it.
+  const isLocked = (m: ModelDefinition | undefined): boolean => !!m && !!modelLock?.isLocked(m)
+  const lockLabel = modelLock?.action?.label
+  const pick = (m: ModelDefinition, stored: string = m.id) => {
+    if (modelLock && isLocked(m)) modelLock.action?.run(m)
+    else onPick(stored)
+  }
+  const pickId = (id: string) => {
+    const m = catalog.find((entry) => entry.id === id)
+    if (m) pick(m)
+    else onPick(id)
+  }
 
   // Vendor tabs, in catalog order of first appearance. Until the user picks a
   // tab, follow the selection's vendor so opening the picker lands on the tab
@@ -562,7 +613,9 @@ export function ModelFamilyList({
                         setPickedVendor(key)
                         if (resolved && vendorKey(resolved) === key) return
                         const defaultModel = vendorDefault(catalog, key)
-                        if (defaultModel) {
+                        // A locked default is left for the user to pick (and
+                        // upgrade); the tab switch alone changes nothing.
+                        if (defaultModel && !isLocked(defaultModel)) {
                           // The catalog declares a concrete default. Do
                           // not turn it into a family alias on settings
                           // surfaces: the family's latest may be a
@@ -597,17 +650,19 @@ export function ModelFamilyList({
               rowTestId={offerLatest ? `model-latest-${group.family}` : `model-family-${group.family}`}
               // Bare alias in settings (rides upgrades); latest concrete id in
               // the composer (per-message picks are concrete).
-              onRowPick={() => onPick(offerLatest ? group.family : latestVersion.id)}
+              onRowPick={() => pick(latestVersion, offerLatest ? group.family : latestVersion.id)}
               selected={familyHasSelection}
+              locked={isLocked(latestVersion)}
+              lock={modelLock}
               activeId={!isLatestSelected ? resolved?.id : undefined}
               chipLabel={(m) => versionChipLabel(m.label, group.displayName)}
-              onPickModel={onPick}
+              onPickModel={pickId}
               // Alias surfaces get an explicit Latest chip so latest-vs-pinned
               // is readable at a glance (Latest lit = alias; version lit = pin).
               latestChip={
                 offerLatest
                   ? {
-                      onPick: () => onPick(group.family),
+                      onPick: () => pick(latestVersion, group.family),
                       active: isLatestSelected && familyHasSelection,
                       testId: `model-latest-chip-${group.family}`,
                     }
@@ -625,12 +680,14 @@ export function ModelFamilyList({
                 label={group.displayName}
                 models={[]}
                 rowTestId={`model-latest-${group.family}`}
-                onRowPick={() => onPick(group.family)}
+                onRowPick={() => pick(latestOf(group.versions), group.family)}
                 selected={familyHasSelection && isLatestSelected}
+                locked={isLocked(latestOf(group.versions))}
+                lock={modelLock}
                 chipLabel={() => ''}
-                onPickModel={onPick}
+                onPickModel={pickId}
                 latestChip={{
-                  onPick: () => onPick(group.family),
+                  onPick: () => pick(latestOf(group.versions), group.family),
                   active: isLatestSelected && familyHasSelection,
                   testId: `model-latest-chip-${group.family}`,
                 }}
@@ -647,11 +704,13 @@ export function ModelFamilyList({
                     rowTestId={`model-family-${lineSlug(line.base)}`}
                     // No bare alias exists for a sub-line, so both modes pin
                     // the line's newest concrete id.
-                    onRowPick={() => onPick(lineLatest.id)}
+                    onRowPick={() => pick(lineLatest)}
                     selected={!isLatestSelected && line.models.some((m) => m.id === resolved?.id)}
+                    locked={isLocked(lineLatest)}
+                    lock={modelLock}
                     activeId={!isLatestSelected ? resolved?.id : undefined}
                     chipLabel={(m) => versionChipLabel(m.label, line.base)}
-                    onPickModel={onPick}
+                    onPickModel={pickId}
                   />
                 )
               }
@@ -662,7 +721,9 @@ export function ModelFamilyList({
                   testId={`model-pinned-${version.id}`}
                   label={version.label}
                   isSelected={!isLatestSelected && resolved?.id === version.id}
-                  onClick={() => onPick(version.id)}
+                  locked={isLocked(version)}
+                  lockLabel={lockLabel}
+                  onClick={() => pick(version)}
                 />
               )
             })}
@@ -679,7 +740,9 @@ export function ModelFamilyList({
           icon={<ModelIcon icon={m.icon} className="h-3.5 w-3.5 shrink-0" />}
           label={m.label}
           isSelected={resolved?.id === m.id}
-          onClick={() => onPick(m.id)}
+          locked={isLocked(m)}
+          lockLabel={lockLabel}
+          onClick={() => pick(m)}
         />
       ))}
       {/* Selection-dependent notes go BELOW the rows: picks keep the popover
@@ -688,6 +751,32 @@ export function ModelFamilyList({
           wrong-row hazard). Like the cliff note, the warning is scoped to the
           tab that owns the selection — on any other tab its "this model" copy
           would read as being about the listed models. */}
+      {/* Lock first: a saved selection the connection can no longer run (e.g.
+          after a plan downgrade) fails every run until it changes, which
+          outranks the advisories below. */}
+      {modelLock && resolved && isLocked(resolved) && vendorKey(resolved) === activeVendor && (
+        <div
+          data-testid="model-unavailable-warning"
+          className="mx-1 mt-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>
+            {modelLock.reason(resolved)} Pick another model.
+            {modelLock.action && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={() => modelLock.action?.run(resolved)}
+                  className="font-medium underline underline-offset-2"
+                >
+                  {modelLock.action.label}
+                </button>
+              </>
+            )}
+          </span>
+        </div>
+      )}
       {/* Data-use first: a missing web tool is an inconvenience the user can
           fix in settings, but this one leaves the building with their prompt
           and has no remedy after the fact, so it must not sit below the fold

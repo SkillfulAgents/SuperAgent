@@ -2977,7 +2977,9 @@ class MessagePersister {
           // (severity, icon, markdown message + CTA link). Sent alongside the
           // raw error so the UI never re-derives provider-specific copy.
           const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
-          const errorPresentation = (runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()).presentationForTurnError(
+          const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()
+          turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
+          const errorPresentation = turnProvider.presentationForTurnError(
             apiErrorStatus ?? undefined,
             errorMessage,
             apiErrorCode,

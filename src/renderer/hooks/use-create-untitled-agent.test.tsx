@@ -43,9 +43,10 @@ describe('useCreateUntitledAgent', () => {
   it('creates and navigates without touching folders by default', async () => {
     const { result } = renderHook(() => useCreateUntitledAgent())
     await act(async () => {
-      await result.current.createUntitledAgent()
+      await result.current.createUntitledAgent({ surface: 'nav' })
     })
     expect(mockMutateAsync).toHaveBeenCalledWith({ name: 'Untitled' })
+    expect(mockTrack).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'new', surface: 'nav' }))
     expect(mockUpdateMutateAsync).not.toHaveBeenCalled()
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/agents/$slug',
@@ -56,9 +57,10 @@ describe('useCreateUntitledAgent', () => {
   it('files the new agent into the requested folder before navigating', async () => {
     const { result } = renderHook(() => useCreateUntitledAgent())
     await act(async () => {
-      await result.current.createUntitledAgent({ folderId: 'f1' })
+      await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
     })
 
+    expect(mockTrack).toHaveBeenCalledWith('agent_created', expect.objectContaining({ surface: 'section_plus' }))
     expect(mockUpdateMutateAsync).toHaveBeenCalledTimes(1)
     expect(mockUpdateMutateAsync.mock.invocationCallOrder[0]).toBeLessThan(
       mockNavigate.mock.invocationCallOrder[0]
@@ -77,7 +79,7 @@ describe('useCreateUntitledAgent', () => {
     const { result } = renderHook(() => useCreateUntitledAgent())
     let creation!: ReturnType<typeof result.current.createUntitledAgent>
     await act(async () => {
-      creation = result.current.createUntitledAgent({ folderId: 'f1' })
+      creation = result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
     })
     expect(mockUpdateMutateAsync).toHaveBeenCalledOnce()
     expect(mockNavigate).not.toHaveBeenCalled()
@@ -92,7 +94,7 @@ describe('useCreateUntitledAgent', () => {
     mockUpdateMutateAsync.mockRejectedValueOnce(new Error('offline'))
     const { result } = renderHook(() => useCreateUntitledAgent())
     await act(async () => {
-      expect(await result.current.createUntitledAgent({ folderId: 'f1' })).toEqual(AGENT)
+      expect(await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })).toEqual(AGENT)
     })
     expect(mockMutateAsync).toHaveBeenCalledOnce()
     expect(mockNavigate).toHaveBeenCalledOnce()
@@ -105,7 +107,7 @@ describe('useCreateUntitledAgent', () => {
   it('treats the default folder as unfiled', async () => {
     const { result } = renderHook(() => useCreateUntitledAgent())
     await act(async () => {
-      await result.current.createUntitledAgent({ folderId: 'root' })
+      await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'root' })
     })
     const patch = mockUpdateMutateAsync.mock.calls[0][0]
     expect(patch({ agentFolderAssignments: { 'untitled-abc': 'f1' } })).toEqual({
@@ -118,7 +120,7 @@ describe('useCreateUntitledAgent', () => {
     const { result } = renderHook(() => useCreateUntitledAgent())
     let agent: unknown
     await act(async () => {
-      agent = await result.current.createUntitledAgent({ folderId: 'f1' })
+      agent = await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
     })
     expect(agent).toBeNull()
     expect(mockUpdateMutateAsync).not.toHaveBeenCalled()

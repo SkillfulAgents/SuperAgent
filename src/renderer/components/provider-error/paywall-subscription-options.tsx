@@ -31,6 +31,23 @@ type SubscriptionAttempt = {
   analytics: PaywallAnalyticsContext
 }
 
+// One literal per funnel step so every name is greppable and in the catalog.
+const SUBSCRIPTION_FUNNEL_EVENTS = {
+  sign_in_started: 'paywall_subscription_sign_in_started',
+  sign_in_opened: 'paywall_subscription_sign_in_opened',
+  sign_in_succeeded: 'paywall_subscription_sign_in_succeeded',
+  sign_in_failed: 'paywall_subscription_sign_in_failed',
+  token_entered: 'paywall_subscription_token_entered',
+  save_started: 'paywall_subscription_save_started',
+  saved: 'paywall_subscription_saved',
+  save_failed: 'paywall_subscription_save_failed',
+  resume_started: 'paywall_subscription_resume_started',
+  resume_failed: 'paywall_subscription_resume_failed',
+  resumed: 'paywall_subscription_resumed',
+  cancelled: 'paywall_subscription_cancelled',
+} as const
+type SubscriptionFunnelStep = keyof typeof SUBSCRIPTION_FUNNEL_EVENTS
+
 export function PaywallSubscriptionOptions({ session, onResumed, analytics }: {
   session: Session
   onResumed: (recovery: SubscriptionRecovery) => void
@@ -107,9 +124,9 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
   const finished = useRef(false)
   const connectionSaved = useRef(false)
   const lastStep = useRef('clicked')
-  const report = useCallback((step: string, properties: Record<string, unknown> = {}) => {
+  const report = useCallback((step: SubscriptionFunnelStep, properties: Record<string, unknown> = {}) => {
     lastStep.current = step
-    track(`paywall_subscription_${step}`, {
+    track(SUBSCRIPTION_FUNNEL_EVENTS[step], {
       ...attempt.analytics,
       attemptId: attempt.attemptId,
       provider: subscription.provider,
