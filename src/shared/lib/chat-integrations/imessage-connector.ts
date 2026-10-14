@@ -417,9 +417,12 @@ export class IMessageConnector extends ChatAgentIntegration {
       const uploadInfo = await this.requestUpload({ filename, contentType: mimeType, sizeBytes: fileData.length })
 
       // 2. Upload the file
+      const uploadHeaders = new Headers(uploadInfo.requiredHeaders)
+      // Fetch computes the byte body's length; forwarding it duplicates the header with Undici's dispatcher.
+      uploadHeaders.delete('content-length')
       const uploadRes = await fetch(uploadInfo.uploadUrl, {
         method: 'PUT',
-        headers: uploadInfo.requiredHeaders,
+        headers: uploadHeaders,
         body: new Uint8Array(fileData),
       })
       if (!uploadRes.ok) {
