@@ -3,7 +3,19 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import * as http from 'http'
-import { parseVolumes, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
+import { spawn } from 'child_process'
+import { EventEmitter } from 'events'
+import { mountVolumes, mountedVolumeIds, parseVolumes, rcloneMountArgs, untilMountAnswers, volumeAnswers, waitForUploads } from './volume-mounts'
+
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('child_process')>()),
+  spawn: vi.fn(),
+  execFile: vi.fn((_file: string, _args: string[], callback: (error: Error | null) => void) => callback(null)),
+}))
+vi.mock('./volume-recovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./volume-recovery')>()),
+  createVolumeCache: vi.fn(async () => '/tmp/volume-cache'),
+}))
 
 describe('parseVolumes', () => {
   it('accepts names that are one path segment', () => {
@@ -120,5 +132,25 @@ describe('waitForUploads', () => {
     expect(settled).toBe(false)
     await vi.advanceTimersByTimeAsync(151)
     await expect(done).resolves.toEqual(['big.bin'])
+  })
+})
+
+describe('a mount that fails', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('removes the folder it created, so no writes land in a plain folder', async () => {
+    vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined)
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ dev: 1 } as fs.Stats)
+    const rmdir = vi.spyOn(fs.promises, 'rmdir').mockResolvedValue(undefined)
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), { kill: vi.fn() })
+      setImmediate(() => child.emit('exit', 1))
+      return child as never
+    })
+
+    await mountVolumes(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'notes' }])))
+
+    expect(rmdir).toHaveBeenCalledWith('/mounts/notes')
+    expect(mountedVolumeIds()).toEqual([])
   })
 })

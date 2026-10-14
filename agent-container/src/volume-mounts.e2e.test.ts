@@ -77,13 +77,20 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     spawnSync('docker', ['rm', '-f', ...containers], { stdio: 'ignore', timeout: 60_000 });
   }, 60_000);
 
-  it.each(['claude', 'root'])('started as %s, mounts a served volume, and every file operation reaches the source', async (user) => {
+  // no-new-privs is the Lambda MicroVM: the setuid fusermount3 cannot mount there, so start.sh puts its root helper in front.
+  it.each([
+    ['claude', []],
+    ['root', []],
+    ['root under no-new-privs', ['--security-opt', 'no-new-privileges']],
+  ])('started as %s, mounts a served volume, and every file operation reaches the source', async (label, runArgs) => {
+    const user = label.split(' ')[0]
     const source = '/tmp/src/v_good';
     const mount = '/mounts/docs';
     const container = startAgent(
       `mkdir -p ${source} && echo hello > ${source}/a.txt && chmod -R a+rwX /tmp/src && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes --dir-cache-time 0s`,
       [{ volumeId: 'v_good', name: 'docs' }],
       user,
+      runArgs,
     );
     await healthUntilOk(container);
     expect(sh(container, 'stat -c %U /proc/1')).toBe('claude');
@@ -114,6 +121,9 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
 
     sh(container, `echo outside > ${source}/new.txt`);
     await waitFor(() => sh(container, `cat ${mount}/new.txt 2>/dev/null || true`) === 'outside', 2_000);
+
+    sh(container, `fusermount3 -uz ${mount}`);
+    expect(sh(container, `findmnt -n ${mount} || true`)).toBe('');
   }, 60_000);
 
   it('reads what the host wrote over a file the agent wrote, at the same size and after a resize', async () => {

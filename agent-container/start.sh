@@ -5,6 +5,12 @@
 set -e
 if [ "$(id -u)" = 0 ]; then
   if [ -e /dev/fuse ]; then chmod 666 /dev/fuse; fi
+  # No-new-privs (Lambda MicroVM) disables the setuid fusermount3, so a root helper mounts instead.
+  # A helper that fails to start leaves volumes unmounted, not the agent down.
+  if grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status; then
+    /usr/local/lib/gamut/fusermount-helper serve && mount --bind /usr/local/lib/gamut/fusermount-helper /usr/local/bin/fusermount3 ||
+      echo "fusermount helper unavailable, volumes will not mount" >&2
+  fi
   exec setpriv --reuid=claude --regid=claude --init-groups node dist/server.js
 fi
 exec node dist/server.js
