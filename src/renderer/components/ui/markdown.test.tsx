@@ -1,6 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import {
+  Outlet,
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from '@tanstack/react-router'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { Markdown } from './markdown'
 
@@ -35,6 +43,39 @@ describe('Markdown', () => {
         <Markdown>{'[Open](/settings/not-a-tab)'}</Markdown>
       </DialogContext.Provider>,
     )
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
+  })
+
+  it('navigates an agent page link in the app', async () => {
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Markdown>{'Add the key on the [Secrets page](/agents/sales-helper/secrets).'}</Markdown>
+          <Outlet />
+        </>
+      ),
+    })
+    const secretsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: 'agents/$slug/secrets',
+      component: () => <p>Secrets for sales-helper</p>,
+    })
+    const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/' })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, secretsRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    render(<RouterProvider router={router} />)
+
+    const link = await screen.findByRole('link', { name: 'Secrets page' })
+    expect(link).not.toHaveAttribute('target')
+    fireEvent.click(link)
+    expect(await screen.findByText('Secrets for sales-helper')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/agents/sales-helper/secrets')
+  })
+
+  it('keeps an unknown agent page as an external link', () => {
+    render(<Markdown>{'[Open](/agents/sales-helper/not-a-page)'}</Markdown>)
     expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
   })
 

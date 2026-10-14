@@ -2,7 +2,8 @@ import { useContext, useMemo, type ReactNode } from 'react'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
 import { createMarkdownUrlTransform, markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
-import { settingsTabFromHref } from '@renderer/lib/settings-link'
+import { Link, type LinkProps } from '@tanstack/react-router'
+import { isAgentPageHref, settingsTabFromHref } from '@renderer/lib/in-app-link'
 import { DialogContext } from '@renderer/context/dialog-context'
 
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
@@ -10,6 +11,14 @@ import { DialogContext } from '@renderer/context/dialog-context'
 // target="_blank" is the only path that reaches the Electron shell opener.
 export function MarkdownLink({ children, href }: { children?: ReactNode; href?: string }) {
   const openSettings = useContext(DialogContext)?.openSettings
+  if (isAgentPageHref(href)) {
+    // Link, not AppLink: AppLink imports the router singleton, which would pull every route into Markdown.
+    return (
+      <Link to={href as LinkProps['to']} className="text-blue-500 hover:underline">
+        {children}
+      </Link>
+    )
+  }
   const settingsTab = settingsTabFromHref(href)
   if (settingsTab && openSettings) {
     return (

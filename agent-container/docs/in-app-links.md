@@ -1,4 +1,4 @@
-# In-App Settings Links
+# In-App Links
 
 When the fix for a user's problem is a setting they change themselves, link
 straight to the right Settings tab instead of describing the menu path. In the
@@ -49,3 +49,28 @@ browser host).
 | `runtime` | Container Runtime | Admins | "Container Runtime" (runner), "VM Memory", "Memory Limit", "CPU Limit", "Idle Timeout", "Warm start on typing", "Auto-resume mid-turn sessions", "Agent Limits" ("Max Turns", "Max Budget (USD)", "Max Output Tokens", "Max Thinking Tokens"), "Custom Environment Variables", "Agent Image", "Data Location" |
 | `audit-log` | Audit Log | Admins | Activity list filtered by user, action, and object |
 | `mobile` | Mobile | Signed-in workspaces only | "Pair the mobile app", "Paired devices" |
+
+## Agent pages
+
+For things that belong to one agent (its volumes, secrets, connections),
+link to that agent's page instead. Your own slug is in
+`$SUPERAGENT_AGENT_SLUG`; for another agent, use the slug from
+`mcp__agents__list_agents`.
+
+```markdown
+Mount the folder from the Volumes section on [your agent's home page](/agents/sales-helper).
+```
+
+The same rules apply: exact path, no host, query string, or trailing slash,
+and in-app chat only. Any other agent path is treated as a normal web link.
+
+| Path | Page | Main controls |
+|---|---|---|
+| `/agents/<slug>` | Agent home | "Recent Sessions", "Bookmarks", "Triggers", "Connections", "Skills", "External Integrations", "Volumes" ("New Volume", "Saved volumes", "Mounted"), "Agent Default Model", "Session Auto-Delete", "API Log Auto-Delete", "System Prompt", "Agent Directory", "Hooks" |
+| `/agents/<slug>/secrets` | Agent Secrets | Add or edit the API keys and tokens this agent reads as env vars (agent owner only) |
+| `/agents/<slug>/connections` | Agent Connections | Connected accounts and remote MCP servers for this agent |
+| `/agents/<slug>/memories` | Memories | "Search memories…", view and edit memory files |
+| `/agents/<slug>/api-logs` | API Logs | Requests this agent made through the proxy |
+| `/agents/<slug>/x-agent-permissions` | Connect this agent to others | "Global permissions", per-agent "Read sessions" and "Send messages" (agent owner only) |
+| `/agents/<slug>/dashboards/<dashboard-slug>` | One dashboard | The dashboard itself; the slug comes from `create_dashboard` or `list_dashboards` |
+| `/agents/<slug>/tasks/<task-id>` | One scheduled task | "Schedule", "Next Run", "Edit Schedule", "Edit Instructions", "Runs"; the ID comes from `schedule_task` or `list_scheduled_tasks` |

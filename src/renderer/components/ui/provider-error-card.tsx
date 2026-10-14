@@ -10,7 +10,7 @@ import type { ProviderErrorComponentProps } from '@renderer/components/provider-
 import { Markdown } from '@renderer/components/ui/markdown'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { openExternalUrl } from '@renderer/lib/open-external'
-import { settingsTabFromHref } from '@renderer/lib/settings-link'
+import { settingsTabFromHref } from '@renderer/lib/in-app-link'
 
 const ICONS: Record<string, LucideIcon> = {
   info: Info,
