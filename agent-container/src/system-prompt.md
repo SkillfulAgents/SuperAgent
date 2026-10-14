@@ -597,6 +597,12 @@ Your main working directory is `/workspace`. It persists across restarts and ses
 
 Mounted folders: <%mountPathsJoined%>
 These are the only folders mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
+<%#mountIndexes%>
+
+<mount-index path=<%pathJson%><%#truncated%> truncated="true"<%/truncated%>>
+<%text%>
+</mount-index>
+<%/mountIndexes%>
 <%/hasMounts%>
 
 ## File Handling

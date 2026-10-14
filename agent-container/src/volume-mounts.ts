@@ -5,14 +5,23 @@ import * as path from 'path';
 import { promisify } from 'util';
 import { z } from 'zod';
 import { volumesEnvSchema, type ContainerMount } from './volume-mounts-schema';
+import { withinStopDeadline } from './stop-deadline';
 import { createVolumeCache, preserveVolumeCache } from './volume-recovery';
 
 const execFileAsync = promisify(execFile);
 
 const MOUNTS_DIR = '/mounts';
 const MOUNT_TIMEOUT_MS = 10_000;
+const INDEX_MAX_CHARS = 20_000;
+const INJECT_END = '<!-- inject:end -->';
 
-let mounted: (ContainerMount & { rclone: ChildProcess; cache: string })[] = [];
+/** A folder's root INDEX.md as the system prompt shows it. */
+export interface VolumeIndex {
+  text: string;
+  truncated: boolean;
+}
+
+let mounted: (ContainerMount & { rclone: ChildProcess; cache: string; index?: VolumeIndex })[] = [];
 let finished: Promise<{ drained: boolean; recovered: number; recoveryErrors: number }> | undefined;
 
 export function parseVolumes(raw: string | undefined): ContainerMount[] {
@@ -95,7 +104,35 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
   await answers();
 }
 
-async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { rclone: ChildProcess; cache: string }) | undefined> {
+export function indexPath(mountPath: string): string {
+  return path.join(mountPath, 'INDEX.md');
+}
+
+// Over the cap, keep what the folder marked for injection, else the start. The text lands verbatim inside a
+// <mount-index> tag, so it must not be able to open or close one.
+export function fitIndex(raw: string): VolumeIndex {
+  const truncated = raw.length > INDEX_MAX_CHARS;
+  const marker = raw.indexOf(INJECT_END);
+  const kept = !truncated ? raw : marker !== -1 && marker <= INDEX_MAX_CHARS ? raw.slice(0, marker) : raw.slice(0, INDEX_MAX_CHARS).replace(/[\uD800-\uDBFF]$/, '');
+  return { text: kept.trimEnd().replace(/<(\s*\/?\s*mount-index)/gi, '\u2039$1'), truncated };
+}
+
+// Boot waits on every mount, so a read hung on a remote source must not hold it.
+export async function readIndex(mountPath: string): Promise<VolumeIndex | undefined> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), MOUNT_TIMEOUT_MS);
+  try {
+    const raw = await withinStopDeadline(fs.promises.readFile(indexPath(mountPath), 'utf8'), deadline.signal);
+    return raw.trim() ? fitIndex(raw) : undefined;
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) console.error(`[volumes] No index for ${mountPath}:`, error);
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mountVolume(volume: ContainerMount): Promise<(typeof mounted)[number] | undefined> {
   const { volumeId, name, cacheMode, caseInsensitive, ignoreSize, dirCacheSeconds } = volume;
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
@@ -136,7 +173,9 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
 
 export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
   const processes = await Promise.all(mounts.map(mountVolume));
-  mounted = processes.filter((m): m is NonNullable<typeof m> => m !== undefined);
+  // Read after the mount settles, so a slow index never delays noticing that rclone exited.
+  mounted = await Promise.all(processes.filter((m): m is NonNullable<typeof m> => m !== undefined)
+    .map(async (m) => ({ ...m, index: await readIndex(path.join(MOUNTS_DIR, m.name)) })));
   finished = undefined;
 }
 
@@ -239,6 +278,10 @@ export async function unmountVolumes(deadline: number): Promise<void> {
 
 export function mountedVolumePaths(): string[] {
   return mounted.map((m) => path.join(MOUNTS_DIR, m.name));
+}
+
+export function mountedVolumeIndexes(): { path: string; index: VolumeIndex }[] {
+  return mounted.flatMap((m) => (m.index ? [{ path: path.join(MOUNTS_DIR, m.name), index: m.index }] : []));
 }
 
 export function mountedVolumeIds(): string[] {
