@@ -272,7 +272,7 @@ function ToolResultDocument({ document }: { document: ParsedToolResultDocument }
 function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
-  const renderer = getToolRenderer(toolCall.name)
+  const renderer = useMemo(() => getToolRenderer(toolCall.name, toolCall.input), [toolCall.name, toolCall.input])
   const isPendingUserInput = status === 'running' && getToolPresentation(toolCall.name).showWaitingForInput
   const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
   const ToolIcon = renderer?.icon || Search
