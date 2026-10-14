@@ -125,6 +125,8 @@ async function mountVolume(volume: ContainerMount): Promise<(ContainerMount & { 
     console.error(`[volumes] Leaving out ${mountPath}:`, error);
     rclone?.kill();
     await execFileAsync('fusermount3', ['-uz', mountPath]).catch(() => {});
+    // An empty folder left here would take writes that never reach the volume.
+    await fs.promises.rmdir(mountPath).catch(() => {});
     return undefined;
   } finally {
     settled = true;
