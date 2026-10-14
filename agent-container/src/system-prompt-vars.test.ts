@@ -75,7 +75,7 @@ describe('generateSystemPrompt rendering', () => {
     const fileHandlingIdx = out.indexOf('## File Handling')
     expect(workspaceIdx).toBeLessThan(mountsIdx)
     expect(mountsIdx).toBeLessThan(fileHandlingIdx)
-    expect(out).toContain("If a folder's root has an index file that is not shown here, read it before you search the folder.")
+    expect(out).not.toContain('INDEX.md')
     expect(out).not.toContain('<mount-index')
   })
 
@@ -88,7 +88,8 @@ describe('generateSystemPrompt rendering', () => {
     const out = generateSystemPrompt()
     expect(out).toContain('<mount-index path="/mounts/team">\n# Team\n')
     expect(out.split('</mount-index>')).toHaveLength(3)
-    expect(out).toContain('<mount-index path="/mounts/big" truncated="true">\n# Big\n</mount-index>\nThis index was cut at the size limit.')
+    expect(out).toContain('<mount-index path="/mounts/big" truncated="true">\n# Big\n</mount-index>')
+    expect(out.split('root `INDEX.md`, if it has one, is shown below')).toHaveLength(2)
   })
 
   // Trigger gating across every env combination, in one table so each case is

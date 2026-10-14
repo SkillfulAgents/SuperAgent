@@ -104,6 +104,10 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
   await answers();
 }
 
+export function indexPath(mountPath: string): string {
+  return path.join(mountPath, 'INDEX.md');
+}
+
 // Over the cap, keep what the folder marked for injection, else the start. The text lands verbatim inside a
 // <mount-index> tag, so it must not be able to open or close one.
 export function fitIndex(raw: string): VolumeIndex {
@@ -118,7 +122,7 @@ export async function readIndex(mountPath: string): Promise<VolumeIndex | undefi
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), MOUNT_TIMEOUT_MS);
   try {
-    const raw = await withinStopDeadline(fs.promises.readFile(path.join(mountPath, 'INDEX.md'), 'utf8'), deadline.signal);
+    const raw = await withinStopDeadline(fs.promises.readFile(indexPath(mountPath), 'utf8'), deadline.signal);
     return raw.trim() ? fitIndex(raw) : undefined;
   } catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) console.error(`[volumes] No index for ${mountPath}:`, error);
