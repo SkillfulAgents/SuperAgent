@@ -11,10 +11,11 @@ import type { IntegrationMessageProps } from './messages/types'
 import { SlackIntegrationMessage } from './messages/slack-message'
 import { TelegramIntegrationMessage } from './messages/telegram-message'
 import { IMessageIntegrationMessage } from './messages/imessage-message'
+import { IMessageDeliveryCard } from './imessage-delivery-card'
 import { LinearIntegrationMessage } from './messages/linear-message'
 
-function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<IntegrationMessageProps>): IntegrationSetupProvider {
-  return { slug, label, Message, Settings: ChatIntegrationSettingsCard, Setup: props => <ChatIntegrationSetupForm {...props} provider={slug} /> }
+function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<IntegrationMessageProps>, Settings: IntegrationSetupProvider['Settings'] = ChatIntegrationSettingsCard): IntegrationSetupProvider {
+  return { slug, label, Message, Settings, Setup: props => <ChatIntegrationSetupForm {...props} provider={slug} /> }
 }
 
 /** Composition point for provider UI; the home list, dialog and transcript only consume definitions. */
@@ -22,7 +23,10 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
   { slug: 'platform-email', label: 'Email', managementAccess: 'owner', Setup: EmailIntegrationSetupForm, Settings: EmailSettingsCard, Message: EmailIntegrationMessage },
   chatProvider('telegram', 'Telegram', TelegramIntegrationMessage),
   chatProvider('slack', 'Slack', SlackIntegrationMessage),
-  chatProvider('imessage', 'iMessage', IMessageIntegrationMessage),
+  chatProvider('imessage', 'iMessage', IMessageIntegrationMessage, props => <>
+    <ChatIntegrationSettingsCard {...props} />
+    <IMessageDeliveryCard integration={props.integration} />
+  </>),
   { slug: 'linear', label: 'Linear', managementAccess: 'owner', iconClassName: 'dark:invert', Setup: LinearSetupForm, ConnectionSettings: LinearConnectionSettings, Settings: LinearIntegrationSettings, Message: LinearIntegrationMessage },
 
 ]
