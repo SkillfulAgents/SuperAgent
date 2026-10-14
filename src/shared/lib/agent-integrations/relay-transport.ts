@@ -1,3 +1,6 @@
+import { and, ne, sql } from 'drizzle-orm'
+import { db } from '../db'
+import { chatIntegrations } from '../db/schema'
 import { captureException } from '../error-reporting'
 import { getStoredPlatformMemberId } from '../services/platform-auth-service'
 import { resolvePlatformMemberForCandidates } from '../services/webhook-trigger-service'
@@ -61,10 +64,18 @@ export async function disableIntegrationRelay(binding: IntegrationRelayBinding):
   await getWebhookRelay().disableEndpoint(binding.scope, binding.endpointId)
 }
 
+/** Another installation receives through this endpoint too (Email's mailboxes share one per scope). */
+async function endpointSharedWith(endpointId: string, integrationId: string): Promise<boolean> {
+  const other = await db.select({ id: chatIntegrations.id }).from(chatIntegrations)
+    .where(and(ne(chatIntegrations.id, integrationId), sql`json_extract(${chatIntegrations.config}, '$.relay.endpointId') = ${endpointId}`)).get()
+  return !!other
+}
+
 /**
  * An integration is being deleted: nothing more is claimed for it, what was
- * already claimed is discarded, and its URL is disabled. Never throws: a
- * relay that can't be reached must not block deletion.
+ * already claimed is discarded, and its URL is disabled unless another
+ * installation still uses it. Never throws: a relay that can't be reached
+ * must not block deletion.
  */
 export async function releaseIntegrationTransport(record: AgentIntegrationRecord): Promise<void> {
   integrationRelays.remove(record.id)
@@ -76,6 +87,7 @@ export async function releaseIntegrationTransport(record: AgentIntegrationRecord
   }
   if (!relay) return
   try {
+    if (await endpointSharedWith(relay.endpointId, record.id)) return
     await disableIntegrationRelay(relay)
   } catch (error) {
     // The URL stays live but nothing claims its events; they expire on the platform.

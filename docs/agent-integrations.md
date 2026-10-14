@@ -178,7 +178,9 @@ When provider setup returns `relay: true`, setup mints the endpoint before the
 installation exists, under the creator's platform member (as agent-minted
 webhook endpoints are), so provider setup can hand out its URL; a relay-only
 provider always gets one. If the installation is then not created, the endpoint
-is disabled; deleting the installation disables it too.
+is disabled. Deleting the installation disables it too, unless another
+installation stores the same endpoint (Email's mailboxes share one per relay
+scope).
 
 `host.relay.attach()` goes through `integrationRelays`, which keeps one relay
 registration per integration across reconnects: nothing is claimed while no
@@ -210,6 +212,12 @@ returns Linq's message id, and a reaction answers an approval only if it is on
 that approval's own message, so a stale reaction can't answer a newer approval.
 Deleting the installation removes the gateway webhook before the endpoint is
 disabled.
+
+Email works the same way, with no SSE stream when a relay is offered, but its
+webhooks only wake the cursor poll, which stays the source of truth. Its
+mailboxes share one endpoint per relay scope, so they don't attach through
+`integrationRelays`. `EmailRelays` keeps one registration per endpoint and
+routes each pointer to its mailbox. See [agent-email.md](agent-email.md#consumption-and-delivery).
 
 ## Task managers
 
