@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the browser-use feature works correctly - agent successfully executed browser tools to navigate to example.com, captured the page title \"Example Domain\", and reported back in the chat interface.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 using Playwright browser_run_code — Page loaded successfully with title \"Gamut\", displaying the agent home page with sidebar and \"Your Agents\" list",
+    "Step 2: Found and clicked \"QA-20261015-200033-slyn\" agent in the sidebar — Successfully navigated to the agent page at http://localhost:47891/agents/qa-20261015-200033-slyn-rmh35nhbot, displaying the agent configuration interface with message input field",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the input field and sent using the Send button, redirecting to a new session URL with status showing \"working\"",
+    "Step 4: Waited up to 3 minutes for agent response — Agent completed work in approximately 6 seconds, as shown in the \"Worked for 6s · 3 tool calls · 152,529 tokens\" metric",
+    "Step 5: Verified response mentions \"Example Domain\" and reviewed tool call cards — Agent's response clearly states: \"The page title is \"Example Domain\". I've closed the browser.\" Tool call cards show: ToolSearch (completed), Open Browser → https://example.com (completed), and Close Browser (completed)"
+  ],
+  "bugs": [],
+  "durationMs": 158623,
+  "sessionId": "b94cab0d-f4db-4542-8a25-7ddd5c45c789",
+  "cost": {
+    "inputTokens": 668,
+    "outputTokens": 16321,
+    "cacheCreationTokens": 104306,
+    "cacheReadTokens": 2231046,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.43576
+  }
+}
