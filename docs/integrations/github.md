@@ -10,6 +10,8 @@ GitHub appears in the agent's existing integration picker when the host is conne
 
 Each integration owns a separate, private GitHub App. Actions use `app-slug[bot]`, not the person who installed it. The app is installed on its owning account; organization setup requires permission to create and install apps there. The manifest requests Contents, Issues and Pull requests write access, plus Metadata read access. Repository selection further restricts that access.
 
+The bot cannot be selected as an issue assignee or from the native mention picker; type its handle explicitly to invoke it. A custom avatar must be uploaded in the GitHub App's Display information settings; the manifest does not set one.
+
 The generic setup contract supplies a provider-owned POST form and a multi-step callback. Creation exchanges GitHub's temporary manifest code for the app credentials. Installation checks the returned ID with an app-signed JWT and verifies the owning account and granted permissions. Expiring, single-use state protects each phase; retries retain an already-created app.
 
 ## Incoming work
@@ -26,7 +28,7 @@ The integration publishes GitHub's official remote MCP through the existing MCP 
 
 App/installation revocation signals the shared reconnect-needed lifecycle. A transient permission/rate-limit or upstream failure does not cancel work or revoke the app. Reconnecting can bind a new installation ID after uninstall/reinstall. Deleting the local integration releases its relay endpoint; it does not delete the customer's GitHub App. A deleted app or removed signing key requires creating a new integration/app.
 
-GitHub Enterprise Server and apps installed across multiple owning accounts are outside this first version. Creation, signed delivery, token renewal, proxy projection, and UI flows have mocked automated coverage; a real GitHub browser installation and bot-authenticated MCP round trip remain a release smoke test.
+GitHub Enterprise Server and apps installed across multiple owning accounts are outside this first version. Creation, signed delivery, token renewal, proxy projection, and UI flows have mocked automated coverage. Live verification with a real GitHub App and LLM access is complete, including installation, bot-authenticated replies, automatic follow-ups on bot-created issues/PRs, and inline review replies.
 
 ## References
 
