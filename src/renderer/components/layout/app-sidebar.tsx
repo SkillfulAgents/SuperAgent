@@ -49,10 +49,10 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useSettings, useModelSettings } from '@renderer/hooks/use-settings'
+import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useExperiment } from '@renderer/hooks/use-experiment'
 import { useTodos } from '@renderer/hooks/use-todos'
@@ -574,6 +574,14 @@ const AgentMenuItemInner = React.forwardRef<
   // View-only members can't send, so they get no new-session control; nor
   // does the slot while it shows the ⌘-number hint.
   const canStartSession = hint === null && canUseAgent(agent.slug)
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const startAgent = useStartAgent()
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const warmStart = () => {
+    if (warmStartEnabled && canStartSession && runtimeStatus?.runtimeReadiness.status === 'READY') {
+      startAgent.mutate({ slug: agent.slug, source: 'warm-start' })
+    }
+  }
   const dragHandlers = useSidebarFileDrop({
     kind: 'agent',
     agentSlug: agent.slug,
@@ -618,7 +626,7 @@ const AgentMenuItemInner = React.forwardRef<
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
               {/* The status slot doubles as the new-session control: hovering
                   the row (or focusing the button) swaps the status for a pen
-                  linking to Agent Home, whose composer starts a new session. */}
+                  opening the session view with an empty composer. */}
               <span className="group/status-slot relative z-10 ml-auto flex shrink-0 items-center">
                 {/* Expose the status title above the stretched link while keeping
                     clicks (including modifier clicks) native agent navigation. */}
@@ -645,6 +653,8 @@ const AgentMenuItemInner = React.forwardRef<
                         <AppLink
                           to="/agents/$slug/sessions/new"
                           params={{ slug: agent.displaySlug }}
+                          onPointerDown={(event) => { if (event.button === 0) warmStart() }}
+                          onClick={(event) => { if (event.detail === 0) warmStart() }}
                           aria-label={`New session with ${agent.name}`}
                           data-testid={`agent-new-session-${agent.slug}`}
                           className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"

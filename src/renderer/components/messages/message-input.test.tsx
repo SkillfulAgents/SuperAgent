@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, act } from '@testing-library/react'
+import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
 import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
@@ -8,11 +8,24 @@ import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
+
+const mockCreateSession = { mutateAsync: vi.fn(), isPending: false, error: null }
+let mockSessions: Array<{ id: string }> = []
+let mockAgentName = 'Test Agent'
+const mockRenameUntitled = vi.fn()
+vi.mock('@renderer/hooks/use-sessions', () => ({
+  useCreateSession: () => mockCreateSession,
+  useSessions: () => ({ data: mockSessions }),
+}))
+vi.mock('@renderer/hooks/use-rename-untitled-agent', () => ({
+  useRenameUntitledAgent: () => ({ mutate: mockRenameUntitled }),
+}))
 
 // Mock hooks
 const mockSendMessage = {
@@ -161,11 +174,16 @@ const mockStartAgent = vi.fn()
 vi.mock('@renderer/hooks/use-agents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@renderer/hooks/use-agents')>()),
   useStartAgent: () => ({ mutate: mockStartAgent }),
+  useAgent: () => ({ data: { slug: 'agent-1', name: mockAgentName } }),
 }))
 
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCreateSession.mutateAsync.mockReset().mockResolvedValue({ id: 'new-123', initialMessageUuid: 'initial-uuid' })
+    mockCreateSession.isPending = false
+    mockSessions = []
+    mockAgentName = 'Test Agent'
     mockStreamState.isActive = false
     mockStreamState.isWaitingBackground = false
     mockStreamState.backgroundTasks = []
@@ -182,6 +200,102 @@ describe('MessageInput', () => {
       key: 'GitHub Token',
       envVar: 'GITHUB_TOKEN',
       hasValue: true,
+    })
+  })
+
+  describe('before the first send', () => {
+    it('creates only on send and hands the first message to the shell', async () => {
+      const onSessionCreated = vi.fn()
+      renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />)
+      expect(mockCreateSession.mutateAsync).not.toHaveBeenCalled()
+      await userEvent.type(screen.getByTestId('message-input'), 'Hello agent{Enter}')
+      await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith('new-123', 'Hello agent', 'initial-uuid'))
+      expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ agentSlug: 'agent-1', message: 'Hello agent' }))
+      expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
+    })
+
+    it.each([0, 1])('renames Untitled only when it had no sessions (existing: %i)', async (count) => {
+      mockAgentName = 'Untitled'
+      mockSessions = Array.from({ length: count }, () => ({ id: 'existing' }))
+      renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={vi.fn()} />)
+      await userEvent.type(screen.getByTestId('message-input'), 'Triage my inbox{Enter}')
+      await waitFor(() => expect(mockCreateSession.mutateAsync).toHaveBeenCalled())
+      if (count === 0) expect(mockRenameUntitled).toHaveBeenCalledWith({ slug: 'agent-1', prompt: 'Triage my inbox' })
+      else expect(mockRenameUntitled).not.toHaveBeenCalled()
+    })
+
+    it('restores its own draft independently of existing sessions', async () => {
+      const { rerender } = renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={vi.fn()} />)
+      await userEvent.type(screen.getByTestId('message-input'), 'New session draft')
+      rerender(<></>)
+      rerender(<MessageInput sessionId="existing" agentSlug="agent-1" />)
+      expect(screen.getByTestId('message-input')).toHaveTextContent('')
+      await userEvent.type(screen.getByTestId('message-input'), 'Existing session draft')
+      rerender(<></>)
+      rerender(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={vi.fn()} />)
+      expect(screen.getByTestId('message-input')).toHaveTextContent('New session draft')
+    })
+
+    it('keeps the draft if creating the session fails', async () => {
+      mockCreateSession.mutateAsync.mockRejectedValueOnce(new Error('Cannot create session'))
+      const onSessionCreated = vi.fn()
+      renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />)
+      await userEvent.type(screen.getByTestId('message-input'), 'Keep this{Enter}')
+      await waitFor(() => expect(mockCreateSession.mutateAsync).toHaveBeenCalled())
+      expect(screen.getByTestId('message-input')).toHaveTextContent('Keep this')
+      expect(onSessionCreated).not.toHaveBeenCalled()
+    })
+
+    it('blocks first send while offline', () => {
+      mockIsOnline = false
+      renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={vi.fn()} />)
+      expect(screen.getByTestId('send-button')).toBeDisabled()
+      expect(screen.getByText('No internet connection. Messages cannot be sent.')).toBeVisible()
+    })
+
+    it('continues sending through the same editor after adopting a session id', async () => {
+      function AdoptSession() {
+        const [id, setId] = useState<string | null>(null)
+        return <MessageInput sessionId={id} agentSlug="agent-1" onSessionCreated={setId} />
+      }
+      renderWithProviders(<AdoptSession />)
+      const input = screen.getByTestId('message-input')
+      await userEvent.type(input, 'First message{Enter}')
+      await waitFor(() => expect(input).toHaveTextContent(''))
+      expect(screen.getByTestId('message-input')).toBe(input)
+      await userEvent.type(input, 'Second message{Enter}')
+      await waitFor(() => expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'new-123', content: 'Second message' })))
+      expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
+    })
+
+    it('enters requested voice mode when the mounted composer adopts its session', async () => {
+      mockCanUseVoiceMode = true
+      function AdoptVoiceSession() {
+        const [id, setId] = useState<string | null>(null)
+        return <MessageInput sessionId={id} agentSlug="agent-1" onSessionCreated={(createdId) => {
+          requestVoiceMode(createdId)
+          setId(createdId)
+        }} />
+      }
+      const { unmount } = renderWithProviders(<AdoptVoiceSession />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      await waitFor(() => expect(screen.getByTestId('voice-mode-composer')).toBeVisible())
+      expect(mockSendMessage.mutate).not.toHaveBeenCalled()
+      expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
+      unmount()
+      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything(),
+      ))
+    })
+
+    it('starts voice mode through the normal session handoff', async () => {
+      mockCanUseVoiceMode = true
+      const onSessionCreated = vi.fn()
+      renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={onSessionCreated} />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith('new-123', VOICE_MODE_ENTERED_MESSAGE, 'initial-uuid', { voiceMode: true }))
+      expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ inputMode: 'voice' }))
+      expect(mockSendMessage.mutate).not.toHaveBeenCalled()
     })
   })
 
@@ -478,6 +592,17 @@ describe('MessageInput', () => {
   })
 
   describe('warm start on type', () => {
+    it('wakes on composer press before text is entered and deduplicates typing', async () => {
+      mockWarmStartEnabled = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      const input = screen.getByTestId('message-input')
+      fireEvent.pointerDown(input)
+      expect(mockStartAgent).toHaveBeenCalledTimes(1)
+      expect(input).toHaveTextContent('')
+      await userEvent.type(input, 'Hi')
+      expect(mockStartAgent).toHaveBeenCalledTimes(1)
+    })
+
     it('starts the agent container once on the first typed edit', async () => {
       mockWarmStartEnabled = true
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)

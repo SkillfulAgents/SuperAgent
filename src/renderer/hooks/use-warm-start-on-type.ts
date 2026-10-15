@@ -111,5 +111,9 @@ export function useWarmStartOnType({
     return null
   }, [enabled, isReady, message, run])
 
-  return { awaitWarmStart, noteProgrammaticChange }
+  const warmStart = useCallback(() => {
+    if (enabled && isReady) void run()
+  }, [enabled, isReady, run])
+
+  return { awaitWarmStart, noteProgrammaticChange, warmStart }
 }

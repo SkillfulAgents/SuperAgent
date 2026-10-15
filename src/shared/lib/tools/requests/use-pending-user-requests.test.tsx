@@ -52,6 +52,19 @@ describe('usePendingUserRequests', () => {
     expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests?sessionId=s-1')
   })
 
+  it('does not fetch for an unsent draft and starts when its session id arrives', async () => {
+    mockApiFetch.mockResolvedValue(okResponse([validEnvelope]))
+    const { result, rerender } = renderHook(
+      ({ sessionId }) => usePendingUserRequests('agent-1', sessionId),
+      { wrapper, initialProps: { sessionId: null as string | null } },
+    )
+    expect(mockApiFetch).not.toHaveBeenCalled()
+    rerender({ sessionId: 's-1' })
+    await waitFor(() => expect(result.current.data).toHaveLength(1))
+    expect(mockApiFetch).toHaveBeenCalledTimes(1)
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests?sessionId=s-1')
+  })
+
   it('omits the sessionId query for the agent-wide view', async () => {
     mockApiFetch.mockResolvedValue(okResponse([]))
 

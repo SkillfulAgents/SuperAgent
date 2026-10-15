@@ -53,7 +53,6 @@ const DashboardRoute = lazyRouteComponent(() => import('./lazy-routes/dashboard-
 const MemoriesRoute = lazyRouteComponent(() => import('./lazy-routes/memories-route'), 'MemoriesRoute')
 const SecretsRoute = lazyRouteComponent(() => import('./lazy-routes/secrets-route'), 'SecretsRoute')
 const SessionRoute = lazyRouteComponent(() => import('./lazy-routes/session-route'), 'SessionRoute')
-const NewSessionRoute = lazyRouteComponent(() => import('./lazy-routes/new-session-route'), 'NewSessionRoute')
 const TaskRoute = lazyRouteComponent(() => import('./lazy-routes/task-route'), 'TaskRoute')
 const WebhookRoute = lazyRouteComponent(() => import('./lazy-routes/webhook-route'), 'WebhookRoute')
 const SettingsLayout = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsLayout')
@@ -174,19 +173,24 @@ export const agentHomeRoute = createRoute({
   component: AgentHomeRoute,
 })
 
-// A blank session: the composer whose first send creates the session. The
-// static `new` segment outranks `$sessionId`, and session ids never collide.
-export const newSessionRoute = createRoute({
+// One mounted view owns both an unsent draft and the session it becomes.
+// The children only select the id; changing `new` to an id keeps this parent.
+export const sessionsLayoutRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
-  path: 'sessions/new',
-  component: NewSessionRoute,
+  path: 'sessions',
+  component: SessionRoute,
+})
+
+// The static segment outranks `$sessionId`, so no APIs see a fake "new" id.
+export const newSessionRoute = createRoute({
+  getParentRoute: () => sessionsLayoutRoute,
+  path: 'new',
 })
 
 export const sessionRoute = createRoute({
-  getParentRoute: () => agentLayoutRoute,
-  path: 'sessions/$sessionId',
+  getParentRoute: () => sessionsLayoutRoute,
+  path: '$sessionId',
   params: { parse: (raw) => ({ sessionId: z.string().min(1).parse(raw.sessionId) }) },
-  component: SessionRoute,
 })
 
 export const taskRoute = createRoute({
@@ -304,8 +308,7 @@ export const routeTree = rootRoute.addChildren([
     exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
-      newSessionRoute,
-      sessionRoute,
+      sessionsLayoutRoute.addChildren([newSessionRoute, sessionRoute]),
       taskRoute,
       webhookRoute,
       inboundXAgentRoute,

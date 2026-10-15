@@ -10,7 +10,7 @@ import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot, VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 export interface UseVoiceModeArgs {
-  sessionId: string
+  sessionId: string | null
   agentSlug: string
   active: boolean
   send(text: string): Promise<boolean>
@@ -70,7 +70,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     setAgent(IDLE_AGENT)
     setProviderError(null)
     setAgentIssue(null)
-    if (!active || !engine) return
+    if (!active || !engine || !sessionId) return
     if (initialHandoff.current?.sessionId !== sessionId || initialHandoff.current.agentSlug !== agentSlug) {
       initialHandoff.current = { sessionId, agentSlug, pending: latest.current.args.startWithAgentTurn ?? false }
     }
