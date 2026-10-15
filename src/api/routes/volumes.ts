@@ -9,6 +9,8 @@ import type { HttpBindings } from '@hono/node-server'
 import { allowStreamingUpload } from '@shared/lib/streaming-upload-timeout'
 
 const RCLONE_FIRST_CHUNK_BYTES = 128 * 1024 * 1024
+// Allowlisted, so a method added later is refused on a read-only mount.
+const READ_METHODS = new Set(['PROPFIND', 'GET', 'HEAD'])
 
 type Env = { Variables: { agentSlug: string }; Bindings: HttpBindings }
 
@@ -21,8 +23,10 @@ volumes.use('*', IsAgent())
 async function serve(c: Context<Env>, volumeId: string): Promise<Response> {
   const base = `/api/volumes/${volumeId}`
   // A volume that is not this agent's answers 403, never 404: rclone would show a 404 root as an empty folder.
-  const ops = await resolveVolume(c.get('agentSlug'), volumeId)
-  if (!ops) return c.body(null, 403)
+  const mount = await resolveVolume(c.get('agentSlug'), volumeId)
+  if (!mount) return c.body(null, 403)
+  if (mount.readOnly && !READ_METHODS.has(c.req.method)) return c.body(null, 403)
+  const { ops } = mount
 
   let path = ''
   try {

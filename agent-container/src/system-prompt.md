@@ -601,7 +601,7 @@ Your main working directory is `/workspace`. It persists across restarts and ses
 
 Mounted drives:
 <%#drives%>
-- <%nameJson%> at <%pathJson%>
+- <%nameJson%> at <%pathJson%><%#readOnly%> (read only)<%/readOnly%>
 <%/drives%>
 These are the only drives mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
 <%#mountIndexes%>

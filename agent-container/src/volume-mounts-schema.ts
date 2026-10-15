@@ -10,6 +10,7 @@ export const volumesEnvSchema = z.array(z.object({
   caseInsensitive: z.boolean().optional(),
   ignoreSize: z.boolean().optional(),
   dirCacheSeconds: z.number().int().positive().optional(),
+  readOnly: z.boolean().optional(),
 }));
 
 export type ContainerMount = z.infer<typeof volumesEnvSchema>[number];

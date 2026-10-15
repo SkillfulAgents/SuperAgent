@@ -86,8 +86,8 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
-import { addMountSchema } from '@shared/lib/services/mount-schema'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
@@ -6360,6 +6360,25 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
   } catch (error) {
     console.error('Failed to add mount:', error)
     return c.json({ error: 'Failed to add drive' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/mounts/:mountId - Set read only
+agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const mountId = c.req.param('mountId')
+    const parsed = updateMountSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid drive update' }, 400)
+    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
+      return c.json({ error: 'Drive not found' }, 404)
+    }
+
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'updated', details: { readOnly: parsed.data.readOnly } })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to update mount:', error)
+    return c.json({ error: 'Failed to update drive' }, 500)
   }
 })
 

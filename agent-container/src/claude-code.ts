@@ -347,7 +347,7 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  drives: { nameJson: string; pathJson: string }[];
+  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
   mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
@@ -415,7 +415,7 @@ export function buildSystemPromptVars(
     hasMounts: drives.length > 0,
     // Names and paths render as JSON string literals. Both are user bytes, and
     // a raw newline or `#` in them would read as prompt structure.
-    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path) })),
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
     mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,

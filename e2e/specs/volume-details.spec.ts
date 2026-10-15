@@ -93,7 +93,7 @@ test('renders provider-owned logos on the homepage and in saved volumes', async 
         sourceLabel: type === 'dropbox' ? 'Dropbox · /Team' : 'Google Drive · Team', health: 'ok' as const,
         userId: null, canManage: true, attachmentCount: 1 }
       state.definitions.push(volume)
-      state.mounts.push({ ...volume, id: `mount-${type}`, volumeId: volume.id, volumeName: volume.name })
+      state.mounts.push({ ...volume, id: `mount-${type}`, volumeId: volume.id, volumeName: volume.name, readOnly: false })
     }
     await page.goto(`/agents/${agent.slug}`)
     for (const type of ['dropbox', 'googledrive']) await expect(page.locator(`img[src*="${type}"]`).first()).toBeVisible()

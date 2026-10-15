@@ -18,10 +18,10 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockVolume = vi.hoisted(() => ({ ops: null as BaseMountableVolume<unknown> | null }))
 vi.mock('@shared/lib/services/mount-service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/lib/services/mount-service')>()
-  return { ...actual, resolveVolume: (agentSlug: string, volumeId: string) => mockVolume.ops ?? actual.resolveVolume(agentSlug, volumeId) }
+  return { ...actual, resolveVolume: (agentSlug: string, volumeId: string) => mockVolume.ops ? { ops: mockVolume.ops, readOnly: false } : actual.resolveVolume(agentSlug, volumeId) }
 })
 
-import { addMount } from '@shared/lib/services/mount-service'
+import { addMount, setMountReadOnly } from '@shared/lib/services/mount-service'
 import type { BaseMountableVolume, VolumeFile } from '@shared/lib/volumes/base-mountable-volume'
 import volumes from './volumes'
 
@@ -173,6 +173,20 @@ describe('/api/volumes', () => {
     expect((await request(`${volumeId}/d`, { method: 'DELETE' })).status).toBe(409)
     expect((await request(`${volumeId}/d/b.txt`, { method: 'DELETE' })).status).toBe(204)
     expect(fs.existsSync(path.join(folder, 'd', 'b.txt'))).toBe(false)
+  })
+
+  it('serves only reads on a read-only mount, and changes nothing', async () => {
+    await setMountReadOnly('agent-a', volumeId, true)
+    expect((await request(volumeId, { method: 'PROPFIND', headers: { Depth: '1' } })).status).toBe(207)
+    expect(await (await request(`${volumeId}/a.txt`)).text()).toBe('hello world')
+    expect((await request(`${volumeId}/a.txt`, { method: 'HEAD' })).status).toBe(200)
+    const destination = `http://localhost/api/volumes/${volumeId}/b.txt`
+    for (const [method, headers] of [['PUT', {}], ['DELETE', {}], ['MKCOL', {}], ['MOVE', { Destination: destination }], ['PROPPATCH', {}]] as const) {
+      expect((await request(`${volumeId}/a.txt`, { method, headers, ...(method === 'PUT' ? { body: 'x' } : {}) })).status, method).toBe(403)
+    }
+    expect((await request(volumeId, { method: 'PUT', body: 'x' })).status).toBe(403)
+    expect(fs.readdirSync(folder)).toEqual(['a.txt'])
+    expect(fs.readFileSync(path.join(folder, 'a.txt'), 'utf8')).toBe('hello world')
   })
 
   it('answers a write onto a folder 405, a move into a missing folder 409, and a move onto a file replaces it', async () => {

@@ -22,9 +22,9 @@ it('backfills old agents, preserves referenced rows, and never rerandomizes on l
     id: 'volume', name: 'Files', type: 'local', config: JSON.stringify(localVolumeConfigSchema.parse({ path: '/tmp/avatar-migration-fixture' })),
     createdAt: new Date(), updatedAt: new Date(),
   }).run()
-  await db.insert(agentVolumes).values({
-    id: 'mount', agentSlug: 'old-0', volumeId: 'volume', name: 'Files', createdAt: new Date(),
-  }).run()
+  // Seed historical columns explicitly: the current schema also includes later additions.
+  await db.run(sql`INSERT INTO agent_volumes (id, agent_slug, volume_id, name, created_at)
+    VALUES ('mount', 'old-0', 'volume', 'Files', 1)`)
 
   await migrateFromBundle(db)
   const migrated = await db.select().from(agents).all()
@@ -33,7 +33,7 @@ it('backfills old agents, preserves referenced rows, and never rerandomizes on l
     expect(agentAvatarSchema.safeParse({ color: row.avatarColor, shape: row.avatarShape }).success).toBe(true)
   }
   expect(new Set(migrated.map(row => `${row.avatarColor}:${row.avatarShape}`)).size).toBeGreaterThan(1)
-  expect(await db.select().from(agentVolumes).all()).toHaveLength(1)
+  expect(await db.select().from(agentVolumes).all()).toMatchObject([{ id: 'mount', readOnly: false }])
 
   await db.update(agents).set({ avatarColor: 'duo-red-amber', avatarShape: 'bloom' }).where(eq(agents.slug, 'old-0')).run()
   const saved = await db.select().from(agents).all()

@@ -36,7 +36,7 @@ export async function mockDropboxVolumes(page: Page, agentSlug?: string) {
     const body = route.request().postDataJSON()
     const source = body.volumeId ? definitions.find(volume => volume.id === body.volumeId)! : save(body)
     source.attachmentCount++
-    const mount = { ...source, id: `mount-${mounts.length + 1}`, volumeId: source.id, volumeName: source.name }
+    const mount = { ...source, id: `mount-${mounts.length + 1}`, volumeId: source.id, volumeName: source.name, readOnly: false }
     mounts.push(mount)
     return route.fulfill({ status: 201, json: mount })
   })

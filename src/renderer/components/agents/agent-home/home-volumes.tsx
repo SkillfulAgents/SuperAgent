@@ -21,6 +21,8 @@ import {
   FolderOpen,
   Copy,
   Trash2,
+  Lock,
+  Check,
   Plus,
   Loader2,
   RefreshCw,
@@ -61,7 +63,9 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               definition={volumes.definitions.find(volume => volume.id === mount.volumeId)}
               agentSlug={agentSlug}
               onRemove={() => volumes.handleRemove(mount.id)}
+              onSetReadOnly={(readOnly) => volumes.handleSetReadOnly(mount.id, readOnly)}
               isRemovingMount={volumes.isRemovingMount}
+              isUpdatingMount={volumes.isUpdatingMount}
               canRemove={volumes.canModifyMounts}
             />
           ))}
@@ -159,11 +163,13 @@ interface VolumeRowProps {
   mount: MountSummaryWithHealth
   definition?: VolumeDefinitionSummary
   onRemove: () => void
+  onSetReadOnly: (readOnly: boolean) => void
   isRemovingMount: boolean
+  isUpdatingMount: boolean
   canRemove: boolean
 }
 
-function VolumeRow({ mount, definition, agentSlug, onRemove, isRemovingMount, canRemove }: VolumeRowProps) {
+function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRemovingMount, isUpdatingMount, canRemove }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
@@ -226,6 +232,12 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, isRemovingMount, ca
           ) : <>
             <span className="text-xs font-medium truncate">{mount.volumeName}</span>
             <VolumeStatusBadge health={mount.health} />
+            {mount.readOnly && (
+              <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
+                <Lock className="h-2.5 w-2.5" />
+                Read only
+              </span>
+            )}
           </>}
         </div>
         {subtitle && (
@@ -285,6 +297,23 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, isRemovingMount, ca
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   Rename
+                </button>
+              )}
+              {canRemove && (
+                <button
+                  role="switch"
+                  aria-checked={mount.readOnly}
+                  disabled={isUpdatingMount}
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSetReadOnly(!mount.readOnly)
+                    setMenuOpen(false)
+                  }}
+                >
+                  <Lock className="h-3.5 w-3.5" />
+                  Read only
+                  {mount.readOnly && <Check className="ml-auto h-3.5 w-3.5" />}
                 </button>
               )}
               {canRemove && <button
