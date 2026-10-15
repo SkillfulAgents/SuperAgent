@@ -35,6 +35,8 @@ export interface VoiceModeResult extends VoiceConversationSnapshot {
   /** The speaker mute for the agent's voice, kept the same way. */
   outputMuted: boolean
   setOutputMuted(muted: boolean): void
+  /** Standing guidance for the running engine (who is in the room); ignored by engines without the channel. */
+  instruct(text: string): void
 }
 const IDLE: VoiceConversationSnapshot = {
   phase: 'listening', ready: false, userSpeaking: false, assistantSpeaking: false,
@@ -178,12 +180,13 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     setOutputMutedState(muted)
     adapter.current?.setOutputMuted(muted)
   }, [])
+  const instruct = useCallback((text: string) => { adapter.current?.appendInstructions?.(text) }, [])
   const clearError = useCallback(() => { setProviderError(null); setAgentIssue(null) }, [])
   return {
     ...snapshot, engine, capabilities,
     working: active && !paused && snapshot.ready && (agent.active || !!agent.background),
     speechActive: snapshot.userSpeaking || snapshot.assistantSpeaking,
     error: agentIssue ?? providerError, clearError, pressMic, getAnalyser, getOutputAnalyser,
-    micMuted, setMicMuted, outputMuted, setOutputMuted,
+    micMuted, setMicMuted, outputMuted, setOutputMuted, instruct,
   }
 }

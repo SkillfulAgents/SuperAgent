@@ -6,7 +6,9 @@ import type { PublicAgentIntegration } from './public'
 import type { IntegrationMcpConnection } from './mcp-types'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
+import type { LiveConversationSetting } from '../voice/live-types'
 import { taskManagerProviders } from '../task-manager-integrations/providers'
+import { meetingProviders } from '../meeting-integrations/providers'
 import { chatProviders } from '../chat-integrations/providers'
 import { formatProviderName } from './presentation'
 
@@ -28,6 +30,12 @@ export interface IntegrationProvider {
   }
   /** Access and session policy must be available independently of a live connection. */
   policy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'>
+  /**
+   * How a voice conversation in one of this provider's sessions differs from
+   * a person alone with the app (a meeting room). Absent for providers whose
+   * sessions are ordinary conversations.
+   */
+  liveSetting?(record: AgentIntegrationRecord, externalId: string): Promise<LiveConversationSetting | undefined>
   create(record: AgentIntegrationRecord): Promise<AgentIntegration>
   mcp?(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null>
   cleanup?(record: AgentIntegrationRecord): Promise<void>
@@ -81,6 +89,10 @@ export class AgentIntegrationRegistry {
     return definitions.filter((_, index) => available[index])
   }
 
+  async liveSetting(record: AgentIntegrationRecord, externalId: string): Promise<LiveConversationSetting | undefined> {
+    return this.providers.get(record.provider)?.liveSetting?.(record, externalId)
+  }
+
   async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
     return (await this.providers.get(context.integration.provider)?.policy.isAllowed(context)) ?? false
   }
@@ -122,4 +134,4 @@ export class AgentIntegrationRegistry {
   }
 }
 
-export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders, platformEmailProvider])
+export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders, ...meetingProviders, platformEmailProvider])

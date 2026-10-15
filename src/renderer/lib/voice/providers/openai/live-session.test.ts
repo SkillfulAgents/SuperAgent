@@ -47,9 +47,9 @@ class FakeAudioContext {
   createMediaStreamSource = () => ({ connect: vi.fn() })
 }
 const track = { enabled: true, stop: vi.fn() }
-function setup(agentSlug?: string) {
+function setup(agentSlug?: string, agentSessionId?: string) {
   const callbacks = { onReady: vi.fn(), onClosed: vi.fn(), onError: vi.fn(), onSpeaking: vi.fn(), onInputSpeaking: vi.fn(), onUtterance: vi.fn(), onRequest: vi.fn(async () => true) }
-  return { adapter: new OpenAILiveConversation(callbacks, [], agentSlug), callbacks }
+  return { adapter: new OpenAILiveConversation(callbacks, [], agentSlug, agentSessionId), callbacks }
 }
 const answer = () => new Response(JSON.stringify({ session: { id: 'live_1' }, transport: { sdp: 'answer' }, handle: 'owned-handle' }))
 beforeEach(() => {
@@ -150,6 +150,15 @@ describe('Live WebRTC lifecycle', () => {
     await adapter.start()
     expect(mocks.fetch).toHaveBeenCalledWith('/api/voice/live/agents/ada%20display%2Fslug/session', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ sdp: 'offer', history: [] }),
+    }))
+    adapter.close()
+  })
+
+  it('names the agent session so the host can place the conversation, without any prompt text', async () => {
+    const { adapter } = setup('ada', 'session-7')
+    await adapter.start()
+    expect(mocks.fetch).toHaveBeenCalledWith('/api/voice/live/agents/ada/session', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ sdp: 'offer', history: [], sessionId: 'session-7' }),
     }))
     adapter.close()
   })
@@ -389,6 +398,7 @@ describe('Live WebRTC lifecycle', () => {
     ])
     adapter.close()
   })
+
 
   it.each([
     { complete: false, ready: true },

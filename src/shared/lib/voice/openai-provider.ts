@@ -1,6 +1,8 @@
 import { fetchWithIdleTimeout } from './streaming-fetch'
 import { VoiceProviderError } from './provider-error'
 import { OPENAI_TTS_VOICES } from './openai-voices'
+import { OPENAI_LIVE_VOICES, resolveOpenAILiveVoice } from './openai-live-voices'
+import type { TtsVoiceInfo } from './tts-preferences'
 import type { TtsSynthesisInput, TtsSynthesisProvider } from './tts-types'
 import { BaseVoiceProvider } from './voice-provider'
 import { getEffectiveModels, type VoiceProvider } from '../config/settings'
@@ -82,6 +84,9 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     return this
   }
 
+  getLiveVoices(): readonly TtsVoiceInfo[] { return OPENAI_LIVE_VOICES }
+  resolveLiveVoice(requested?: string | null): string { return resolveOpenAILiveVoice(requested ?? undefined) }
+
   /** The project key stays on the host; the renderer receives only an SDP answer. */
   async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext): Promise<LiveSessionAnswer> {
     const apiKey = this.getEffectiveApiKey()
@@ -101,7 +106,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
           model: 'gpt-live-1',
           instructions: buildLiveConversationPrompt(agent),
           delegation: { type: 'client' },
-          audio: { output: { voice: 'marin' } },
+          // The setting (a meeting) may ask for a voice; a person alone with the app gets the default.
+          audio: { output: { voice: this.resolveLiveVoice(agent?.setting?.voice) } },
           store: false,
           client: { data_channel: { allowed_client_events: [
             'session.commentary.append', 'session.thinking.append', 'session.instructions.append',

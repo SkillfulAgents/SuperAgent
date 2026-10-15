@@ -786,6 +786,41 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
 }))
 
+// Meetings an agent was asked to attend (meeting integration family). The
+// session mapping stays in chat_integration_sessions (externalChatId = meeting
+// id); this row carries the bot lifecycle the participant page and UI follow.
+export const agentIntegrationMeetings = sqliteTable('agent_integration_meetings', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  agentSlug: text('agent_slug').notNull(),
+  meetingUrl: text('meeting_url').notNull(),
+  platform: text('platform').notNull(),
+  botName: text('bot_name').notNull(),
+  // How the agent takes part: 'voice' | 'silent' | 'listen' (see meeting-integrations/schemas.ts).
+  mode: text('mode').notNull().default('voice'),
+  // Provider's bot handle; null until the host accepted the join.
+  botId: text('bot_id'),
+  status: text('status').notNull().default('requested'),
+  statusDetail: text('status_detail'),
+  sessionId: text('session_id'),
+  // The person's brief for this meeting, as given at join time.
+  context: text('context'),
+  // sha256 of the one-time participant page token; the token itself is only in the page URL.
+  participantTokenHash: text('participant_token_hash').notNull(),
+  createdByUserId: text('created_by_user_id'),
+  requestedAt: integer('requested_at', { mode: 'timestamp_ms' }).notNull(),
+  joinedAt: integer('joined_at', { mode: 'timestamp_ms' }),
+  endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  integrationIdx: index('agent_integration_meetings_integration_idx').on(table.integrationId),
+  sessionIdx: index('agent_integration_meetings_session_idx').on(table.agentSlug, table.sessionId),
+  statusIdx: index('agent_integration_meetings_status_idx').on(table.status),
+}))
+export type AgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferSelect
+export type NewAgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferInsert
+
 // Slack participation is independent of session routing: multiple threads can
 // share one channel session. Keep the bounded, least-recently-used thread list
 // across connector recreation, scoped to the installation and bot identity.

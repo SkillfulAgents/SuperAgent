@@ -34,7 +34,12 @@ export async function authenticateAgentWebSocket(
     }
 
     const session = await auth.api.getSession({ headers })
-    if (!session?.user) return false
+    if (!session?.user) {
+      // The meeting bot's page watches its own agent's browser stream; it may not steer it.
+      const { authenticateMeetingParticipant } = await import('@shared/lib/meeting-integrations/participant-credential')
+      const participant = await authenticateMeetingParticipant(headers.get('cookie'))
+      return !!participant && participant.agentSlug === agentSlug && minRole === 'viewer'
+    }
 
     const [row] = await db
       .select({ role: agentAcl.role })

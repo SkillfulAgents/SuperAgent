@@ -598,5 +598,16 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791924124387,
     "hash": "51ec4cbbcee73557e8d2840d2d286a03279a78dd6b5d29e7d51f23ed7e943b98"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_integration_meetings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`meeting_url` text NOT NULL,\n\t`platform` text NOT NULL,\n\t`bot_name` text NOT NULL,\n\t`mode` text DEFAULT 'voice' NOT NULL,\n\t`bot_id` text,\n\t`status` text DEFAULT 'requested' NOT NULL,\n\t`status_detail` text,\n\t`session_id` text,\n\t`context` text,\n\t`participant_token_hash` text NOT NULL,\n\t`created_by_user_id` text,\n\t`requested_at` integer NOT NULL,\n\t`joined_at` integer,\n\t`ended_at` integer,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `agent_integration_meetings_integration_idx` ON `agent_integration_meetings` (`integration_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_session_idx` ON `agent_integration_meetings` (`agent_slug`,`session_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_status_idx` ON `agent_integration_meetings` (`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792093164911,
+    "hash": "3a227888890cbbc01667d8ecaed1a7604e1830fb29d0148e6e92dc5a5ba5b3de"
   }
 ]

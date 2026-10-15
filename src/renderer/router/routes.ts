@@ -297,7 +297,20 @@ export const settingsTabRoute = createRoute({
   component: SettingsTabRoute,
 })
 
+// ── MEETING PARTICIPANT: the page a meeting bot presents as its camera ────────
+// Sibling of the app shell: no sidebar, no chrome. The bot's browser has no
+// app session; the page authenticates with the one-time token in its URL.
+const MeetingParticipantRoute = lazyRouteComponent(() => import('./lazy-routes/meeting-participant-route'), 'MeetingParticipantRoute')
+export const meetingParticipantRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'meeting/$meetingId',
+  params: { parse: (raw) => ({ meetingId: z.string().min(1).parse(raw.meetingId) }) },
+  validateSearch: lenient(z.object({ token: z.string().optional() })),
+  component: MeetingParticipantRoute,
+})
+
 export const routeTree = rootRoute.addChildren([
+  meetingParticipantRoute,
   appShellRoute.addChildren([
     homeRoute,
     notificationsRoute,

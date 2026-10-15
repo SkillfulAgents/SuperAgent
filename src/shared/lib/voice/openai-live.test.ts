@@ -32,6 +32,21 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(result).toEqual({ session: { id: 'live_test' }, transport: { type: 'webrtc', sdp: 'answer' } })
     expect(provider.getConversationEngine()).toBe('openai-live')
     expect(provider.supportsTts()).toBe(true)
+    expect(body.session.audio).toEqual({ output: { voice: 'marin' } })
+  })
+
+  it('speaks with the voice the setting asks for when GPT-Live offers it, else the default', async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
+    const agent = { name: 'Ada', description: '', instructions: '', capabilityPolicies: { subagents: 'allow' as const, workflows: 'allow' as const } }
+    const setting = { policy: { turnTaking: 'room', spokenUpdates: 'quiet' }, instructions: 'In a call.' }
+    await provider.createLiveSession('offer', [], { ...agent, setting: { ...setting, voice: 'cinder' } })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).session.audio).toEqual({ output: { voice: 'cinder' } })
+    await provider.createLiveSession('offer', [], { ...agent, setting: { ...setting, voice: 'not-a-voice' } })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).session.audio).toEqual({ output: { voice: 'marin' } })
+    // The list the settings UI offers is the provider's own, Marin first as the default.
+    expect(provider.getLiveVoices()[0]).toMatchObject({ id: 'marin' })
+    expect(provider.getLiveVoices().map(voice => voice.id)).toContain('cinder')
+    expect(provider.resolveLiveVoice()).toBe('marin')
   })
 
   it('sends agent identity, custom instructions, and account handoff guidance as session instructions', async () => {

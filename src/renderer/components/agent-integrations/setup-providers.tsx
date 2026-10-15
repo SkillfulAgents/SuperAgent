@@ -15,6 +15,9 @@ import { IMessageIntegrationMessage } from './messages/imessage-message'
 import { IMessageDeliveryCard } from './imessage-delivery-card'
 import { TelegramDeliveryCard } from './telegram-delivery-card'
 import { LinearIntegrationMessage } from './messages/linear-message'
+import { RecallSetupForm } from './recall-setup-form'
+import { MeetingPanel } from './meeting-panel'
+import { MeetingSettingsCard } from './meeting-settings-card'
 
 function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<IntegrationMessageProps>, Settings: IntegrationSetupProvider['Settings'] = ChatIntegrationSettingsCard): IntegrationSetupProvider {
   return { slug, label, Message, Settings, Setup: props => <ChatIntegrationSetupForm {...props} provider={slug} /> }
@@ -36,5 +39,6 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
     <IMessageDeliveryCard integration={props.integration} />
   </>),
   { slug: 'linear', label: 'Linear', managementAccess: 'owner', iconClassName: 'dark:invert', Setup: LinearSetupForm, ConnectionSettings: LinearConnectionSettings, Settings: LinearIntegrationSettings, Message: LinearIntegrationMessage },
+  { slug: 'recall', label: 'Meetings', managementAccess: 'owner', Setup: RecallSetupForm, ConnectionSettings: MeetingPanel, Settings: MeetingSettingsCard },
 
 ]

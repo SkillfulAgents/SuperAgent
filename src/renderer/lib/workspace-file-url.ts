@@ -1,4 +1,5 @@
 import { toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
+import { encodeWorkspaceFilePath, getAgentFileApiPath } from '@shared/lib/utils/workspace-file-url'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 /**
@@ -22,18 +23,7 @@ export function isSafeWorkspaceFilePath(filePath: string): boolean {
   return relative.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..')
 }
 
-/** Convert a container workspace path into safely encoded API path segments. */
-export function encodeWorkspaceFilePath(filePath: string): string {
-  return toWorkspaceRelativePath(filePath)
-    .split('/')
-    .filter(Boolean)
-    .map(segment => encodeURIComponent(segment))
-    .join('/')
-}
-
-export function getAgentFileApiPath(agentSlug: string, filePath: string): string {
-  return `/api/agents/${encodeURIComponent(agentSlug)}/files/${encodeWorkspaceFilePath(filePath)}`
-}
+export { encodeWorkspaceFilePath, getAgentFileApiPath }
 
 interface AgentFileUrlOptions {
   /** Ask the route to serve the bytes for display rather than as a download. */
