@@ -62,6 +62,26 @@ describe('SlackSetup', () => {
     expect(state.requests[1]).toEqual({ url: '/api/agent-integrations/int-9', method: 'PATCH', body: { status: 'active', showToolCalls: false, sessionTimeout: null, config: { botToken: 'xoxb-1', signingSecret: 'secret', onlyMentioned: true, answerInThread: false, newSessionPerThread: false } } })
   })
 
+  it('keeps a created installation’s form while the relay goes away and comes back', async () => {
+    setup()
+    fireEvent.click(await screen.findByTestId('slack-create-app'))
+    await waitFor(() => expect(fakeLoginWindow.navigate).toHaveBeenCalledOnce())
+    fireEvent.change(screen.getByLabelText('Signing Secret'), { target: { value: 'secret' } })
+    state.relayAvailable = false
+    await client.invalidateQueries({ queryKey: ['webhook-relay'] })
+    await waitFor(() => expect(screen.queryByTestId('slack-webhooks-choice')).toBeNull())
+    expect(screen.queryByLabelText('App-Level Token')).toBeNull()
+    expect(screen.getByLabelText('Signing Secret')).toHaveValue('secret')
+    state.relayAvailable = true
+    await client.invalidateQueries({ queryKey: ['webhook-relay'] })
+    await screen.findByTestId('slack-webhooks-choice')
+    // The Slack app already targets the first installation's URL.
+    expect(screen.getByTestId('slack-setup-webhook-url')).toHaveTextContent('https://relay.test/v1/hooks/whep_1')
+    expect(screen.getByLabelText('Signing Secret')).toHaveValue('secret')
+    expect(screen.getByLabelText('Bot Token')).toBeEnabled()
+    expect(state.requests.filter(request => request.method === 'POST')).toHaveLength(1)
+  })
+
   it('uses Socket Mode without a relay, or when webhooks are turned off', async () => {
     state.relayAvailable = false
     const view = setup()

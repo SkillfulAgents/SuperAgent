@@ -117,15 +117,13 @@ function SetUpWebhooks({ integrationId, slack }: { integrationId: string; slack:
   </div>
 }
 
-/** Step two: the app's owner points it at the URL. Socket Mode keeps working until Slack's first request arrives. */
-function SwitchToWebhooks({ integrationId, slack, url, rejected }: { integrationId: string; slack: PublicSlackDelivery; url: string; rejected: boolean }) {
+/**
+ * Where the URL goes in the app. Saving the Event Subscriptions URL is what
+ * verifies the webhook, before Interactivity has it, so these stay on hand.
+ */
+function SlackAppSteps({ url }: { url: string }) {
   const settings = JSON.stringify({ settings: slackManifestSettings(url) }, null, 2)
-  return <div className="space-y-3" data-testid="slack-webhook-switch">
-    {rejected ? <SecretRejected integrationId={integrationId} /> : <p role="status" className="text-xs text-muted-foreground" data-testid="slack-webhook-waiting">
-      Waiting for Slack’s first request to this URL.{slack.appTokenSaved ? ' Socket Mode keeps working until it arrives.' : ' Until it arrives, this agent can’t receive messages.'}
-    </p>}
-    <p className="text-xs font-medium">Point your Slack app at this agent’s webhook URL:</p>
-    <WebhookUrl url={url} />
+  return <>
     <ol className={steps}>
       <li>Open your app at <SlackAppsLink />. In <strong className="font-medium text-foreground">Socket Mode</strong>, turn off <em>Enable Socket Mode</em>.</li>
       <li>In <strong className="font-medium text-foreground">Event Subscriptions</strong>, paste the URL as the <em>Request URL</em>. Slack checks it and shows <em>Verified</em>. Click <em>Save Changes</em>.</li>
@@ -139,6 +137,18 @@ function SwitchToWebhooks({ integrationId, slack, url, rejected }: { integration
         <CopyTextButton text={settings} label="Copy settings" />
       </div>
     </details>
+  </>
+}
+
+/** Step two: the app's owner points it at the URL. Socket Mode keeps working until Slack's first request arrives. */
+function SwitchToWebhooks({ integrationId, slack, url, rejected }: { integrationId: string; slack: PublicSlackDelivery; url: string; rejected: boolean }) {
+  return <div className="space-y-3" data-testid="slack-webhook-switch">
+    {rejected ? <SecretRejected integrationId={integrationId} /> : <p role="status" className="text-xs text-muted-foreground" data-testid="slack-webhook-waiting">
+      Waiting for Slack’s first request to this URL.{slack.appTokenSaved ? ' Socket Mode keeps working until it arrives.' : ' Until it arrives, this agent can’t receive messages.'}
+    </p>}
+    <p className="text-xs font-medium">Point your Slack app at this agent’s webhook URL:</p>
+    <WebhookUrl url={url} />
+    <SlackAppSteps url={url} />
     <RemoveWebhooks integrationId={integrationId} slack={slack} />
   </div>
 }
@@ -162,11 +172,15 @@ function SecretRejected({ integrationId }: { integrationId: string }) {
 function WebhookSettings({ integrationId, slack, url }: { integrationId: string; slack: PublicSlackDelivery; url: string }) {
   const [secret, setSecret] = useState('')
   const { save, pending, error } = useSave(integrationId)
-  return <div className="space-y-3">
+  return <div className="space-y-3" data-testid="slack-webhook-settings">
     <div className="space-y-1">
-      <p className="text-xs text-muted-foreground">The app’s Event Subscriptions and Interactivity post to:</p>
+      <p className="text-xs text-muted-foreground">Slack reaches this agent at this URL. Answer buttons need it too, as the <em>Request URL</em> in <strong className="font-medium text-foreground">Interactivity &amp; Shortcuts</strong>.</p>
       <WebhookUrl url={url} />
     </div>
+    <details className="text-xs text-muted-foreground">
+      <summary className="cursor-pointer">Steps in Slack</summary>
+      <div className="mt-2 space-y-2"><SlackAppSteps url={url} /></div>
+    </details>
     <div className="flex items-end gap-2">
       <div className="flex-1"><SecretField id="slack-signing-secret-update" label="Signing secret" value={secret} saved={slack.signingSecretSaved} onChange={setSecret} /></div>
       <Button size="sm" disabled={pending || !secret.trim()} onClick={() => save({ config: { signingSecret: secret.trim() } }, () => setSecret(''))}>Save</Button>

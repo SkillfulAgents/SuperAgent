@@ -30,6 +30,9 @@ function ExternalButton({ href, children }: { href: string; children: ReactNode 
 export function SlackSetup(props: IntegrationSetupProps) {
   const { data: relay, isPending } = useWebhookRelay()
   const [webhooks, setWebhooks] = useState(true)
+  // Once its installation exists, the Slack app targets that webhook: the form
+  // stays, whatever the relay does meanwhile.
+  const [installed, setInstalled] = useState(false)
   // Which form depends on the relay; one that can't be read means Socket Mode.
   if (isPending) return <>
     <DialogTitle className="sr-only">Set up integration with Slack</DialogTitle>
@@ -39,8 +42,8 @@ export function SlackSetup(props: IntegrationSetupProps) {
     <input type="checkbox" className="mt-1" checked={webhooks} disabled={disabled} onChange={event => setWebhooks(event.target.checked)} data-testid="slack-webhooks-choice" />
     <span>Receive through webhooks (recommended)<span className="block text-xs text-muted-foreground">Messages sent while this agent is offline are delivered when it’s back. Without them it uses Socket Mode and misses those.</span></span>
   </label>
-  return relay?.available && webhooks
-    ? <SlackWebhookSetupForm {...props} choice={choice} />
+  return installed || (relay?.available && webhooks)
+    ? <SlackWebhookSetupForm {...props} choice={choice} onCreated={() => setInstalled(true)} />
     : <ChatIntegrationSetupForm {...props} provider="slack" leading={choice()} />
 }
 
@@ -59,7 +62,7 @@ function appSteps({ created }: { created: boolean }) {
  * The installation comes first, so the app can be created with its webhook
  * URL; it waits, disconnected, for the app's signing secret and bot token.
  */
-function SlackWebhookSetupForm({ agentSlug, onClose, choice }: IntegrationSetupProps & { choice: (disabled?: boolean) => ReactNode }) {
+function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: IntegrationSetupProps & { choice: (disabled?: boolean) => ReactNode; onCreated: () => void }) {
   const create = useCreateAgentIntegration()
   const finish = useUpdateAgentIntegration()
   const testCredentials = useTestAgentIntegrationCredentials()
@@ -85,6 +88,7 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice }: IntegrationSetupP
       const webhookUrl = publicSlackDelivery(row)?.webhook?.url
       if (!webhookUrl) throw new Error('Could not create the webhook URL')
       setCreated({ id: row.id, webhookUrl })
+      onCreated()
       await tab.navigate(slackAppCreationUrl(appName, webhookUrl))
     } catch (error) {
       tab.close()

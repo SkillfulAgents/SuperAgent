@@ -94,6 +94,15 @@ describe('SlackDeliveryCard', () => {
     await waitFor(() => expect(state.patches).toEqual([{ settings: { webhooks: false }, config: { appToken: 'xapp-1' } }]))
   })
 
+  it('keeps the Interactivity step once the Events URL verifies', async () => {
+    // Saving the Event Subscriptions URL verifies the webhook before Interactivity has it.
+    state.transport = 'relay'
+    card({ webhook: { url: URL, status: 'verified' }, signingSecretSaved: true })
+    const settings = await screen.findByTestId('slack-webhook-settings')
+    expect(settings).toHaveTextContent('Answer buttons need it too, as the Request URL in Interactivity & Shortcuts.')
+    expect(settings).toHaveTextContent('In Interactivity & Shortcuts, paste the same URL as the Request URL')
+  })
+
   it('says messages wait on the relay while it is unavailable', async () => {
     Object.assign(state, { transport: null, relayAvailable: false })
     card({ webhook: { url: URL, status: 'verified' }, signingSecretSaved: true })
