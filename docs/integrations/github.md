@@ -14,11 +14,11 @@ The generic setup contract supplies a provider-owned POST form and a multi-step 
 
 ## Incoming work
 
-Mention `@app-slug` or `@app-slug[bot]` in an issue/PR body, conversation comment, review, or inline review comment. Only repository writers, maintainers, and administrators can invoke the agent. Bot-authored events are ignored. New human comments on an issue/PR with an active integration session or accepted pending input become follow-ups in the same session. Closing an issue does not interrupt the agent.
+Mention `@app-slug` or `@app-slug[bot]` in an issue/PR body, conversation comment, review, or inline review comment. Only repository writers, maintainers, and administrators can invoke the agent. Bot-authored events are ignored. New human comments and submitted reviews on issues/PRs authored by this app automatically invoke the agent without a mention, creating a dedicated issue/PR session on the first invocation. Issues/PRs with an existing integration session or accepted pending input also receive follow-ups in that same session. Unmentioned edits and state changes do not invoke the agent. Closing an issue does not interrupt the agent.
 
 GitHub sends webhooks to the integration's shared relay endpoint. The host verifies the original payload's HMAC and installation ID, then hands accepted input to the existing integration delivery queue. Delivery deduplication, retry, sessions, runtime queueing, and failure notices use shared infrastructure. There is no GitHub polling, history catch-up, or provider-specific durable queue. Context is read only when preparing accepted work; the snapshot includes up to 100 conversation comments and 100 inline comments and marks truncation.
 
-Comment invocations receive an eyes reaction after durable acceptance. Normal assistant output stays in the app; injected guidance directs the agent to publish its response through its GitHub MCP identity. Host-generated failure notices use the original conversation or inline review thread.
+Comment invocations receive an eyes reaction after durable acceptance. The agent decides whether a comment needs action or a response and may finish without posting. Normal assistant output stays in the app; injected guidance directs the agent to publish any intended response through its GitHub MCP identity. Inline review replies go to the original review thread; ordinary comments and submitted reviews receive main issue/PR conversation comments. Host-generated failure notices use the original conversation or inline review thread.
 
 ## Outbound access and lifecycle
 

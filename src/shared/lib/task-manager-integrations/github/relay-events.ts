@@ -42,8 +42,9 @@ export function githubTaskEvent(type: string, deliveryId: string, body: GitHubWe
   if (!supported) return null
   const text = comment?.body ?? (review ? body.review?.body : issue.body) ?? ''
   const mentioned = mentionsGitHubApp(text, slug)
+  const authoredByApp = issue.user.login.toLowerCase() === `${slug}[bot]`.toLowerCase()
   // An edit without a new mention is context; only newly posted follow-ups run.
-  if (!mentioned && !(followed && (comment && body.action === 'created' || review && body.action === 'submitted'))) return null
+  if (!mentioned && !((followed || authoredByApp) && (comment && body.action === 'created' || review && body.action === 'submitted'))) return null
   const taskId = `${repository.owner.login}/${repository.name}#${issue.number}`
   return {
     id: `github:${deliveryId}`, taskId, interactionId: String(comment?.id ?? body.review?.id ?? issue.id),

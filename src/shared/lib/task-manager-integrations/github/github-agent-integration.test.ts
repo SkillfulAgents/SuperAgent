@@ -79,6 +79,17 @@ it('discards wrong signatures, installations, bot messages, and unauthorized rep
   expect([...(await send()).values()]).toEqual(['discard'])
   expect(events).toEqual([])
 })
+it.each([false, true])('accepts unmentioned comments on app-authored work (PR=%s), with the same access gate', async isPullRequest => {
+  const ownIssue = { ...body.issue, user: { id: 9, login: 'release-helper[bot]', type: 'Bot' }, ...(isPullRequest ? { pull_request: {} } : {}) }
+  const followup = { ...body, issue: ownIssue, comment: { ...comment, body: 'Please update the docs' } }
+  fetchMock.mockResolvedValueOnce(Response.json({ permission: 'read' }))
+  expect([...(await send([delivery(followup)])).values()]).toEqual(['discard'])
+  expect(events).toEqual([])
+  expect([...(await send([delivery(followup)])).values()]).toEqual(['accepted'])
+  expect(events).toHaveLength(1)
+  expect(integration.resolveRoute(events[0])).toMatchObject({ externalId: 'team/project#3', action: 'run', replyTarget: {} })
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reactions'))).toHaveLength(1)
+})
 it('leaves retry to the shared relay during outages and never cancels on state changes', async () => {
   outbound.check.mockResolvedValue(false)
   expect([...(await send()).values()]).toEqual(['retry'])

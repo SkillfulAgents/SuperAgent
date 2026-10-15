@@ -26,3 +26,21 @@ it('accepts new human follow-ups only after joining, and never runs on bot repli
   expect(githubTaskEvent('issue_comment', 'id', { ...body, sender: { ...body.sender, type: 'Bot' } }, 'release-helper', true)).toBeNull()
   expect(githubTaskEvent('issues', 'id', { ...body, action: 'closed' }, 'release-helper', true)).toBeNull()
 })
+it.each(['issue', 'pull_request'] as const)('follows new comments on its own %s without a mention or existing session', kind => {
+  const item = { ...body.issue, user: { id: 9, login: 'Release-Helper[bot]', type: 'Bot' } }
+  const followup = { ...body, issue: undefined, [kind]: item, comment: { ...comment, body: 'Please adjust the example' } }
+  const type = kind === 'issue' ? 'issue_comment' : 'pull_request_review_comment'
+  expect(githubTaskEvent(type, 'id', followup, 'release-helper', false)).toMatchObject({
+    taskId: 'team/project#3', trigger: 'comment', replyTarget: kind === 'issue' ? {} : { commentId: '11' },
+  })
+  expect(githubTaskEvent(type, 'id', { ...followup, action: 'edited' }, 'release-helper', false)).toBeNull()
+  expect(githubTaskEvent(type, 'id', { ...followup, sender: item.user }, 'release-helper', false)).toBeNull()
+  expect(githubTaskEvent(type, 'id', { ...followup, [kind]: { ...item, user: { ...item.user, login: 'other[bot]' } } }, 'release-helper', false)).toBeNull()
+})
+it('follows submitted reviews on its own PR without requiring a mention', () => {
+  const review = { id: 12, body: 'Please add coverage for this case', user: body.sender, submitted_at: comment.created_at, html_url: comment.html_url, state: 'changes_requested' }
+  expect(githubTaskEvent('pull_request_review', 'id', {
+    ...body, action: 'submitted', issue: undefined, comment: undefined,
+    pull_request: { ...body.issue, user: { id: 9, login: 'release-helper[bot]', type: 'Bot' } }, review,
+  }, 'release-helper', false)).toMatchObject({ trigger: 'comment', replyTarget: {}, interactionId: '12' })
+})
