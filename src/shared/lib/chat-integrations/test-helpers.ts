@@ -48,3 +48,33 @@ export function relayedTelegramUpdate(update: Record<string, unknown>, secretTok
     },
   }
 }
+
+/**
+ * A Slack request as the relay hands it over, signed with the app's signing
+ * secret the way Slack signs it (null leaves it unsigned). `form` posts it
+ * the way Slack posts interactivity: `payload=<json>`, form-encoded.
+ */
+export function relayedSlackPost(body: Record<string, unknown>, signingSecret: string | null, options: {
+  id?: string; form?: boolean; handshake?: boolean; timestamp?: number; receivedAt?: string; edgeVerified?: boolean; base64?: boolean
+} = {}): RelayEvent {
+  const raw = options.form ? new URLSearchParams({ payload: JSON.stringify(body) }).toString() : JSON.stringify(body)
+  const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1000))
+  const signature = signingSecret === null ? null : `v0=${createHmac('sha256', signingSecret).update(`v0:${timestamp}:${raw}`).digest('hex')}`
+  const contentType = options.form ? 'application/x-www-form-urlencoded' : 'application/json'
+  return {
+    id: options.id ?? `whe_${String(body.event_id ?? body.trigger_id ?? body.challenge ?? 'post')}`,
+    endpointId: 'whep_1',
+    type: 'CUSTOM_WEBHOOK',
+    createdAt: new Date().toISOString(),
+    payload: {
+      kind: options.handshake ? 'handshake' : 'event',
+      ...(options.handshake ? { handshake_type: 'slack_url_verification' } : {}),
+      verified: options.edgeVerified ?? false,
+      headers: { 'content-type': contentType, 'x-slack-request-timestamp': timestamp, ...(signature ? { 'x-slack-signature': signature } : {}) },
+      content_type: contentType,
+      body: options.base64 ? Buffer.from(raw).toString('base64') : raw,
+      body_encoding: options.base64 ? 'base64' : 'utf8',
+      received_at: options.receivedAt ?? new Date().toISOString(),
+    },
+  }
+}

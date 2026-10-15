@@ -12,7 +12,7 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
  */
 
 import { onIntegrationAuthorizationLost, type IntegrationAuthorizationLost } from './lifecycle'
-import { integrationRequestEventSchema } from './runtime-schema'
+import { containerPendingInputsSchema, integrationRequestEventSchema } from './runtime-schema'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
@@ -1600,7 +1600,8 @@ export class AgentIntegrationManager {
     // request and both proceed. claimRequest is a synchronous check-and-mark,
     // so exactly one presser wins.
     const actor = agentRegistry.get(integration.agentSlug)
-    const open = actor.inputs.claim(toolUseId)
+    let open = actor.inputs.claim(toolUseId)
+    if (!open && await this.recoverOpenQuestion(integration, chatId, toolUseId)) open = actor.inputs.claim(toolUseId)
     if (!open || open.scope.agentSlug !== integration.agentSlug) {
       // Wrong agent: release immediately, we never had the right to hold it.
       if (open) actor.inputs.releaseClaim(toolUseId)
@@ -1651,6 +1652,38 @@ export class AgentIntegrationManager {
       // worse than the race it guards.
       actor.inputs.releaseClaim(toolUseId)
     }
+  }
+
+  /**
+   * Register again a question the chat's container is still parked on. A
+   * restarted host has forgotten its open requests until something reads the
+   * session, and a relay holds presses through the restart, so a press can be
+   * the first to ask. The container is the authority on what it waits for.
+   * The session is reattached first, so the rest of the turn reaches the chat.
+   */
+  private async recoverOpenQuestion(integration: AgentIntegrationRecord, chatId: string | undefined, toolUseId: string): Promise<boolean> {
+    const actor = agentRegistry.get(integration.agentSlug)
+    // A stopped container waits on nothing: its questions ended with it.
+    if (!chatId || actor.inputs.recentResolution(toolUseId) || actor.container.status().status !== 'running') return false
+    const row = await getIntegrationSession(integration.id, chatId)
+    if (!row) return false
+    let parked: { inputType: string; sessionId?: string } | undefined
+    try {
+      const response = await actor.container.fetch('/inputs/pending')
+      if (!response.ok) return false
+      parked = containerPendingInputsSchema.parse(await response.json()).find(input => input.toolUseId === toolUseId)
+    } catch (error) {
+      reportError(error, 'recover-open-question', { integrationId: integration.id, toolUseId })
+      return false
+    }
+    // Chat answers questions, and only those of its own session.
+    if (parked?.inputType !== 'question' || (parked.sessionId && parked.sessionId !== row.sessionId)) return false
+    if (!(await this.recoverSessionContext(integration.id, chatId, this.generationOf(integration.id), row.sessionId))) return false
+    // Settled on another surface while this looked.
+    if (actor.inputs.recentResolution(toolUseId)) return false
+    // Marked recovered, like transcript recovery's: the chat already has its card.
+    actor.inputs.register({ id: toolUseId, kind: 'question', scope: { sessionId: row.sessionId }, blocking: true, payload: { recovered: true } })
+    return true
   }
 
   /**

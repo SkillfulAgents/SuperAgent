@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import type { VerificationProfile } from '../services/webhook-endpoint-schema'
 import type { IntegrationSetupMetadata } from './setup-schema'
 import type { AgentIntegrationRecord, IntegrationStatus } from './types'
 
@@ -13,8 +14,11 @@ export interface IntegrationProviderSetup {
   describe?(context: IntegrationSetupContext, name?: string): IntegrationSetupMetadata | Promise<IntegrationSetupMetadata>
   /** Agent-side setup is opt-in; owner-managed accounts require the user UI. */
   allowAgentCreation?: boolean
-  /** `relay: true` sets up webhooks: the host mints the endpoint before the installation exists. */
-  prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus; relay?: boolean }>
+  /**
+   * `relay: true` sets up webhooks: the host mints the endpoint before the
+   * installation exists, with `verification` if the provider can give it.
+   */
+  prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus; relay?: boolean; verification?: VerificationProfile }>
   testCredentials?(input: unknown): Promise<Record<string, unknown>>
   authorize?: {
     inputSchema: z.ZodType

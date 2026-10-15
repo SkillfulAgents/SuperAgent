@@ -116,7 +116,7 @@ install is only ever read.**
 | Check | Protects |
 |---|---|
 | `inbound-turn` | An inbound Slack message creates a chat session bound to a real container session whose transcript holds the turn |
-| `question-card` | `AskUserQuestion` renders as Block Kit with one button per option and connector-registered `cb_<n>` action ids |
+| `question-card` | `AskUserQuestion` renders as Block Kit with one button per option, `answer_<n>` action ids, and values that carry the request, question and answer |
 | `question-answered-in-app` | The card posted to Slack and the request the **app** answers are the same registry entry: answering through the app's decision route settles it and the continuation lands back in Slack |
 | `question-freetext-reply` | A plain-text reply to an open single-question card settles it and the agent responds — and the report says **which** path ran (answer-in-turn vs cancel → fresh turn) |
 | `question-cancelled-by-unrelated-message` | An unrelated message cancels the parked question instead of deadlocking behind it, and the fresh turn runs |

@@ -978,6 +978,8 @@ export class UserInputRequestScenario implements MockScenario {
     // resolve/reject calls from the API can find and decrement the count.
     client.registerPendingInputs(sessionId, tools.length, {
       holdResultsUntilAll: this.opts?.holdResultsUntilAll,
+      // AskUserQuestion parks as 'question'; the others keep their tool name here.
+      inputs: tools.map((tool, i) => ({ toolUseId: toolIds[i], inputType: tool.name === 'AskUserQuestion' ? 'question' : tool.name })),
     })
 
     // Write the user message entry immediately so the JSONL file exists on disk.
@@ -2545,6 +2547,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private sessionToApiSession: Map<string, string> = new Map()
   // Track pending user input requests per session for auto-completion
   private pendingInputCounts: Map<string, number> = new Map()
+  // The parked requests themselves, for GET /inputs/pending
+  private pendingInputs: Map<string, { sessionId: string; inputType: string }> = new Map()
   // Delay between the last input resolving and the turn-ending 'result', per
   // session (default 50ms). Scenarios that must expose the post-resolve window
   // (agent resumed, not yet settled) register a longer one.
@@ -2674,9 +2678,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   registerPendingInputs(
     sessionId: string,
     count: number,
-    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean },
+    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean; inputs?: Array<{ toolUseId: string; inputType: string }> },
   ): void {
     this.pendingInputCounts.set(sessionId, count)
+    for (const input of opts?.inputs ?? []) this.pendingInputs.set(input.toolUseId, { sessionId, inputType: input.inputType })
     if (opts?.completionDelayMs !== undefined) {
       this.inputCompletionDelays.set(sessionId, opts.completionDelayMs)
     }
@@ -3072,6 +3077,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
+    if (fetchPath === '/inputs/pending') {
+      const pending = [...this.pendingInputs].map(([toolUseId, input]) => ({ toolUseId, ...input, createdAt: new Date() }))
+      return new Response(JSON.stringify(pending), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
     // Handle input resolve/reject — decrement pending count and complete session when all done
     const resolveMatch = fetchPath.match(/^\/inputs\/([^/]+)\/(resolve|reject)$/)
     if (resolveMatch) {
@@ -3082,6 +3092,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // Malformed escape — keep the raw path segment (mock tool ids are alphanumeric anyway)
       }
       console.log(`[MockContainerClient] Input ${resolveMatch[2]}: ${fetchPath}`)
+      this.pendingInputs.delete(toolUseId)
       // Find the session with pending inputs (we only have one active at a time in tests)
       for (const [sessionId, count] of this.pendingInputCounts) {
         if (count > 0) {
