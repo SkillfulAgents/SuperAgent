@@ -176,6 +176,26 @@ describe('SessionManager idle eviction', () => {
     expect(mockReleaseBrowserLock).toHaveBeenCalledWith(id)
   })
 
+  it('reports a finished turn as settled while its process stays alive, without holding off eviction', async () => {
+    const { id, proc } = await createIdleSession()
+    expect(proc.isRunning()).toBe(true)
+    await pastThreshold()
+
+    expect(manager.getSessionSettled(id)).toBe(true)
+    await manager.evictIdleSessions()
+
+    expect(proc.stopCalls).toBe(1)
+  })
+
+  it('reports a session as unsettled from the moment a message is sent', async () => {
+    const { id } = await createIdleSession()
+
+    await manager.sendMessage(id, 'one more thing')
+
+    expect(manager.getSessionSettled(id)).toBe(false)
+    expect(manager.getSessionSettled('unknown-session')).toBeNull()
+  })
+
   it('announces eviction only after the process stops and before a racing send resumes', async () => {
     const { id, proc } = await createIdleSession()
     const processInstance = manager.getProcessInstanceId(id)
