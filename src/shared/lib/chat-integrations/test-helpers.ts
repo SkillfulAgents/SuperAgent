@@ -31,3 +31,20 @@ export function relayedIMessageDelivery(body: Record<string, unknown>, secret: s
     },
   }
 }
+
+/** A Telegram webhook post as the relay hands it over, with the secret token Telegram sends back (none for null). */
+export function relayedTelegramUpdate(update: Record<string, unknown>, secretToken: string | null, options: { id?: string; base64?: boolean } = {}): RelayEvent {
+  const raw = JSON.stringify(update)
+  return {
+    id: options.id ?? `whe_${String(update.update_id)}`,
+    endpointId: 'whep_1',
+    type: 'CUSTOM_WEBHOOK',
+    createdAt: new Date().toISOString(),
+    payload: {
+      kind: 'event', verified: false,
+      headers: { 'content-type': 'application/json', ...(secretToken === null ? {} : { 'x-telegram-bot-api-secret-token': secretToken }) },
+      body: options.base64 ? Buffer.from(raw).toString('base64') : raw,
+      body_encoding: options.base64 ? 'base64' : 'utf8',
+    },
+  }
+}

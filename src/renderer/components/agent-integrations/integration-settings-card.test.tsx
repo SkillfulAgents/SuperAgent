@@ -9,7 +9,9 @@ const setApprovalMock = vi.fn()
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useUpdateAgentIntegration: () => ({ mutate: updateMock, isPending: false }),
   useSetRequireApproval: () => ({ mutate: setApprovalMock, isPending: false, isError: false }),
+  useAgentIntegrationStatus: () => ({ data: undefined }),
 }))
+vi.mock('@renderer/hooks/use-webhook-relay', () => ({ useWebhookRelay: () => ({ data: undefined }) }))
 vi.mock('./integration-settings-controls', () => ({
   ToggleRow: ({ label, onCheckedChange }: any) => (
     <button aria-label={label} onClick={() => onCheckedChange(true)}>{label}</button>
