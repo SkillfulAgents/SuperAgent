@@ -6,6 +6,7 @@ import { DialogProvider } from '@renderer/context/dialog-context'
 import { DraftsProvider } from '@renderer/context/drafts-context'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
+import { VoiceModeHost } from '@renderer/components/messages/voice-mode-host'
 import type { ReactElement, ReactNode } from 'react'
 
 export { screen, waitFor, within, act } from '@testing-library/react'
@@ -32,7 +33,9 @@ function AllProviders({ children }: { children: ReactNode }) {
             <DraftsProvider>
               <FilePreviewProvider>
                 <WorkflowProvider>
-                  {children}
+                  <VoiceModeHost>
+                    {children}
+                  </VoiceModeHost>
                 </WorkflowProvider>
               </FilePreviewProvider>
             </DraftsProvider>

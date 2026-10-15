@@ -199,7 +199,7 @@ export function VoiceModeComposer({
 const MIC_SIZE = 152
 
 /** Which of the orb's designed states the composer's phase is. */
-function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolean): DotOrbState {
+export function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolean): DotOrbState {
   if (!ready) return 'boot'
   if (phase === 'speaking') return 'agent'
   if (phase === 'thinking') return 'thinking'
@@ -212,15 +212,13 @@ function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolea
  * level it moves to comes from the mic while the person talks and from the
  * reply's output while the agent does.
  */
-export function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnalyser, onClick, size = MIC_SIZE, className }: {
+function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnalyser, onClick }: {
   phase: VoiceModePhase
   ready: boolean
   userSpeaking: boolean
   getAnalyser: () => AnalyserNode | null
   getOutputAnalyser: () => AnalyserNode | null
   onClick: () => void
-  size?: number
-  className?: string
 }) {
   const orbState = orbStateFor(phase, ready, userSpeaking)
   const levelSource = phase === 'speaking' ? getOutputAnalyser : getAnalyser
@@ -237,11 +235,10 @@ export function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOut
         // Sized by the canvas, which already carries ~23px of clear space around the sphere; the margins top it up so the orb floats evenly.
         'voice-mic relative mx-1 mb-3 flex shrink-0 items-center justify-center overflow-hidden rounded-full',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        className,
       )}
     >
       {/* Greyscale until the connection is up. */}
-      <VoiceOrb state={orbState} monochrome={!ready} size={size} getAnalyser={levelSource} />
+      <VoiceOrb state={orbState} monochrome={!ready} size={MIC_SIZE} getAnalyser={levelSource} />
     </button>
   )
 }

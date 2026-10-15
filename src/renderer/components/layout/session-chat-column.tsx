@@ -22,8 +22,6 @@ import type { SessionUsage } from '@shared/lib/types/agent'
 
 interface SessionChatColumnProps {
   sessionId: string | null
-  /** Out of sight; only its voice composer shows, floating. */
-  background?: boolean
   onSessionCreated?: PendingMessagesContextValue['onSessionCreated']
   /** Route slug used by session APIs and navigation. */
   agentSlug: string
@@ -69,7 +67,6 @@ export function SessionChatColumn({
   pendingWakeAt,
   pendingWakeTaskId,
   pendingWakeNote,
-  background = false,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   const voiceModeActive = useIsVoiceModeActive(sessionId)
@@ -166,7 +163,6 @@ export function SessionChatColumn({
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                     inputRequests={voiceInputRequests}
-                    background={background}
                   />}
                   <SessionComposerHints contextPercent={contextPercent} isActive={isActive} voiceModeActive={voiceModeActive} />
                 </>

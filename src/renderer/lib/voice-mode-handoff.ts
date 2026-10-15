@@ -37,10 +37,6 @@ export function setVoiceModeActive(sessionId: string, on: boolean): void {
   if (was !== on) for (const listener of listeners) listener()
 }
 
-export function isVoiceModeActive(sessionId: string | null): boolean {
-  return sessionId !== null && active.has(sessionId)
-}
-
 /** Whether any session has voice mode on; Space interrupts the agent then. */
 export function isAnyVoiceModeActive(): boolean {
   return active.size > 0
@@ -79,9 +75,4 @@ export function registerVoiceModeExit(sessionId: string, exit: () => void): () =
 
 export function exitSessionVoiceMode(sessionId: string): void {
   exitHandlers.get(sessionId)?.()
-}
-
-/** One voice conversation at a time: the microphone and the hold sound are shared. */
-export function exitOtherVoiceModes(sessionId: string | null): void {
-  for (const other of [...active]) if (other !== sessionId) exitSessionVoiceMode(other)
 }
