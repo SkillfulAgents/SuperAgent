@@ -16,6 +16,7 @@ export interface OAuthMetadata {
   authorization_endpoint: string
   token_endpoint: string
   registration_endpoint?: string
+  client_id_metadata_document_supported?: boolean
   code_challenge_methods_supported?: string[]
   scopes_supported?: string[]
   authorization_response_iss_parameter_supported?: boolean

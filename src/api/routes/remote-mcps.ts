@@ -13,6 +13,7 @@ import {
 } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
+import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -150,6 +151,24 @@ function buildRedirectCandidates(
     : [httpRedirect]
 }
 
+const WEB_CIMD_PATH = '/api/remote-mcps/oauth-client.json'
+
+/**
+ * The Client ID Metadata Document URL this deployment identifies as. Desktop
+ * uses the static document on the platform site (one URL for every install);
+ * a web deployment serves its own, which only works on a public https origin
+ * (local mode restricts /api to localhost, so the server could not fetch it).
+ */
+function buildCimdClientId(c: Context, electron: boolean): string | undefined {
+  if (electron) {
+    const platformBase = getPlatformBaseUrl().replace(/\/+$/, '')
+    return platformBase ? `${platformBase}/oauth/superagent-desktop.json` : undefined
+  }
+  if (!isAuthMode()) return undefined
+  const appBase = getAppBaseUrlFromRequest(c)
+  return appBase.startsWith('https://') ? `${appBase}${WEB_CIMD_PATH}` : undefined
+}
+
 function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
   // Prefer the scheme recorded on the flow: a cloud deployment serving this
   // callback has no SUPERAGENT_PROTOCOL of its own (SUP-560).
@@ -200,6 +219,20 @@ async function validateMcpServerUrl(url: string): Promise<URL> {
 }
 
 const remoteMcps = new Hono()
+
+// Public: authorization servers fetch this without a session.
+remoteMcps.get('/oauth-client.json', (c) => {
+  const appBase = getAppBaseUrlFromRequest(c)
+  return c.json({
+    client_id: `${appBase}${WEB_CIMD_PATH}`,
+    client_name: 'Gamut',
+    client_uri: 'https://gamut.so',
+    redirect_uris: [`${appBase}/api/remote-mcps/oauth-callback`],
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    token_endpoint_auth_method: 'none',
+  })
+})
 
 remoteMcps.use('*', Authenticated())
 
@@ -349,6 +382,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     electron: !!body.electron,
     protocol: typeof body.protocol === 'string' ? body.protocol : undefined,
   })
+  const cimdClientId = buildCimdClientId(c, !!body.electron)
 
   if (body.mcpId) {
     // Existing server re-auth
@@ -368,7 +402,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
 
     let result
     try {
-      result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
+      result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride, cimdClientId)
     } catch (e) {
       if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
       throw e
@@ -393,7 +427,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     // New server: OAuth-first flow (no DB insert yet)
     let result
     try {
-      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride, cimdClientId)
     } catch (e) {
       if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
       throw e

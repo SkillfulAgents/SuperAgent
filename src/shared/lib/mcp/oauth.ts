@@ -354,6 +354,34 @@ async function registerDynamicClientWithFallback(
   throw lastError ?? new McpOAuthSetupError('No redirect URLs available for client registration')
 }
 
+/**
+ * The client_id to send as a Client ID Metadata Document (CIMD) URL, or
+ * undefined to keep the existing paths. Only used when the server offers no
+ * dynamic registration, so servers that work over DCR today are unchanged.
+ */
+function cimdClientIdFor(metadata: OAuthMetadata, cimdClientId?: string): string | undefined {
+  if (!cimdClientId || metadata.registration_endpoint) return undefined
+  return metadata.client_id_metadata_document_supported ? cimdClientId : undefined
+}
+
+// Same custom-scheme → http fallback as dynamic registration, without the register step.
+async function pickCimdRedirect(
+  authorizationEndpoint: string,
+  clientId: string,
+  redirectCandidates: string[],
+  resource?: string,
+): Promise<string> {
+  for (let i = 0; i < redirectCandidates.length - 1; i++) {
+    const redirectUri = redirectCandidates[i]
+    if (!isCustomSchemeRedirect(redirectUri)) return redirectUri
+    if (!(await authorizeRejectsRedirect(authorizationEndpoint, clientId, redirectUri, resource))) {
+      return redirectUri
+    }
+    console.error(`[mcp/oauth] Authorization rejected redirect ${redirectUri}; trying next candidate`)
+  }
+  return redirectCandidates[redirectCandidates.length - 1]
+}
+
 type PendingOAuthFlow = {
   codeVerifier: string
   redirectUri: string
@@ -501,6 +529,7 @@ export async function initiateOAuthFlow(
   clientNameOverride?: string,
   clientIdOverride?: string,
   clientSecretOverride?: string,
+  cimdClientId?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -520,7 +549,7 @@ export async function initiateOAuthFlow(
     )
   }
 
-  // Resolve client credentials: explicit override > dynamic registration > stored.
+  // Resolve client credentials: explicit override > dynamic registration > stored > CIMD.
   let clientId: string | undefined
   let clientSecret: string | undefined
   let registeredScope: string | undefined
@@ -529,6 +558,7 @@ export async function initiateOAuthFlow(
   // accepts (e.g. an http loopback URL when the custom app scheme is rejected),
   // and a supplied client_id pins it to the http(s) candidate.
   let redirectUri = redirectCandidates[0]
+  const cimdId = cimdClientIdFor(metadata, cimdClientId)
 
   // Check if we already have client credentials stored
   const [existing] = await db
@@ -568,9 +598,18 @@ export async function initiateOAuthFlow(
         throw error
       }
     }
-  } else if (existing?.oauthClientId) {
+  } else if (existing?.oauthClientId && existing.oauthClientId !== cimdId) {
+    // A hand-entered client must survive reconnect even if the server now offers CIMD.
     clientId = existing.oauthClientId
     clientSecret = existing.oauthClientSecret || undefined
+  } else if (cimdId) {
+    clientId = cimdId
+    redirectUri = await pickCimdRedirect(
+      metadata.authorization_endpoint,
+      cimdId,
+      redirectCandidates,
+      resource,
+    )
   }
 
   if (!clientId) {
@@ -661,6 +700,7 @@ export async function initiateNewServerOAuth(
   clientNameOverride?: string,
   clientIdOverride?: string,
   clientSecretOverride?: string,
+  cimdClientId?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -686,6 +726,7 @@ export async function initiateNewServerOAuth(
   // accepts (e.g. an http loopback URL when the custom app scheme is rejected),
   // and a supplied client_id pins it to the http(s) candidate.
   let redirectUri = redirectCandidates[0]
+  const cimdId = cimdClientIdFor(metadata, cimdClientId)
 
   if (clientIdOverride) {
     clientId = clientIdOverride
@@ -703,6 +744,14 @@ export async function initiateNewServerOAuth(
     clientSecret = registration.clientSecret
     registeredScope = registration.scope
     redirectUri = registration.redirectUri
+  } else if (cimdId) {
+    clientId = cimdId
+    redirectUri = await pickCimdRedirect(
+      metadata.authorization_endpoint,
+      cimdId,
+      redirectCandidates,
+      resource,
+    )
   }
 
   if (!clientId) {
