@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 
 const state = vi.hoisted(() => ({
   definitions: [] as VolumeDefinitionSummary[],
-  selectedId: undefined as string | undefined, navigate: vi.fn(),
+  selectedId: undefined as string | undefined, source: undefined as 'home' | undefined, from: undefined as string | undefined, navigate: vi.fn(), push: vi.fn(),
   host: true, isAdmin: true, save: vi.fn(), remove: vi.fn(),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
@@ -17,16 +17,17 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({
 }))
 vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => state.host }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useSearch: () => ({ volume: state.selectedId }) }))
-vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: React.ReactNode }) => <a href="/settings/volumes?volume=v1">{children}</a> }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
-vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: [], isLoading: false }) }))
+vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }], isLoading: false }) }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useAddMount: () => ({}), useRemoveMount: () => ({}) }))
-import { VolumesTab } from './volumes-tab'
+import { agentBackPath, VolumesTab } from './volumes-tab'
 
 beforeEach(() => {
   vi.resetAllMocks()
   state.selectedId = undefined
+  state.source = undefined
+  state.from = undefined
   state.host = true
   state.isAdmin = true
   state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok' }]
@@ -38,21 +39,67 @@ afterEach(() => {
 })
 
 describe('volume settings', () => {
-  it('edits a definition without offering to change its folder or attached mount paths', async () => {
+  it('renames from the title without offering to change its folder or attached mount paths', async () => {
     state.definitions[0].attachmentCount = 2
     state.selectedId = 'v1'
     render(<VolumesTab />)
     expect(screen.getByRole('button', { name: 'Delete volume' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/notes')
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox')).toBeDisabled()
-    await userEvent.clear(screen.getByLabelText('Name'))
-    await userEvent.type(screen.getByLabelText('Name'), 'Team notes')
-    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
-    expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes', visibility: 'private' })
-    await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Rename volume' }))
+    await userEvent.clear(screen.getByTestId('volume-title-input'))
+    await userEvent.type(screen.getByTestId('volume-title-input'), 'Team notes{Enter}')
+    expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+  it('returns Back to an agent page only when the agent home opened the volume', () => {
+    expect(agentBackPath('home', '/agents/a1')).toBe('/agents/a1')
+    expect(agentBackPath('home', '/settings/general')).toBeNull()
+    expect(agentBackPath('home', '/agents/a1/sessions/s1')).toBeNull()
+    expect(agentBackPath(undefined, '/agents/a1')).toBeNull()
+    expect(agentBackPath('home', undefined)).toBeNull()
+    expect(agentBackPath('list', '/agents/a1')).toBeNull()
+    expect(agentBackPath('home', '/agents/')).toBeNull()
+    expect(agentBackPath('home', '/agents/a1?tab=files')).toBeNull()
+  })
+  it('shows a read-only title to people who cannot manage the volume', () => {
+    state.selectedId = 'v1'
+    state.definitions[0] = { ...state.definitions[0], canManage: false }
+    render(<VolumesTab />)
+    expect(screen.queryByRole('button', { name: 'Rename volume' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Notes' })).toBeInTheDocument()
+    cleanup()
+    state.isAdmin = false
+    state.definitions[0] = { ...state.definitions[0], canManage: true }
+    render(<VolumesTab />)
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+  })
+  it('returns an unavailable volume opened from an agent to that agent', async () => {
+    state.selectedId = 'missing'
+    state.source = 'home'
+    state.from = '/agents/a1'
+    render(<VolumesTab />)
+    expect(screen.getByText('This volume is no longer available.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Back to Ada' }))
+    expect(state.push).toHaveBeenCalledWith('/agents/a1')
+  })
+  it('returns Back to the agent the page was opened from, else to the list', async () => {
+    state.selectedId = 'v1'
+    state.source = 'home'
+    state.from = '/agents/a1'
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Ada' }))
+    expect(state.push).toHaveBeenCalledWith('/agents/a1')
+    cleanup()
+    state.navigate.mockClear()
+    state.source = undefined
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Volumes' }))
+    expect(state.navigate.mock.calls[0][0].search({ from: '/agents/a1', volume: 'v1' })).toEqual({ from: '/agents/a1', volume: undefined, source: undefined })
   })
   it('creates a private volume using the native folder picker', async () => {
     state.isAdmin = false
@@ -69,9 +116,10 @@ describe('volume settings', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
     expect(state.save).toHaveBeenCalledWith({ id: undefined, name: 'folder', source: { type: 'local', config: { path: '/new/folder' } }, visibility: 'private' })
   })
-  it('links the volume name to its dedicated page instead of offering a pencil modal', () => {
+  it('opens the volume from anywhere on its row, as the list, not the agent it came from', async () => {
     render(<VolumesTab />)
-    expect(screen.getByRole('link', { name: 'Notes' })).toHaveAttribute('href', '/settings/volumes?volume=v1')
+    await userEvent.click(screen.getByText('/notes'))
+    expect(state.navigate.mock.calls[0][0].search({ from: '/agents/a1', source: 'home' })).toEqual({ from: '/agents/a1', source: undefined, volume: 'v1' })
     expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
   })
   it('shows public sources without management controls for other users', () => {
@@ -90,6 +138,7 @@ describe('volume settings', () => {
     render(<VolumesTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Detach this volume')
+    expect(state.save).toHaveBeenCalledWith({ id: 'v1', visibility: 'private' })
     expect(screen.getByTestId('volume-detail-page')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })

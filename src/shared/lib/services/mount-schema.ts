@@ -13,7 +13,7 @@ const folderRowSchema = z
 /** mounts.json as a list of rows, each parsed on its own so a row this version cannot read costs only itself. */
 export const mountsFileSchema = z.array(z.unknown())
 
-export const volumeNameSchema = z.string().min(1).max(255)
+export const volumeNameSchema = z.string().min(1).max(255, 'Use 255 characters or fewer')
   .refine(name => name !== '.' && name !== '..' && !/[/\\\0]/.test(name), 'Use a single folder name')
 
 export const createVolumeSchema = z.object({
@@ -24,7 +24,7 @@ export const createVolumeSchema = z.object({
 }).strict()
 
 export const updateVolumeSchema = z.object({
-  name: volumeNameSchema,
+  name: volumeNameSchema.optional(),
   visibility: z.enum(['private', 'public']).optional(),
 }).strict()
 

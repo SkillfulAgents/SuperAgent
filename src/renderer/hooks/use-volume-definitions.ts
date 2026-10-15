@@ -27,9 +27,9 @@ export function useVolumeDefinitions() {
 export function useSaveVolumeDefinition() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: async (input: VolumeSettingsInput & { id?: string }) => {
-      const { id, name, visibility, source } = input
-      const body = id ? { name, visibility } : { name, visibility, ...volumeConfigSchema.parse(source) }
+    mutationFn: async (input: VolumeSettingsInput | { id: string; name?: string; visibility?: VolumeSettingsInput['visibility'] }) => {
+      const id = 'id' in input ? input.id : undefined
+      const body = 'id' in input ? { name: input.name, visibility: input.visibility } : { name: input.name, visibility: input.visibility, ...volumeConfigSchema.parse(input.source) }
       return (await checkedResponse(await apiFetch(`/api/volume-definitions${id ? `/${id}` : ''}`, {
         method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       }))).json()

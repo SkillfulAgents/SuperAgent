@@ -29,7 +29,7 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
     .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
   return rows.flatMap(({ volume, mount }) => {
     const stored = storedDefinition(volume)
-    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id }] : []
+    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id, volumeName: volume.name }] : []
   })
 }
 
@@ -101,6 +101,6 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
   return (await judgeVolumes(slug)).map(({ row, reason }) => ({
-    ...volumeSummary(row), volumeId: row.volumeId, health: reason === null ? 'ok' : 'missing',
+    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, health: reason === null ? 'ok' : 'missing',
   }))
 }

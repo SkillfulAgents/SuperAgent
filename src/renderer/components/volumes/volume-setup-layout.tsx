@@ -27,15 +27,15 @@ export function VolumeSetupHeader({ title, description, Logo, steps, step }: {
   </DialogHeader>
 }
 
-export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, children }: {
-  value: VolumeDetails; onChange: (value: VolumeDetails) => void; disabled: boolean; inUse?: boolean; children: ReactNode
+export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, showName = true, children }: {
+  value: VolumeDetails; onChange: (value: VolumeDetails) => void; disabled: boolean; inUse?: boolean; showName?: boolean; children: ReactNode
 }) {
   const { isAuthMode, isAdmin } = useUser()
   return <>
-    <div className="space-y-2">
+    {showName && <div className="space-y-2">
       <Label htmlFor="volume-name">Name</Label>
       <Input id="volume-name" value={value.name} onChange={event => onChange({ ...value, name: event.target.value })} maxLength={255} disabled={disabled} required />
-    </div>
+    </div>}
     {children}
     {isAuthMode && <div className="space-y-2">
       <Label htmlFor="volume-access">Who can attach this volume?</Label>
