@@ -165,8 +165,74 @@ jobs:
       - name: Run browser integration tests
         run: ./agent-container/test-browser-integration.sh superagent-container
 
+  # The shared-server Chromium suite, split across runners. Each shard starts
+  # its own Vite server and database, so a shard's pages only see its own
+  # agents' activity: per-test cost on one shared server rises with the number
+  # of concurrent workers, while shards add parallelism without that.
   e2e-tests:
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E shard
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/web
+          # Four workers measured the same per-test cost and failure count as
+          # two on one server; six raised both.
+          PLAYWRIGHT_WORKERS: '4'
+          # Playwright cuts shards as contiguous runs of tests in file order,
+          # and per-test cost is uneven along that order (the streaming specs
+          # sort late), so equal counts leave one shard far behind. These are
+          # test counts per shard, one per shard, colon-separated, fitted to
+          # equalize test time measured in CI; re-fit them when a shard runs
+          # well over the others.
+          PWTEST_SHARD_WEIGHTS: '100:69:94:89:69'
+          PLAYWRIGHT_OUTPUT_DIR: test-results/web
+          PLAYWRIGHT_HTML_REPORT: playwright-report/web
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/5
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-playwright-artifacts-${{ matrix.shard }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Suites that need a server and data dir of their own, run back to back.
+  e2e-isolated-suites:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -200,26 +266,13 @@ jobs:
           PLAYWRIGHT_HTML_REPORT: playwright-report/wizard
         run: npm run test:e2e:wizard
 
-      - name: Run Playwright E2E suites
-        id: web_e2e
-        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
-        env:
-          PORT: '3000'
-          SUPERAGENT_DATA_DIR: .e2e-data/web
-          # All Chromium specs share one Vite server and database. Six workers
-          # cause stream and agent-creation timeouts that pass in isolation.
-          PLAYWRIGHT_WORKERS: '2'
-          PLAYWRIGHT_OUTPUT_DIR: test-results/web
-          PLAYWRIGHT_HTML_REPORT: playwright-report/web
-        run: npm run test:e2e
-
       # Own server + fresh data dir: the graph canvas gestures need a board
       # that holds only this spec's agents and a layout no sibling worker is
       # re-solving mid-gesture (the previous shared-server arrangement was the
       # suite's top flake source).
       - name: Run graph E2E suite
         id: graph_e2e
-        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' || steps.web_e2e.outcome == 'failure' }}
+        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/graph
@@ -230,7 +283,7 @@ jobs:
       # Section drag targets must stay still while the pointer crosses them.
       # Other specs creating agents used to move those targets mid-gesture.
       - name: Run sidebar E2E suite
-        if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.web_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure') }}
+        if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure') }}
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/sidebar
@@ -244,7 +297,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-playwright-artifacts
+          name: e2e-playwright-artifacts-isolated
           path: |
             test-results/
             playwright-report/
