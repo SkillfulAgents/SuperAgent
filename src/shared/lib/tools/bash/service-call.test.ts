@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { identifyServiceCall } from './service-call'
+import { identifyDirectSite, identifyServiceCall } from './service-call'
 
 const AUTH = '-H "Authorization: Bearer $PROXY_TOKEN"'
 
@@ -64,5 +64,33 @@ for id in 1 2; do curl -sS "$G/messages/$id" ${AUTH}; done`
     expect(identifyServiceCall('curl "$PLATFORM_BASE_URL/v1/x-extra/search"')).toBeNull()
     expect(identifyServiceCall('curl "$PROXY_BASE_URL/a/api.github.com_extra/user"')).toBeNull()
     expect(identifyServiceCall('curl "$PLATFORM_BASE_URL/v1/x.json"')).toBeNull()
+  })
+})
+
+describe('identifyDirectSite', () => {
+  it('names the one site a direct curl fetches, with the toolkit icon Gamut ships for it', () => {
+    expect(identifyDirectSite('curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" | jq .'))
+      .toEqual({ origin: 'https://api.linear.app', toolkit: 'linear' })
+    expect(identifyDirectSite('wget -q "https://arxiv.org/pdf/2401.1"; curl -sI https://ARXIV.org/'))
+      .toEqual({ origin: 'https://arxiv.org', toolkit: null })
+  })
+
+  it('reads the host the way a URL parser does, keeping its scheme', () => {
+    expect(identifyDirectSite('curl https://api.github.com:pw@attacker.example/')?.origin).toBe('https://attacker.example')
+    expect(identifyDirectSite('curl -s http://example.com:8080/x')?.origin).toBe('http://example.com:8080')
+  })
+
+  it('brands a shared host only when every URL names the same toolkit', () => {
+    const drive = 'https://www.googleapis.com/drive/v3/files'
+    expect(identifyDirectSite(`curl ${drive}`)?.toolkit).toBe('googledrive')
+    expect(identifyDirectSite(`curl ${drive} https://www.googleapis.com/calendar/v3/calendars`)?.toolkit).toBeNull()
+  })
+
+  it('stays plain Bash without a fetch, a literal site, one site, or with any platform URL', () => {
+    expect(identifyDirectSite('git clone https://github.com/o/r')).toBeNull()
+    expect(identifyDirectSite('curl -sS "$URL"')).toBeNull()
+    expect(identifyDirectSite(`curl "https://\${HOST}/health"`)).toBeNull()
+    expect(identifyDirectSite('curl -sI https://warmapp.ai/ && curl -sI https://www.warmapp.ai/')).toBeNull()
+    expect(identifyDirectSite('curl "$PROXY_BASE_URL/a/graph.microsoft.com/v1.0/me" -d \'{"url":"https://example.com"}\'')).toBeNull()
   })
 })

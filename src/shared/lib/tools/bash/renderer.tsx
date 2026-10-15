@@ -1,10 +1,14 @@
 import { defineToolRenderer } from '../renderer-types'
+import { useMemo } from 'react'
 import { Mic, Sparkles, Terminal, Users } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { FaviconPlate, SiteFavicon } from '@renderer/components/ui/site-favicon'
 import { cn } from '@shared/lib/utils/cn'
 import { bashDef, type BashInput } from './definition'
-import { identifyServiceCall, type BuiltInService } from './service-call'
-import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from '../renderer-types'
+import { HostTooltip } from '../ui/shared'
+import { hostnameOf } from '../ui/web-result-parse'
+import { identifyDirectSite, identifyServiceCall, type BuiltInService } from './service-call'
+import type { CollapsedContentProps, ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from '../renderer-types'
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { command } = bashDef.parseInput(input)
@@ -104,8 +108,35 @@ function serviceCallVariant(command: string): ToolRenderer | undefined {
   return renderer
 }
 
+/** The fetched site's icon, drawn as Web Fetch draws one: the logo Gamut ships for a known service, else the host's favicon. */
+function DirectSiteIcon({ input, isError }: CollapsedContentProps) {
+  const site = useMemo(() => {
+    const { command } = bashDef.parseInput(input)
+    return typeof command === 'string' ? identifyDirectSite(command) : null
+  }, [input])
+  if (!site || isError) return null
+  return (
+    <HostTooltip host={hostnameOf(site.origin)}>
+      {site.toolkit ? (
+        <FaviconPlate className="h-3.5 w-3.5">
+          <ServiceIcon slug={site.toolkit} fallback="request" className="h-full w-full" />
+        </FaviconPlate>
+      ) : (
+        <SiteFavicon src={`${site.origin}/favicon.ico`} className="h-3.5 w-3.5" fallback="none" />
+      )}
+    </HostTooltip>
+  )
+}
+
+/** A direct fetch stays a Bash row; it ranks below platform services so they keep their own row. */
+const directSiteRenderer: ToolRenderer = { ...terminalRenderer, CollapsedContent: DirectSiteIcon }
+
+function directSiteVariant(command: string): ToolRenderer | undefined {
+  return identifyDirectSite(command) ? directSiteRenderer : undefined
+}
+
 /** Most specific first; the first variant that matches wins, and no match keeps the terminal. */
-const VARIANTS = [serviceCallVariant]
+const VARIANTS = [serviceCallVariant, directSiteVariant]
 
 export const bashRenderer = {
   ...terminalRenderer,
