@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with agent sidebar visible.",
+    "Found and clicked the \"QA-20261015-002005-igra\" agent in the sidebar — Agent page opened successfully, showing the agent configuration and chat interface.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message displayed in the textbox and Send button became enabled.",
+    "Clicked the Send message button — Message was sent successfully, a new session was created with title \"Check Example.com page title\", and the agent status changed to \"working\".",
+    "Waited for the agent to complete processing — Agent finished within 5 seconds (well under the 3-minute limit). The \"Working...\" status disappeared and the response appeared in the chat.",
+    "Verified the response mentions \"Example Domain\" — The agent's response clearly states: 'The page title at https://example.com is \"Example Domain\". The page loaded normally, and I closed the browser afterward.'",
+    "Took a screenshot showing the response — Screenshot captured showing the complete agent response with the \"Example Domain\" text visible."
+  ],
+  "bugs": [],
+  "durationMs": 64609,
+  "sessionId": "3619e2e5-5fc9-4eba-8423-ea33ed922d8c",
+  "cost": {
+    "inputTokens": 344,
+    "outputTokens": 10512,
+    "cacheCreationTokens": 72070,
+    "cacheReadTokens": 981506,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.241142
+  }
+}
