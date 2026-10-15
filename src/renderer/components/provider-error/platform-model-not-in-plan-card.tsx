@@ -115,7 +115,7 @@ function ContinueButton({ session, connection, deniedModel, sameModel, isUnavail
   onContinued: () => void
 }) {
   const { canUseAgent } = useUser()
-  const { isActive } = useMessageStream(session.sessionId, session.agentSlug)
+  const { isActive } = useMessageStream(session.sessionId, session.agentSlug, ['isActive'])
   const { mutateAsync: sendMessage, isPending } = useSendMessage({ quiet: true })
   const [error, setError] = useState('')
 

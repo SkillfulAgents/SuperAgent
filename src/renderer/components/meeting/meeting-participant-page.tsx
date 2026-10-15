@@ -90,7 +90,7 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
   const spoken = mode === 'voice'
   const { data: messages } = useMessages(sessionId, agentSlug)
   // The session's browser, when open, takes the camera the way the tray takes the chat.
-  const { browserActive, isActive } = useMessageStream(sessionId, agentSlug)
+  const { browserActive, isActive } = useMessageStream(sessionId, agentSlug, ['browserActive', 'isActive'])
   const roster = useMeetingRoster(meeting.id, token)
   const send = useSendMessage({ quiet: true })
   const [sendError, setSendError] = useState<string | null>(null)
