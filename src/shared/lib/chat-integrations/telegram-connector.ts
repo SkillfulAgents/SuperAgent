@@ -19,7 +19,7 @@ import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
-import type { IntegrationRelayAttachment, IntegrationRelayHost } from '../agent-integrations/transport'
+import type { IntegrationRelayAttachment, IntegrationRelayBinding, IntegrationRelayHost } from '../agent-integrations/transport'
 import { relayAcceptResult } from '../agent-integrations/relay-transport'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
@@ -223,12 +223,15 @@ interface TelegramCards {
   // single-question cards (multi-question falls through to cancel); cleared synchronously when
   // the card is answered by any path.
   openQuestionCard: Map<string, OpenQuestionCard>
+  // Relayed updates acted on, as `${botId}:${update_id}`: one the relay offers again, even
+  // to a later connection, would toggle a multi-select card back.
+  handledUpdates: Set<string>
 }
 
 const cardsByInstallation = new Map<string, TelegramCards>()
 
 function newCards(): TelegramCards {
-  return { callbacks: new Map(), pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map() }
+  return { callbacks: new Map(), pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map(), handledUpdates: new Set() }
 }
 
 /** The installation's open cards; a connector without one keeps its own. */
@@ -284,8 +287,10 @@ export class TelegramConnector extends ChatAgentIntegration {
   private processing: Promise<unknown> = Promise.resolve()
   /** What the host did with each update's message, for a relayed update to report back. */
   private readonly inputResults = new WeakMap<object, Promise<IntegrationInputResult>>()
-  /** update_ids of relayed updates acted on: a redelivered button tap would toggle twice. */
-  private readonly handledUpdates = new Set<number>()
+  /** Relayed updates, which skip the first-poll batching: each is acknowledged on its own. */
+  private readonly relayedUpdates = new WeakSet<object>()
+  /** Setting the webhook up, which a disconnect waits out so it can't land after the next connection starts. */
+  private webhookSetup: Promise<unknown> = Promise.resolve()
 
   /**
    * `integration` is the installation this connects for. Without it the relay
@@ -317,42 +322,62 @@ export class TelegramConnector extends ChatAgentIntegration {
     // The webhook whenever the host has a relay as this connection starts;
     // long polling otherwise, or if the webhook can't be set right now.
     const relay = this.integration ? this.host.relay : null
-    if (relay && this.integration && await this.connectWebhooks(bot, relay, this.integration, generation)) return
+    const setup = relay && this.integration ? this.setUpWebhook(bot, this.integration, generation) : Promise.resolve(null)
+    this.webhookSetup = setup
+    const webhook = await setup
     if (generation !== this.generation) return
+    if (relay && webhook?.set) {
+      this.mode = 'webhooks'
+      this.attachRelay(relay, webhook, generation)
+      this.connected = true
+      console.log(`[TelegramConnector] Receiving through the webhook for ${this.integration?.id}`)
+      return
+    }
     this.mode = 'polling'
     await this.startPolling(bot)
+    // An earlier connection's webhook may have left updates on the relay, which
+    // getUpdates can't return: they're drained alongside the poll.
+    if (relay && webhook && generation === this.generation) this.attachRelay(relay, webhook, generation)
   }
 
-  /** Receives through the relay. False leaves this connection to long polling. */
-  private async connectWebhooks(bot: Bot, relay: IntegrationRelayHost, integration: NonNullable<TelegramConnector['integration']>, generation: number): Promise<boolean> {
+  /**
+   * Sets the endpoint as the bot's webhook. Null if the installation has no
+   * endpoint; `set` is false if the webhook couldn't be set, or this
+   * connection was replaced first.
+   */
+  private async setUpWebhook(bot: Bot, integration: NonNullable<TelegramConnector['integration']>, generation: number): Promise<{ relay: IntegrationRelayBinding; secretToken: string; set: boolean } | null> {
     let webhook: Awaited<ReturnType<typeof ensureTelegramWebhook>>
-    let secretToken: string
     try {
       // A slow platform mustn't hold up the connections that start after this one.
       webhook = await within(ensureTelegramWebhook(integration), WEBHOOK_SETUP_TIMEOUT_MS, 'Creating the webhook endpoint timed out')
-      if (!webhook || generation !== this.generation) return false
-      secretToken = telegramSecretToken(webhook.secret, this.config.botToken)
-      const signal = telegramTimeout(WEBHOOK_SETUP_TIMEOUT_MS)
-      // handleUpdate needs the bot's own profile, which polling fetches as it starts.
-      bot.botInfo = await bot.api.getMe(signal)
-      // Every connect: the same webhook again is a no-op, and setting it moves
-      // the updates held for getUpdates to it.
-      await bot.api.setWebhook(webhook.relay.url, {
-        secret_token: secretToken, allowed_updates: [...TELEGRAM_UPDATE_TYPES], drop_pending_updates: false,
-      }, signal)
     } catch (error) {
       if (error instanceof IntegrationSetupError) console.warn(`[TelegramConnector] Long polling for ${integration.id}: ${error.message}`)
       else this.report(error, 'telegram-webhooks')
-      return false
+      return null
     }
-    if (generation !== this.generation) return false
-    this.mode = 'webhooks'
-    // Updates held while the host was away aren't batched: each is acknowledged on its own.
-    this.hasCompletedFirstPoll = true
-    this.relayAttachment = relay.attach(webhook.relay, events => this.acceptRelayed(events, secretToken, generation))
-    this.connected = true
-    console.log(`[TelegramConnector] Receiving through the webhook for ${integration.id}`)
-    return true
+    if (!webhook) return null
+    const result = { relay: webhook.relay, secretToken: telegramSecretToken(webhook.secret, this.config.botToken), set: false }
+    try {
+      if (generation !== this.generation) return result
+      const signal = telegramTimeout(WEBHOOK_SETUP_TIMEOUT_MS)
+      // handleUpdate needs the bot's own profile, which polling fetches as it starts.
+      bot.botInfo = await bot.api.getMe(signal)
+      // A replaced connection's webhook would undo its successor's choice.
+      if (generation !== this.generation) return result
+      // Every connect: the same webhook again is a no-op, and setting it moves
+      // the updates held for getUpdates to it.
+      await bot.api.setWebhook(webhook.relay.url, {
+        secret_token: result.secretToken, allowed_updates: [...TELEGRAM_UPDATE_TYPES], drop_pending_updates: false,
+      }, signal)
+      return { ...result, set: true }
+    } catch (error) {
+      this.report(error, 'telegram-webhooks')
+      return result
+    }
+  }
+
+  private attachRelay(relay: IntegrationRelayHost, webhook: { relay: IntegrationRelayBinding; secretToken: string }, generation: number): void {
+    this.relayAttachment = relay.attach(webhook.relay, events => this.acceptRelayed(events, webhook.secretToken, generation))
   }
 
   private registerHandlers(bot: Bot): void {
@@ -489,6 +514,8 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.mode = null
     this.relayAttachment?.detach()
     this.relayAttachment = undefined
+    // A setWebhook still in flight lands before the next connection chooses its path.
+    await this.webhookSetup.catch(() => {})
 
     // Flush any pending batches
     this.flushAllPendingBatches()
@@ -1010,7 +1037,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // For groups use the chat title; for DMs use the user's name
     const chatName = ('title' in ctx.chat ? ctx.chat.title : undefined) || userName || undefined
 
-    if (!this.hasCompletedFirstPoll) {
+    if (!this.hasCompletedFirstPoll && !this.relayedUpdates.has(ctx.update)) {
       // Buffer messages during first poll
       let pending = this.pendingFirstPollMessages.get(chatId)
       if (!pending) {
@@ -1090,9 +1117,12 @@ export class TelegramConnector extends ChatAgentIntegration {
       return 'discard'
     }
     const { update } = check
-    if (this.handledUpdates.has(update.update_id)) return 'duplicate'
+    const key = `${this.config.botToken.split(':')[0]}:${update.update_id}`
+    const handled = this.cards.handledUpdates
+    if (handled.has(key)) return 'duplicate'
     let result: RelayAcceptResult
     try {
+      this.relayedUpdates.add(update)
       await this.bot.handleUpdate(update)
       const input = this.inputResults.get(update)
       // An update with no message for the host (a button tap) was handled in full.
@@ -1103,8 +1133,8 @@ export class TelegramConnector extends ChatAgentIntegration {
       result = 'discard'
     }
     if (result !== 'retry') {
-      this.handledUpdates.add(update.update_id)
-      if (this.handledUpdates.size > MAX_HANDLED_UPDATES) this.handledUpdates.delete(this.handledUpdates.values().next().value!)
+      handled.add(key)
+      if (handled.size > MAX_HANDLED_UPDATES) handled.delete(handled.values().next().value!)
     }
     return result
   }

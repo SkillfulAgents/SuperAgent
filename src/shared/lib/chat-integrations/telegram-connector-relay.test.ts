@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
  * Every Bot API call the connector makes, answered here instead of by Telegram.
- * A failure is Telegram's refusal, every time, or a thrown error, once.
+ * A failure is Telegram's refusal, every time, or a thrown error, once. A
+ * gate holds a method's answer until the test opens it.
  */
 const telegram = vi.hoisted(() => ({
   calls: [] as Array<{ method: string; payload: Record<string, any> }>,
   failures: new Map<string, { error_code: number; description: string } | Error>(),
+  gates: new Map<string, Promise<void>>(),
   nextMessageId: 1000,
 }))
 
@@ -28,6 +30,7 @@ vi.mock('grammy', async (importOriginal) => {
       super(token)
       this.api.config.use(async (_prev, method, payload) => {
         telegram.calls.push({ method, payload: (payload ?? {}) as Record<string, any> })
+        await telegram.gates.get(method)
         const failure = telegram.failures.get(method)
         if (failure instanceof Error) { telegram.failures.delete(method); throw failure }
         if (failure) return { ok: false, ...failure } as never
@@ -44,7 +47,7 @@ vi.mock('./telegram-webhooks', async (importOriginal) => ({
 }))
 
 import { captureException } from '@shared/lib/error-reporting'
-import { TelegramConnector } from './telegram-connector'
+import { TelegramConnector, forgetTelegramCards } from './telegram-connector'
 import { ensureTelegramWebhook, telegramSecretToken } from './telegram-webhooks'
 import { IntegrationRelays } from '../agent-integrations/relay-transport'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
@@ -74,6 +77,8 @@ afterEach(() => { vi.useRealTimers() })
 beforeEach(() => {
   telegram.calls.length = 0
   telegram.failures.clear()
+  telegram.gates.clear()
+  forgetTelegramCards('int-1')
   vi.mocked(captureException).mockClear()
   vi.mocked(ensureTelegramWebhook).mockReset().mockResolvedValue(webhook)
   relay = createFakeWebhookRelay()
@@ -237,6 +242,46 @@ describe('TelegramConnector through the webhook', () => {
     expect(redraws).toHaveLength(1)
     expect(redraws[0].payload.reply_markup.inline_keyboard[0][0].text).toBe('✅ A')
     await instance.disconnect()
+
+    // Offered again to the next connection, which keeps the card.
+    const next = await connected()
+    expect([...(await deliver(toggle)).values()]).toEqual(['duplicate'])
+    expect(telegram.calls.filter(call => call.method === 'editMessageReplyMarkup')).toHaveLength(1)
+    await next.disconnect()
+  })
+
+  it('sets no webhook once disconnected mid-setup, and the disconnect waits for setup to finish', async () => {
+    let openGetMe!: () => void
+    telegram.gates.set('getMe', new Promise(resolve => { openGetMe = resolve }))
+    const instance = connector()
+    const connecting = instance.connect()
+    await vi.waitFor(() => expect(methods()).toContain('getMe'))
+
+    let disconnected = false
+    const disconnecting = instance.disconnect().then(() => { disconnected = true })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(disconnected).toBe(false)
+
+    openGetMe()
+    await disconnecting
+    await connecting
+    expect(methods()).not.toContain('setWebhook')
+    expect(relay.consumers.get(CONSUMER)).toBeUndefined()
+
+    // A setWebhook already sent lands before the disconnect returns.
+    let openSetWebhook!: () => void
+    telegram.gates.set('setWebhook', new Promise(resolve => { openSetWebhook = resolve }))
+    const second = connector()
+    const connectingSecond = second.connect()
+    await vi.waitFor(() => expect(methods()).toContain('setWebhook'))
+    disconnected = false
+    const disconnectingSecond = second.disconnect().then(() => { disconnected = true })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(disconnected).toBe(false)
+    openSetWebhook()
+    await disconnectingSecond
+    await connectingSecond
+    expect(second.activeTransport()).toBeNull()
   })
 
   it('gives every button its own random callback id, within Telegram’s 64 bytes', async () => {
@@ -292,8 +337,13 @@ describe('TelegramConnector long polling', () => {
 
     expect(methods()).toContain('getUpdates')
     expect(instance.activeTransport()).toBe('direct')
-    expect(relay.consumers.has(CONSUMER)).toBe(false)
     expect(captureException).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ tags: expect.objectContaining({ operation: 'telegram-webhooks' }) }))
+
+    // An earlier connection's webhook left updates on the relay; they're drained
+    // alongside the poll, each on its own, not batched with the first poll.
+    expect(relay.consumers.get(CONSUMER)?.endpointIds).toEqual(['whep_1'])
+    expect([...(await deliver(textUpdate('held', 60), textUpdate('also held', 61))).values()]).toEqual(['accepted', 'accepted'])
+    expect(inputs.map(input => input.text)).toEqual(['held', 'also held'])
     error.mockRestore()
     await instance.disconnect()
   })

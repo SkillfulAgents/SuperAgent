@@ -226,13 +226,19 @@ a secret. Every such connect calls `setWebhook` with the endpoint, which is
 idempotent and moves updates held for `getUpdates` to the webhook. Without a
 relay, or if the endpoint or `setWebhook` fails, the connection long-polls.
 grammY deletes the webhook before its first `getUpdates`, keeping held updates.
+Updates an earlier webhook already posted to the relay can't come back through
+`getUpdates`, so a connection that has an endpoint but couldn't set the webhook
+also drains the relay alongside the poll. A disconnect waits out a `setWebhook`
+in flight, and a connection replaced during setup sends none, so a stale
+webhook can't land after the next connection has chosen to poll.
 Telegram doesn't sign its posts. It sends back the webhook's `secret_token` in
 a header, which no relay verification profile can check (they all sign the
 body), so the host compares it itself. The token is the secret bound to the
 bot's id, so a bot the installation no longer uses can't post as the current
 one. Relayed updates go through `bot.handleUpdate()` one at a time, into the
 same handlers as polled ones, without the first-poll batching, and are
-deduplicated on `update_id`. Each reports what `emitEvent` did with its message.
+deduplicated on `update_id` for as long as the installation keeps its cards.
+Each reports what `emitEvent` did with its message.
 Open cards and their buttons belong to the installation, not the connection,
 so a tap that arrives after a reconnect still answers. A restart forgets them,
 and callback ids are random, so an old card's button can't match a new card. Deleting the installation deletes the
