@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the QA-20261014-183312-4b9e agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and returns the result in the chat interface.",
+  "reason": "Verified that the Gamut agent can successfully open a browser, navigate to https://example.com, and return the correct page title \"Example Domain\"",
   "steps": [
-    "Step 1: Navigate to http://localhost:47891 — Successfully navigated to the Gamut application homepage. Page title is \"Gamut\" and displays \"Your Agents\" section with two agents listed.",
-    "Step 2: Find and click the \"QA-20261014-183312-4b9e\" agent in sidebar — Successfully clicked the agent from the sidebar. The agent's chat interface opened, showing the session page at /agents/qa-20261014-183312-4b9e-8hmi64l5uq/sessions/d4635f9e-16e0-4447-949f-07b5a3e0e6c1",
-    "Step 3: Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully sent the message to the agent. The message appeared in the chat interface at 6:33 PM.",
-    "Step 4: Wait up to 3 minutes for a response — Agent responded in approximately 10 seconds. The response was: \"The page title is \"Example Domain\". The page loaded normally, and I've closed the browser.\"",
-    "Step 5: Verify response mentions \"Example Domain\" — VERIFIED. The agent's response explicitly states: The page title is \"Example Domain\". Tool calls are visible showing: ToolSearch (✓), Open Browser → https://example.com (✓), and Close Browser (✓). All 3 tool calls completed successfully with green checkmarks. Metadata shows \"Worked for 10s · 3 tool calls · 153,051 tokens\"."
+    "Step 1 - Navigated to http://localhost:47891 — SUCCESS: Page loaded and displayed Gamut interface with agent sidebar showing \"QA-20261015-022445-k82g\" agent",
+    "Step 2 - Found and clicked the \"QA-20261015-022445-k82g\" agent in the sidebar — SUCCESS: Successfully navigated to the agent's configuration page at /agents/qa-20261015-022445-k82g-t5ah5im896",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — SUCCESS: Message was typed into the input field and sent to the agent; agent transitioned to \"working\" status and created a new session",
+    "Step 4 - Waited up to 3 minutes for response — SUCCESS: Agent completed work in 10 seconds with 3 tool calls and 153,056 tokens used; agent status changed to \"idle\"",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot — SUCCESS: Agent response displayed: \"The page title is \"Example Domain\". The page at https://example.com loaded fine, and I closed the browser afterwards.\""
   ],
   "bugs": [],
-  "durationMs": 93547,
-  "sessionId": "6c689324-adf0-464f-a990-defd74e5e4ba",
+  "durationMs": 104815,
+  "sessionId": "c9c48c44-6c28-4f08-ae56-78e7a33170a0",
   "cost": {
-    "inputTokens": 464,
-    "outputTokens": 16094,
-    "cacheCreationTokens": 85394,
-    "cacheReadTokens": 1471864,
+    "inputTokens": 420,
+    "outputTokens": 12705,
+    "cacheCreationTokens": 73919,
+    "cacheReadTokens": 1226492,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.334863
+    "totalCostUsd": 0.278993
   }
 }
