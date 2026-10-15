@@ -31,7 +31,7 @@ const FFMPEG_ARGS = [
 
 /** Splits ffmpeg's IVF output (32-byte file header, then 12-byte frame headers) into frames. */
 export class IvfFrameReader {
-  private buffer = Buffer.alloc(0);
+  private buffer: Buffer = Buffer.alloc(0);
   private headerSkipped = false;
 
   push(chunk: Buffer): Array<{ frame: Buffer; keyFrame: boolean }> {
