@@ -6,6 +6,8 @@
 classDiagram
     AgentIntegration <|-- TaskManagerAgentIntegration
     TaskManagerAgentIntegration <|-- LinearAgentIntegration
+    AgentIntegration <|-- MeetingAgentIntegration
+    MeetingAgentIntegration <|-- RecallMeetingIntegration
     AgentIntegration <|-- ChatAgentIntegration
     ChatAgentIntegration <|-- TelegramConnector
     ChatAgentIntegration <|-- SlackConnector
@@ -256,3 +258,13 @@ durable work queue, turn lock or retry scheduler; the shared manager owns delive
 durability for all integrations. Linear implements provider setup, cleanup and MCP hooks;
 its UI panels register at the renderer composition point.
 See [Linear integration](linear-agent-integration.md) for event delivery and identity setup.
+
+## Meetings
+
+`MeetingAgentIntegration` brings the agent into a video call as a voice participant: one
+session per meeting, a join brief, status tracking, and tools to join, leave, list and post
+chat. Providers implement only `MeetingBotHost`; the voice loop runs in the participant page
+the bot presents as its camera. Integration tools can opt into management invocation
+(`exposure: 'management' | 'both'`) and are then reachable at
+`POST /api/agent-integrations/:id/tools/:tool`, so the join button and the agent's
+`join_meeting` call the same operation. See [Meeting integrations](meeting-integrations.md).

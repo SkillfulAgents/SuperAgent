@@ -133,12 +133,24 @@ export type IntegrationOutput =
   | { type: 'access-approved' }
   | { type: 'request-settled' }
 
+/** Who is calling an integration tool: the agent through its runtime, or a person managing the installation. */
+export interface IntegrationToolInvocation {
+  source: 'agent' | 'management'
+  userId?: string
+}
+
 export interface IntegrationTool {
   name: string
   description: string
   /** JSON Schema for the tool's input; implementations also validate on execution. */
   inputSchema: Record<string, unknown>
-  execute(input: unknown): Promise<unknown>
+  /**
+   * Who may call it. Agent-only by default (the x-agent routes); `management`
+   * lets the integration page invoke it on the person's behalf, `both` serves
+   * the same operation to either caller.
+   */
+  exposure?: 'agent' | 'management' | 'both'
+  execute(input: unknown, invocation?: IntegrationToolInvocation): Promise<unknown>
 }
 
 export interface IntegrationSessionPolicy {

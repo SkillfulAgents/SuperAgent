@@ -223,7 +223,12 @@ export class OpenAILiveBridge {
     this.append('commentary', text, delegation)
   }
 
-  private append(type: 'thinking' | 'commentary', text: string, delegation: string | null, delivery?: LiveDelivery) {
+  /** Standing guidance for the rest of the session, outside any delegation. */
+  instructions(text: string) {
+    this.append('instructions', text, null)
+  }
+
+  private append(type: 'thinking' | 'commentary' | 'instructions', text: string, delegation: string | null, delivery?: LiveDelivery) {
     if (this.closed) return
     this.events.send({ type: `session.${type}.append`, delegation_id: delegation, content: text }, delivery)
   }

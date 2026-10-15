@@ -90,5 +90,10 @@ export interface VoiceConversationAdapter {
   /** Silence the agent's voice: the reply still plays out, so turn-taking is unchanged. */
   setOutputMuted(muted: boolean): void
   pressMic(): void
+  /**
+   * Add a standing instruction while the conversation runs, such as who is in
+   * the room. Engines without a live instruction channel may omit it.
+   */
+  appendInstructions?(text: string): void
   close(): void
 }

@@ -36,6 +36,7 @@ import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@sh
 import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
@@ -185,7 +186,6 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
-
     await assertConnectionSelectionAccess(llmProviderId)
     const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
@@ -278,6 +278,36 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'agent-integration', operation: 'authorize' } })
     return c.json({ error: 'Could not authorize integration' }, 500)
+  }
+})
+
+// POST /api/agent-integrations/:integrationId/tools/:tool - Invoke an integration
+// tool on the managing person's behalf. Only tools the family exposes to
+// management are reachable; the agent's own path is the x-agent routes.
+const toolInvocationSchema = z.object({ input: z.unknown().optional() })
+agentIntegrationsRouter.post('/:integrationId/tools/:tool', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
+  const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+  const toolName = c.req.param('tool')
+  try {
+    const parsed = toolInvocationSchema.safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: 'Invalid tool input' }, 400)
+    if (integration.status === 'paused') return c.json({ error: 'This integration is paused' }, 409)
+    let connector = agentIntegrationManager.getConnector(integration.id)
+    if (!connector) {
+      try { await agentIntegrationManager.addIntegration(integration.id) } catch { /* reported by the manager */ }
+      connector = agentIntegrationManager.getConnector(integration.id)
+    }
+    if (!connector) return c.json({ error: 'This integration is not connected' }, 409)
+    const tool = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === toolName)
+    if (!tool || (tool.exposure !== 'management' && tool.exposure !== 'both')) return c.json({ error: 'Unknown tool' }, 404)
+    const result = await tool.execute(parsed.data.input, { source: 'management', userId: getCurrentUserId(c) })
+    return c.json({ result: result ?? null })
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid tool input' }, 400)
+    // A refusal the family explains is the person's to act on; anything else is a fault.
+    if (error instanceof IntegrationPolicyError) return c.json({ error: error.message }, 400)
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'invoke-tool' }, extra: { integrationId: integration.id, tool: toolName } })
+    return c.json({ error: error instanceof Error ? error.message : 'Tool invocation failed' }, 500)
   }
 })
 

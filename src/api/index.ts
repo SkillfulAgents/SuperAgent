@@ -15,6 +15,7 @@ import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
 import agentIntegrationsRouter from './routes/agent-integrations'
+import meetingParticipantRouter from './routes/meeting-participant'
 import notifications from './routes/notifications'
 import pushRouter from './routes/push'
 import platformNotifications from './routes/platform-notifications'
@@ -247,6 +248,8 @@ app.route('/api/webhook-triggers', webhookTriggers)
 // TODO(2026-12-01): Delete this legacy alias; use /api/agent-integrations.
 app.route('/api/chat-integrations', agentIntegrationsRouter)
 app.route('/api/agent-integrations', agentIntegrationsRouter)
+// Token-gated: loaded by the meeting bot's browser, which has no app session.
+app.route('/api/meeting-participant', meetingParticipantRouter)
 app.route('/api/notifications', notifications)
 app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)

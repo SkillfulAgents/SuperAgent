@@ -1,6 +1,7 @@
 import { isSafeInternalPath } from './safe-internal-path'
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
+import { isMeetingParticipantPage } from './meeting-participant-page'
 import { reportCloudSessionRejected } from './cloud-session'
 import { addRendererBreadcrumb } from './error-reporting'
 import { HttpError } from './http-error'
@@ -59,6 +60,8 @@ export function handleWorkspaceUnavailableResponse(
 // URL right after clearRedirectStash() dropped it (shared-tab leak).
 export async function handleUnauthorizedResponse(status: number, path: string): Promise<void> {
   if (status !== 401 || path.startsWith('/api/auth/') || !isAuthMode()) return
+  // The meeting page has no login to expire; a 401 there is the meeting's own credential ending.
+  if (isMeetingParticipantPage()) return
   if (hasInteractiveLogin()) {
     if (!deliberateSignOut) {
       // Interactive login is web-only, so pathname+search is the route; the
