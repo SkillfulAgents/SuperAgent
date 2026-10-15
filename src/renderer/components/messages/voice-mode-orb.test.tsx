@@ -8,7 +8,6 @@ import { VoiceModeOrb } from './voice-mode-orb'
 const mocks = vi.hoisted(() => ({
   routeSessionId: undefined as string | undefined,
   navigate: vi.fn(),
-  isActive: false,
   requests: [] as Array<{ key: string; kind: string }>,
   useVoiceMode: vi.fn(),
   mutate: vi.fn(),
@@ -18,7 +17,6 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mocks.navigate,
 }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useSession: () => ({ data: { name: 'Plan the launch' } }) }))
-vi.mock('@renderer/hooks/use-message-stream', () => ({ useMessageStream: () => ({ isActive: mocks.isActive }) }))
 vi.mock('@shared/lib/tools/requests/use-pending-requests', () => ({
   usePendingRequests: () => ({ items: mocks.requests, count: mocks.requests.length }),
 }))
@@ -74,7 +72,6 @@ describe('VoiceModeOrb', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.routeSessionId = undefined
-    mocks.isActive = false
     mocks.requests = []
     // jsdom has no pointer capture.
     Element.prototype.setPointerCapture = vi.fn()
@@ -107,24 +104,6 @@ describe('VoiceModeOrb', () => {
       paused: true,
       inputRequests: [{ id: 'question-1', message: 'Choose a database in the question card.' }],
     }))
-  })
-
-  it('says Done when the agent finishes its turn, then lets the notice fade', () => {
-    vi.useFakeTimers()
-    try {
-      mocks.routeSessionId = 'session-b'
-      mocks.isActive = true
-      const { rerender } = renderOrb()
-      expect(screen.queryByTestId('voice-mode-orb-notice')).toBeNull()
-      mocks.isActive = false
-      rerender(<VoiceModeHost><StartVoice /><VoiceModeOrb /></VoiceModeHost>)
-      expect(screen.getByTestId('voice-mode-orb-notice')).toHaveTextContent('Done')
-      act(() => { vi.advanceTimersByTime(4000) })
-      expect(screen.queryByTestId('voice-mode-orb-notice')).toBeNull()
-      expect(screen.getByLabelText('done')).toBeInTheDocument()
-    } finally {
-      vi.useRealTimers()
-    }
   })
 
   it('ends the conversation from its exit control, with the exit notice', async () => {

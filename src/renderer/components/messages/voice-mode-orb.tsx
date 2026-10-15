@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Check, Mic, MicOff, Volume2, VolumeOff, X } from 'lucide-react'
+import { Mic, MicOff, Volume2, VolumeOff, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { useSession } from '@renderer/hooks/use-sessions'
-import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { usePendingRequests } from '@shared/lib/tools/requests/use-pending-requests'
 import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { cn } from '@shared/lib/utils'
@@ -16,7 +15,6 @@ import { useVoiceModeHost, type VoiceSession } from './voice-mode-host'
 const ORB_SIZE = 48
 const EDGE = 16
 const DRAG_THRESHOLD = 4
-const DONE_NOTICE_MS = 4000
 const POSITION_KEY = 'voice-mode-orb-position'
 
 interface OrbPosition {
@@ -63,26 +61,6 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
     [registerView, needsInput, inputRequests],
   )
 
-  // "Done" once the agent's turn ends while the person is elsewhere: the pill
-  // fades, the check stays until the session is opened.
-  const { isActive } = useMessageStream(session.sessionId, session.agentSlug)
-  const wasActive = useRef(isActive)
-  const [done, setDone] = useState(false)
-  const [doneNotice, setDoneNotice] = useState(false)
-  useEffect(() => {
-    if (wasActive.current && !isActive) {
-      setDone(true)
-      setDoneNotice(true)
-    }
-    if (isActive) setDone(false)
-    wasActive.current = isActive
-  }, [isActive])
-  useEffect(() => {
-    if (!doneNotice) return
-    const timer = setTimeout(() => setDoneNotice(false), DONE_NOTICE_MS)
-    return () => clearTimeout(timer)
-  }, [doneNotice])
-
   const [position, setPosition] = useState(loadPosition)
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null)
   const dragStart = useRef<{ pointerX: number; pointerY: number; left: number; top: number; moved: boolean } | null>(null)
@@ -123,7 +101,7 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
   }
 
   const name = sessionInfo?.name ?? 'Voice mode'
-  const notice = needsInput ? 'Needs your input' : voice.error ?? (doneNotice ? 'Done' : null)
+  const notice = needsInput ? 'Needs your input' : voice.error
   const style = drag
     ? { left: drag.x, top: drag.y }
     : { [position.side]: EDGE, bottom: position.bottom }
@@ -162,10 +140,6 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
         </button>
         {needsInput ? (
           <span className="absolute -right-0.5 -top-0.5 rounded-full bg-background p-0.5"><AwaitingDot /></span>
-        ) : done ? (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full border bg-background" aria-label="done">
-            <Check className="h-2.5 w-2.5 text-foreground" />
-          </span>
         ) : voice.micMuted ? (
           <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full border bg-background" aria-label="microphone muted">
             <MicOff className="h-2.5 w-2.5 text-muted-foreground" />
