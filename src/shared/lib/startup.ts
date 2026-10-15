@@ -18,7 +18,8 @@ import { accountSyncService } from './scheduler/account-sync-service'
 import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
-import { listAgents } from './services/agent-service'
+import { listAgents, syncAgentIdentityFromWorkspace } from './services/agent-service'
+import { messagePersister } from './container/message-persister'
 import { isAuthMode } from './auth/mode'
 import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -199,6 +200,17 @@ async function initializeServicesInner() {
       await provider.stop(agentId)
     }
   }
+
+  // The agent may have rewritten its name or description in AGENTS.md during the turn.
+  containerHost.onSessionIdle((agentSlug) => {
+    syncAgentIdentityFromWorkspace(agentSlug)
+      .then((changed) => {
+        if (changed) messagePersister.broadcastGlobal({ type: 'agent_updated', agentSlug })
+      })
+      .catch((error) => {
+        captureException(error, { tags: { component: 'startup', operation: 'sync-agent-identity' } })
+      })
+  })
 
   // Lane order is priority: the limiter grants slots FIFO, and the last three
   // starts below are open-ended (image pull on fresh installs; the task

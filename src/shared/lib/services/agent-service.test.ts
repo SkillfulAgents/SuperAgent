@@ -68,6 +68,7 @@ import {
   getAgentInstructionsContent,
   setAgentInstructionsContent,
   adoptAgentIdentityFromWorkspace,
+  syncAgentIdentityFromWorkspace,
   writeAgentIdentityProjection,
 } from './agent-service'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
@@ -686,6 +687,33 @@ Instructions`
       await setAgentInstructionsContent(created.slug, 'No frontmatter\n')
       expect((await adoptAgentIdentityFromWorkspace(created.slug, { name: '' }))?.name).toBe('Override')
       expect(await adoptAgentIdentityFromWorkspace('nonexistent')).toBeNull()
+    })
+  })
+
+  describe('syncAgentIdentityFromWorkspace', () => {
+    it('takes the name and description the agent wrote, and a later user rename wins', async () => {
+      const created = await createAgent({ name: 'Untitled' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Inbox Bot\ndescription: Triages Gmail and drafts replies.\n---\nBody\n')
+
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toBe(true)
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Bot', description: 'Triages Gmail and drafts replies.' })
+      await updateAgent(created.slug, { name: 'Mail Helper' })
+      const content = await getAgentInstructionsContent(created.slug)
+      expect(content).toContain('name: Mail Helper')
+      expect(content).toContain('description: Triages Gmail and drafts replies.')
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toBe(false)
+    })
+
+    it('leaves blank or missing fields alone', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, '---\nname: "  "\n---\nBody\n')
+
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toBe(false)
+      expect(await syncAgentIdentityFromWorkspace('nonexistent')).toBe(false)
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Helper' })
+      expect((await getAgentRecord(created.slug))?.description).toBe('Triages Gmail.')
     })
   })
 

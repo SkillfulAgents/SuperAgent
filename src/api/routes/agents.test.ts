@@ -1545,7 +1545,7 @@ describe('POST /api/agents/generate-name', () => {
     vi.clearAllMocks()
     app = createApp()
     mockLlmMessagesCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Generated Agent Name' }],
+      content: [{ type: 'text', text: 'Lead Finder\nFinds and qualifies sales leads.' }],
     })
   })
 
@@ -1555,9 +1555,24 @@ describe('POST /api/agents/generate-name', () => {
     })
 
     expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({ name: 'Generated Agent Name' })
+    await expect(res.json()).resolves.toEqual({
+      name: 'Lead Finder',
+      description: 'Finds and qualifies sales leads.',
+    })
     expect(mockAgentExists).not.toHaveBeenCalledWith('generate-name')
     expect(mockLlmMessagesCreate).toHaveBeenCalled()
+  })
+
+  it('returns only the name when the model gives one line', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({
+      content: [{ type: 'text', text: 'Lead Finder' }],
+    })
+
+    const res = await postJson(app, '/api/agents/generate-name', {
+      prompt: 'Build a lead generation agent',
+    })
+
+    await expect(res.json()).resolves.toEqual({ name: 'Lead Finder' })
   })
 })
 
