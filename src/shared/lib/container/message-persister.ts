@@ -2,7 +2,7 @@ import type { SessionTurnOutcome } from './session-turn-outcome-schema'
 import { withSessionSendContext } from './session-send-context'
 import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { z } from 'zod'
-import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
+import type { ContainerClient, StreamMessage, SlashCommandInfo, StreamSocketInfo } from './types'
 import { mergeCanonicalSlashCommands } from './slash-commands'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tools/ask-user-question/definition'
@@ -1416,6 +1416,10 @@ class MessagePersister {
   // Check if a session has an active subscription
   isSubscribed(agentSlug: string, sessionId: string): boolean {
     return this.subscriptions.has(sessionKeyOf(agentSlug, sessionId))
+  }
+
+  getStreamSocketInfo(agentSlug: string, sessionId: string): StreamSocketInfo | null {
+    return this.containerClients.get(sessionKeyOf(agentSlug, sessionId))?.getStreamSocketInfo(sessionId) ?? null
   }
 
   // Check if any session for a given agent is currently active (processing)

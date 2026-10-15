@@ -7,11 +7,13 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 const isSessionActive = vi.fn(() => false)
 const isSubscribed = vi.fn(() => false)
+const getStreamSocketInfo = vi.fn((): unknown => null)
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     broadcastGlobal: (...args: unknown[]) => broadcastGlobal(...args),
     isSessionActive: (...args: unknown[]) => isSessionActive(...(args as [])),
     isSubscribed: (...args: unknown[]) => isSubscribed(...(args as [])),
+    getStreamSocketInfo: (...args: unknown[]) => getStreamSocketInfo(...(args as [])),
   },
 }))
 const captureException = vi.fn()
@@ -20,6 +22,10 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ container: { containerRunner: 'apple-container' } }),
+}))
+const getRecentPowerEvents = vi.fn((): unknown[] => [])
+vi.mock('@shared/lib/power-events', () => ({
+  getRecentPowerEvents: () => getRecentPowerEvents(),
 }))
 
 import agentBootstrap from './agent-bootstrap'
@@ -43,6 +49,8 @@ beforeEach(() => {
   captureException.mockReset()
   isSessionActive.mockReset().mockReturnValue(false)
   isSubscribed.mockReset().mockReturnValue(false)
+  getStreamSocketInfo.mockReset().mockReturnValue(null)
+  getRecentPowerEvents.mockReset().mockReturnValue([])
   resetBootstrapEnvStoreForTests()
 })
 
@@ -210,10 +218,26 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
     socketError: 'ECONNRESET',
   }
 
-  it('reports a turn the host is still stuck on', async () => {
+  it('reports a turn the host is still stuck on, with the host side of the socket', async () => {
     validateProxyToken.mockResolvedValue('agent-1')
     isSessionActive.mockReturnValue(true)
     isSubscribed.mockReturnValue(true)
+    const hostSocket = {
+      readyState: 'OPEN',
+      openedAt: '2026-09-29T16:45:00.000Z',
+      lastFrameAt: '2026-09-29T16:58:00.000Z',
+      framesReceived: 812,
+      bufferedAmount: 0,
+      tcpDestroyed: false,
+      tcpBytesRead: 482_113,
+      tcpBytesWritten: 318,
+    }
+    getStreamSocketInfo.mockReturnValue(hostSocket)
+    const powerEvents = [
+      { type: 'suspend', at: '2026-09-29T16:50:00.000Z' },
+      { type: 'resume', at: '2026-09-29T16:59:58.000Z' },
+    ]
+    getRecentPowerEvents.mockReturnValue(powerEvents)
 
     const res = await post('/agent-1/events/undelivered-turn', report, { Authorization: 'Bearer synth_x' })
 
@@ -222,6 +246,7 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
     const [err, context] = captureException.mock.calls[0]
     expect((err as Error).message).toBe('Session turn ended after its stream socket dropped')
     expect(isSessionActive).toHaveBeenCalledWith('agent-1', 'session-1')
+    expect(getStreamSocketInfo).toHaveBeenCalledWith('agent-1', 'session-1')
     expect(context).toEqual({
       tags: {
         component: 'container',
@@ -239,6 +264,8 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
         socketAgeMs: 900_000,
         idleMsBeforeClose: 120_000,
         socketError: 'ECONNRESET',
+        hostSocket,
+        powerEvents,
       },
     })
   })

@@ -9,6 +9,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { getSettings } from '@shared/lib/config/settings'
+import { getRecentPowerEvents } from '@shared/lib/power-events'
 
 const agentBootstrap = new Hono()
 const DASHBOARD_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
@@ -148,9 +149,17 @@ agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
   )
   if (!hostStuck) return c.body(null, 204)
 
+  // The host's side of the same socket and the machine's recent sleep/wake,
+  // to compare with the container's close time.
+  const hostSocket = messagePersister.getStreamSocketInfo(agentSlug, report.sessionId)
+  const powerEvents = getRecentPowerEvents()
+  console.warn(
+    `[AgentBootstrap] Host stream socket for session ${report.sessionId}: ${JSON.stringify(hostSocket)}; ` +
+    `power events: ${JSON.stringify(powerEvents)}`,
+  )
   captureException(new Error('Session turn ended after its stream socket dropped'), {
     tags: { component: 'container', operation: 'undelivered-turn', containerRunner, closeCode: String(closeCode) },
-    extra: { agentId: agentSlug, ...report },
+    extra: { agentId: agentSlug, ...report, hostSocket, powerEvents },
   })
   return c.body(null, 204)
 })
