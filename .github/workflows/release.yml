@@ -164,7 +164,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: .node-version
           cache: 'npm'
 
       # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
@@ -173,7 +173,7 @@ jobs:
         run: npm install -g npm@11.14.1
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --foreground-scripts
 
       - name: Decode Apple API Key
         env:
@@ -236,6 +236,7 @@ jobs:
 
       - name: Build and sign macOS app
         env:
+          DEBUG: electron-rebuild
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -293,7 +294,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: .node-version
           cache: 'npm'
 
       # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
@@ -302,7 +303,7 @@ jobs:
         run: npm install -g npm@11.14.1
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --foreground-scripts
 
       # See build-mac: set the channel via Node from an env var so Windows
       # arg-passing can't mangle a `-c.publish.channel=` CLI flag (SUP-283).
@@ -316,6 +317,7 @@ jobs:
 
       - name: Build and sign Windows app
         env:
+          DEBUG: electron-rebuild
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
