@@ -23,7 +23,14 @@ vi.mock('@tanstack/react-router', () => ({ useNavigate: () => mockNavigate }))
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({ pendingAgentHomeAction: null, setPendingAgentHomeAction: mockSetPendingAgentHomeAction }),
 }))
-vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: vi.fn() }) }))
+// Filing reads the agent list from the cache when it runs, not from its
+// (deliberately inert) useAgents subscription.
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+    getQueryData: (key: unknown[]) => (key[0] === 'agents' ? mockUseAgents().data : undefined),
+  }),
+}))
 const { mockUser } = vi.hoisted(() => ({ mockUser: vi.fn() }))
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUser(),

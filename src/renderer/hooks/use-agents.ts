@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
@@ -41,16 +42,46 @@ export function resolveRouteAgentId(
   return match?.slug ?? slug
 }
 
-/** Hook form of {@link resolveRouteAgentId}, reading the active `:slug` route param. */
+// Every sidebar row resolves the route's agent and its own sessions' key, and
+// so does each of its session and dashboard sub-items. Resolve once per agents
+// list per slug, not once per asker: each `['agents']` refetch would otherwise
+// rescan the list once per row.
+const resolvedAgentIds = new WeakMap<ApiAgent[], Map<string, string>>()
+
+function resolveCached(slug: string, agents: ApiAgent[]): string {
+  let bySlug = resolvedAgentIds.get(agents)
+  if (!bySlug) resolvedAgentIds.set(agents, (bySlug = new Map()))
+  let id = bySlug.get(slug)
+  if (id === undefined) bySlug.set(slug, (id = resolveRouteAgentId(slug, agents) ?? slug))
+  return id
+}
+
+/**
+ * Hook form of {@link resolveRouteAgentId} for any slug form.
+ *
+ * Subscribes through `select`, so a caller re-renders when the resolved id
+ * changes, not on every `['agents']` refetch. Every sidebar row calls this, and
+ * any agent's session event refetches the list: a whole-list subscription made
+ * each event re-render every row, which with hundreds of agents pinned the
+ * renderer's main thread.
+ */
+export function useResolvedAgentId(slug: string | undefined): string | undefined {
+  const select = useCallback((agents: ApiAgent[]) => (slug ? resolveCached(slug, agents) : undefined), [slug])
+  const { data } = useAgents({ select })
+  return data ?? resolveRouteAgentId(slug, undefined)
+}
+
+/** {@link useResolvedAgentId} for the active `:slug` route param. */
 export function useRouteAgentId(): string | undefined {
   const { slug } = useParams({ strict: false }) as { slug?: string }
-  const { data: agents } = useAgents()
-  return resolveRouteAgentId(slug, agents)
+  return useResolvedAgentId(slug)
 }
 
 export function useAgents<TData = ApiAgent[]>(options?: {
   select?: (agents: ApiAgent[]) => TData
   enabled?: boolean
+  /** `[]` keeps the list fetched and cached without ever re-rendering the caller. */
+  notifyOnChangeProps?: []
 }) {
   return useQuery<ApiAgent[], Error, TData>({
     queryKey: ['agents'],
@@ -66,6 +97,7 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     // it, every agent-status tick would change `data` identity and re-render every
     // consumer of that projection.
     select: options?.select,
+    notifyOnChangeProps: options?.notifyOnChangeProps,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: 60000,
   })
