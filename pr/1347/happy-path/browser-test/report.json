@@ -1,17 +1,26 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: .** The browser-use feature functioned correctly, with the agent successfully:\n- Opening a browser session\n- Navigating to https://example.com\n- Extracting the page title\n- Returning the correct response mentioning \"Example Domain\"\n- Keeping the browser preview visible in the UI for user inspection\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and reports it correctly.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut application displaying agents in the sidebar.",
+    "Found the agent \"QA-20261015-215559-95vv\" in the sidebar under \"Your Agents\" — Agent was visible and clickable in the sidebar list.",
+    "Clicked on the agent \"QA-20261015-215559-95vv\" — Successfully navigated to the agent's configuration page with title \"QA-20261015-215559-95vv · Gamut\".",
+    "Clicked on the message input textbox — Textbox became active and ready for input.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared correctly in the input field.",
+    "Clicked the send button — Message was sent and a new session was created with URL containing session ID 82ad1623-962b-4e9a-979b-09a230f87bb8, page title changed to \"Browser Page Title Check — QA-20261015-215559-95vv\".",
+    "Waited for the agent to respond — Agent completed work in 9 seconds using 3 tool calls and 153,050 tokens.",
+    "Verified the response mentions \"Example Domain\" — Agent response explicitly states: 'The page title is \"Example Domain\". https://example.com loaded normally, and I've closed the browser.' The requirement was satisfied."
+  ],
   "bugs": [],
-  "durationMs": 70696,
-  "sessionId": "90184898-830f-4d84-8b39-4a7a3442fc83",
+  "durationMs": 96784,
+  "sessionId": "095039d5-12ca-4a00-b96b-5c837dd897a0",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 11262,
-    "cacheCreationTokens": 75907,
-    "cacheReadTokens": 966611,
+    "inputTokens": 410,
+    "outputTokens": 12954,
+    "cacheCreationTokens": 78163,
+    "cacheReadTokens": 1135314,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.248205
+    "totalCostUsd": 0.276415
   }
 }
