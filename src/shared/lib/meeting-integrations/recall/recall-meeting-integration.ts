@@ -125,9 +125,9 @@ export function recallParticipantEvent(body: unknown): MeetingParticipantEvent |
 }
 
 /** The host for one installation, over whatever transport this deployment has; null when it has none. */
-export function recallBotHostFor(record: Pick<AgentIntegrationRecord, 'createdByUserId'>): RecallBotHost | null {
+export function recallBotHostFor(record: Pick<AgentIntegrationRecord, 'agentSlug' | 'createdByUserId'>): RecallBotHost | null {
   const transport = resolveRecallTransport()
-  return transport ? new RecallBotHost(new RecallClient(transport, record.createdByUserId)) : null
+  return transport ? new RecallBotHost(new RecallClient(transport, record)) : null
 }
 
 export class RecallMeetingIntegration extends MeetingAgentIntegration {
