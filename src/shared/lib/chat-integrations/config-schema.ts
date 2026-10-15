@@ -20,15 +20,34 @@ export const telegramConfigSchema = z.object({
   webhookSecret: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional(),
 })
 
-export const slackConfigSchema = z.object({
-  botToken: z.string().min(1, 'Bot token is required'),
-  appToken: z.string().min(1, 'App-level token is required'),
+/** Every Slack field; the stored config also needs a way to receive (below). */
+export const slackConfigFieldsSchema = z.object({
+  /** Absent only while an installation set up with webhooks waits for its Slack app. */
+  botToken: z.string().min(1, 'Bot token is required').optional(),
+  /** Socket Mode's app-level token. Not needed once Slack delivers through webhooks. */
+  appToken: z.string().min(1, 'App-level token is required').optional(),
+  /** Signs Slack's requests (Basic Information → App Credentials). Webhooks need it. */
+  signingSecret: z.string().trim().min(1, 'Signing secret is required').optional(),
   channelId: z.string().optional(),
   // Channel behavior toggles (only apply to channels, not DMs)
   onlyMentioned: z.boolean().optional(),
   answerInThread: z.boolean().optional(),
   newSessionPerThread: z.boolean().optional(),
+  /** The relay endpoint the app's Event Subscriptions and Interactivity post to. */
+  ...integrationRelayConfigShape,
+  /**
+   * Whether a post through the endpoint verified with the signing secret.
+   * Until one has, the app may still deliver over Socket Mode. A new secret
+   * clears it.
+   */
+  webhookStatus: z.enum(['verified', 'rejected']).optional(),
 })
+
+/** Socket Mode needs both tokens; an installation with webhooks may still be waiting for its bot token. */
+export const slackConfigSchema = slackConfigFieldsSchema.refine(
+  config => !!config.relay || (!!config.botToken && !!config.appToken),
+  'Bot token and app-level token are required',
+)
 
 export const IMESSAGE_GATEWAY_URL = 'https://imsgw.com'
 
@@ -57,6 +76,7 @@ export const imessageConfigSchema = z.object({
 /** Config the host writes itself; a settings patch or setup input can't supply it. */
 const HOST_OWNED_FIELDS: Partial<Record<string, readonly string[]>> = {
   telegram: ['relay', 'webhookSecret'],
+  slack: ['relay', 'webhookStatus'],
   imessage: ['relay', 'webhookSecret'],
 }
 
@@ -81,7 +101,7 @@ const MASKED_CREDENTIAL = /^(?:(?:\*|•){4,}(?:[A-Za-z0-9_-]{0,4})?|redacted|\[
 
 const CREDENTIAL_FIELDS: Record<ChatProvider, readonly string[]> = {
   telegram: ['botToken'],
-  slack: ['botToken', 'appToken'],
+  slack: ['botToken', 'appToken', 'signingSecret'],
   imessage: ['gatewayUrl', 'token'],
 }
 
@@ -149,5 +169,10 @@ export function mergeChatIntegrationConfig(
   // be trusted, require the patch itself to be a complete valid replacement.
   if (!stored) return validateChatIntegrationConfig(provider, unmaskedPatch)
 
-  return validateChatIntegrationConfig(provider, { ...stored, ...unmaskedPatch })
+  const merged: Record<string, unknown> = { ...stored, ...unmaskedPatch }
+  // Slack's posts haven't been seen to verify with a new signing secret yet.
+  if (provider === 'slack' && slackConfigSchema.shape.signingSecret.safeParse(merged.signingSecret).data !== (stored as SlackConfig).signingSecret) {
+    delete merged.webhookStatus
+  }
+  return validateChatIntegrationConfig(provider, merged)
 }

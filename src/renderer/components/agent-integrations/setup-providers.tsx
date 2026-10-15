@@ -14,6 +14,8 @@ import { TelegramIntegrationMessage } from './messages/telegram-message'
 import { IMessageIntegrationMessage } from './messages/imessage-message'
 import { IMessageDeliveryCard } from './imessage-delivery-card'
 import { TelegramDeliveryCard } from './telegram-delivery-card'
+import { SlackDeliveryCard } from './slack-delivery-card'
+import { SlackConnectionSettings, SlackSetup } from './slack-setup'
 import { LinearIntegrationMessage } from './messages/linear-message'
 
 function chatProvider(slug: ChatProvider, label: string, Message: ComponentType<IntegrationMessageProps>, Settings: IntegrationSetupProvider['Settings'] = ChatIntegrationSettingsCard): IntegrationSetupProvider {
@@ -30,7 +32,10 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
     <ChatIntegrationSettingsCard {...props} />
     <TelegramDeliveryCard integration={props.integration} />
   </>),
-  chatProvider('slack', 'Slack', SlackIntegrationMessage),
+  { ...chatProvider('slack', 'Slack', SlackIntegrationMessage, props => <>
+    <ChatIntegrationSettingsCard {...props} />
+    <SlackDeliveryCard integration={props.integration} />
+  </>), Setup: SlackSetup, ConnectionSettings: SlackConnectionSettings },
   chatProvider('imessage', 'iMessage', IMessageIntegrationMessage, props => <>
     <ChatIntegrationSettingsCard {...props} />
     <IMessageDeliveryCard integration={props.integration} />

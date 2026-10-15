@@ -247,6 +247,41 @@ so a tap that arrives after a reconnect still answers. A restart forgets them,
 and callback ids are random, so an old card's button can't match a new card. Deleting the installation deletes the
 bot's webhook if it still points at the endpoint, before the endpoint is disabled.
 
+Slack can't set its webhooks up itself. A Slack app delivers over Socket Mode
+or to request URLs, never both, and only the app's owner can switch it in
+Slack. So webhooks are explicit:
+- New installations, when the host has a relay: "Create app in Slack" creates
+  the installation first. `prepare()` returns `relay: true` and status
+  `disconnected`, with no bot token yet. Slack's create-app page then opens
+  with a manifest whose Event Subscriptions and Interactivity post to the
+  endpoint, with Socket Mode off. Pasting the app's signing secret and bot
+  token connects it. No app-level token is needed.
+- Existing Socket Mode installations: the Event Delivery card's "Set up
+  webhooks" takes the signing secret and mints the endpoint. The card then
+  walks the owner through switching the app in Slack. "Remove webhooks" goes
+  back to Socket Mode, with an app-level token.
+
+The endpoint carries a Slack v0 verification profile (`slackVerificationProfile`),
+so forgeries are refused as they arrive. The host verifies each post again with
+`isValidSlackRequest`, as of the post's `received_at`, because a claim can come
+long after the post, and because Slack's URL check skips the endpoint's
+verification.
+
+A connection with webhooks keeps Socket Mode (when it has an app-level token)
+until a post through the relay verifies. Slack signs its URL check, so saving
+the request URL is enough. That post records `webhookStatus: 'verified'` and
+closes the socket; later connections receive through the relay only. A URL
+check that fails verification records `rejected`, and the card asks for the
+secret again. A new signing secret clears the status and updates the
+endpoint's profile.
+
+Without a relay, a verified installation still connects for sending, but it
+reports itself disconnected, so health checks rebuild it until the relay is
+back. Relayed bodies go through `app.processEvent()`, into the same Bolt
+handlers as Socket Mode. They are deduplicated on `event_id` / `trigger_id`.
+Answer buttons carry their request in the button value, so a click that
+reaches another connection, or arrives after a restart, still answers.
+
 ## Task managers
 
 `TaskManagerAgentIntegration` maps each work item to a session and prepares issue

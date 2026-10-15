@@ -107,10 +107,11 @@ export async function setUpIntegrationWebhooks(
   record: AgentIntegrationRecord,
   definition: Pick<AgentIntegrationDefinition, 'name' | 'transports'>,
   write: (relay: IntegrationRelayBinding) => Promise<void>,
+  verification?: VerificationProfile,
 ): Promise<boolean> {
   if (readIntegrationRelay(record.config)) return false
   if (!supportedTransports(definition).includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
-  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined)
+  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined, verification)
   try {
     await write(relay)
   } catch (error) {

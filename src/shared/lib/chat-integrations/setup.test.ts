@@ -19,6 +19,23 @@ it('checks both Slack tokens and propagates a Socket Mode rejection', async () =
   await expect(setup.testCredentials!({ botToken: 'bot', appToken: 'app' })).rejects.toThrow('missing_scope')
   expect(fetch.mock.calls[1]).toEqual(['https://slack.com/api/apps.connections.open', expect.objectContaining({ headers: { Authorization: 'Bearer app' } })])
 })
+it('checks only the bot token of an app on webhooks, which has no app-level token', async () => {
+  const fetch = vi.fn(async () => Response.json({ ok: true, team: 'Team', user: 'U1' }))
+  vi.stubGlobal('fetch', fetch)
+  expect(await chatProviderSetup('slack', slackConfigSchema).testCredentials!({ botToken: 'bot' })).toEqual({ valid: true, team: 'Team', user: 'U1' })
+  expect(fetch).toHaveBeenCalledOnce()
+})
+it('sets Slack up over Socket Mode with both tokens, or with webhooks before its app exists', async () => {
+  const setup = chatProviderSetup('slack', slackConfigSchema)
+  expect(await setup.prepare({ botToken: 'bot', appToken: 'app', onlyMentioned: true }, context)).toEqual({ config: { botToken: 'bot', appToken: 'app', onlyMentioned: true } })
+  await expect(setup.prepare({ botToken: 'bot' }, context)).rejects.toThrow(/app-level token/)
+
+  // The endpoint is minted with the installation, which waits for the app's credentials.
+  expect(await setup.prepare({ webhooks: true, onlyMentioned: true, relay: { endpointId: 'forged' }, webhookStatus: 'verified' }, context))
+    .toEqual({ config: { onlyMentioned: true }, relay: true, status: 'disconnected' })
+  expect(await setup.prepare({ webhooks: true, botToken: 'bot', signingSecret: 'secret' }, context))
+    .toEqual({ config: { botToken: 'bot', signingSecret: 'secret' }, relay: true })
+})
 it('does not claim iMessage credentials are verified before exchanging the code on creation', async () => {
   const fetch = vi.fn(async () => Response.json({ token: 'issued-token' }))
   vi.stubGlobal('fetch', fetch)

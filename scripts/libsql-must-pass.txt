@@ -65,3 +65,5 @@ src/api/routes/google-drive-volumes.test.ts
 src/api/routes/s3-volumes.test.ts
 src/shared/lib/chat-integrations/imessage-webhooks.test.ts
 src/shared/lib/chat-integrations/telegram-webhooks.test.ts
+src/shared/lib/chat-integrations/slack-webhooks.test.ts
+src/api/routes/slack-webhook-setup.test.ts

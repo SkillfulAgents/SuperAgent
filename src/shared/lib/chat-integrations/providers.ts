@@ -29,6 +29,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     record: AgentIntegrationRecord,
   ) => ChatAgentIntegration | Promise<ChatAgentIntegration>,
   cleanup?: IntegrationProvider['cleanup'],
+  updateSettings?: IntegrationProvider['updateSettings'],
 ): IntegrationProvider {
   const identityField = provider === 'imessage' ? 'phoneNumber' : 'botToken'
   const identitySchema = z.object({ [identityField]: z.string().min(1) })
@@ -60,6 +61,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
       return instantiate ? instantiate(Connector, config, appLink, record) : new Connector(config, appLink)
     },
     cleanup,
+    updateSettings,
     async describeTarget(externalId) {
       const Connector = await load()
       return { type: Connector.classifyChatId?.({ chatId: externalId }) }
@@ -84,8 +86,11 @@ export const chatProviders: IntegrationProvider[] = [
     'slack', slackConfigSchema, async () => (await import('./slack-connector')).SlackConnector,
     async (Connector, config, appLink, record) => {
       const { createSlackThreadStateStore } = await import('./slack-thread-state')
-      return new Connector(config, appLink, createSlackThreadStateStore(record.id))
+      return new Connector(config, appLink, createSlackThreadStateStore(record.id), record)
     },
+    // The app keeps posting to the endpoint, which is disabled after this.
+    async record => { (await import('./slack-connector')).forgetSlackInstallation(record.id) },
+    async (record, input) => (await import('./slack-webhooks')).updateSlackWebhookSettings(record, input),
   ),
   chatProvider(
     'imessage', imessageConfigSchema, async () => (await import('./imessage-connector')).IMessageConnector,
