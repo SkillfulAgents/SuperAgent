@@ -189,7 +189,7 @@ export interface StopOptions {
 }
 
 export interface StopResult {
-  /** True if we had to force-stop the runtime (e.g. kill the Lima VM). */
+  /** True if a force-stop killed the runtime VM shared by every container (Lima, WSL2). */
   forceStopUsed: boolean
   /**
    * True if the container was actually stopped (gracefully, killed, or via

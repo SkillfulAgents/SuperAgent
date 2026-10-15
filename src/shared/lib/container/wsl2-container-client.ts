@@ -549,7 +549,7 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * Force-stop by terminating the WSL2 distro directly.
    * Called when nerdctl stop + kill both time out because the distro is unresponsive.
    */
-  protected async forceStop(): Promise<void> {
+  protected async forceStop(): Promise<boolean> {
     console.warn('Force-terminating WSL2 distro')
     try {
       await Promise.race([
@@ -561,6 +561,7 @@ export class WSL2ContainerClient extends BaseContainerClient {
     } catch {
       console.error('WSL2 distro terminate failed')
     }
+    return true
   }
 
   /**

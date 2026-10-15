@@ -548,7 +548,7 @@ export class LimaContainerClient extends BaseContainerClient {
    * Force-stop by killing the Lima VM directly (QEMU process).
    * Called when nerdctl stop + kill both time out because the VM is unresponsive.
    */
-  protected async forceStop(): Promise<void> {
+  protected async forceStop(): Promise<boolean> {
     console.warn('Force-stopping Lima VM (killing QEMU process)')
     try {
       await Promise.race([
@@ -560,6 +560,7 @@ export class LimaContainerClient extends BaseContainerClient {
     } catch {
       console.error('Lima VM force-stop failed')
     }
+    return true
   }
 
   /**

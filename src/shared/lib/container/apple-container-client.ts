@@ -394,7 +394,7 @@ export class AppleContainerClient extends BaseContainerClient {
    * down directly — the per-container analog of Lima killing its shared VM
    * process. Bounded so a wedged runtime can't hang the shutdown path.
    */
-  protected async forceStop(): Promise<void> {
+  protected async forceStop(): Promise<boolean> {
     const containerName = this.getContainerName()
     console.warn(`Force-deleting Apple container ${containerName} (stop and kill both timed out)`)
     try {
@@ -402,6 +402,8 @@ export class AppleContainerClient extends BaseContainerClient {
     } catch {
       console.error('Apple container force-delete failed')
     }
+    // Other agents run in their own VMs and are still up.
+    return false
   }
 
   /**

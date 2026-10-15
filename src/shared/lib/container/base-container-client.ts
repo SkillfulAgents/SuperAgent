@@ -1050,8 +1050,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             return { forceStopUsed: false, stopped: false }
           }
 
-          await this.forceStop()
-          forceStopUsed = true
+          forceStopUsed = await this.forceStop()
         }
       }
 
@@ -1082,9 +1081,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Last-resort force stop when both `stop` and `kill` fail (e.g., VM is unresponsive).
    * Subclasses can override to kill the VM directly.
    * No-op by default for runtimes like Docker/Podman where kill should always work.
+   * Returns true only when it killed a runtime VM shared by every container.
    */
-  protected async forceStop(): Promise<void> {
-    // No-op — subclasses override for VM-based runtimes
+  protected async forceStop(): Promise<boolean> {
+    return false
   }
 
   stopSync(): void {
