@@ -159,7 +159,7 @@ test.describe('voice mode', () => {
     await expect(sessionPage.getStopButton()).toHaveCount(0, { timeout: 10_000 })
   })
 
-  test('starts from the agent home, and leaving the session ends it', async ({ page }, testInfo) => {
+  test('starts from the agent home, keeps going from the orb, and its exit ends it', async ({ page }, testInfo) => {
     test.setTimeout(90_000)
     const speech = await mockSpeech(page)
     await appPage.goto()
@@ -179,17 +179,24 @@ test.describe('voice mode', () => {
     await expect(composer).toHaveAttribute('data-phase', 'listening', { timeout: 15_000 })
     await expect.poll(() => speech.listen() !== null).toBe(true)
 
-    // Navigating away ends voice mode and tells the agent.
+    // Leaving the session keeps voice mode on, shrunk to the floating orb.
     const sessionUrl = page.url()
+    await page.goBack()
+    await expect(page).not.toHaveURL(sessionUrl)
+    const orb = page.getByTestId('voice-mode-orb')
+    await expect(orb).toBeVisible()
+    await expect(composer).toHaveCount(0)
+    expect(speech.listen()).not.toBeNull()
+
+    // The orb's exit ends voice mode and tells the agent.
     const exitNotice = page.waitForResponse(
       (response) => response.url().includes('/messages') && response.request().method() === 'POST',
       { timeout: 10_000 },
     )
-    await page.goBack()
-    await expect(page).not.toHaveURL(sessionUrl)
+    await orb.hover()
+    await page.getByTestId('voice-mode-orb-exit').click()
+    await expect(orb).toHaveCount(0)
     await expect.poll(() => speech.listen(), { timeout: 10_000 }).toBeNull()
-    // The notice is sent as the session view unmounts; a reload before it
-    // lands would cut it off.
     expect((await exitNotice).status()).toBe(201)
     await page.goto(sessionUrl)
     await expect(page.getByTestId('message-input')).toBeVisible()
