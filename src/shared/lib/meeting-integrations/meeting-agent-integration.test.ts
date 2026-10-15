@@ -13,7 +13,7 @@ vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('../agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) } }))
 vi.mock('../agent-integrations/app-link', () => ({ resolveInternetAppBaseUrl: vi.fn(() => 'https://app.example') }))
 
-const { MeetingAgentIntegration, MeetingPolicyError, MAX_CONSECUTIVE_POLL_FAILURES, MAX_MEETING_AGE_MS, MEETING_POLL_INTERVAL_MS, MEETING_RECORDING_RETENTION_HOURS } = await import('./meeting-agent-integration')
+const { MeetingAgentIntegration, MeetingPolicyError, MAX_CONSECUTIVE_POLL_FAILURES, MAX_MEETING_AGE_MS, MEETING_LOST_CONTACT_DETAIL, MEETING_POLL_INTERVAL_MS, MEETING_RECORDING_RETENTION_HOURS } = await import('./meeting-agent-integration')
 const { getMeeting, listMeetings, toPublicMeeting, transitionMeeting, verifyParticipantToken } = await import('./store')
 const { leaveOpenMeetings } = await import('./definitions')
 const { meetingEventPayloadSchema } = await import('./schemas')
@@ -31,8 +31,13 @@ class FakeHost implements MeetingBotHost {
   chats: Array<[string, string]> = []
   fail = false
   unreachable = false
+  /** When set, createBot waits until releaseCreate() so a test can act while the host is still starting the bot. */
+  holdCreate = false
+  private releases: Array<() => void> = []
+  releaseCreate() { for (const release of this.releases.splice(0)) release() }
   async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }) {
     if (this.fail) throw new Error('Recall.ai has no bot capacity right now. Try again in a moment.')
+    if (this.holdCreate) await new Promise<void>(resolve => this.releases.push(resolve))
     this.created.push(request); return { botId: `bot-${this.created.length}` }
   }
   async getBotStatus() { if (this.unreachable) throw new Error('503 from the bot host'); return this.status }
@@ -139,26 +144,58 @@ describe('MeetingAgentIntegration', () => {
     expect(await transitionMeeting(meeting.id, 'in_call')).toBeNull()
   })
 
-  it('gives up on a meeting only after losing the host for the whole failure budget; a blip resets it', async () => {
+  it('reports lost contact with the host after the failure budget but keeps the meeting open and keeps trying', async () => {
     const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     host.status = { status: 'in_call' }
     await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS)
     expect((await getMeeting(meeting.id))?.status).toBe('in_call')
     host.unreachable = true
     await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS * (MAX_CONSECUTIVE_POLL_FAILURES - 1))
-    expect((await getMeeting(meeting.id))?.status).toBe('in_call')
-    host.unreachable = false
+    expect(await getMeeting(meeting.id)).toMatchObject({ status: 'in_call', statusDetail: null })
     await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS)
+    // The bot may well still be in the call, so this is not the end of the meeting: no ended notice, Leave still reaches the bot.
+    expect(await getMeeting(meeting.id)).toMatchObject({ status: 'in_call', statusDetail: MEETING_LOST_CONTACT_DETAIL, endedAt: null })
+    expect(events.filter(event => meetingEventPayloadSchema.parse(event.payload).kind === 'ended')).toHaveLength(0)
+    // The host coming back clears the notice; a later outage reports again.
+    host.unreachable = false
+    host.status = { status: 'in_call', detail: 'recording' }
+    await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS)
+    expect(await getMeeting(meeting.id)).toMatchObject({ status: 'in_call', statusDetail: 'recording' })
     host.unreachable = true
-    await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS * (MAX_CONSECUTIVE_POLL_FAILURES - 1))
-    expect((await getMeeting(meeting.id))?.status).toBe('in_call')
-    await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS)
-    expect(await getMeeting(meeting.id)).toMatchObject({ status: 'failed', statusDetail: 'Lost contact with the meeting bot host', endedAt: expect.any(Date) })
-    expect(events.filter(event => meetingEventPayloadSchema.parse(event.payload).kind === 'ended')).toHaveLength(1)
-    // Tracking stopped: the host coming back does not reopen it.
-    host.unreachable = false
-    await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS * 2)
-    expect((await getMeeting(meeting.id))?.status).toBe('failed')
+    await vi.advanceTimersByTimeAsync(MEETING_POLL_INTERVAL_MS * MAX_CONSECUTIVE_POLL_FAILURES)
+    expect((await getMeeting(meeting.id))?.statusDetail).toBe(MEETING_LOST_CONTACT_DETAIL)
+    await integration.leave(meeting.id, 'done')
+    expect(host.left).toEqual(['bot-1'])
+    expect((await getMeeting(meeting.id))?.status).toBe('ended')
+  })
+
+  it('sends a bot home when the meeting was ended while the host was still starting it', async () => {
+    host.holdCreate = true
+    const joining = integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    await vi.advanceTimersByTimeAsync(0)
+    const [row] = await listMeetings('integration')
+    expect(row.botId).toBeNull()
+    await integration.leave(row.id, 'changed my mind')
+    host.releaseCreate()
+    const meeting = await joining
+    expect(meeting.status).toBe('ended')
+    expect(host.created).toHaveLength(1)
+    expect(host.left).toEqual(['bot-1'])
+    expect(integration['pollers'].size).toBe(0)
+  })
+
+  it('starts one bot for two simultaneous requests for the same call', async () => {
+    host.holdCreate = true
+    const joins = Promise.all([
+      integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' }),
+      integration.requestJoin({ meetingUrl: 'meet.google.com/abc-defg-hij', context: 'also me' }),
+    ])
+    await vi.advanceTimersByTimeAsync(0)
+    host.releaseCreate()
+    const [first, second] = await joins
+    expect(second.id).toBe(first.id)
+    expect(host.created).toHaveLength(1)
+    expect(await listMeetings('integration')).toHaveLength(1)
   })
 
   it('posts files the agent delivers into the meeting chat as links, only while in the call', async () => {

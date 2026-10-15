@@ -119,7 +119,7 @@ export function Authenticated(): MiddlewareHandler {
       const { authenticateMeetingParticipant, meetingParticipantMayRequest } = await import('@shared/lib/meeting-integrations/participant-credential')
       const participant = await authenticateMeetingParticipant(c.req.header('cookie'))
       if (!participant) return c.json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': SESSION_CHALLENGE })
-      if (!meetingParticipantMayRequest(c.req.path)) return c.json({ error: 'Forbidden' }, 403)
+      if (!meetingParticipantMayRequest(c.req.method, c.req.path)) return c.json({ error: 'Forbidden' }, 403)
       c.set('user' as never, { id: participant.userId } as never)
       c.set(MEETING_PARTICIPANT_CONTEXT_KEY as never, participant as never)
       return runWithRequestUser(participant.userId, () => next())

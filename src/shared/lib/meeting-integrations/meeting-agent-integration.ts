@@ -13,11 +13,11 @@ import { captureException } from '../error-reporting'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import type { MeetingBotHost, MeetingRecordingLink } from './bot-host'
 import { meetingPolicy } from './definitions'
-import { parseMeetingUrl } from './meeting-url'
+import { parseMeetingUrl, type ParsedMeetingUrl } from './meeting-url'
 import { meetingEndedNotice, meetingJoinBrief, meetingRecordingDisclosure, meetingSessionSystemPrompt } from './prompts'
 import {
   isTerminalMeetingStatus, joinMeetingInputSchema, listMeetingsInputSchema, MEETING_RECORDING_RETENTION_HOURS, meetingEventPayloadSchema,
-  meetingIdInputSchema, sendMeetingChatInputSchema, DEFAULT_MEETING_MODE, type MeetingIntegrationSettings, type MeetingStatus, type PublicMeeting,
+  meetingIdInputSchema, sendMeetingChatInputSchema, DEFAULT_MEETING_MODE, type JoinMeetingInput, type MeetingIntegrationSettings, type MeetingStatus, type PublicMeeting,
 } from './schemas'
 import {
   createMeeting, getMeeting, listMeetings, listOpenMeetings, mintParticipantToken, setMeetingBot,
@@ -51,6 +51,7 @@ const deliveredFileEventSchema = z.object({
 /** How often the family asks the host where its bot is. Webhooks can replace this behind the same transitions. */
 export const MEETING_POLL_INTERVAL_MS = 5000
 export const MAX_CONSECUTIVE_POLL_FAILURES = 24
+export const MEETING_LOST_CONTACT_DETAIL = 'Lost contact with the meeting bot host; still trying'
 /**
  * No meeting runs this long. A row still open after it was abandoned by a
  * crash, a lost webhook or a host that never answered; on reconnect the bot is
@@ -207,10 +208,21 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   // ── Operations ────────────────────────────────────────────────────────
 
+  /** Joins in flight by invite URL, so two requests for the same call made at once share one bot. */
+  private pendingJoins = new Map<string, Promise<PublicMeeting>>()
+
   async requestJoin(input: unknown, invocation?: IntegrationToolInvocation): Promise<PublicMeeting> {
     const request = joinMeetingInputSchema.parse(input)
     const parsed = parseMeetingUrl(request.meetingUrl)
     if (!parsed) throw new MeetingPolicyError('That does not look like a Zoom, Google Meet or Microsoft Teams invite link.')
+    const pending = this.pendingJoins.get(parsed.url)
+    if (pending) return pending
+    const join = this.join(parsed, request, invocation).finally(() => this.pendingJoins.delete(parsed.url))
+    this.pendingJoins.set(parsed.url, join)
+    return join
+  }
+
+  private async join(parsed: ParsedMeetingUrl, request: JoinMeetingInput, invocation?: IntegrationToolInvocation): Promise<PublicMeeting> {
     const current = await this.requireActive()
     const baseUrl = resolveInternetAppBaseUrl()
     if (!baseUrl) throw new MeetingPolicyError('This app has no public HTTPS address for the meeting bot to load (HOST_PUBLIC_URL).')
@@ -240,6 +252,13 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
         eventsUrl: `${participantPath}/events/?token=${encodeURIComponent(token)}`,
       })
       await setMeetingBot(meeting.id, botId)
+      // A leave that arrived while the host was starting the bot has already ended
+      // the row; the bot it did not know about must not stay in the call.
+      const ended = await getMeeting(meeting.id)
+      if (!ended || isTerminalMeetingStatus(ended.status)) {
+        await this.bots.leaveCall(botId).catch(error => captureException(error, { tags: { component: 'meeting-integration', operation: 'leave-after-cancel' }, extra: { meetingId: meeting.id } }))
+        return toPublicMeeting(ended ?? meeting)
+      }
       await transitionMeeting(meeting.id, 'joining')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The meeting bot could not be started'
@@ -316,9 +335,13 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
       await this.settle(meetingId, status.status, status.detail)
     } catch (error) {
       entry.failures += 1
-      if (entry.failures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+      if (entry.failures === MAX_CONSECUTIVE_POLL_FAILURES) {
         captureException(error, { tags: { component: 'meeting-integration', operation: 'poll' }, extra: { meetingId } })
-        await this.settle(meetingId, 'failed', 'Lost contact with the meeting bot host')
+        // Not terminal: for all we know the bot is still in the call, recording and
+        // billing, so Leave and the expiry sweep must keep reaching it. The row says
+        // what is going on and polling continues until the host answers again or the
+        // meeting ages out.
+        await transitionMeeting(meetingId, meeting.status, MEETING_LOST_CONTACT_DETAIL)
       }
     }
   }

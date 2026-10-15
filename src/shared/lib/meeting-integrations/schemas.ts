@@ -65,6 +65,7 @@ export const joinMeetingInputSchema = z.object({
   /** How the agent takes part in this call; the installation's setting when omitted. */
   mode: meetingModeSchema.optional(),
 }).strict()
+export type JoinMeetingInput = z.infer<typeof joinMeetingInputSchema>
 
 export const meetingIdInputSchema = z.object({ meetingId: z.string().uuid() }).strict()
 export const sendMeetingChatInputSchema = z.object({

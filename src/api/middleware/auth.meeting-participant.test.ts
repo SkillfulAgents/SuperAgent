@@ -40,6 +40,11 @@ function app() {
   api.get('/api/agents/:id/sessions/:sessionId/browser-credentials', ResolveAgent(), IsAdmin(), c => c.json({ ok: true }))
   api.get('/api/agents/:id/sessions/:sessionId/tasks/:taskId', ResolveAgent(), TaskRole('viewer'), c => c.json({ ok: true }))
   api.delete('/api/agents/:id', ResolveAgent(), AgentAdmin(), c => c.json({ ok: true }))
+  // Agent-gated routes the page has no business with: sessionless reads and writes, browser control, file writes.
+  api.get('/api/agents/:id/sessions', ResolveAgent(), AgentRead(), c => c.json({ ok: true }))
+  api.post('/api/agents/:id/sessions', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.post('/api/agents/:id/browser/:action', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.put('/api/agents/:id/files/*', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
   // The rest of the app.
   api.get('/api/me', c => c.json(me(c)))
   api.post('/api/agents', c => c.json(me(c)))
@@ -89,6 +94,13 @@ describe('meeting participant credential through the auth middlewares', () => {
   it('is refused by grants that go by account even on routes it may reach', async () => {
     expect((await app().request('/api/agents/research/sessions/s1/browser-credentials')).status).toBe(403)
     expect((await app().request('/api/agents/research/sessions/s1/tasks/t1')).status).toBe(403)
+  })
+  it('cannot list or create sessions, drive the browser, or write files, even on its own agent', async () => {
+    expect((await app().request('/api/agents/research/sessions')).status).toBe(403)
+    expect((await app().request('/api/agents/research/sessions', { method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/agents/research/browser/close', { method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/agents/research/files/output/x', { method: 'PUT' })).status).toBe(403)
+    expect(attributed).toEqual([])
   })
   it('answers 401 with the session challenge when neither a session nor a valid cookie is present', async () => {
     participant.value = null

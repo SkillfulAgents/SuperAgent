@@ -20,20 +20,23 @@ import { verifyParticipantToken } from './store'
 export const MEETING_PARTICIPANT_COOKIE = 'gamut_meeting_participant'
 
 /**
- * The routes a participant credential may reach at all: the meeting's own
- * agent session (messages, stream, files, the browser view; the agent
- * middlewares then confine each to that agent and session) and the voice
- * routes that mint the call's voice session with the person's provider.
- * Everything else is the app, where the bot's browser has no business, so the
- * credential never stands in for the person there.
+ * The requests a participant credential may make at all: the meeting's own
+ * agent session (the agent middlewares then confine it to that agent and that
+ * session), reading the agent's files and the browser view's status, and the
+ * voice routes that mint the call's voice session with the person's provider.
+ * Nothing sessionless that writes: no listing or creating sessions, no
+ * browser actions. Everything else is the app, where the bot's browser has no
+ * business, so the credential never stands in for the person there.
  */
-const PARTICIPANT_ROUTES: readonly RegExp[] = [
-  /^\/api\/agents\/[^/]+\/(sessions|files|browser)(\/|$)/,
-  /^\/api\/(voice|stt)\//,
+const PARTICIPANT_REQUESTS: ReadonlyArray<{ methods: readonly string[] | null; path: RegExp }> = [
+  { methods: null, path: /^\/api\/agents\/[^/]+\/sessions\/[^/]+(\/|$)/ },
+  { methods: ['GET', 'HEAD'], path: /^\/api\/agents\/[^/]+\/files\// },
+  { methods: ['GET', 'HEAD'], path: /^\/api\/agents\/[^/]+\/browser\/status$/ },
+  { methods: null, path: /^\/api\/(voice|stt)\// },
 ]
 
-export function meetingParticipantMayRequest(path: string): boolean {
-  return PARTICIPANT_ROUTES.some(route => route.test(path))
+export function meetingParticipantMayRequest(method: string, path: string): boolean {
+  return PARTICIPANT_REQUESTS.some(rule => rule.path.test(path) && (rule.methods === null || rule.methods.includes(method.toUpperCase())))
 }
 
 export interface MeetingParticipantPrincipal {
