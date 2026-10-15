@@ -63,7 +63,7 @@ describe('SlackDeliveryCard', () => {
     card({ webhook: { url: URL, status: 'pending' }, signingSecretSaved: true })
     await waitFor(() => expect(screen.getByTestId('slack-delivery-path')).toHaveTextContent('Over Socket Mode, until Slack’s first request to the webhook URL arrives.'))
     expect(screen.getByTestId('slack-webhook-url')).toHaveTextContent(URL)
-    expect(screen.getByTestId('slack-webhook-waiting')).toHaveTextContent('keeps using Socket Mode')
+    expect(screen.getByTestId('slack-webhook-waiting')).toHaveTextContent('Socket Mode keeps working until it arrives')
     expect(screen.getByTestId('slack-webhook-switch')).toHaveTextContent('turn off Enable Socket Mode')
     expect(screen.getByTestId('slack-webhook-switch')).toHaveTextContent('Interactivity & Shortcuts')
     const settings = JSON.parse(screen.getByText(/"socket_mode_enabled"/).textContent!)

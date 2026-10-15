@@ -162,6 +162,7 @@ export function SlackConnectionSettings({ integration }: { integration: PublicAg
   const [botToken, setBotToken] = useState('')
   const [error, setError] = useState<string | null>(null)
   if (!slack || slack.botTokenSaved || !slack.webhook) return null
+  const creationUrl = slackAppCreationUrl(integration.name || DEFAULT_APP_NAME, slack.webhook.url)
   const connect = () => {
     setError(null)
     update.mutate({ id: integration.id, status: 'active', config: { botToken: botToken.trim(), signingSecret: signingSecret.trim() } }, {
@@ -173,9 +174,10 @@ export function SlackConnectionSettings({ integration }: { integration: PublicAg
     <div className="space-y-3" data-testid="slack-finish-setup">
       <p className="text-sm">Finish setting up this agent’s Slack app.</p>
       <ol className="list-decimal list-outside ml-5 space-y-1.5 text-xs text-muted-foreground">
-        {appSteps({ created: true }).map((step, i) => <li key={i}>{step}</li>)}
+        {appSteps({ created: true }).map((step, i) => <li key={i}>{step}
+          {i === 0 && <div className="mt-2"><ExternalButton href={creationUrl}>Create app in Slack</ExternalButton></div>}
+        </li>)}
       </ol>
-      <ExternalButton href={slackAppCreationUrl(integration.name || DEFAULT_APP_NAME, slack.webhook.url)}>Create app in Slack</ExternalButton>
       <IntegrationSetupField id="slack-finish-signing-secret" label="Signing Secret" type="password" autoComplete="new-password" value={signingSecret} onChange={event => setSigningSecret(event.target.value)} />
       <IntegrationSetupField id="slack-finish-bot-token" label="Bot Token" type="password" autoComplete="new-password" value={botToken} onChange={event => setBotToken(event.target.value)} placeholder="xoxb-..." />
       <Button size="sm" disabled={update.isPending || !botToken.trim() || !signingSecret.trim()} onClick={connect}>

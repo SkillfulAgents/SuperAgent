@@ -122,7 +122,7 @@ function SwitchToWebhooks({ integrationId, slack, url, rejected }: { integration
   const settings = JSON.stringify({ settings: slackManifestSettings(url) }, null, 2)
   return <div className="space-y-3" data-testid="slack-webhook-switch">
     {rejected ? <SecretRejected integrationId={integrationId} /> : <p role="status" className="text-xs text-muted-foreground" data-testid="slack-webhook-waiting">
-      Waiting for Slack’s first request to this URL. {slack.appTokenSaved ? 'Until it arrives, this agent keeps using Socket Mode.' : 'Until it arrives, this agent can’t receive messages.'}
+      Waiting for Slack’s first request to this URL.{slack.appTokenSaved ? ' Socket Mode keeps working until it arrives.' : ' Until it arrives, this agent can’t receive messages.'}
     </p>}
     <p className="text-xs font-medium">Point your Slack app at this agent’s webhook URL:</p>
     <WebhookUrl url={url} />
