@@ -246,3 +246,21 @@ it('registers unified integration discovery in host definitions and renderers', 
   expect(getToolDefinition('mcp__chat__list_agent_integrations')?.displayName).toBe('List Agent Integrations')
   expect(getRegisteredRendererNames()).toContain('mcp__chat__list_agent_integrations')
 })
+
+// ── Bash service-call variants ───────────────────────────────────────
+
+describe('getToolRenderer with input', () => {
+  it('narrows a Bash call to a platform service to that service', () => {
+    const renderer = getToolRenderer('Bash', { command: 'curl "$PROXY_BASE_URL/a/api.github.com/user"', description: 'Who am I' })
+    expect(renderer?.displayName).toBe('GitHub')
+    expect(renderer?.getSummary?.({ description: 'Who am I' })).toBe('Who am I')
+    expect(renderer?.ExpandedView).toBe(getToolRenderer('Bash')?.ExpandedView)
+  })
+
+  it('keeps the terminal for any other Bash call, and is stable across calls', () => {
+    expect(getToolRenderer('Bash', { command: 'ls' })).toBe(getToolRenderer('Bash'))
+    expect(getToolRenderer('Bash', { command: 42, description: 'Malformed' })).toBe(getToolRenderer('Bash'))
+    const input = { command: 'curl "$PLATFORM_BASE_URL/v1/apollo/people/match"' }
+    expect(getToolRenderer('Bash', input)).toBe(getToolRenderer('Bash', { ...input }))
+  })
+})

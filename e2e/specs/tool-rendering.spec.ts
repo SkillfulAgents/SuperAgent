@@ -82,6 +82,21 @@ test.describe('Tool Call Rendering', () => {
     await expect(terminal).toHaveCSS('background-color', 'rgb(0, 0, 0)')
   })
 
+  test('names the platform service a Bash call uses and keeps the terminal', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Bash service')
+
+    await sessionPage.sendMessage('check github through proxy')
+    await sessionPage.waitForInputEnabled(20000)
+
+    await sessionPage.expandLatestCompletedTurn(20000)
+    await sessionPage.expectToolCall('Bash', 20000)
+    const toolCall = renderedToolCall(sessionPage, 'Bash')
+    await expect(toolCall.getByTestId('tool-call-toggle-Bash')).toContainText('GitHub')
+
+    const terminal = toolCall.getByTestId('bash-terminal')
+    await expectToolCallExpanded(toolCall, 'Bash', true, terminal)
+  })
+
   test('renders Read tool call with file path summary', async ({ page, request }, testInfo) => {
     const { sessionPage } = await setupToolTest(page, request, testInfo, 'Read')
 
