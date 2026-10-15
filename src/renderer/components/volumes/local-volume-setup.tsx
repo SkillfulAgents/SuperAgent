@@ -38,7 +38,7 @@ function LocalVolumeSetup({ initialConfig, initialDetails, onSubmit, onBack, onC
   }
 
   return <>
-    <VolumeSetupHeader title="Set up local volume" description="Choose a name for this folder. Attached agents get read/write access." Logo={Folder} steps={['Source', 'Details']} step={1} />
+    <VolumeSetupHeader title="Set up local drive" description="Choose a name for this folder. Agents you add it to get read/write access." Logo={Folder} steps={['Source', 'Details']} step={1} />
     <form onSubmit={event => { event.preventDefault(); void onSubmit(config, details) }} className="space-y-4">
       <VolumeDetailsFields value={details} onChange={value => { setDetails(value); clearError() }} disabled={isSaving || isPicking}>
         <div className="space-y-2">
@@ -50,7 +50,7 @@ function LocalVolumeSetup({ initialConfig, initialDetails, onSubmit, onBack, onC
         </div>
       </VolumeDetailsFields>
       {(error || pickerError) && <p role="alert" className="text-sm text-destructive">{error || pickerError}</p>}
-      <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={isSaving || isPicking} disabled={!details.name.trim() || !config.path} submitLabel={attachToAgent ? 'Create and attach' : 'Create volume'} />
+      <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={isSaving || isPicking} disabled={!details.name.trim() || !config.path} submitLabel={attachToAgent ? 'Create and add' : 'Create drive'} />
     </form>
   </>
 }

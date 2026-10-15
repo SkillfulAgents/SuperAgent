@@ -6,7 +6,7 @@ const FILE_CHANGING_COMMAND = /(^|[\s;&|(])(\S*\/)?(mv|rm|rmdir|cp|mkdir|touch|l
 function indexHint(roots: string[]): string | undefined {
   if (roots.length === 0) return undefined
   const indexes = roots.map((root) => JSON.stringify(indexPath(root))).join(', ')
-  return `Folder index: ${indexes}. Update the index if this change makes an entry wrong or missing.`
+  return `Drive index: ${indexes}. Update the index if this change makes an entry wrong or missing.`
 }
 
 function escapeRegExp(text: string): string {

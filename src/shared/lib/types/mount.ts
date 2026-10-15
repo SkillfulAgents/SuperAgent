@@ -45,6 +45,8 @@ export type VolumeCacheMode = 'local' | 'remote'
 export interface ContainerVolume {
   volumeId: string // attachment id; the agent token scopes its lookup
   name: string
+  /** The name people see. Older hosts omit it, and the prompt shows the folder name. */
+  volumeName?: string
   /** Older hosts omit this; the image preserves local-folder behavior in that case. */
   cacheMode?: VolumeCacheMode
   /** Lets rclone recognize aliases of the same file before replacing a target. */

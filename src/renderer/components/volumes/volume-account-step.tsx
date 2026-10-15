@@ -72,6 +72,6 @@ export function VolumeRemoteDetailsStep({ label, accountName, active, details, o
     <VolumeDetailsFields value={details} onChange={onDetailsChange} disabled={isSaving}>{children}</VolumeDetailsFields>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={isSaving}
-      disabled={!active || !details.name.trim() || !canSave} submitLabel={attachToAgent ? 'Create and attach' : 'Create volume'} />
+      disabled={!active || !details.name.trim() || !canSave} submitLabel={attachToAgent ? 'Create and add' : 'Create drive'} />
   </form>
 }

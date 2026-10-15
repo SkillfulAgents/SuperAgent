@@ -131,7 +131,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       render: () => deferredTab(<ConnectionsTab />),
       headerActions: <Suspense fallback={null}><NewIntegrationButton /></Suspense>,
     },
-    { id: 'volumes', label: 'Volumes', icon: <FolderOpen className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
+    { id: 'volumes', label: 'Drives', icon: <FolderOpen className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
     ...(showAdminSettings
       ? [
           { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },

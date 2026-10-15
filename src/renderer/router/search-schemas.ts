@@ -86,7 +86,7 @@ const arrivalParams = Object.fromEntries(
 // `detail` is the open connection-detail overlay on the Connections tab,
 // URL-driven for parity with the agent connections route (deep-linkable +
 // reload-durable). Only the Connections tab reads it; `lenient()` drops it on
-// other tabs. Connection detail always returns to its own list. A volume
+// other tabs. Connection detail always returns to its own list. A drive
 // detail opened from an agent home carries `source: 'home'` so Back returns there.
 export const settingsSearchSchema = z
   .object({

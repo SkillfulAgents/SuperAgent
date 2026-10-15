@@ -52,7 +52,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
       await onSave({ ...parsedDetails.data, ...(source ? { source } : {}) })
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save volume')
+      setError(err instanceof Error ? err.message : 'Could not save drive')
     } finally { setIsSaving(false) }
   }
 
@@ -60,7 +60,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
   return <Dialog open onOpenChange={open => { if (!open && !isSaving && !starting) onClose() }}>
     <DialogContent className="sm:max-w-lg" data-testid="volume-settings-dialog">
       {volume ? <>
-        <DialogHeader><DialogTitle>Volume settings</DialogTitle><DialogDescription>Manage this saved volume. Existing agents keep their current mount paths.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Drive settings</DialogTitle><DialogDescription>Manage this saved drive. Existing agents keep their current folder paths.</DialogDescription></DialogHeader>
         <form onSubmit={event => { event.preventDefault(); void save(details) }} className="space-y-4">
           <VolumeDetailsFields value={details} onChange={value => { setDetails(value); setError(null) }} disabled={isSaving} inUse={volume.attachmentCount > 0}>
             <div className="space-y-2"><p className="text-sm font-medium">Folder</p><p className="break-all font-mono text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
@@ -71,10 +71,10 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
       </> : Setup ? <Setup initialConfig={selected?.config} initialDetails={details} onSubmit={(config, values) => save(values, config)}
         onBack={() => { setSelected(null); setError(null) }} onCancel={onClose} isSaving={isSaving} error={error} clearError={() => setError(null)} attachToAgent={attachToAgent} /> : <>
         <DialogHeader className="text-left">
-          <DialogTitle>New Volume</DialogTitle>
+          <DialogTitle>New Drive</DialogTitle>
           <DialogDescription>Choose where your files live.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3" aria-label="Volume sources">
+        <div className="space-y-3" aria-label="Drive sources">
           {Object.values(volumeSetupRegistry).map(definition => {
             const available = definition.isAvailable()
             return <button key={definition.type} type="button" aria-label={definition.label} data-testid={`volume-source-${definition.type}`}

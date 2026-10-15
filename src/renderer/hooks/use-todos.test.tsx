@@ -223,7 +223,7 @@ describe('useStartTodo', () => {
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
       origin: 'todo',
-      message: 'Churn\n\nWhy did it spike?\n\n[Mounted folders (read-write):]\n- /mounts/notes (from /tmp/notes)\n\n[Attached files:]\n- /workspace/uploads/notes/',
+      message: 'Churn\n\nWhy did it spike?\n\n[Attached drives (read-write):]\n- /mounts/notes (from /tmp/notes)\n\n[Attached files:]\n- /workspace/uploads/notes/',
     })
   })
 

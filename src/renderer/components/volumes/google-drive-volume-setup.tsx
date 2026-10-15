@@ -42,8 +42,8 @@ function GoogleDriveVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, is
   }
 
   return <>
-    <VolumeSetupHeader title={step === 'account' ? 'Connect Google Drive' : 'Set up Google Drive volume'}
-      description={step === 'account' ? 'Choose an account or connect a new one.' : 'Select a folder and name it. Attached agents get read/write access.'}
+    <VolumeSetupHeader title={step === 'account' ? 'Connect Google Drive' : 'Set up Google Drive'}
+      description={step === 'account' ? 'Choose an account or connect a new one.' : 'Select a folder and name it. Agents you add it to get read/write access.'}
       Logo={GoogleDriveLogo} steps={['Source', 'Account', 'Details']} step={step === 'account' ? 1 : 2} />
     {step === 'account' ? <VolumeAccountStep toolkit="googledrive" label="Google Drive" accounts={accounts} accountId={accountId} active={active}
       onSelect={selectAccount} onNext={() => { clearError(); setStep('details') }} onBack={onBack} onCancel={onCancel} />

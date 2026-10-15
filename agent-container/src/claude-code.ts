@@ -27,7 +27,7 @@ import { computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
-import { mountedVolumeIndexes, mountedVolumePaths, type VolumeIndex } from './volume-mounts';
+import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
@@ -347,7 +347,7 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  mountPathsJoined: string;
+  drives: { nameJson: string; pathJson: string }[];
   mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
@@ -384,7 +384,7 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  const mountPaths = mountedVolumePaths();
+  const drives = mountedDrives();
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
@@ -412,10 +412,10 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
-    hasMounts: mountPaths.length > 0,
-    // Each path is rendered as a JSON string literal. A folder name is user
-    // bytes, and a raw newline or `#` in it would read as prompt structure.
-    mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
+    hasMounts: drives.length > 0,
+    // Names and paths render as JSON string literals. Both are user bytes, and
+    // a raw newline or `#` in them would read as prompt structure.
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path) })),
     mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,

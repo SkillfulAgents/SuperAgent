@@ -45,7 +45,7 @@ export async function addMount(
     db.insert(agentVolumes).values({ id, agentSlug: slug, volumeId: row.id, name: availableMountName(slug, row.name), createdAt: new Date() }),
   ])
   const mount = (await getMounts(slug)).find(m => m.id === id)
-  if (!mount) throw new VolumeError('Mount could not be loaded', 404)
+  if (!mount) throw new VolumeError('Drive could not be loaded', 404)
   return mount
 }
 
@@ -54,19 +54,19 @@ export async function addMount(
 export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer): Promise<MountedVolume> {
   const selection = and(eq(volumeDefinitions.id, volumeId), selectableVolumes(viewer))
   const source = await db.select().from(volumeDefinitions).where(selection).get()
-  if (!source) throw new VolumeError('Volume not found', 404)
+  if (!source) throw new VolumeError('Drive not found', 404)
   const stored = storedDefinition(source)
-  if (!stored || !instantiateVolume(stored)) throw new VolumeError('Volume configuration is unavailable', 400)
+  if (!stored || !instantiateVolume(stored)) throw new VolumeError('Drive configuration is unavailable', 400)
   const result = await insertWhere(agentVolumes, {
     id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), createdAt: new Date(),
   }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
     .onConflictDoNothing({ target: [agentVolumes.agentSlug, agentVolumes.volumeId] }).run()
   // Idempotent attachment still requires current visibility.
   if (changesOf(result) === 0 && !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection).get()) {
-    throw new VolumeError('Volume not found', 404)
+    throw new VolumeError('Drive not found', 404)
   }
   const mount = (await getMounts(slug)).find(m => m.volumeId === volumeId)
-  if (!mount) throw new VolumeError('Mount could not be loaded', 404)
+  if (!mount) throw new VolumeError('Drive could not be loaded', 404)
   return mount
 }
 
@@ -90,7 +90,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
     volumes: judged.flatMap(({ row, reason }) => {
       if (reason !== null) return []
       const driver = instantiateVolume(row)
-      return [{ volumeId: row.id, name: row.name, cacheMode: driver?.cacheMode ?? 'local',
+      return [{ volumeId: row.id, name: row.name, volumeName: row.volumeName, cacheMode: driver?.cacheMode ?? 'local',
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
         ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
         ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}) }]

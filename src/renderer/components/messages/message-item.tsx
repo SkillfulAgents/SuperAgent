@@ -465,7 +465,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               >
                 <Link2 className="h-3 w-3 text-blue-500" />
                 <span className="font-medium">{mount.containerPath}</span>
-                <span className="text-muted-foreground">mounted</span>
+                <span className="text-muted-foreground">drive</span>
               </div>
             ))}
           </div>
