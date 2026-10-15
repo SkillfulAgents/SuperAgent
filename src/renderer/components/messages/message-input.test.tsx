@@ -6,14 +6,21 @@ import { MessageInput } from './message-input'
 import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
-import { renderWithProviders } from '@renderer/test/test-utils'
+import { renderWithProviders as renderWithAppProviders } from '@renderer/test/test-utils'
+import { VoiceModeHost } from './voice-mode-host'
 import { useDraft } from '@renderer/context/drafts-context'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
+
+// The voice host lives above the routes in the app, so it wraps every render here.
+function renderWithProviders(ui: ReactElement) {
+  const result = renderWithAppProviders(<VoiceModeHost>{ui}</VoiceModeHost>)
+  return { ...result, rerender: (next: ReactElement) => result.rerender(<VoiceModeHost>{next}</VoiceModeHost>) }
+}
 
 const mockCreateSession = { mutateAsync: vi.fn(), isPending: false, error: null }
 let mockSessions: Array<{ id: string }> = []
