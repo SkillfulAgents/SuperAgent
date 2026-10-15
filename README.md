@@ -171,6 +171,8 @@ Both regular and auth-enabled images are published on every push to `main` and o
 | `HOST` | Server hostname, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `localhost` |
 | `PORT` | Server port, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `47891` |
 | `USE_HTTPS` | Use `https` protocol in the auth base URL when `TRUSTED_ORIGINS` is not set. | `false` |
+| `HOST_PUBLIC_URL` | The public https address of the app, for links and pages handed to outside services (OAuth callbacks, the meeting bot's camera page). Features that need the internet to reach the app, such as [meetings](docs/meeting-integrations.md), are offered only when this is set to a non-private https URL. | First `TRUSTED_ORIGINS` entry (links only) |
+| `RECALL_API_KEY` / `RECALL_REGION` | Self-hosted alternative to the platform proxy for meeting bots: a Recall.ai key and its region (`us-west-2` default). Not needed when the platform is connected. | None |
 
 ### Example: production deployment
 

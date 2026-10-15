@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Globe } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 
 /**
- * Renders a vendor-supplied page icon (Exa `favicon`), or a globe when absent/blocked.
+ * Renders a page icon (Exa's `favicon`, or a Bash curl's guessed `/favicon.ico`), or a globe when absent/blocked.
  * Only https icon URLs are accepted; private/local hosts are refused. Pattern ancestry:
  * onError→fallback from agent-home/home-bookmarks.tsx. No third-party favicon service.
  *
@@ -15,7 +15,7 @@ import { cn } from '@shared/lib/utils/cn'
  * Deliberately mirrors, rather than imports, `isPrivateHost` from
  * shared/lib/utils/url-safety.ts: that module imports `node:dns/promises` at top level, and no
  * renderer file pulls it in today. Importing it here would drag Node's dns into the browser
- * bundle - which typecheck and vitest both pass and only a build catches. site-favicon.test.ts
+ * bundle - which typecheck and vitest both pass and only a build catches. site-favicon.test.tsx
  * asserts this copy is never weaker than that one, so loosening it here fails the suite.
  */
 function isPrivateHost(hostname: string): boolean {
@@ -58,10 +58,9 @@ function hexQuadToV4(rest: string): string {
 }
 
 /**
- * A vendor-supplied icon URL, accepted only if https and not a private host. The URL is the
- * page's own declared icon, so a hostile page can name anything - including an address on the
- * reader's network. http is refused rather than upgraded to https: we did not construct this
- * path, so rewriting its scheme would just 404.
+ * An icon URL, accepted only if https and not a private host. A page's declared icon or a
+ * command's host can name anything - including an address on the reader's network. http is
+ * refused rather than upgraded: a web deployment blocks it as mixed content.
  */
 export function vendorFaviconHref(src: string): string | null {
   try {
@@ -94,9 +93,9 @@ export function SiteFavicon({
   fallback = 'globe',
 }: {
   /**
-   * The page's declared icon, as supplied by the search vendor. Nothing is derived: guessing
-   * `/favicon.ico` misses roughly 40% of real sites, and every result we can show an icon for
-   * already carries one. No icon means the generic glyph, which is the honest answer.
+   * The page's declared icon, as supplied by the search vendor, or the host's `/favicon.ico` for a
+   * direct curl in Bash, which has no vendor to ask. That guess misses roughly 40% of real sites,
+   * so search results never take it. A miss means the fallback, which is the honest answer.
    */
   src?: string
   className?: string
@@ -108,8 +107,18 @@ export function SiteFavicon({
     if (fallback === 'none') return null
     return <Globe aria-hidden className={cn('shrink-0 text-muted-foreground', className)} />
   }
-  // Light plate in both themes: site favicons are often dark-on-transparent (Exa returns the
-  // page's declared icon, not a dark-mode variant). Size/margin classes land on the plate.
+  return (
+    <FaviconPlate className={className}>
+      <img src={href} alt="" className="h-full w-full object-contain" onError={onError} />
+    </FaviconPlate>
+  )
+}
+
+/**
+ * Light plate in both themes: site favicons are often dark-on-transparent (Exa returns the
+ * page's declared icon, not a dark-mode variant). Size/margin classes land on the plate.
+ */
+export function FaviconPlate({ className, children }: { className?: string; children: ReactNode }) {
   return (
     <span
       aria-hidden
@@ -118,7 +127,7 @@ export function SiteFavicon({
         className,
       )}
     >
-      <img src={href} alt="" className="h-full w-full object-contain" onError={onError} />
+      {children}
     </span>
   )
 }

@@ -1,0 +1,23 @@
+{
+  "sessionId": "d475e60a-8682-4699-b9cc-9054c5095f59",
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.296",
+  "cliVersion": "2.1.296",
+  "capturedAt": "2026-10-10",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [],
+  "source": "capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (SDK 0.3.296 / CLI 2.1.296). Explicit run_in_background:true Bash (`sleep 8`); the lead turn ends while it runs, then the completion wake turn.",
+  "backgroundTasks": [
+    {
+      "taskId": "bghlv4ezl",
+      "taskType": "local_bash",
+      "startedT": 2123,
+      "prematureIdleT": 2985,
+      "realCompletionT": 10127
+    }
+  ],
+  "settledT": 10935,
+  "totalEntries": 63
+}

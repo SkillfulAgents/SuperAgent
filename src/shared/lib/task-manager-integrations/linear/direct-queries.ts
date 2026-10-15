@@ -1,6 +1,6 @@
-const ISSUE_FIELDS = 'id identifier title updatedAt archivedAt delegate{id} state{id name type}'
-const COMMENT_FIELDS = 'id body createdAt updatedAt archivedAt user{id app} parent{id}'
-const HISTORY_FIELDS = 'id createdAt updatedAt actor{id app} fromDelegate{id} toDelegate{id} fromState{id} toState{id name type} archived'
+export const ISSUE_FIELDS = 'id identifier title updatedAt archivedAt delegate{id} state{id name type}'
+export const COMMENT_FIELDS = 'id body createdAt updatedAt archivedAt user{id app} parent{id}'
+export const HISTORY_FIELDS = 'id createdAt updatedAt actor{id app} fromDelegate{id} toDelegate{id} fromState{id} toState{id name type} archived'
 
 // Receive the event itself. No notification/history scans or reconnect replay.
 export const DIRECT_SUBSCRIPTIONS = {

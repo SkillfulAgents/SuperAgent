@@ -131,8 +131,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: AUTH_MODE=${{ matrix.auth_mode }}
+          # Read-only: every release bumps package.json's version, which busts
+          # the npm ci layers, so exporting cache here cost minutes and never hit.
           cache-from: type=gha,scope=app-${{ matrix.auth_mode }}
-          cache-to: type=gha,mode=max,scope=app-${{ matrix.auth_mode }}
 
   # Kick gamut-infra's release-ingest: crane copy the -auth image to ECR,
   # build the MicroVM agent image, register the release_registry row. Needs

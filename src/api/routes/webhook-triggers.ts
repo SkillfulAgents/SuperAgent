@@ -1,4 +1,5 @@
-import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 /**
  * Webhook Triggers API Routes
  *
@@ -150,7 +151,8 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to update webhook trigger runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }

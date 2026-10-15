@@ -4,7 +4,7 @@ import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/h
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { getPlatform } from '@renderer/lib/env'
 import { Wsl2InstallGuide } from './wsl2-install-guide'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
 import {

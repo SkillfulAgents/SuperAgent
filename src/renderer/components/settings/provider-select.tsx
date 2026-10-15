@@ -5,6 +5,8 @@ import type { ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 import { ProviderLogo } from './provider-logo'
 import { ProviderUsage } from './provider-usage'
 
+export const connectionLabel = (c: ConnectionInfo) => `${c.name}${c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}`
+
 export function ProviderSelect({ connections: unordered, value, onChange, directApiOnly, disabled }: {
   connections: ConnectionInfo[]
   value?: string | null
@@ -25,17 +27,16 @@ export function ProviderSelect({ connections: unordered, value, onChange, direct
   ]))
   if (connections.length < 2) return null
   const selected = connections.find(c => c.id === value)
-  const label = (c: ConnectionInfo) => `${c.name}${c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}`
   return (
     <>
       <div className="mx-1 flex text-xs">
         <Select open={open} onOpenChange={next => { setOpen(next); if (!next) setExpanded(new Set()) }} value={value ?? ''} onValueChange={onChange} disabled={disabled}>
           <SelectTrigger aria-label="Connection" className="h-auto w-auto max-w-full justify-start gap-1 border-0 px-1 py-1 font-medium shadow-none hover:bg-accent focus:ring-0 focus-visible:ring-1 [&>svg]:text-foreground [&>svg]:opacity-100">
-            <SelectValue placeholder="Choose provider">{selected ? <ConnectionName connection={selected} label={label(selected)} /> : undefined}</SelectValue>
+            <SelectValue placeholder="Choose provider">{selected ? <ConnectionName connection={selected} label={connectionLabel(selected)} /> : undefined}</SelectValue>
           </SelectTrigger>
           <SelectContent position="popper" className="min-w-72 max-w-[22rem]" onPointerLeave={() => setExpanded(new Set())}>
             {connections.map((connection, index) => (
-              <ProviderOption key={connection.id} connection={connection} label={label(connection)} open={open}
+              <ProviderOption key={connection.id} connection={connection} label={connectionLabel(connection)} open={open}
                 expanded={expanded.has(connection.id)} onExpand={() => expandAt(index)}
                 disabled={directApiOnly && connection.supportsDirectApi === false} />
             ))}

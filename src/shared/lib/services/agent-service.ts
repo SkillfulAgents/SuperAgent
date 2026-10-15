@@ -22,6 +22,7 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
+import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -62,6 +63,7 @@ function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent 
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
+    avatar: record.avatar,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),
     createdAt: record.createdAt,
@@ -335,6 +337,13 @@ export async function updateAgent(
 
     return toApiAgent(updated, info.status, info.port, body)
   })
+}
+
+/** Appearance lives entirely in the catalog, so changing it never reads a workspace. */
+export async function updateAgentAvatar(slug: string, input: AgentAvatar): Promise<AgentAvatar | null> {
+  const avatar = agentAvatarSchema.parse(input)
+  const record = await agentCatalog.update(slug, { avatar })
+  return record?.avatar ?? null
 }
 
 /**

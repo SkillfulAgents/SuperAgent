@@ -9,7 +9,7 @@ import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
 import { useNavigate } from '@tanstack/react-router'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
-import { usePendingMessages } from '@renderer/context/pending-messages-context'
+import { usePendingMessages, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
@@ -18,21 +18,22 @@ import { SessionSearchBar } from '@renderer/components/messages/session-search-b
 
 interface SessionViewProps {
   agentSlug: string
-  sessionId: string
+  sessionId: string | null
+  onSessionCreated?: PendingMessagesContextValue['onSessionCreated']
 }
 
 /**
- * The session leaf (sessionRoute, `/agents/$slug/sessions/$sessionId`). Renders
+ * The session leaf, including `/sessions/new` with a null sessionId. Renders
  * the chat column, the per-session search bar, and the automated-session
  * indicator banners (which link back to the originating trigger/schedule).
  *
- * `FilePreviewProvider` wraps ONLY this leaf: files are session-specific, so it
- * must remount/clear when the route's `sessionId` changes. The optimistic
+ * `FilePreviewProvider` wraps this view. SessionRoute keeps it through first
+ * send, and remounts it when navigating to a different session or fresh draft. The optimistic
  * `pendingMessagesRef` + two-holder `useMessageStream` live one level up in
  * `AgentShell`, so they survive leaving this leaf for a sibling sub-view and
  * coming back.
  */
-export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
+export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSessionCreated }: SessionViewProps) {
   useRenderTracker('SessionView')
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
@@ -40,6 +41,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const clearSessionUnread = useClearSessionUnread()
   const {
+    onSessionCreated,
     getPendingMessages,
     onMessageSent,
     onMessageUuidAssigned,
@@ -48,14 +50,15 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   } = usePendingMessages()
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
-  const search = useSessionSearch(true, sessionId)
+  const search = useSessionSearch(!!sessionId, sessionId)
 
   // Context usage: prefer live stream data, fall back to persisted session metadata
-  const contextUsage = streamContextUsage ?? session?.lastUsage ?? null
+  const contextUsage = sessionId ? streamContextUsage ?? session?.lastUsage ?? null : null
   const contextPercent = contextUsage ? computeContextPercent(contextUsage) : null
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
+    if (!sessionId) return
     const clearWrites = () => {
       markSessionNotificationsRead.mutate(sessionId)
       // "Mark as unread" survives until the session is *reopened*, so it clears
@@ -81,6 +84,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
 
   // Also mark notifications as read when the tab regains focus while viewing it
   useEffect(() => {
+    if (!sessionId) return
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         markSessionNotificationsRead.mutate(sessionId)
@@ -95,6 +99,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   // (optimistic ghost in flight while the backend catches up) never flashes
   // not-found — and the agent-level loader has already gated access.
   if (
+    sessionId &&
     sessionError instanceof HttpError &&
     sessionError.status === 404 &&
     getPendingMessages(sessionId).length === 0
@@ -162,9 +167,10 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
       <FilePreviewProvider>
         <WorkflowProvider>
           <div className="flex-1 flex flex-col min-h-0">
-            <SessionSearchBar search={search} />
+            {sessionId && <SessionSearchBar search={search} />}
             <SessionChatColumn
               sessionId={sessionId}
+              onSessionCreated={handleSessionCreated ?? onSessionCreated}
               agentSlug={agentSlug}
               agentId={session?.agentSlug}
               pendingUserMessages={getPendingMessages(sessionId)}

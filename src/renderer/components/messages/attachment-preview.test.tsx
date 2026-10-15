@@ -2,14 +2,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AttachmentPreview, type Attachment, type FolderAttachment, type MountAttachment, type UploadState } from './attachment-preview'
+import { AttachmentPreview, type Attachment, type FileAttachment, type FolderAttachment, type MountAttachment, type UploadState } from './attachment-preview'
 
 function createFile(name: string, size: number, type: string): File {
   const blob = new Blob(['x'.repeat(size)], { type })
   return new File([blob], name, { type })
 }
 
-function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string; upload?: UploadState; error?: string } = {}): Attachment {
+function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string; upload?: UploadState; error?: string } = {}): FileAttachment {
   const { name = 'file.txt', size = 1024, type = 'text/plain', id = 'att-1', preview, upload, error } = overrides
   return { type: 'file', file: createFile(name, size, type), id, preview, upload, error }
 }
@@ -35,6 +35,20 @@ describe('AttachmentPreview', () => {
     const attachments = [createAttachment({ name: 'report.pdf' })]
     render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
+  })
+
+  it.each(['file', 'image', 'folder'] as const)('shows a non-retryable %s failure with removal but no retry control', async (kind) => {
+    const attachment = kind === 'folder' ? createFolderAttachment() : createAttachment({
+      name: kind === 'image' ? 'photo.png' : 'report.txt',
+      ...(kind === 'image' ? { type: 'image/png', preview: 'blob:x' } : {}),
+    })
+    const onRemove = vi.fn()
+    render(<AttachmentPreview attachments={[{ ...attachment, error: 'Upload rejected', errorRetryable: false }]} onRemove={onRemove} onRetry={vi.fn()} />)
+    expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'error')
+    expect(screen.getByTitle('Upload rejected')).toBeInTheDocument()
+    expect(screen.queryByTestId('attachment-retry')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /^Remove / }))
+    expect(onRemove).toHaveBeenCalledWith(attachment.id)
   })
 
   it('renders formatted file size in bytes', () => {
@@ -339,4 +353,3 @@ describe('upload status', () => {
     expect(screen.getByTestId('attachment-preview')).not.toHaveAttribute('data-attachment-status')
   })
 })
-

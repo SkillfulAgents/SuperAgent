@@ -93,17 +93,17 @@ export function SubAgentBlock({
   // Fetch subagent messages — poll while running so concurrent background agents stay updated
   const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
 
-  // Extract streaming state from activeSubagent (only if this block is the active one)
-  const isActiveSubagent = activeSubagent?.parentToolId === toolCall.id
-  const subagentStreamingMessage = isActiveSubagent ? activeSubagent?.streamingMessage : null
-  const subagentStreamingToolUse = isActiveSubagent ? activeSubagent?.streamingToolUse : null
+  // The parent selects this block's original or resumed run. A SendMessage
+  // run has a different tool id but still streams into the same Agent block.
+  const subagentStreamingMessage = activeSubagent?.streamingMessage ?? null
+  const subagentStreamingToolUse = activeSubagent?.streamingToolUse ?? null
 
   // Auto-expand when streaming content arrives
   useEffect(() => {
-    if (isActiveSubagent && (subagentStreamingMessage || subagentStreamingToolUse)) {
+    if (subagentStreamingMessage || subagentStreamingToolUse) {
       setExpanded(true)
     }
-  }, [isActiveSubagent, subagentStreamingMessage, subagentStreamingToolUse])
+  }, [subagentStreamingMessage, subagentStreamingToolUse])
 
   // Check if streaming text is already persisted (same dedup pattern as main agent)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -141,11 +141,11 @@ export function SubAgentBlock({
       const parsed = parseToolResult(toolCall.result)
       return parsed.text
     }
-    if (isActiveSubagent && activeSubagent?.resultText) {
+    if (activeSubagent?.resultText) {
       return activeSubagent.resultText
     }
     return null
-  }, [toolCall.result, isActiveSubagent, activeSubagent?.resultText])
+  }, [toolCall.result, activeSubagent?.resultText])
 
   // Stats from completed subagent
   const stats = toolCall.subagent
@@ -237,7 +237,7 @@ export function SubAgentBlock({
 
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (
-              <TranscriptText>{subagentStreamingMessage}</TranscriptText>
+              <TranscriptText mode="streaming" agentSlug={agentSlug}>{subagentStreamingMessage}</TranscriptText>
             )}
 
             {/* Streaming tool use from subagent (not yet persisted) */}
@@ -250,7 +250,7 @@ export function SubAgentBlock({
 
             {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
             {resultText && !isResultInFlatItems && !isRunning && (
-              <TranscriptText>{resultText}</TranscriptText>
+              <TranscriptText mode="settled" agentSlug={agentSlug}>{resultText}</TranscriptText>
             )}
           </div>
 
@@ -266,7 +266,7 @@ export function SubAgentBlock({
               )}
             </div>
           )}
-          {isRunning && isActiveSubagent && activeSubagent?.usage && (
+          {isRunning && activeSubagent?.usage && (
             <div className="mt-2 text-xs text-muted-foreground italic">
               {formatElapsed(activeSubagent.usage.duration_ms)}
               {' · '}{formatTokens(activeSubagent.usage.total_tokens)} tokens

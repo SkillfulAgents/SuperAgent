@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+
 const useSettingsMock = vi.fn()
 vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: undefined }) }))
 

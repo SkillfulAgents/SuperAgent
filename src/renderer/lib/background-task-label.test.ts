@@ -87,6 +87,16 @@ describe('labelBackgroundTasks', () => {
     expect(task).toMatchObject({ title: 'Background command', detail: 'Serve local assets' })
   })
 
+  it("names a subagent after the runtime's subagent type when the transcript has no launch", () => {
+    // The launch's tool_result (which carries the agentId the transcript join
+    // needs) lands after the task is already listed.
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'agent-2', startedAt: 1, isSubagent: true, subagentType: 'web-browser', description: 'Check prices' }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ title: 'web-browser', detail: 'Check prices' })
+  })
+
   it('prefers the launching call over the runtime description', () => {
     const [task] = labelBackgroundTasks(
       [{ taskId: 'agent-1', startedAt: 1, isSubagent: true, description: 'Runtime wording' }],

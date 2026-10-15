@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import MarkdownIt from 'markdown-it'
 import type Token from 'markdown-it/lib/token.mjs'
 import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
@@ -28,7 +28,9 @@ import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Comma
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { findPotentialSecrets, type PotentialSecret, type SecuredSecret } from '@renderer/lib/secret-detection'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -461,6 +463,39 @@ const removeFormattingAtBlockStart: Command = (state, dispatch) => {
   return false
 }
 
+/** Whether `pos` touches a link, checking the text on both sides since a link's mark does not extend past its end. */
+function isInLink(state: EditorState, pos: number): boolean {
+  const $pos = state.doc.resolve(pos)
+  const { link } = state.schema.marks
+  return !!(link.isInSet($pos.nodeAfter?.marks ?? []) ?? link.isInSet($pos.nodeBefore?.marks ?? []))
+}
+
+/** Whether `url` is one web or mail address the card can open and paste can link. */
+function isOpenableUrl(url: string): boolean {
+  if (!/^(https?:\/\/|mailto:)\S+$/i.test(url)) return false
+  try {
+    new URL(url)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Pasting a single URL over selected text links it, unless the result could hide or lose anything. */
+function linkPastedUrl(state: EditorState, text: string): Transaction | null {
+  // Select-all over a draft that is a single text block is still a selection inside one block.
+  const wholeSingleBlock = state.selection instanceof AllSelection && state.doc.childCount === 1 && !!state.doc.firstChild?.isTextblock
+  const selection = wholeSingleBlock ? TextSelection.between(state.selection.$from, state.selection.$to) : state.selection
+  const { link, code } = state.schema.marks
+  if (!(selection instanceof TextSelection) || selection.empty) return null
+  const { from, to, $from, $to } = selection
+  if (!$from.sameParent($to) || $from.parent.type.spec.code || state.doc.rangeHasMark(from, to, code)) return null
+  const url = text.trim()
+  // A link hides its URL, and secret highlighting only marks visible text.
+  if (!isOpenableUrl(url) || findPotentialSecrets(url).length > 0) return null
+  return state.tr.addMark(from, to, link.create({ href: markdownTokenizer.normalizeLink(url) })).scrollIntoView()
+}
+
 /** Backspace on an empty paragraph below a list joins it into the text above instead of adding an item. */
 const returnUpFromEmptyLine: Command = (state, dispatch, view) => {
   const { $from } = state.selection
@@ -736,7 +771,7 @@ export function MarkdownComposerEditor({
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
-    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
+    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
     className
   )
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -753,6 +788,7 @@ export function MarkdownComposerEditor({
     onRemoveSecuredSecrets,
   })
   const lastMarkdownRef = useRef(value)
+  const [linkCard, setLinkCard] = useState<{ href: string; anchor: { current: Element } } | null>(null)
 
   latestRef.current = {
     onChange,
@@ -878,6 +914,9 @@ export function MarkdownComposerEditor({
       dispatchTransaction: (tr) => {
         const nextState = view.state.apply(tr)
         view.updateState(nextState)
+        // The link card closes on an edit or when the caret leaves every link. A click opens it before the caret moves there.
+        const leavesLink = tr.docChanged || (tr.selectionSet && !isInLink(nextState, nextState.selection.head))
+        if (leavesLink) setLinkCard(null)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
         if (!tr.docChanged) return
         const markdown = serializeComposerMarkdown(
@@ -886,6 +925,12 @@ export function MarkdownComposerEditor({
         )
         lastMarkdownRef.current = markdown
         if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
+      },
+      handleClick: (editorView, pos, event) => {
+        const link = editorView.editable && event.button === 0 && event.target instanceof Element ? event.target.closest('a') : null
+        const href = link?.getAttribute('href') ?? ''
+        if (link && isOpenableUrl(href)) setLinkCard({ href, anchor: { current: link } })
+        return false
       },
       handlePaste: (editorView, event) => {
         const hasFiles = Array.from(event.clipboardData?.items ?? [])
@@ -899,6 +944,11 @@ export function MarkdownComposerEditor({
         const text = event.clipboardData?.getData('text/plain')
         if (!text) return false
         event.preventDefault()
+        const linked = linkPastedUrl(editorView.state, text)
+        if (linked) {
+          editorView.dispatch(linked)
+          return true
+        }
         editorView.dispatch(
           editorView.state.tr
             .replaceSelection(markdownClipboardSlice(text))
@@ -935,6 +985,8 @@ export function MarkdownComposerEditor({
     tr.setSelection(TextSelection.atEnd(tr.doc))
     view.updateState(view.state.apply(tr))
     lastMarkdownRef.current = value
+    // The redraw detaches the link the card points at.
+    setLinkCard(null)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder, value])
 
@@ -942,6 +994,7 @@ export function MarkdownComposerEditor({
     const view = viewRef.current
     if (!view) return
     view.setProps({ editable: () => !disabled })
+    if (disabled) setLinkCard(null)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder])
 
@@ -959,5 +1012,29 @@ export function MarkdownComposerEditor({
     view.dispatch(view.state.tr.setMeta(secretDecorationsMeta, true).setMeta('addToHistory', false))
   }, [potentialSecrets, securedSecrets])
 
-  return <div ref={hostRef} className="contents" />
+  return (
+    <>
+      <div ref={hostRef} className="contents" />
+      <Popover open={linkCard !== null} onOpenChange={(open) => { if (!open) setLinkCard(null) }}>
+        {linkCard && <PopoverAnchor virtualRef={linkCard.anchor} />}
+        <PopoverContent
+          align="start"
+          className="w-auto max-w-80 px-2 py-1.5 text-xs"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            title={linkCard?.href}
+            className="block max-w-full truncate text-blue-500 hover:underline"
+            onClick={() => {
+              if (linkCard) void openExternalUrl(linkCard.href)
+              setLinkCard(null)
+            }}
+          >
+            {linkCard?.href}
+          </button>
+        </PopoverContent>
+      </Popover>
+    </>
+  )
 }

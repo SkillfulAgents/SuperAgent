@@ -173,11 +173,24 @@ export const agentHomeRoute = createRoute({
   component: AgentHomeRoute,
 })
 
-export const sessionRoute = createRoute({
+// One mounted view owns both an unsent draft and the session it becomes.
+// The children only select the id; changing `new` to an id keeps this parent.
+export const sessionsLayoutRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
-  path: 'sessions/$sessionId',
-  params: { parse: (raw) => ({ sessionId: z.string().min(1).parse(raw.sessionId) }) },
+  path: 'sessions',
   component: SessionRoute,
+})
+
+// The static segment outranks `$sessionId`, so no APIs see a fake "new" id.
+export const newSessionRoute = createRoute({
+  getParentRoute: () => sessionsLayoutRoute,
+  path: 'new',
+})
+
+export const sessionRoute = createRoute({
+  getParentRoute: () => sessionsLayoutRoute,
+  path: '$sessionId',
+  params: { parse: (raw) => ({ sessionId: z.string().min(1).parse(raw.sessionId) }) },
 })
 
 export const taskRoute = createRoute({
@@ -284,7 +297,20 @@ export const settingsTabRoute = createRoute({
   component: SettingsTabRoute,
 })
 
+// ── MEETING PARTICIPANT: the page a meeting bot presents as its camera ────────
+// Sibling of the app shell: no sidebar, no chrome. The bot's browser has no
+// app session; the page authenticates with the one-time token in its URL.
+const MeetingParticipantRoute = lazyRouteComponent(() => import('./lazy-routes/meeting-participant-route'), 'MeetingParticipantRoute')
+export const meetingParticipantRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'meeting/$meetingId',
+  params: { parse: (raw) => ({ meetingId: z.string().min(1).parse(raw.meetingId) }) },
+  validateSearch: lenient(z.object({ token: z.string().optional() })),
+  component: MeetingParticipantRoute,
+})
+
 export const routeTree = rootRoute.addChildren([
+  meetingParticipantRoute,
   appShellRoute.addChildren([
     homeRoute,
     notificationsRoute,
@@ -295,7 +321,7 @@ export const routeTree = rootRoute.addChildren([
     exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
-      sessionRoute,
+      sessionsLayoutRoute.addChildren([newSessionRoute, sessionRoute]),
       taskRoute,
       webhookRoute,
       inboundXAgentRoute,

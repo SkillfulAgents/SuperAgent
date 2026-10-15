@@ -1,7 +1,8 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
-import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
@@ -35,7 +36,7 @@ import type {
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { z } from 'zod'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
-import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
+import { getAgentCapabilitySettings, getGlobalInstructions, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { getActiveWebProvider } from '../web-provider'
@@ -259,6 +260,10 @@ const HEALTH_PROBE_TIMEOUT_MS = 2000
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
   const text = stripNulls(error?.stderr).toLowerCase()
   return flags.split(/\s+/).some((flag) => flag.length > 4 && text.includes(flag.toLowerCase()))
+}
+
+export function withVolumesEnv(envVars: StartOptions['envVars'], volumes: StartOptions['volumes']): StartOptions['envVars'] {
+  return volumes?.length ? { ...envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : envVars
 }
 
 /**
@@ -741,10 +746,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // The volume list travels with the volume run flags: a run that drops one drops both.
       let volumes = options?.volumes?.length ? options.volumes : undefined
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const envFile = () => this.buildEnvFile(
-        volumes ? { ...options?.envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : options?.envVars,
-        options?.agentName,
-      )
+      const envFile = () => this.buildEnvFile(withVolumesEnv(options?.envVars, volumes), options?.agentName)
       let { flag: envFileFlag, cleanup: cleanupEnvFile } = await envFile()
       const containerName = this.getContainerName()
 
@@ -1256,12 +1258,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Resolve stored selections (bare aliases or concrete ids) to the active
       // provider's concrete wire id before the container ever sees them.
       const selected = await resolveExecutionSelection(storedSelection(options.model, options.llmProviderId))
-      const llmRuntime = await connectionRuntime(selected, this.config.agentId)
+      const llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
       const warmSelection = options.prewarmDefaults
         ? await resolveExecutionSelection(storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId))
         : null
       const warmRuntime = warmSelection
-        ? await connectionRuntime(warmSelection, this.config.agentId)
+        ? await prewarmConnectionRuntime(warmSelection, this.config.agentId)
         : undefined
       const resolvedModel = llmRuntime.model
       const resolvedBrowserModel = llmRuntime.browserModel
@@ -1286,6 +1288,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // caller inherits them. Never taken from the request — a caller (or the
       // agent itself) must not be able to loosen its own policy.
       const capabilityPolicies = getAgentCapabilitySettings()
+      // Same per-session resolution for the org-wide guidance in the prompt.
+      const globalInstructions = getGlobalInstructions()
 
       const controller = new AbortController()
       timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -1319,6 +1323,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
+          globalInstructions,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
             llmRuntime: warmRuntime,
             llmProviderId: warmRuntime.llmProviderId,
@@ -1458,7 +1463,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // A queued follow-up belongs to the running turn. It must not resolve a
     // deleted connection, rotate credentials, or rebuild the active query.
     const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
-    let llmRuntime: Awaited<ReturnType<typeof connectionRuntime>> | undefined
+    let llmRuntime: ConnectionRuntime | undefined
     if (!preserveRuntime) {
       try {
         const { agentRegistry } = await import('@shared/lib/agent-actor')
@@ -1472,7 +1477,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           storedSelection(metadata?.model, metadata?.llmProviderId),
           storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
         )
-        llmRuntime = await connectionRuntime(selected, this.config.agentId)
+        llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
         rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
         await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
       } catch (error) {
@@ -1487,6 +1492,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // Refreshed on every message so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
     const capabilityPolicies = getAgentCapabilitySettings()
+    // Also refreshed per message; a change re-queries so the prompt picks it up.
+    const globalInstructions = getGlobalInstructions()
 
     try {
       const controller = new AbortController()
@@ -1507,6 +1514,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
             ...(isAutomated !== undefined ? { isAutomated } : {}),
             capabilityPolicies,
+          globalInstructions,
           }),
           signal: controller.signal,
         }

@@ -4,6 +4,9 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeExtras } from './home-extras'
 
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   openFolder: vi.fn(),

@@ -11,11 +11,13 @@ import {
 } from './platform-endpoints-client'
 import { acknowledgePlatformRelayEvents, claimPlatformRelayEvents } from './platform-relay-client'
 import { PlatformWebhookRelayService } from './platform-webhook-relay-service'
+import { describeWebhookRelayUnavailable } from './errors'
 import type { WebhookRelayService } from './types'
 import { UnavailableWebhookRelayService } from './unavailable-webhook-relay-service'
 
 export * from './types'
-export { WebhookRelayUnavailableError } from './errors'
+export { WebhookRelayUnavailableError, describeWebhookRelayUnavailable } from './errors'
+export * from './status'
 
 // One relay per host. A build with a platform proxy always gets the platform
 // relay, which goes available/unavailable as the platform connects and
@@ -45,4 +47,14 @@ const globalForRelay = globalThis as unknown as { webhookRelay: WebhookRelayServ
 export function getWebhookRelay(): WebhookRelayService {
   globalForRelay.webhookRelay ??= createWebhookRelay()
   return globalForRelay.webhookRelay
+}
+
+/**
+ * Why `what` can't be used on this host right now, or null when webhooks can
+ * be received. Every "are webhooks available" decision goes through the
+ * relay's snapshot, never a platform-token check of its own.
+ */
+export function webhooksUnavailableMessage(what: string): string | null {
+  const { unavailableReason } = getWebhookRelay().snapshot()
+  return unavailableReason ? describeWebhookRelayUnavailable(what, unavailableReason) : null
 }

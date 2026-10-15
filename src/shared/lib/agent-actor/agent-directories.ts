@@ -1,11 +1,13 @@
 /**
  * What an agent directory says about the agent it holds: the identity in the
- * frontmatter of its instructions document. Synchronous and free of the database, so
+ * frontmatter of its instructions document and legacy mount files. Free of the database, so
  * the data migration that imports directories into the catalog table can run
  * it while the database is being opened.
  */
 import * as fs from 'fs'
-import { getLegacyAgentInstructionsPath, getAgentInstructionsPath, getAgentDir, getAgentsDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
+import path from 'node:path'
+import { mountsFileSchema } from '@shared/lib/services/mount-schema'
+import { getLegacyAgentInstructionsPath, getAgentInstructionsPath, getAgentDir, getAgentsDir, parseMarkdownWithFrontmatter, readJsonFileStrict } from '@shared/lib/utils/file-storage'
 import type { AgentSlug } from './types'
 
 /** The runtime of an agent whose workspace is a directory under the agents data directory. */
@@ -110,4 +112,9 @@ export function renameClaudeMdToAgentsMdSync(slug: AgentSlug): boolean {
   if (fs.lstatSync(agentsMd, { throwIfNoEntry: false })) return false
   fs.renameSync(legacyInstructions, agentsMd)
   return true
+}
+
+/** Boot-time import only. SQLite owns mounts after this legacy file is read. */
+export async function readLegacyAgentMounts(slug: AgentSlug): Promise<unknown[]> {
+  return readJsonFileStrict(path.join(getAgentDir(slug), 'mounts.json'), mountsFileSchema, [])
 }

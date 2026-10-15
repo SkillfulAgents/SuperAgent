@@ -45,7 +45,7 @@ beforeEach(async () => {
   integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
   events = []; integration.onEvent(async event => {
       if (event.type === 'input') {
-        if (!await deliveryStore.accept(id, event, integration.resolveRoute(event))) return
+        if (await deliveryStore.accept(id, event, integration.resolveRoute(event)) !== 'accepted') return
         await integration.acknowledgeInput(event)
       }
       events.push(event)
@@ -140,7 +140,7 @@ describe('Linear live event lifecycle', () => {
     integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
     integration.onEvent(async event => {
       if (event.type === 'input') {
-        if (!await deliveryStore.accept(id, event, integration.resolveRoute(event))) return
+        if (await deliveryStore.accept(id, event, integration.resolveRoute(event)) !== 'accepted') return
         await integration.acknowledgeInput(event)
       }
       events.push(event)
@@ -186,7 +186,7 @@ describe('Linear live event lifecycle', () => {
     integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
     integration.onEvent(async event => {
       if (event.type === 'input') {
-        if (!await deliveryStore.accept(id, event, integration.resolveRoute(event))) return
+        if (await deliveryStore.accept(id, event, integration.resolveRoute(event)) !== 'accepted') return
         await integration.acknowledgeInput(event)
       }
       events.push(event)

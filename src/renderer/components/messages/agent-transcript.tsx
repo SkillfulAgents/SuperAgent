@@ -1,4 +1,4 @@
-import { Markdown } from '@renderer/components/ui/markdown'
+import { AgentMarkdown, COMPACT_AGENT_TEXT } from './agent-markdown'
 import { ToolCallItem } from './tool-call-item'
 import type { ApiMessage, ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
 
@@ -33,10 +33,10 @@ export function flattenAssistantMessages(messages: ApiMessageOrBoundary[] | unde
 }
 
 /** A markdown text block styled for a transcript (prose, xs). */
-export function TranscriptText({ children }: { children: string }) {
+export function TranscriptText({ children, mode, agentSlug }: { children: string; mode: 'settled' | 'streaming'; agentSlug: string }) {
   return (
-    <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-      <Markdown>{children}</Markdown>
+    <div className={`prose prose-sm max-w-none break-words dark:prose-invert text-xs ${COMPACT_AGENT_TEXT}`}>
+      <AgentMarkdown text={children} mode={mode} agentSlug={agentSlug} />
     </div>
   )
 }
@@ -60,7 +60,7 @@ export function TranscriptItems({
     <>
       {items.map((item) =>
         item.kind === 'text' ? (
-          <TranscriptText key={item.key}>{item.text}</TranscriptText>
+          <TranscriptText key={item.key} mode="settled" agentSlug={agentSlug}>{item.text}</TranscriptText>
         ) : (
           <ToolCallItem
             key={item.key}

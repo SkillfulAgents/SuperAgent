@@ -27,6 +27,12 @@ const WEB_PROVIDERS: {
     docsUrl: 'https://docs.exa.ai',
   },
   {
+    value: 'parallel',
+    label: 'Parallel',
+    note: 'Free web search without an API key. Works with every model. Page reading uses the model’s built-in tools when available.',
+    docsUrl: 'https://docs.parallel.ai/integrations/mcp/search-mcp',
+  },
+  {
     value: 'native',
     label: 'Native',
     note: "Uses the model's built-in web tools. Nothing to set up, but not all models have them.",
@@ -173,7 +179,7 @@ export function WebTab() {
                           className="underline hover:text-foreground"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          View Exa docs
+                          View {provider.label} docs
                         </a>
                       </>
                     )}

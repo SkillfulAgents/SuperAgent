@@ -5,6 +5,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 import { getSettings } from '@shared/lib/config/settings'
+import { ParallelWebProvider } from './parallel-web-provider'
 import { ExaWebProvider } from './exa-web-provider'
 import { PlatformWebProvider } from './platform-web-provider'
 import type { WebProviderId } from './types'
@@ -31,6 +32,7 @@ afterEach(() => {
 
 describe('findWebProvider', () => {
   it('returns the provider for a known vendor id string', () => {
+    expect(findWebProvider('parallel')).toBeInstanceOf(ParallelWebProvider)
     expect(findWebProvider('exa')).toBeInstanceOf(ExaWebProvider)
     expect(findWebProvider('platform')).toBeInstanceOf(PlatformWebProvider)
   })
@@ -52,6 +54,13 @@ describe('getActiveWebProvider', () => {
 })
 
 describe('resolveEffectiveWebVendor', () => {
+  it('honors a keyless Parallel pin without changing the automatic incumbent', () => {
+    setActive('parallel')
+    expect(resolveEffectiveWebVendor()).toBe('parallel')
+    expect(getActiveWebProvider()?.search).toBeTypeOf('function')
+    expect(getActiveWebProvider()?.fetch).toBeUndefined()
+  })
+
   it('honors a pinned vendor even when its credential is gone (fail loud, no silent swap)', () => {
     process.env.PLATFORM_TOKEN = 't'
     setActive('exa')

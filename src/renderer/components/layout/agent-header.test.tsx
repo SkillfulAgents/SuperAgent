@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 const agent: ApiAgent = {
+  avatar: { color: 'tonal-blue', shape: 'circle' } as const,
   slug: 'test-agent',
   displaySlug: 'test-agent',
   name: 'Test Agent',

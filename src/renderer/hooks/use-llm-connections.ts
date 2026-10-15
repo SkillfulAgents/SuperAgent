@@ -34,7 +34,7 @@ export function useLlmConnections(
     staleTime: 10_000,
   })
 }
-export function useConnectionMutation() {
+export function useConnectionMutation(options?: { onSaved?: () => void }) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async ({
@@ -53,6 +53,11 @@ export function useConnectionMutation() {
       })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error ?? 'Could not update connection')
+      // Report the durable write before awaiting cache refreshes. Navigating
+      // away during those refreshes must not lose a successful save event.
+      if ((method === 'POST' && path === '') || (method === 'PUT' && /^\/[^/]+$/.test(path))) {
+        options?.onSaved?.()
+      }
       return result
     },
     onSuccess: (_result, { path }) => Promise.all([
