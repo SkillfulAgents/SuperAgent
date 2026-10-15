@@ -286,6 +286,7 @@ describe('generateSystemPrompt rendering', () => {
       'x.md',
       'audio.md',
       'exa.md',
+      'in-app-links.md',
     ]
 
     for (const guide of guides) {
@@ -392,7 +393,8 @@ describe('generateSystemPrompt rendering', () => {
     ]
 
     for (const file of files) {
-      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#)([^)]+)\)/g)) {
+      // `/settings/<tab>` and `/agents/<slug>` are in-app routes (in-app-links.md), not files.
+      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#|\/settings\/|\/agents\/)([^)]+)\)/g)) {
         const target = join(dirname(file), match[1])
         expect(existsSync(target), `${basename(file)} links to missing ${match[1]}`).toBe(true)
       }

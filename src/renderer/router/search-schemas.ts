@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isSafeInternalPath } from '@renderer/lib/api'
+import { isSafeInternalPath } from '@renderer/lib/safe-internal-path'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
 
@@ -44,10 +44,10 @@ export const connectionsSearchSchema = z
   })
 
 // Open-redirect-safe internal path. ONE definition for the whole app: the same
-// `isSafeInternalPath` backstop applied on the actual stash/redirect path in
-// api.ts (rejects `//host`, `/\host`, and a leading encoded `/%2f`/`/%5c`), so
-// the schema gate and the sanitizer can't drift. Shared by the post-login
-// `redirect` and the settings `from` close-target.
+// `isSafeInternalPath` (safe-internal-path.ts, re-exported by api.ts) applied on
+// the stash/redirect path (rejects `//host`, `/\host`, and a leading encoded
+// `/%2f`/`/%5c`), so the schema gate and the sanitizer can't drift. Shared by
+// the post-login `redirect` and the settings `from` close-target.
 const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
 
 // Deep-link-through-login target.

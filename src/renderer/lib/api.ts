@@ -1,3 +1,4 @@
+import { isSafeInternalPath } from './safe-internal-path'
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
@@ -92,21 +93,7 @@ export function clearDeliberateSignOut(): void {
   deliberateSignOut = false
 }
 
-/**
- * A safe internal path. Must start with a single `/` and reject anything the
- * router/browser could resolve into an off-site (open-redirect) navigation:
- * `//host` and `/\host` (protocol-relative / UNC), and a leading encoded
- * separator (`/%2f…`, `/%5c…`) that would decode into one. A deeper encoded `%2f`
- * (in a query, say) is fine — only a leading one is dangerous. Current callers
- * pass browser-normalized `window.location.*`; this is the open-redirect backstop
- * for any future caller that stashes a hand-built path.
- */
-export function isSafeInternalPath(p: string | null): p is string {
-  if (!p) return false
-  if (!/^\/(?![/\\])/.test(p)) return false // single leading slash only
-  if (/^\/(?:%2f|%5c)/i.test(p)) return false // encoded separator right after it
-  return true
-}
+export { isSafeInternalPath }
 
 /**
  * Read AND clear the post-login redirect stash, validated as a safe internal
