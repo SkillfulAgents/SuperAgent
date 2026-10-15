@@ -26,7 +26,9 @@ import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
-import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
+import { AttachedImages } from './attached-images'
+import { isPreviewableImage } from '@renderer/lib/file-types'
+import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tools/deliver-file/definition'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -44,7 +46,7 @@ import {
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
 import {
@@ -120,11 +122,15 @@ interface DeliveredFile {
 }
 
 function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
+  // Pictures show as themselves, laid out exactly as a user's uploads are
+  // (only on the agent's side of the thread); everything else keeps its row.
+  const fileRows = files.filter((file) => !isPreviewableImage(file.filePath))
+  const images = files.filter((file) => isPreviewableImage(file.filePath))
   return (
     // max-w-[80%] matches the assistant column in MessageItem, so a row's right
     // edge lines up with the text of the answer it belongs to.
     <div className="flex max-w-[80%] flex-col gap-1.5 -mt-1 pb-1" data-testid="delivered-files">
-      {files.map((file) => (
+      {fileRows.map((file) => (
         <FileDeliveryRow
           key={file.id}
           filePath={file.filePath}
@@ -133,6 +139,14 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
           sizeBytes={file.sizeBytes}
         />
       ))}
+      {images.length > 0 && (
+        <AttachedImages
+          images={images.map((file) => ({ ...file, key: file.id }))}
+          agentSlug={agentSlug}
+          align="start"
+          data-testid="delivered-images"
+        />
+      )}
     </div>
   )
 }
@@ -1312,6 +1326,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 startedAt={block.startedAt}
                 endedAt={block.endedAt}
                 active={isActive && block.endedAt === null}
+                agentSlug={agentSlug}
               />
             </div>
           </MessageErrorBoundary>
@@ -1331,6 +1346,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              isStreamingRow
               suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}

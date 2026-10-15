@@ -385,7 +385,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
 describe('triggerSessionWaitingInput — NOT gated by automated-session flag', () => {
   it('creates a notification for a regular session', async () => {
     mockGetSessionMetadata.mockResolvedValue(null)
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'session_waiting',
@@ -397,7 +397,7 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
 
   it('still fires for a scheduled-execution session — automated agents that block on input must surface', async () => {
     mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'question')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'session_waiting' })
     )
@@ -405,24 +405,24 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
 
   it('still fires for a webhook session', async () => {
     mockGetSessionMetadata.mockResolvedValue({ isWebhookExecution: true })
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'connected_account')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'connected_account', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
   it('still fires for a chat-integration session', async () => {
     mockGetSessionMetadata.mockResolvedValue({ isChatIntegrationSession: true })
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'file')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'file', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
   it('names the capability under review — a workflow launch is not "launch agents"', async () => {
     mockGetSessionMetadata.mockResolvedValue(null)
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'capability_review_workflows')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'capability_review', payload: { capability: 'workflows' } })
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('wants to run a workflow') })
     )
 
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'capability_review_subagents')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'capability_review', payload: { capability: 'subagents' } })
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('wants to launch a subagent') })
     )
@@ -434,7 +434,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   // notification on one would raise unread indicators that point at nothing —
   // and could never be cleared. Every session_waiting must promote first.
   it('triggerSessionWaitingInput promotes before creating the notification', async () => {
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
 
     expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
@@ -457,7 +457,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
 
   it('a promotion failure does not block the notification', async () => {
     mockPromoteAutomatedSession.mockRejectedValueOnce(new Error('disk full'))
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'question')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
@@ -470,7 +470,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
         sessionScheduled: true,
       },
     })
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
     expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })

@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+
 const useSettingsMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => useSettingsMock(),
@@ -17,6 +20,7 @@ import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select
 import { DialogContext, type DialogContextType } from '@renderer/context/dialog-context'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { connectionInfoSchema } from '@shared/lib/llm-provider/connection-schema'
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD: EffortLevel[] = ['low', 'medium', 'high']
@@ -68,6 +72,21 @@ beforeEach(() => {
 })
 
 describe('SettingsModelSelect (flat picker)', () => {
+  it('names the version "latest" resolves to and the connection in the trigger tooltip', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [connectionInfoSchema.parse({
+      id: 'max', name: 'Claude Max', provider: 'claude-subscription', userId: 'u1', ownerName: 'Jeremy', managed: false,
+      isConfigured: true, catalog: CATALOG, modelOverrides: [], defaultModel: 'opus', browserModel: null, dashboardModel: null,
+      canManage: true, canDelete: true,
+    })], defaultSelection: { llmProviderId: 'max', model: 'opus' } } })
+    render(<SettingsModelSelect model="opus" llmProviderId="max" onModelChange={vi.fn()} onSelectionChange={vi.fn()} />)
+    await userEvent.hover(screen.getByTestId('settings-model-trigger'))
+    const tooltip = await screen.findByRole('tooltip')
+    const latest = CATALOG.find(m => m.family === 'opus' && m.isLatest)
+    expect(tooltip).toHaveTextContent(`Opus · latest (${latest?.label})`)
+    expect(tooltip).toHaveTextContent('Claude Max · Jeremy')
+  })
+
   it('does not use an agent-only catalog for direct API settings', async () => {
     const settings = settingsWith({ webProvider: 'native' }).data
     useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
@@ -357,5 +376,21 @@ describe('ModelPickerPopover', () => {
     render(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} />)
     await userEvent.click(screen.getByTestId('settings-model-trigger'))
     expect(screen.queryByTestId('settings-model-empty')).toBeNull()
+  })
+
+  it('flags a saved model the provider says cannot run on the trigger, in its words (SUP-1143)', async () => {
+    const modelLock = {
+      isLocked: (m: ModelDefinition) => m.family === 'opus',
+      reason: (m: ModelDefinition) => `${m.label} isn't included in your Pro 30 plan.`,
+      action: { label: 'Upgrade', run: vi.fn() },
+    }
+    const { rerender } = render(<ModelPickerPopover catalog={CATALOG} model="opus" onPick={vi.fn()} modelLock={modelLock} />)
+    const trigger = screen.getByTestId('settings-model-trigger')
+    expect(trigger).toHaveAttribute('data-locked', 'true')
+    expect(trigger).toHaveAccessibleName(/Opus 4\.8 isn't included in your Pro 30 plan\./)
+    await userEvent.click(trigger)
+    expect(screen.getByTestId('model-unavailable-warning')).toHaveTextContent("Opus 4.8 isn't included in your Pro 30 plan.")
+    rerender(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} modelLock={modelLock} />)
+    expect(screen.getByTestId('settings-model-trigger')).not.toHaveAttribute('data-locked')
   })
 })

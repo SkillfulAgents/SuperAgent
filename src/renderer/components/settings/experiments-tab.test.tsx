@@ -8,9 +8,13 @@ const state = {
   switches: undefined as Record<string, boolean> | undefined,
 }
 const updateUserSettings = vi.fn()
+const track = vi.fn()
 
 vi.mock('@shared/lib/experiments/registry', () => ({
   get EXPERIMENTS() { return state.experiments },
+}))
+vi.mock('@renderer/context/analytics-context', () => ({
+  useAnalyticsTracking: () => ({ track }),
 }))
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: { experiments: state.switches }, isLoading: false }),
@@ -23,6 +27,7 @@ beforeEach(() => {
   state.experiments = []
   state.switches = undefined
   updateUserSettings.mockReset()
+  track.mockReset()
 })
 
 describe('ExperimentsTab', () => {
@@ -47,6 +52,20 @@ describe('ExperimentsTab', () => {
     state.experiments = [{ id: 'alpha', name: 'Alpha', description: 'The first one.' }]
     renderWithProviders(<ExperimentsTab />)
     fireEvent.click(screen.getByRole('switch', { name: 'Alpha' }))
-    expect(updateUserSettings).toHaveBeenCalledWith({ experiments: { alpha: true } })
+    expect(updateUserSettings).toHaveBeenCalledWith(
+      { experiments: { alpha: true } },
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    )
+  })
+
+  it('records the toggle once the setting is saved, and the failure when it is not', () => {
+    state.experiments = [{ id: 'alpha', name: 'Alpha', description: 'The first one.' }]
+    renderWithProviders(<ExperimentsTab />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Alpha' }))
+    const [, options] = updateUserSettings.mock.calls[0]
+    options.onSuccess()
+    expect(track).toHaveBeenCalledWith('experiment_toggled', { experiment_key: 'alpha', enabled: true })
+    options.onError()
+    expect(track).toHaveBeenCalledWith('experiment_toggle_failed', { experiment_key: 'alpha', enabled: true })
   })
 })

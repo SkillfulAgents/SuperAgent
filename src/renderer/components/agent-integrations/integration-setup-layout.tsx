@@ -4,6 +4,7 @@ import { DialogDescription, DialogHeader, DialogTitle } from '@renderer/componen
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Textarea } from '@renderer/components/ui/textarea'
 
 /** Providers supply content; the setup frame and controls stay identical. */
 export function IntegrationSetupLayout({ provider, label, iconClassName = '', instructions, children, feedback, actions }: {
@@ -44,6 +45,15 @@ export function IntegrationSetupField({ label, optional, id, ...props }: Compone
       {label}{optional && <span className="ml-1 text-muted-foreground/70">optional</span>}
     </Label>
     <Input {...props} id={id} className="mt-1 shadow-none bg-background" />
+  </div>
+}
+
+export function IntegrationSetupTextArea({ label, optional, id, ...props }: ComponentProps<typeof Textarea> & { label: string; id: string; optional?: boolean }) {
+  return <div>
+    <Label htmlFor={id} className="text-xs font-normal">
+      {label}{optional && <span className="ml-1 text-muted-foreground/70">optional</span>}
+    </Label>
+    <Textarea {...props} id={id} className="mt-1 shadow-none bg-background" />
   </div>
 }
 

@@ -81,6 +81,52 @@ function createWrapper() {
 }
 
 describe('useMessageStream', () => {
+  it.each(['connected', 'ping'])('recovers a missed completion and final text through %s', async (type) => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('recovery', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    send({ type: 'connected', isActive: true, backgroundTasks: [{ taskId: 'task', startedAt: 1 }], isWaitingBackground: true })
+    expect(result.current.isWaitingBackground).toBe(true)
+    // The turn finishes while the renderer is disconnected; no session_idle.
+    const turnOutcome = { id: 'done', status: 'completed', responseText: 'Invoice 42 was sent.', error: null }
+    send({ type, isActive: false, turnOutcome, backgroundTasks: [] })
+    expect(result.current.turnOutcome).toEqual(turnOutcome)
+    expect(result.current.streamingMessage).toBe('Invoice 42 was sent.')
+    expect(result.current.isActive).toBe(false)
+    expect(result.current.isWaitingBackground).toBe(false)
+    expect(result.current.backgroundTasks).toEqual([])
+    unmount()
+  })
+
+  it('keeps background work visible after a cancelled foreground turn, including reconnect', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('cancel-background', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    const backgroundTasks = [{ taskId: 'task', startedAt: 1 }]
+    const turnOutcome = { id: 'stopped', status: 'cancelled', responseText: 'Partial work.', error: null }
+    send({ type: 'connected', isActive: true, backgroundTasks })
+    send({ type: 'session_waiting_background', interrupted: true, backgroundTasks, turnOutcome })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    send({ type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks, turnOutcome })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.backgroundTasks).toEqual(backgroundTasks)
+    unmount()
+  })
+
+  it('does not overwrite fresh output with an older outcome on a heartbeat', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('running', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    send({ type: 'session_active' })
+    send({ type: 'stream_delta', text: 'New work.' })
+    send({ type: 'ping', isActive: true, turnOutcome: { id: 'old', status: 'completed', responseText: 'Old result.', error: null } })
+    expect(result.current.streamingMessage).toBe('New work.')
+    expect(result.current.isActive).toBe(true)
+    unmount()
+  })
+
   it('returns default state initially', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -711,7 +757,7 @@ describe('useMessageStream', () => {
     // isActive should be preserved, streaming should be reset
     expect(result.current.isActive).toBe(true)
     expect(result.current.isStreaming).toBe(false)
-    expect(result.current.streamingMessage).toBeNull()
+    expect(result.current.streamingMessage).toBe('Hello')
   })
 
   it('handles subagent streaming events', async () => {
@@ -1702,6 +1748,67 @@ describe('useMessageStream', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a subagent_started after completion reopens the run until it completes again', async () => {
+    // CLI 2.1.296+ re-runs a subagent under its launching call when its own
+    // background work finishes: same parentToolId, a second lifecycle.
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const send = (m: Record<string, unknown>) => act(() => { MockEventSource.instances[0].simulateMessage(m) })
+
+    send({ type: 'connected', isActive: true })
+    send({ type: 'subagent_started', parentToolId: 'pt-1', agentId: 'sub-1', subagentType: 'general-purpose' })
+    send({ type: 'subagent_completed', parentToolId: 'pt-1', agentId: 'sub-1' })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+
+    send({ type: 'subagent_started', parentToolId: 'pt-1', agentId: 'sub-1', subagentType: 'general-purpose' })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(false)
+    expect(result.current.activeSubagents).toHaveLength(1)
+
+    send({ type: 'subagent_completed', parentToolId: 'pt-1', agentId: 'sub-1' })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+  })
+
+  it('refetches subagent messages again once updates go quiet (the CLI writes the transcript after relaying)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, SUBAGENT_TRAILING_REFETCH_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      const invalidate = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true }) })
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-1', agentId: 'sub-1' }) })
+      const subagentInvalidations = () => invalidate.mock.calls.filter(([f]) => (f as { queryKey?: unknown[] })?.queryKey?.[0] === 'subagent-messages').length
+      expect(subagentInvalidations()).toBe(1)
+
+      // A second update inside the window pushes the trailing refetch out.
+      await act(async () => { await vi.advanceTimersByTimeAsync(SUBAGENT_TRAILING_REFETCH_MS - 100) })
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-1', agentId: 'sub-1' }) })
+      expect(subagentInvalidations()).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(SUBAGENT_TRAILING_REFETCH_MS - 100) })
+      expect(subagentInvalidations()).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(subagentInvalidations()).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('subagent_progress carries the agentId onto a run first seen through it', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => { MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_progress', parentToolId: 'pt-9', agentId: 'sub-9', summary: 'Reading files',
+      })
+    })
+    expect(result.current.activeSubagents.find((s) => s.parentToolId === 'pt-9')?.agentId).toBe('sub-9')
   })
 
   it('handles subagent_updated — clears streaming state and invalidates subagent messages', async () => {

@@ -1,5 +1,6 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
+import { webhookRelayAvailable } from './webhook-relay-env';
 import {
   query,
   startup,
@@ -23,10 +24,10 @@ import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpS
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
-import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
-import { mountedVolumePaths } from './volume-mounts';
+import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
@@ -346,7 +347,9 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  mountPathsJoined: string;
+  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
+  mountIndexes: (VolumeIndex & { pathJson: string })[];
+  globalInstructions: string;
   userInstructions: string;
 }
 
@@ -364,22 +367,24 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
   const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
-  const composioTriggers = composioPlatform;
+  // Same gates as the webhook tools in mcp-server.ts: every trigger needs the
+  // host's webhook relay, and Composio's also need platform Composio.
+  const webhookEndpoints = webhookRelayAvailable();
+  const composioTriggers = composioPlatform && webhookEndpoints;
   const platformAccounts = composioPlatform;
-  const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
-  // Same gate as webhookEndpoints — do not tighten to also require proxy URL
-  // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
-  const platformServices = webhookEndpoints;
+  // Only the platform token: do not tighten to also require proxy URL.
+  const platformServices = process.env.PLATFORM_AUTH_ACTIVE === 'true';
   const modelHints = modelPromptHints || [];
   const connectedAccounts = connectedAccountGroups();
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  const mountPaths = mountedVolumePaths();
+  const drives = mountedDrives();
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
@@ -407,10 +412,12 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
-    hasMounts: mountPaths.length > 0,
-    // Each path is rendered as a JSON string literal. A folder name is user
-    // bytes, and a raw newline or `#` in it would read as prompt structure.
-    mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
+    hasMounts: drives.length > 0,
+    // Names and paths render as JSON string literals. Both are user bytes, and
+    // a raw newline or `#` in them would read as prompt structure.
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
+    mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
+    globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };
 }
@@ -428,6 +435,7 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -437,6 +445,7 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    globalInstructions,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -532,6 +541,7 @@ export interface ClaudeCodeProcessOptions {
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  globalInstructions?: string;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -585,6 +595,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   private availableEnvVars: string[] | undefined;
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
+  // Org-wide guidance from host Settings. Tracked per message like the
+  // capability policies, so an edit reaches long-lived sessions too.
+  private globalInstructions: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -678,6 +691,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
+    this.globalInstructions = options.globalInstructions;
     this.refreshSystemPrompt();
   }
 
@@ -696,6 +710,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
+      this.globalInstructions,
     );
   }
 
@@ -1092,6 +1107,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Gamut plugin (`plugins` below); plugin skills and agent-created
         // skills under /workspace/.claude/skills are unaffected by this flag.
         disableBundledSkills: true,
+        // CLI 2.1.296 lists a built-in `plugin-authoring` skill (making
+        // "mods" to Claude Code's own terminal UI and hooks) that
+        // disableBundledSkills does not remove — verified with the
+        // claude-prompt-drift capture. Meaningless inside an agent session.
+        skillOverrides: { 'plugin-authoring': 'off' },
         // CLI features that default on "once available" and would run work of
         // their own inside the session. Both start ambient background tasks:
         // the SDK lists them in background_tasks_changed, so they keep the
@@ -1440,6 +1460,15 @@ export class ClaudeCodeProcess extends EventEmitter {
         ],
         PostToolUse: [
           {
+            matcher: 'Bash',
+            hooks: [
+              async (input) => {
+                const hint = mountIndexCommandHint(((input as any).tool_input as Record<string, unknown> | undefined)?.command);
+                return hint ? { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: hint } } : {};
+              },
+            ],
+          },
+          {
             matcher: 'Read',
             hooks: [
               async (input) => {
@@ -1684,7 +1713,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }): Promise<void> {
     const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
       ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
@@ -1713,7 +1742,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     const connectedAccountsChanged =
       connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
     const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
-    if (connectedAccountsChanged || remoteMcpsChanged) {
+    // Absent means an older host that never sends it: keep what we have.
+    // Compared trimmed, the way the prompt renders it, so whitespace-only
+    // edits do not cost a re-query.
+    const nextGlobalInstructions = options?.globalInstructions;
+    const globalInstructionsChanged = nextGlobalInstructions !== undefined &&
+      nextGlobalInstructions.trim() !== (this.globalInstructions ?? '').trim();
+    if (nextGlobalInstructions !== undefined) this.globalInstructions = nextGlobalInstructions;
+    if (connectedAccountsChanged || remoteMcpsChanged || globalInstructionsChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
       this.refreshSystemPrompt();
@@ -1756,6 +1792,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          this.globalInstructions,
         );
       }
       this.reconcilePendingCapabilityReviews();
@@ -1792,6 +1829,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       speedChanged ||
       capabilityBlockChanged ||
       connectedAccountsChanged ||
+      globalInstructionsChanged ||
       contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -1808,6 +1846,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (connectedAccountsChanged) reasons.push('connected accounts changed');
+      if (globalInstructionsChanged) reasons.push('global instructions changed');
       if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
       if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);

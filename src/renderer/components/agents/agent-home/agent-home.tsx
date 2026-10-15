@@ -7,12 +7,16 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
+import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { AgentAvatarPicker } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
@@ -132,7 +136,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
-  const createSession = useCreateSession()
+  const createSession = useCreateSession({ agentRuntimeErrorsShownInline: true })
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
@@ -362,6 +366,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
+            {isOwner
+              ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
+              : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
             <AgentContextMenu
               agent={agent}
               onRename={() => titleRef.current?.startEditing()}
@@ -572,6 +579,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                     <>
                       <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
                       <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+                      <AgentRuntimeErrorView error={createSession.error} className="mt-2" />
                     </>
                   )}
                 />

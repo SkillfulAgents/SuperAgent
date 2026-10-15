@@ -35,6 +35,7 @@ import {
   getEffectiveModels,
   getEffectiveAgentLimits,
   getCustomEnvVars,
+  getGlobalInstructions,
   type AppSettings,
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
@@ -168,6 +169,12 @@ settings.get('/models', Authenticated(), async (c) => {
     console.error('Failed to fetch model settings:', error)
     return c.json({ error: 'Failed to fetch model settings' }, 500)
   }
+})
+
+// Global guidance shapes every agent's behavior, so everyone may read what
+// their agents are told; only admins edit it (via PUT / below the gate).
+settings.get('/global-instructions', Authenticated(), (c) => {
+  return c.json({ globalInstructions: getGlobalInstructions() })
 })
 
 settings.use('*', Authenticated(), IsAdmin())

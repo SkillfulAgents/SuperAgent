@@ -1,5 +1,9 @@
-import { BrowserWindow, session, type WebContents } from 'electron'
+import { BrowserWindow, type Session, type WebContents } from 'electron'
+import { isIP } from 'node:net'
+import { refreshCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { CREDENTIAL_RESPONSE_HEADERS } from '../api/routes/cloud-proxy'
 import { buildDashboardViewUrl } from '@shared/lib/dashboard-url'
+import { SESSION_CHALLENGE } from '@shared/lib/auth/session-challenge'
 import { DASHBOARD_CHROME_HEIGHT, dashboardChromeScript } from './dashboard-window-chrome'
 import { safeOpenExternal } from './safe-open-external'
 
@@ -8,7 +12,7 @@ import { safeOpenExternal } from './safe-open-external'
 // an agent of the same slug, and reusing a window across them would show the
 // wrong one's dashboard under the right one's name. The raw join is fine as a
 // dedup key — only the loaded URL needs per-segment encoding.
-const dashboardWindows: Map<string, BrowserWindow> = new Map()
+const dashboardWindows: Map<string, { win: BrowserWindow; webContentsId: number; cloud: boolean }> = new Map()
 
 function installDashboardChrome(win: BrowserWindow, titlePrefix = ''): void {
   const script = dashboardChromeScript(process.platform, titlePrefix)
@@ -45,79 +49,165 @@ export function installPopupHandler(webContents: WebContents) {
   })
 }
 
+const RENDERER_ORIGIN = process.env.ELECTRON_RENDERER_URL
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- set by electron-vite dev to the renderer's URL
+  ? new URL(process.env.ELECTRON_RENDERER_URL).origin
+  : 'file://'
+
+export type OwnedWindow = 'main' | 'cloud-popout' | null
+
+export interface WorkspaceRequest {
+  url: string
+  resourceType: string
+  method: string
+  /** The requesting frame's origin first, up to the window's top frame. */
+  frameOrigins: readonly string[]
+}
+
 /**
- * The origin and the path a cloud base URL adds ahead of `/api/…`, or null for
- * a local base URL (a bare origin, so nothing to add) and for anything
- * unparseable.
+ * Whether a page is on the workspace's site, as a SameSite cookie judges it.
+ * Every workspace host is `<slug>.<ingress domain>`, and no ingress domain is
+ * a public suffix, so the site is the host minus its first label. A host that
+ * would leave one label (localhost, an apex) or an IP is its own site.
  */
-function proxyRouteOf(apiBaseUrl: string): { origin: string; prefix: string } | null {
+function isWorkspaceSite(origin: string, workspaceOrigin: string): boolean {
+  if (!URL.canParse(origin)) return false
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- checked by canParse above
+  const page = new URL(origin)
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- the workspace origin was parsed on read
+  const { protocol, hostname } = new URL(workspaceOrigin)
+  const parent = hostname.slice(hostname.indexOf('.') + 1)
+  const site = isIP(hostname) || !parent.includes('.') ? hostname : parent
+  return page.protocol === protocol && (page.hostname === site || page.hostname.endsWith(`.${site}`))
+}
+
+/**
+ * Cloud dashboards load at the workspace's own address, as in a browser, and
+ * main signs them in place of the browser's login cookie, so the page never
+ * holds the token. Local dashboards share this session and must not be signed.
+ */
+export function shouldSignWorkspaceRequest(request: WorkspaceRequest, workspaceOrigin: string, window: OwnedWindow): boolean {
+  if (!window) return false
+  const socketOrigin = workspaceOrigin.replace(/^http/, 'ws')
+  if (!request.url.startsWith(`${workspaceOrigin}/`) && !request.url.startsWith(`${socketOrigin}/`)) return false
+  const { frameOrigins } = request
+  const navigation = request.resourceType === 'mainFrame' || request.resourceType === 'subFrame'
+  return frameOrigins.length > 0 && frameOrigins.every((origin, i) =>
+    origin === RENDERER_ORIGIN
+    || origin === workspaceOrigin
+    // Where a browser's Lax cookie goes too: a frame navigating back from a
+    // same-site page, and a popout's own top-level GET from anywhere.
+    || (i === 0 && navigation && isWorkspaceSite(origin, workspaceOrigin))
+    || (window === 'cloud-popout' && request.resourceType === 'mainFrame' && request.method === 'GET'))
+}
+
+interface RequestDetails {
+  id: number
+  url: string
+  resourceType: string
+  method: string
+  webContentsId?: number
+  frame?: { origin: string; parent: RequestDetails['frame'] } | null
+}
+
+function workspaceRequestOf({ url, resourceType, method, frame }: RequestDetails): WorkspaceRequest | null {
+  const frameOrigins: string[] = []
   try {
-    const url = new URL(apiBaseUrl)
-    const prefix = url.pathname.replace(/\/+$/, '')
-    return prefix ? { origin: url.origin, prefix } : null
+    for (let f = frame; f; f = f.parent) frameOrigins.push(f.origin)
+    return { url, resourceType, method, frameOrigins }
   } catch {
+    // A frame already disposed in the renderer throws on access. Its request is not signed.
     return null
   }
 }
 
+const isSessionRejection = (headers: Record<string, string[]>) =>
+  Object.entries(headers).some(([name, values]) => name.toLowerCase() === 'www-authenticate' && values.includes(SESSION_CHALLENGE))
+
+const withoutHeaders = <T>(headers: Record<string, T>, names: ReadonlySet<string>) =>
+  Object.fromEntries(Object.entries(headers).filter(([name]) => !names.has(name.toLowerCase())))
+
 /**
- * Keep every request this window makes inside the cloud proxy.
- *
- * Only the document URL we hand to `loadURL` carries the proxy prefix. The
- * wrapper the deployment serves back builds its own calls from a root-relative
- * `basePath` (`/api/agents/{slug}`, see the `/view` route in api/routes/agents.ts),
- * and its iframe from the same — so its status poll, its start-the-agent POST
- * and the dashboard itself would resolve against the laptop's own API. That is
- * the original wrong-deployment bug, one layer in: the popout window looks
- * right and drives the local Superagent.
- *
- * Rewriting here rather than in the wrapper is deliberate. The wrapper is
- * generated by the *deployment*, so a fix there only reaches workspaces new
- * enough to have it, and this has to hold against whatever version an
- * organization is running. It also catches URLs however the document builds
- * them, without anyone parsing agent-generated HTML.
- *
- * The listener goes on a per-window partition. On the default session it would
- * rewrite the main window's requests too.
+ * `currentWorkspace` answers only while the app is driving a cloud workspace,
+ * and is read per request, so a switch to local or a disconnect stops signing
+ * with nothing to reset. Each signed request remembers the token it carried, so
+ * its response is cleaned and its 401 retried once even if the record changed
+ * in between.
  */
-function confineToProxy(partition: string, { origin, prefix }: { origin: string; prefix: string }): void {
-  session.fromPartition(partition).webRequest.onBeforeRequest(
-    { urls: [`${origin}/*`] },
-    (details, callback) => {
-      const rest = details.url.slice(origin.length)
-      // Already inside the proxy, or not an API call at all: leave it alone.
-      // The prefix check keeps this idempotent, including across redirects.
-      if (rest.startsWith(`${prefix}/`) || !rest.startsWith('/api/')) {
-        callback({})
-        return
-      }
-      callback({ redirectURL: `${origin}${prefix}${rest}` })
-    },
-  )
+export function installCloudDashboardAuth(
+  target: Session,
+  mainWebContentsId: () => number | null,
+  currentWorkspace: () => { deploymentUrl: string; token: string } | null,
+): void {
+  // Per request in flight: the token this hop carried (null when it was not
+  // signed) and whether it was retried.
+  const signedRequests = new Map<number, { token: string | null; retried: boolean }>()
+  const isCloudPopout = (id: number) =>
+    [...dashboardWindows.values()].some((entry) => entry.cloud && entry.webContentsId === id)
+  const windowOf = (id: number | undefined): OwnedWindow =>
+    id === undefined ? null
+      : id === mainWebContentsId() ? 'main'
+        : isCloudPopout(id) ? 'cloud-popout' : null
+
+  target.webRequest.onBeforeSendHeaders((details, callback) => {
+    const window = windowOf(details.webContentsId)
+    const workspace = window ? currentWorkspace() : null
+    const earlier = signedRequests.get(details.id)
+    // A page's own Authorization never reaches the workspace, and ours never
+    // follows a redirect away from it.
+    const requestHeaders = withoutHeaders(details.requestHeaders, new Set(['authorization']))
+    const request = workspace && workspaceRequestOf(details)
+    if (!workspace || !request || !shouldSignWorkspaceRequest(request, workspace.deploymentUrl, window)) {
+      if (earlier) earlier.token = null
+      callback({ requestHeaders: earlier ? requestHeaders : details.requestHeaders })
+      return
+    }
+    signedRequests.set(details.id, { token: workspace.token, retried: earlier?.retried ?? false })
+    callback({ requestHeaders: { ...requestHeaders, Authorization: `Bearer ${workspace.token}` } })
+  })
+
+  target.webRequest.onHeadersReceived((details, callback) => {
+    const request = signedRequests.get(details.id)
+    if (!request?.token) {
+      callback({})
+      return
+    }
+    const responseHeaders = withoutHeaders(details.responseHeaders ?? {}, CREDENTIAL_RESPONSE_HEADERS)
+    if (details.statusCode !== 401 || request.retried || !isSessionRejection(responseHeaders)) {
+      callback({ responseHeaders })
+      return
+    }
+    // Same recovery as the cloud proxy: re-mint, then retry once.
+    request.retried = true
+    const sentWith = request.token
+    void refreshCloudProxyTarget().then((fresh) => {
+      callback(fresh && fresh.token !== sentWith
+        ? { statusLine: 'HTTP/1.1 307 Temporary Redirect', responseHeaders: { ...responseHeaders, Location: [details.url] } }
+        : { responseHeaders })
+    })
+  })
+
+  const forget = ({ id }: { id: number }) => signedRequests.delete(id)
+  target.webRequest.onCompleted(forget)
+  target.webRequest.onErrorOccurred(forget)
 }
 
 /**
- * `apiBaseUrl` is the base of whichever Superagent the app is currently
- * driving — the local API, or the cloud proxy prefix on it. Popouts are built
- * in main, so they have to be told; a hard-coded local origin opens a dashboard
- * belonging to a different deployment's agent of the same name.
+ * `apiBaseUrl` is where the dashboard lives: the local API, or the cloud
+ * workspace's own address. Popouts are built in main, so they have to be told;
+ * a hard-coded local origin opens a dashboard belonging to a different
+ * deployment's agent of the same name.
  */
-export function openDashboardWindow(agentSlug: string, dashboardSlug: string, apiBaseUrl: string) {
+export function openDashboardWindow(agentSlug: string, dashboardSlug: string, apiBaseUrl: string, cloud = false) {
   const key = `${apiBaseUrl}|${agentSlug}/${dashboardSlug}`
 
   // Focus existing window if already open
-  const existing = dashboardWindows.get(key)
+  const existing = dashboardWindows.get(key)?.win
   if (existing && !existing.isDestroyed()) {
     existing.show()
     existing.focus()
     return
   }
-
-  // Cloud popouts get their own session so the request rewrite above cannot
-  // touch anything else. Local ones keep the default session, exactly as before.
-  const route = proxyRouteOf(apiBaseUrl)
-  const partition = route ? `cloud-dashboard:${route.prefix}` : undefined
-  if (route && partition) confineToProxy(partition, route)
 
   const url = buildDashboardViewUrl(apiBaseUrl, agentSlug, dashboardSlug)
   const win = new BrowserWindow({
@@ -141,32 +231,31 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      ...(partition ? { partition } : {}),
     },
   })
   // Unlike autoHideMenuBar, removeMenu prevents the inherited File/Edit menu
   // from reappearing when Alt is pressed on Windows.
   if (process.platform === 'win32') win.removeMenu()
-  installDashboardChrome(win, route ? 'Cloud workspace — ' : '')
+  installDashboardChrome(win, cloud ? 'Cloud workspace — ' : '')
   // Dashboard content is agent-generated/untrusted — apply the same deny-and-route
   // popup policy as the main window so window.open() can't spawn child windows.
   installPopupHandler(win.webContents)
   // A cloud popout is otherwise indistinguishable from a local one. Keep the
   // workspace marker in both the native/taskbar title and the app-owned title
   // bar above the dashboard iframe.
-  if (route) {
+  if (cloud) {
     win.on('page-title-updated', (event, title) => {
       event.preventDefault()
       win.setTitle(`Cloud workspace — ${title}`)
     })
   }
   win.loadURL(url)
-  dashboardWindows.set(key, win)
+  dashboardWindows.set(key, { win, webContentsId: win.webContents.id, cloud })
   win.on('closed', () => dashboardWindows.delete(key))
 }
 
 export function closeAllDashboardWindows() {
-  for (const win of dashboardWindows.values()) {
+  for (const { win } of dashboardWindows.values()) {
     if (!win.isDestroyed()) win.close()
   }
   dashboardWindows.clear()

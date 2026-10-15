@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { useUser } from '@renderer/context/user-context'
 import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
 import { authClient } from '@renderer/lib/auth-client'

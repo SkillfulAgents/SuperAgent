@@ -79,7 +79,8 @@ const mockQueue = {
 }
 vi.mock('./use-upload-queue', () => ({ useUploadQueue: () => mockQueue }))
 
-vi.mock('@renderer/lib/file-utils', () => ({
+vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/lib/file-utils')>()),
   zipFolderFiles: vi.fn().mockResolvedValue(new Blob(['zipped'])),
 }))
 

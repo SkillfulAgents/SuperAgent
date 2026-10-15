@@ -60,6 +60,8 @@ describe('isBinaryContentType', () => {
     'audio/mpeg',
     'IMAGE/PNG',
     'application/octet-stream; charset=binary',
+    'multipart/related; boundary=Upload_123',
+    'MULTIPART/RELATED; boundary=Upload_123',
   ])('returns true for %j', (ct) => {
     expect(isBinaryContentType(ct)).toBe(true)
   })
@@ -194,6 +196,14 @@ describe('translateProxyBody', () => {
           content_type: 'image/jpeg',
         },
       })
+    })
+
+    it('forwards multipart/related as opaque bytes and preserves its case-sensitive boundary', () => {
+      const contentType = 'multipart/related; boundary=Upload_ABC'
+      const bytes = bufFromString('--Upload_ABC\r\nContent-Type: application/json\r\n\r\n{}\r\n--Upload_ABC--')
+      expect(translateProxyBody('PATCH', contentType, bytes)).toEqual({ ok: true, binaryBody: {
+        content_type: contentType, base64: Buffer.from(bytes).toString('base64'),
+      } })
     })
 
     it('handles application/octet-stream', () => {

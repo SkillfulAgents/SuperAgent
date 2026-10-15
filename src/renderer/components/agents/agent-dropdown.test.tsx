@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ 
 import { AgentDropdown, agentDropdownSections } from './agent-dropdown'
 
 function agent(slug: string, name: string, createdAt = 0): ApiAgent {
-  return { slug, displaySlug: slug, name, createdAt: new Date(createdAt), status: 'stopped', containerPort: null }
+  return { avatar: { color: 'tonal-blue', shape: 'circle' } as const, slug, displaySlug: slug, name, createdAt: new Date(createdAt), status: 'stopped', containerPort: null }
 }
 
 const AGENTS = [agent('ops', 'Ops Agent'), agent('research', 'Research Agent'), agent('market', 'Marketing Agent')]
@@ -84,6 +84,25 @@ describe('AgentDropdown', () => {
     expect(highlighted?.textContent).toBe('search')
     fireEvent.change(screen.getByTestId('agent-dropdown-search'), { target: { value: 'nobody' } })
     expect(screen.getByText('No agents found.')).toBeInTheDocument()
+  })
+
+  it('offers New Agent after the agents when asked to, by click or keyboard', () => {
+    const onSelectNew = vi.fn()
+    open({ onSelectNew })
+    expect(optionNames()).toEqual(['Ops Agent', 'Research Agent', 'Marketing Agent', 'New Agent'])
+    const search = screen.getByTestId('agent-dropdown-search')
+    fireEvent.keyDown(search, { key: 'ArrowUp' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(onSelectNew).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('agent-dropdown'))
+    fireEvent.click(screen.getByTestId('agent-dropdown-new'))
+    expect(onSelectNew).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows New Agent on its button when that is the choice', () => {
+    renderWithProviders(<AgentDropdown value={null} onValueChange={vi.fn()} onSelectNew={vi.fn()} newSelected />)
+    expect(screen.getByTestId('agent-dropdown')).toHaveTextContent('New Agent')
   })
 
   it('picks with the keyboard', () => {

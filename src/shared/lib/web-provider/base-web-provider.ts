@@ -38,8 +38,8 @@ const MAX_FETCH_CHARS = 100_000
 export abstract class BaseWebProvider {
   abstract readonly name: string
   abstract readonly id: WebProviderId
-  protected abstract readonly settingsKeyField: keyof ApiKeySettings
-  protected abstract readonly envVarName: string
+  protected abstract readonly settingsKeyField: keyof ApiKeySettings | undefined
+  protected abstract readonly envVarName: string | undefined
 
   /** Run a ranked web search and return normalized hits. Throws on a whole-request failure. */
   search?(query: string, opts: WebSearchOptions): Promise<WebSearchResponse>
@@ -53,10 +53,10 @@ export abstract class BaseWebProvider {
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
     const settings = getSettings()
-    if (settings.apiKeys?.[this.settingsKeyField]) {
+    if (this.settingsKeyField && settings.apiKeys?.[this.settingsKeyField]) {
       return { isConfigured: true, source: 'settings' }
     }
-    if (process.env[this.envVarName]) {
+    if (this.envVarName && process.env[this.envVarName]) {
       return { isConfigured: true, source: 'env' }
     }
     return { isConfigured: false, source: 'none' }
@@ -65,9 +65,9 @@ export abstract class BaseWebProvider {
   /** Get the effective API key (settings take precedence over env var). */
   getEffectiveApiKey(): string | undefined {
     const settings = getSettings()
-    const fromSettings = settings.apiKeys?.[this.settingsKeyField]
+    const fromSettings = this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined
     if (fromSettings) return fromSettings
-    return process.env[this.envVarName]
+    return this.envVarName ? process.env[this.envVarName] : undefined
   }
 
   /** Validate an API key. */
@@ -79,7 +79,11 @@ export abstract class BaseWebProvider {
    * timeout); a 4xx config error is deterministic, so it throws NonRetryableError to bypass the
    * retry. The timeout is re-armed per attempt.
    */
-  protected async fetchJson(url: string, init: RequestInit): Promise<unknown> {
+  protected async fetchJson(
+    url: string,
+    init: RequestInit,
+    parse: (response: Response) => Promise<unknown> = (response) => response.json(),
+  ): Promise<unknown> {
     return withRetry(
       async () => {
         const res = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
@@ -88,7 +92,7 @@ export abstract class BaseWebProvider {
           if (res.status === 429 || res.status >= 500) throw new Error(message)
           throw new NonRetryableError(message, res.status)
         }
-        return res.json()
+        return parse(res)
       },
       RETRY_ATTEMPTS,
       RETRY_BASE_DELAY_MS,

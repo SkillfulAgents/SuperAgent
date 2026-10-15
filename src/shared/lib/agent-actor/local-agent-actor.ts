@@ -1,6 +1,6 @@
 import type { containerHost } from '@shared/lib/container/container-host'
 import type { messagePersister } from '@shared/lib/container/message-persister'
-import type { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
 import type { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import type { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -227,6 +227,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     },
     markInterrupted: (...args) => deps.messagePersister.markSessionInterrupted(slug, ...args),
     turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
+    turnOutcome: (sessionId) => deps.messagePersister.getSessionTurnOutcome(slug, sessionId),
     isWaitingBackground: (sessionId) => deps.messagePersister.isSessionWaitingBackground(slug, sessionId),
     hasOnlyUntrackedBackgroundWork: (sessionId) =>
       deps.messagePersister.hasOnlyUntrackedBackgroundWork(slug, sessionId),

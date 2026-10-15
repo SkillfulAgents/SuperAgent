@@ -2,18 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMessageStream } from './use-message-stream'
 import { useInterruptSession } from './use-messages'
 import { createVoiceConversation } from '@renderer/lib/voice/registry/conversation'
+import { toAgentSnapshot } from '@renderer/lib/voice/conversation/agent-snapshot'
 import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
+import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
 import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
-import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot } from '@renderer/lib/voice/contracts/conversation'
+import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot, VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 export interface UseVoiceModeArgs {
-  sessionId: string
+  sessionId: string | null
   agentSlug: string
   active: boolean
   send(text: string): Promise<boolean>
   startWithAgentTurn?: boolean
   paused?: boolean
+  inputRequests?: readonly VoiceInputRequest[]
   history?: VoiceHistory
 }
 export interface VoiceModeResult extends VoiceConversationSnapshot {
@@ -32,20 +35,23 @@ export interface VoiceModeResult extends VoiceConversationSnapshot {
   /** The speaker mute for the agent's voice, kept the same way. */
   outputMuted: boolean
   setOutputMuted(muted: boolean): void
+  /** Standing guidance for the running engine (who is in the room); ignored by engines without the channel. */
+  instruct(text: string): void
 }
 const IDLE: VoiceConversationSnapshot = {
   phase: 'listening', ready: false, userSpeaking: false, assistantSpeaking: false,
   utterance: '', hold: { allowed: false, delayMs: 700 },
 }
 const IDLE_AGENT: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
+const NO_INPUT_REQUESTS: readonly VoiceInputRequest[] = []
 
 /** One React integration, one stream subscription, and one selected voice engine. */
 export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConversationEngine | null): VoiceModeResult {
-  const { sessionId, agentSlug, active, paused = false } = args
+  const { sessionId, agentSlug, active, paused = false, inputRequests = NO_INPUT_REQUESTS } = args
   const stream = useMessageStream(
     active && engine ? sessionId : null,
     active && engine ? agentSlug : null,
-    ['isActive', 'streamingMessage', 'activeStartTime', 'streamingToolUses', 'error'],
+    ['isActive', 'isWaitingBackground', 'streamingMessage', 'activeStartTime', 'streamingToolUses', 'error', 'turnOutcome'],
   )
   const interrupt = useInterruptSession()
   const latest = useRef({ args, stream, interrupt })
@@ -70,20 +76,14 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     setAgent(IDLE_AGENT)
     setProviderError(null)
     setAgentIssue(null)
-    if (!active || !engine) return
+    if (!active || !engine || !sessionId) return
     if (initialHandoff.current?.sessionId !== sessionId || initialHandoff.current.agentSlug !== agentSlug) {
       initialHandoff.current = { sessionId, agentSlug, pending: latest.current.args.startWithAgentTurn ?? false }
     }
     const handoff = initialHandoff.current
     let disposed = false
     let speechActive = false
-    const getAgentSnapshot = (): VoiceAgentSnapshot => {
-      const value = latest.current.stream
-      return {
-        active: value.isActive, text: value.streamingMessage ?? '', startedAt: value.activeStartTime ?? null,
-        toolsRunning: (value.streamingToolUses?.length ?? 0) > 0, error: value.error ?? null,
-      }
-    }
+    const getAgentSnapshot = (): VoiceAgentSnapshot => toAgentSnapshot(latest.current.stream)
     const conversation = createVoiceConversation(engine, { sessionId, agentSlug, history: latest.current.args.history ?? [] }, {
       onCommand: (command) => turns.command(command),
       onSnapshot: (next) => {
@@ -94,6 +94,8 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
         if (talking && !speechActive) {
           if (next.userSpeaking) holdSound.stopImmediately()
           else holdSound.stop()
+          // The person's own music has no fade to offer: paused either way.
+          userMusic.stopImmediately()
         }
         speechActive = talking
         setSnapshot(previous => previous.phase === next.phase && previous.ready === next.ready
@@ -113,7 +115,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
         if (disposed) return
         if (!state.awaiting) handoff.pending = false
         setAgent(previous => previous.active === state.active && previous.awaiting === state.awaiting
-          && previous.toolsUsed === state.toolsUsed ? previous : state)
+          && previous.toolsUsed === state.toolsUsed && previous.background === state.background ? previous : state)
       },
       onIssue: (message) => { if (!disposed) setAgentIssue(message) },
     }, conversation.turnPolicy)
@@ -160,11 +162,14 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   }, [paused])
 
   useEffect(() => {
-    coordinator.current?.update({
-      active: stream.isActive, text: stream.streamingMessage ?? '', startedAt: stream.activeStartTime ?? null,
-      toolsRunning: (stream.streamingToolUses?.length ?? 0) > 0, error: stream.error ?? null,
-    })
-  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error])
+    // Request details still flow while the coordinator is paused. Include the
+    // connection identity so a restarted engine gets the current cards too.
+    adapter.current?.acceptAgentEvent({ type: 'input-requests', requests: inputRequests })
+  }, [inputRequests, active, engine, sessionId, agentSlug])
+
+  useEffect(() => {
+    coordinator.current?.update(toAgentSnapshot(latest.current.stream))
+  }, [stream.isActive, stream.streamingMessage, stream.activeStartTime, stream.streamingToolUses, stream.error, stream.turnOutcome, stream.isWaitingBackground])
 
   const pressMic = useCallback(() => adapter.current?.pressMic(), [])
   const getAnalyser = useCallback(() => adapter.current?.analyser ?? null, [])
@@ -179,12 +184,13 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     setOutputMutedState(muted)
     adapter.current?.setOutputMuted(muted)
   }, [])
+  const instruct = useCallback((text: string) => { adapter.current?.appendInstructions?.(text) }, [])
   const clearError = useCallback(() => { setProviderError(null); setAgentIssue(null) }, [])
   return {
     ...snapshot, engine, capabilities,
-    working: active && !paused && snapshot.ready && agent.active,
+    working: active && !paused && snapshot.ready && (agent.active || !!agent.background),
     speechActive: snapshot.userSpeaking || snapshot.assistantSpeaking,
     error: agentIssue ?? providerError, clearError, pressMic, getAnalyser, getOutputAnalyser,
-    micMuted, setMicMuted, outputMuted, setOutputMuted,
+    micMuted, setMicMuted, outputMuted, setOutputMuted, instruct,
   }
 }

@@ -11,11 +11,17 @@ const state = vi.hoisted(() => ({
   toastError: vi.fn(),
   moveOk: true,
   claimHeld: false,
+  createAgentForPrompt: vi.fn(),
+  track: vi.fn(),
+  claimedTodo: {} as Record<string, unknown>,
+  claimedAttachments: [] as { id: string; name: string; size: number; mimeType: string }[],
 }))
 
 vi.mock('sonner', () => ({ toast: { error: state.toastError } }))
 vi.mock('./use-experiment', () => ({ useExperiment: () => state.experimentOn }))
 vi.mock('./use-sessions', () => ({ useCreateSession: () => ({ mutateAsync: state.createSession }) }))
+vi.mock('./use-create-agent-for-prompt', () => ({ useCreateAgentForPrompt: () => state.createAgentForPrompt }))
+vi.mock('@renderer/context/analytics-context', () => ({ useAnalyticsTracking: () => ({ track: state.track }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: async (path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
@@ -31,7 +37,13 @@ vi.mock('@renderer/lib/api', () => ({
     if (path === '/api/todos/t1/claim') {
       if (state.claimHeld) return new Response(JSON.stringify({ error: 'This is already starting' }), { status: 409 })
       state.claimHeld = true
-      return new Response(JSON.stringify({ claim: 'c1', todo: { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst' } }))
+      return new Response(JSON.stringify({ claim: 'c1', todo: { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst', attachments: state.claimedAttachments, ...state.claimedTodo } }))
+    }
+    if (path === '/api/todos/t1' && method === 'PATCH') {
+      return new Response(JSON.stringify({ id: 't1', column: 'drafts', agentSlug: body.agentSlug, newAgent: false }))
+    }
+    if (path === '/api/agents/analyst/mounts' && method === 'POST') {
+      return new Response(JSON.stringify({ id: 'mount-1', name: 'notes' }))
     }
     if (path === '/api/todos/t1/release') {
       state.claimHeld = false
@@ -45,7 +57,11 @@ vi.mock('@renderer/lib/api', () => ({
   },
 }))
 
-import { TODOS_QUERY_KEY, useMoveTodo, useSetTodoStatus, useStartTodo, useStartingTodoIds, useTodos, type TodoView } from './use-todos'
+import { TODOS_QUERY_KEY, useMoveTodo, useSetTodoStatus, useStartTodo, useStartingTodoIds, useTodos, type StartableTodo, type TodoView } from './use-todos'
+
+function draft(partial: Partial<StartableTodo> = {}): StartableTodo {
+  return { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst', newAgent: false, model: null, llmProviderId: null, effort: null, speed: null, ...partial }
+}
 
 function wrapper(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -60,6 +76,10 @@ beforeEach(() => {
   state.toastError.mockReset()
   state.moveOk = true
   state.claimHeld = false
+  state.createAgentForPrompt.mockReset()
+  state.track.mockReset()
+  state.claimedTodo = {}
+  state.claimedAttachments = []
 })
 
 describe('useTodos', () => {
@@ -80,17 +100,57 @@ describe('useStartTodo', () => {
   it('claims the draft, starts a session with the stored brief, then links it', async () => {
     state.createSession.mockResolvedValue({ id: 'session-9' })
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    const started = await result.current.mutateAsync({ id: 't1', agentSlug: 'analyst' })
+    const started = await result.current.mutateAsync(draft())
 
     expect(state.calls[0]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
-    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', message: 'Churn\n\nWhy did it spike?' })
+    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', origin: 'todo', message: 'Churn\n\nWhy did it spike?' })
     expect(state.calls).toContainEqual({ path: '/api/todos/t1/start', method: 'POST', body: { sessionId: 'session-9', claim: 'c1' } })
     expect(started).toMatchObject({ column: 'working', sessionId: 'session-9' })
   })
 
+  it('starts the session on the model, effort and speed picked for the draft', async () => {
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    state.claimedTodo = { model: 'claude-opus-5-5', llmProviderId: 'anthropic-main', effort: 'high', speed: 'fast' }
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft({ model: 'claude-opus-5-5', llmProviderId: 'anthropic-main' }))
+
+    expect(state.createSession).toHaveBeenCalledWith({
+      agentSlug: 'analyst',
+      origin: 'todo',
+      message: 'Churn\n\nWhy did it spike?',
+      model: 'claude-opus-5-5',
+      llmProviderId: 'anthropic-main',
+      effort: 'high',
+      speed: 'fast',
+    })
+  })
+
+  it('makes a new agent named from the brief, gives the draft to it, then starts it there', async () => {
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    state.createAgentForPrompt.mockResolvedValue({ slug: 'churn-analyst' })
+    state.claimedTodo = { agentSlug: 'churn-analyst' }
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft({ agentSlug: null, newAgent: true }))
+
+    expect(state.createAgentForPrompt).toHaveBeenCalledWith('Churn\n\nWhy did it spike?')
+    expect(state.calls[0]).toEqual({ path: '/api/todos/t1', method: 'PATCH', body: { agentSlug: 'churn-analyst' } })
+    expect(state.calls[1]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
+    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'churn-analyst', origin: 'todo', message: 'Churn\n\nWhy did it spike?' })
+    expect(state.track).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'new', surface: 'todo' }))
+  })
+
+  it('creates nothing when the new agent could not be made', async () => {
+    state.createAgentForPrompt.mockRejectedValue(new Error('Failed to create agent'))
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await expect(result.current.mutateAsync(draft({ agentSlug: null, newAgent: true }))).rejects.toThrow('Failed to create agent')
+    expect(state.calls.filter((c) => c.method !== 'GET')).toEqual([])
+    expect(state.createSession).not.toHaveBeenCalled()
+    await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('Failed to create agent'))
+  })
+
   it('needs an agent', async () => {
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    await expect(result.current.mutateAsync({ id: 't1', agentSlug: null }))
+    await expect(result.current.mutateAsync(draft({ agentSlug: null })))
       .rejects.toThrow('Pick an agent to start this')
     expect(state.createSession).not.toHaveBeenCalled()
   })
@@ -100,7 +160,7 @@ describe('useStartTodo', () => {
     state.createSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve }))
     const { result } = renderHook(() => ({ start: useStartTodo(), starting: useStartingTodoIds() }), { wrapper: wrapper() })
 
-    void result.current.start.mutateAsync({ id: 't1', agentSlug: 'analyst' })
+    void result.current.start.mutateAsync(draft())
     await waitFor(() => expect(result.current.starting.has('t1')).toBe(true))
     resolveSession({ id: 'session-1' })
     await waitFor(() => expect(result.current.starting.has('t1')).toBe(false))
@@ -110,7 +170,7 @@ describe('useStartTodo', () => {
     let resolveSession: (value: { id: string }) => void = () => {}
     state.createSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve }))
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    const brief = { id: 't1', agentSlug: 'analyst' }
+    const brief = draft()
 
     const first = result.current.mutateAsync(brief)
     await expect(result.current.mutateAsync(brief)).rejects.toThrow('This is already starting')
@@ -122,7 +182,7 @@ describe('useStartTodo', () => {
   it('says when another start already holds the draft, even after its component is gone', async () => {
     state.claimHeld = true
     const { result, unmount } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    result.current.mutate({ id: 't1', agentSlug: 'analyst' })
+    result.current.mutate(draft())
     unmount()
     await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('This is already starting'))
     expect(state.createSession).not.toHaveBeenCalled()
@@ -131,14 +191,55 @@ describe('useStartTodo', () => {
   it('leaves a failed session creation to report itself, so it is said once', async () => {
     state.createSession.mockRejectedValue(new Error('The agent could not start'))
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    await expect(result.current.mutateAsync({ id: 't1', agentSlug: 'analyst' })).rejects.toThrow()
+    await expect(result.current.mutateAsync(draft())).rejects.toThrow()
     expect(state.toastError).not.toHaveBeenCalled()
+  })
+
+  it('names a stored path', async () => {
+    const att = { id: '11111111-1111-4111-8111-111111111111', name: 'note.txt', size: 5, mimeType: 'text/plain', kind: 'file' as const, path: '/workspace/uploads/note.txt' }
+    state.claimedAttachments = [att]
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft())
+
+    expect(state.createSession).toHaveBeenCalledWith({
+      agentSlug: 'analyst',
+      origin: 'todo',
+      message: 'Churn\n\nWhy did it spike?\n\n[Attached files:]\n- /workspace/uploads/note.txt',
+    })
+  })
+
+  it('names a stored folder and binds a mount after the claim', async () => {
+    const folder = { id: '22222222-2222-4222-8222-222222222222', name: 'notes', size: 8, mimeType: 'inode/directory', kind: 'folder' as const, path: '/workspace/uploads/notes/' }
+    const mount = { id: '33333333-3333-4333-8333-333333333333', name: 'notes', size: 0, mimeType: 'inode/mount', kind: 'mount' as const, hostPath: '/tmp/notes' }
+    state.claimedAttachments = [folder, mount]
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft())
+
+    const claimAt = state.calls.findIndex((call) => call.path === '/api/todos/t1/claim')
+    const mountAt = state.calls.findIndex((call) => call.path === '/api/agents/analyst/mounts')
+    expect(mountAt).toBeGreaterThan(claimAt)
+    expect(state.createSession).toHaveBeenCalledWith({
+      agentSlug: 'analyst',
+      origin: 'todo',
+      message: 'Churn\n\nWhy did it spike?\n\n[Attached drives (read-write):]\n- /mounts/notes (from /tmp/notes)\n\n[Attached files:]\n- /workspace/uploads/notes/',
+    })
+  })
+
+  it('removes a mount when the session does not start', async () => {
+    const mount = { id: '33333333-3333-4333-8333-333333333333', name: 'notes', size: 0, mimeType: 'inode/mount', kind: 'mount' as const, hostPath: '/tmp/notes' }
+    state.claimedAttachments = [mount]
+    state.createSession.mockRejectedValue(new Error('The agent could not start'))
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await expect(result.current.mutateAsync(draft())).rejects.toThrow('The agent could not start')
+    await waitFor(() => expect(state.calls).toContainEqual({ path: '/api/agents/analyst/mounts/mount-1?restart=true', method: 'DELETE', body: undefined }))
   })
 
   it('gives the claim back when the session could not be created', async () => {
     state.createSession.mockRejectedValue(new Error('The agent could not start'))
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    await expect(result.current.mutateAsync({ id: 't1', agentSlug: 'analyst' })).rejects.toThrow('The agent could not start')
+    await expect(result.current.mutateAsync(draft())).rejects.toThrow('The agent could not start')
     await waitFor(() => expect(state.calls).toContainEqual({ path: '/api/todos/t1/release', method: 'POST', body: { claim: 'c1' } }))
     expect(state.claimHeld).toBe(false)
   })

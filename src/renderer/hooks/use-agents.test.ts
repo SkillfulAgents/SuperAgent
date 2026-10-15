@@ -4,7 +4,7 @@ import { resolveRouteAgentId } from './use-agents'
 
 // Minimal agent factory — only the id/displaySlug fields the resolver reads.
 function agent(slug: string, displaySlug: string): ApiAgent {
-  return { slug, displaySlug, name: displaySlug, createdAt: new Date(), status: 'stopped', containerPort: null }
+  return { avatar: { color: 'tonal-blue', shape: 'circle' } as const, slug, displaySlug, name: displaySlug, createdAt: new Date(), status: 'stopped', containerPort: null }
 }
 
 describe('resolveRouteAgentId', () => {

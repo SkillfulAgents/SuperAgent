@@ -14,6 +14,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
+import { BrowserFrameRelay } from './browser-frame-relay'
 
 const browserWss = new WebSocketServer({ noServer: true })
 
@@ -87,13 +88,11 @@ export function setupBrowserStreamProxy(server: ServerType): void {
           trackServerEvent('browser_opened', { using: providerName })
         })
 
-        // Forward frames from container to client
-        // Preserve text/binary framing so JSON text frames aren't converted to binary
-        upstream.on('message', (data, isBinary) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(data, { binary: isBinary })
-          }
-        })
+        // Forward frames from container to client, preserving text/binary
+        // framing. The relay holds screencast frames back while the client's
+        // link is congested and sends the newest once it drains (see its doc).
+        const relay = new BrowserFrameRelay(ws)
+        upstream.on('message', (data, isBinary) => relay.forward(data as Buffer, isBinary))
 
         // Forward input events from client to container (only if user has 'user' role)
         ws.on('message', (data, isBinary) => {
@@ -111,6 +110,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         })
 
         ws.on('close', () => {
+          relay.close()
           if (upstream.readyState === WebSocket.OPEN) {
             upstream.close()
           }

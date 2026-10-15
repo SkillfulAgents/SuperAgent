@@ -70,7 +70,7 @@ export function changesOf(result: unknown): number {
  */
 export function insertWhere<TTable extends SQLiteTable>(
   table: TTable,
-  row: TTable['$inferInsert'],
+  row: { [K in keyof TTable['$inferInsert']]: TTable['$inferInsert'][K] | SQL },
   condition: SQL | undefined,
 ) {
   const values = Object.entries(getTableColumns(table))

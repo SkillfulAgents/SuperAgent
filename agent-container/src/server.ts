@@ -9,6 +9,7 @@ import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -52,7 +53,8 @@ import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-pro
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
-import { mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { installVolumeStop } from './volume-stop';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -119,6 +121,13 @@ app.get('/health', (c) => {
 });
 
 // Session endpoints
+installVolumeStop(app, {
+  hasVolumes: () => mountedVolumeIds().length > 0,
+  stopWriters: async () => { await Promise.all([dashboardManager.stopAll(), sessionManager.stopAll()]); },
+  drain: drainVolumeUploads,
+  finish: finishVolumeStop,
+});
+
 app.post('/sessions', async (c) => {
   try {
     const body = await c.req.json<CreateSessionRequest>();
@@ -271,6 +280,7 @@ app.post('/sessions/:id/messages', async (c) => {
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
+      globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
     });
 
     return c.json({ success: true }, 201);
@@ -1272,8 +1282,12 @@ app.post('/browser/open', async (c) => {
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
-    // Clean up any leftover daemon state before starting
-    cleanupAgentBrowserDaemon();
+    // Clear leftover daemon state only before a net-new launch. While a browser
+    // is active the daemon owns the container's Chrome, so this cleanup (which
+    // pkills agent-browser and headless Chrome) relaunched Chrome on every
+    // navigation and dropped the live-view screencast. Failed opens still clean
+    // up in the retry below.
+    if (launched) cleanupAgentBrowserDaemon();
 
     let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
@@ -2375,6 +2389,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
+        globalInstructions: globalInstructionsSchema.parse(payload.globalInstructions),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);

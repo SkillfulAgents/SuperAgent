@@ -9,6 +9,9 @@ import {
 } from '@shared/lib/services/platform-billing-service'
 import { refreshCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import { actingPlanCacheKey } from '@shared/lib/llm-provider/platform-plan-account'
+import { billingPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy'
 
 /**
  * Boot-time service that keeps the connected platform account's info + billing
@@ -68,8 +71,9 @@ class PlatformService {
     this.isRunning = false
   }
 
-  /** Connect → refresh; disconnect → clear the cache. */
+  /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
   onAuthChanged(connected: boolean): void {
+    platformPlanCache.clear()
     if (connected) void this.refresh()
     else this.clearCache()
   }
@@ -99,6 +103,10 @@ class PlatformService {
       this.cachedBilling = billing
       this.lastRefreshedAt = new Date().toISOString()
     }
+    // The snapshot carries the acting account's plan policy too: a billing
+    // view after an upgrade unlocks models without waiting for the cache.
+    const policy = billingPlanPolicy(billing)
+    if (policy) platformPlanCache.remember(await actingPlanCacheKey(), policy)
     return billing
   }
 

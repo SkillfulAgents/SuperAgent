@@ -1,6 +1,11 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
+
+export function updateAgentAvatarCache(queryClient: QueryClient, slug: string, avatar: AgentAvatar): void {
+  updateMatchingAgents(queryClient, slug, (agent) => ({ ...agent, avatar }))
+}
 
 function matchesAgent(agent: ApiAgent, slug: string): boolean {
   return agent.slug === slug || agent.displaySlug === slug
