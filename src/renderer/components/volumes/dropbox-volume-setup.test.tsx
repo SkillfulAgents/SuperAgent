@@ -56,20 +56,20 @@ describe('Dropbox volume creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
     await screen.findByText('No subfolders')
     await userEvent.click(screen.getByRole('button', { name: 'Use Dropbox root' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith({ name: 'Dropbox', source: { type: 'dropbox', config: { accountId: 'new', path: '' } }, visibility: 'private' })
   })
 
   it('requires a new folder selection when switching accounts', async () => {
     await setup()
     await chooseRoot()
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     await userEvent.click(screen.getByLabelText('Dropbox account', { exact: true }))
     await userEvent.click(screen.getByRole('option', { name: 'Personal Dropbox' }))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
     expect(screen.queryByTestId('selected-volume-folder')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
   })
 
   it('retains a selected folder on cancellation and preserves it when saving fails', async () => {
@@ -82,7 +82,7 @@ describe('Dropbox volume creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Change folder' }))
     await userEvent.click(within(screen.getByTestId('dropbox-folder-picker')).getByRole('button', { name: 'Cancel' }))
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('Entire Dropbox')
-    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Connection expired')
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'My shared files', source: { type: 'dropbox', config: { accountId: 'first', path: '' } } }))
     expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('My shared files')

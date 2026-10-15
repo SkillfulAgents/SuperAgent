@@ -22,7 +22,7 @@ export function useAgentMounts(agentSlug: string) {
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch mounts'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch drives'))
       return res.json()
     },
     enabled: !!agentSlug,
@@ -48,7 +48,7 @@ export function useAddMount() {
           ? { volumeId: data.volumeId, restart: data.restart }
           : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
       })
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add drive'))
       return res.json() as Promise<VolumeSummary>
     },
     onSuccess: () => {
@@ -69,7 +69,7 @@ export function useRemoveMount() {
     mutationFn: async (data: { agentSlug: string; mountId: string; restart?: boolean }) => {
       const url = `/api/agents/${data.agentSlug}/mounts/${data.mountId}${data.restart ? '?restart=true' : ''}`
       const res = await apiFetch(url, { method: 'DELETE' })
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove mount'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove drive'))
     },
     onSuccess: () => {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
@@ -90,7 +90,7 @@ export function useSetMountReadOnly() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ readOnly: data.readOnly }),
       })
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to update mount'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to update drive'))
     },
     onSuccess: () => {
       // Bare prefix - see useAddMount.
@@ -126,7 +126,7 @@ export function useVolumesManager(agentSlug: string) {
   }, [isAgentRunning, pendingRestart])
 
   const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
-    if (!canModifyMounts) throw new Error('You do not have permission to add volumes to this agent')
+    if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')
     const validatedSource = volumeConfigSchema.parse(source)
     if (validatedSource.type === 'local' && !canUseHostFeatures()) throw new Error('Select a folder in the desktop app')
     setOperationError(null)
@@ -143,7 +143,7 @@ export function useVolumesManager(agentSlug: string) {
       await addMount.mutateAsync({ agentSlug, volumeId })
       if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Failed to add mount')
+      setOperationError(error instanceof Error ? error.message : 'Failed to add drive')
     }
   }
 
@@ -154,7 +154,7 @@ export function useVolumesManager(agentSlug: string) {
       await removeMount.mutateAsync({ agentSlug, mountId })
       if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Failed to remove mount')
+      setOperationError(error instanceof Error ? error.message : 'Failed to remove drive')
     }
   }
 
@@ -165,7 +165,7 @@ export function useVolumesManager(agentSlug: string) {
       await setMountReadOnly.mutateAsync({ agentSlug, mountId, readOnly })
       if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Failed to update mount')
+      setOperationError(error instanceof Error ? error.message : 'Failed to update drive')
     }
   }
 
@@ -193,7 +193,7 @@ export function useVolumesManager(agentSlug: string) {
     mounts,
     definitions,
     isLoading: isLoading || registry.isLoading,
-    operationError: operationError ?? (registry.error ? 'Could not load saved volumes' : null),
+    operationError: operationError ?? (registry.error ? 'Could not load saved drives' : null),
     canModifyMounts,
     canCreateMount,
     pendingRestart,

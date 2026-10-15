@@ -30,7 +30,7 @@ function VolumeFileBrowserContent({ volumeId }: { volumeId: string }) {
         const response = await apiFetch(`${base}/folders?${new URLSearchParams({ path })}`)
         if (!response.ok) {
           const body = await response.json().catch(() => null) as { error?: string } | null
-          throw new FolderEntriesError(body?.error ?? 'Could not load this volume', response.status)
+          throw new FolderEntriesError(body?.error ?? 'Could not load this drive', response.status)
         }
         return response.json()
       },
@@ -40,7 +40,7 @@ function VolumeFileBrowserContent({ volumeId }: { volumeId: string }) {
   const fileUrl = activeTab.kind === 'file'
     ? `${getApiBaseUrl()}${base}/file?${new URLSearchParams({ path: activeTab.filePath, v: String(activeTab.version) })}` : null
 
-  return <section className="space-y-2 min-w-0" aria-label="Volume files">
+  return <section className="space-y-2 min-w-0" aria-label="Drive files">
     <div className="flex items-center justify-between">
       <h3 className="text-xs font-normal text-muted-foreground">Files</h3>
       <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Refresh files" onClick={() => {

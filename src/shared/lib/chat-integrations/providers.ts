@@ -7,7 +7,7 @@ import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-inte
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
 import { resolveAppLinkContext, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { toPublicChatIntegration } from './public'
-import { mergeChatIntegrationConfig, parseChatIntegrationConfig, type IMessageConfig } from './config-schema'
+import { mergeChatIntegrationConfig, parseChatIntegrationConfig, type IMessageConfig, type TelegramConfig } from './config-schema'
 import type { ChatIntegration } from '../db/schema'
 import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy } from './chat-policy'
@@ -68,7 +68,18 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
 }
 
 export const chatProviders: IntegrationProvider[] = [
-  chatProvider('telegram', telegramConfigSchema, async () => (await import('./telegram-connector')).TelegramConnector),
+  chatProvider(
+    'telegram', telegramConfigSchema, async () => (await import('./telegram-connector')).TelegramConnector,
+    (Connector, config, appLink, record) => new Connector(config, appLink, record),
+    async record => {
+      (await import('./telegram-connector')).forgetTelegramInstallation(record.id)
+      // The bot stops posting to the endpoint, which is disabled after this.
+      const config = parseChatIntegrationConfig('telegram', record.config) as TelegramConfig | null
+      if (!config?.relay) return
+      const { deleteTelegramWebhook } = await import('./telegram-webhooks')
+      await deleteTelegramWebhook(config)
+    },
+  ),
   chatProvider(
     'slack', slackConfigSchema, async () => (await import('./slack-connector')).SlackConnector,
     async (Connector, config, appLink, record) => {

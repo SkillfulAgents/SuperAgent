@@ -55,7 +55,7 @@ describe('volume type setup API', () => {
     browse.mockRejectedValueOnce(new Error('private upstream details'))
     const unavailable = await request()
     expect(unavailable.status).toBe(503)
-    expect(await unavailable.json()).toEqual({ error: 'The volume source is temporarily unavailable. Please try again.' })
+    expect(await unavailable.json()).toEqual({ error: 'The drive source is temporarily unavailable. Please try again.' })
   })
 })
 

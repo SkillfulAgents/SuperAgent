@@ -60,11 +60,11 @@ describe('Google Drive volume creation', () => {
     const save = await setup()
     await chooseAccount()
     expect(screen.getByText(/Saving one updates the Google file/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
     await chooseTeam()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('My Drive / Team')
     expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('Team')
-    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith({ name: 'Team', source: { type: 'googledrive', config: { accountId: 'first', folderId: 'team', folderName: 'Team', driveName: 'My Drive' } }, visibility: 'private' })
   })
 
@@ -72,12 +72,12 @@ describe('Google Drive volume creation', () => {
     await setup()
     await chooseAccount()
     await chooseTeam()
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     await chooseAccount('Personal Drive')
     expect(screen.queryByTestId('selected-volume-folder')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('')
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
   })
 
   it('continues with a newly connected account and steps back up through the picker', async () => {

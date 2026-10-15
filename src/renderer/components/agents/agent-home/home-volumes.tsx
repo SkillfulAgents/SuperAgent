@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { AppLink } from '@renderer/components/ui/app-link'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { useNavigate } from '@tanstack/react-router'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -16,7 +17,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import {
   MoreVertical,
-  Settings2,
+  Pencil,
   FolderOpen,
   Copy,
   Trash2,
@@ -32,8 +33,12 @@ import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { openableProps } from '@renderer/lib/openable'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
+import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
+import { useSaveVolumeDefinition } from '@renderer/hooks/use-volume-definitions'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
+import { parseVolumeName } from '@renderer/components/volumes/volume-details-schema'
 import { VolumeStatusBadge } from '../volume-status-badge'
-import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
+import type { MountSummaryWithHealth, VolumeDefinitionSummary } from '@shared/lib/types/mount'
 
 interface HomeVolumesProps {
   agentSlug: string
@@ -48,13 +53,14 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   if (!volumes.canAddMount && volumes.mounts.length === 0 && !volumes.operationError) return null
 
   return (
-    <HomeCollapsible title="Volumes" className={className}>
+    <HomeCollapsible title="Drives" className={className}>
       {volumes.mounts.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
           {volumes.mounts.map((mount) => (
             <VolumeRow
               key={mount.id}
               mount={mount}
+              definition={volumes.definitions.find(volume => volume.id === mount.volumeId)}
               agentSlug={agentSlug}
               onRemove={() => volumes.handleRemove(mount.id)}
               onSetReadOnly={(readOnly) => volumes.handleSetReadOnly(mount.id, readOnly)}
@@ -66,8 +72,8 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
         </div>
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No volumes yet</p>
-          <p className="text-xs mt-1">Attach a saved volume{volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.</p>
+          <p className="text-xs font-medium text-foreground">No drives yet</p>
+          <p className="text-xs mt-1">Add a saved drive{volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.</p>
         </div>
       )}
 
@@ -77,7 +83,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
           <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
-                Restart your agent for mount changes to take effect.
+                Restart your agent for drive changes to take effect.
               </span>
               <Button
                 size="sm"
@@ -104,11 +110,11 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" disabled={volumes.isAddingMount || volumes.isLoading} data-testid="add-mount-menu">
                     {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />}
-                    Add Mount <ChevronDown />
+                    Add Drive <ChevronDown />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-72">
-                  <DropdownMenuLabel>Saved volumes</DropdownMenuLabel>
+                  <DropdownMenuLabel>Saved drives</DropdownMenuLabel>
                   {volumes.definitions.map(volume => {
                     const attached = volumes.mounts.some(m => m.volumeId === volume.id)
                     return (
@@ -118,19 +124,19 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                           <span className="block truncate">{volume.name}</span>
                           {(volume.sourceLabel ?? volume.hostPath) && <span className="block truncate text-xs text-muted-foreground">{volume.sourceLabel ?? volume.hostPath}</span>}
                         </span>
-                        {attached && <span className="text-xs text-muted-foreground">Mounted</span>}
+                        {attached && <span className="text-xs text-muted-foreground">Added</span>}
                       </DropdownMenuItem>
                     )
                   })}
                   {volumes.canCreateMount && <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => setShowNewVolume(true)}><Plus className="h-4 w-4" />New Volume</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setShowNewVolume(true)}><Plus className="h-4 w-4" />New Drive</DropdownMenuItem>
                   </>}
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
               <Button variant="ghost" size="sm" onClick={() => setShowNewVolume(true)} disabled={volumes.isAddingMount || volumes.isLoading}>
-                {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />} Add Mount
+                {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />} Add Drive
               </Button>
             )}
           </div>
@@ -155,6 +161,7 @@ function getFileManagerLabel(): string {
 interface VolumeRowProps {
   agentSlug: string
   mount: MountSummaryWithHealth
+  definition?: VolumeDefinitionSummary
   onRemove: () => void
   onSetReadOnly: (readOnly: boolean) => void
   isRemovingMount: boolean
@@ -162,15 +169,20 @@ interface VolumeRowProps {
   canRemove: boolean
 }
 
-function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount, isUpdatingMount, canRemove }: VolumeRowProps) {
+function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRemovingMount, isUpdatingMount, canRemove }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [isRenaming, setIsRenaming] = useState(false)
+  const titleRef = useRef<InlineEditableTitleHandle>(null)
+  useLayoutEffect(() => { if (isRenaming) titleRef.current?.startEditing() }, [isRenaming])
+  const navigate = useNavigate()
+  const save = useSaveVolumeDefinition()
   const fileManagerLabel = getFileManagerLabel()
   // `hostPath` is a path on whichever machine runs the agent. Opening it in the
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
   const { hostPath } = mount
-  const sourceLabel = mount.sourceLabel ?? hostPath
+  const subtitle = mount.name === mount.volumeName ? mount.sourceLabel ?? hostPath : mountPathOf(mount.name)
   const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
@@ -182,6 +194,11 @@ function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount,
     if (hostPath) void navigator.clipboard.writeText(hostPath)
   }
 
+  const canOpen = definition !== undefined && !isRenaming
+  const openSettings = () => {
+    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: `/agents/${encodeURIComponent(agentSlug)}` } })
+  }
+
   const handleDelete = () => {
     onRemove()
     setShowDeleteDialog(false)
@@ -190,29 +207,45 @@ function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount,
   return (
     <>
       <div
-        // Not a button when there is nothing to open: an inert control that
-        // still takes focus and highlights on hover promises an action the
-        // window cannot perform.
-        {...(canOpenInFileManager ? openableProps(handleOpenInFinder) : {})}
-        className={`group relative py-3 px-4 transition-colors ${canOpenInFileManager ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
+        {...(canOpen ? { ...openableProps(openSettings), 'aria-label': `Open ${mount.volumeName} drive settings` } : {})}
+        className={`group relative py-3 px-4 transition-colors ${canOpen ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
       >
         <div className="flex items-center gap-2">
           <VolumeIcon type={mount.type} className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <span className="text-xs font-medium truncate">{mount.name}</span>
-          <VolumeStatusBadge health={mount.health} />
-          {mount.readOnly && (
-            <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
-              <Lock className="h-2.5 w-2.5" />
-              Read only
-            </span>
-          )}
+          {isRenaming ? (
+            <InlineEditableTitle
+              ref={titleRef}
+              value={mount.volumeName}
+              canEdit
+              isSaving={save.isPending}
+              onSave={async name => { await save.mutateAsync({ id: mount.volumeId, name: parseVolumeName(name) }) }}
+              onEditEnd={() => setIsRenaming(false)}
+              onError={error => toast.error('Failed to rename drive', { description: error instanceof Error ? error.message : 'Please try again.' })}
+              displayClassName="text-xs font-medium"
+              inputClassName="h-7 text-xs md:text-xs"
+              editContainerClassName="mr-7"
+              saveButtonClassName="h-7 w-7"
+              ariaLabel="Rename drive"
+              saveAriaLabel="Save name"
+              inputTestId="volume-row-name-input"
+            />
+          ) : <>
+            <span className="text-xs font-medium truncate">{mount.volumeName}</span>
+            <VolumeStatusBadge health={mount.health} />
+            {mount.readOnly && (
+              <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
+                <Lock className="h-2.5 w-2.5" />
+                Read only
+              </span>
+            )}
+          </>}
         </div>
-        {sourceLabel && (
-          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={sourceLabel}>
-            {sourceLabel}
+        {subtitle && (
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={subtitle}>
+            {subtitle}
           </div>
         )}
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -220,18 +253,13 @@ function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount,
                 size="icon"
                 variant="outline"
                 className="h-6 w-6"
-                aria-label="Mount actions"
+                aria-label="Drive actions"
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-1">
-              <AppLink to="/settings/$tab" params={{ tab: 'volumes' }} search={{ volume: mount.volumeId, from: `/agents/${encodeURIComponent(agentSlug)}` }}
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={event => { event.stopPropagation(); setMenuOpen(false) }}>
-                <Settings2 className="h-3.5 w-3.5" />Volume settings
-              </AppLink>
+            <PopoverContent align="end" className="w-44 p-1" onClick={(e) => e.stopPropagation()}>
               {canOpenInFileManager && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
@@ -256,6 +284,19 @@ function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount,
                 >
                   <Copy className="h-3.5 w-3.5" />
                   Copy path
+                </button>
+              )}
+              {definition?.canManage && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setMenuOpen(false)
+                    setIsRenaming(true)
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  Rename
                 </button>
               )}
               {canRemove && (
@@ -284,7 +325,7 @@ function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount,
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Remove Mount
+                Remove from Agent
               </button>}
             </PopoverContent>
           </Popover>
@@ -294,19 +335,19 @@ function VolumeRow({ mount, agentSlug, onRemove, onSetReadOnly, isRemovingMount,
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove Mount</AlertDialogTitle>
+            <AlertDialogTitle>Remove from Agent</AlertDialogTitle>
             <AlertDialogDescription>
-              Detach &quot;{mount.name}&quot; from this agent? The saved volume and its files will remain available. Restart the agent to remove the mount from its filesystem.
+              Remove &quot;{mount.volumeName}&quot; from this agent? The saved drive and its files will remain available. Restart the agent to remove the drive from its filesystem.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep Mount</AlertDialogCancel>
+            <AlertDialogCancel>Keep Drive</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
               disabled={isRemovingMount}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {isRemovingMount ? 'Removing...' : 'Remove Mount'}
+              {isRemovingMount ? 'Removing...' : 'Remove from Agent'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

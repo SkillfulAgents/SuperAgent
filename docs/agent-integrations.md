@@ -219,6 +219,34 @@ mailboxes share one endpoint per relay scope, so they don't attach through
 `integrationRelays`. `EmailRelays` keeps one registration per endpoint and
 routes each pointer to its mailbox. See [agent-email.md](agent-email.md#consumption-and-delivery).
 
+Telegram sets its webhook up itself too, and with a relay it doesn't poll. A
+bot has either a webhook or `getUpdates`, and Telegram holds what it can't
+deliver for 24 hours. The first connect offered a relay mints the endpoint and
+a secret. Every such connect calls `setWebhook` with the endpoint, which is
+idempotent and moves updates held for `getUpdates` to the webhook. Without a
+relay, or if the endpoint or `setWebhook` fails, the connection long-polls.
+grammY deletes the webhook before its first `getUpdates`, keeping held updates.
+Updates an earlier webhook already posted to the relay can't come back through
+`getUpdates`, so a connection that has an endpoint but couldn't set the webhook
+also drains the relay alongside the poll. A connection replaced during setup
+sends no `setWebhook`, and one already in flight is waited out by its disconnect
+and by the installation's next connect, before that one touches Telegram. The
+manager stops waiting for a teardown after five seconds, so the disconnect alone
+isn't enough. A stale webhook can't land after the next connection has chosen
+to poll.
+Telegram doesn't sign its posts. It sends back the webhook's `secret_token` in
+a header, which no relay verification profile can check (they all sign the
+body), so the host compares it itself. The token is the secret bound to the
+bot's id, so a bot the installation no longer uses can't post as the current
+one. Relayed updates go through `bot.handleUpdate()` one at a time, into the
+same handlers as polled ones, without the first-poll batching, and are
+deduplicated on `update_id` for as long as the installation keeps its cards.
+Each reports what `emitEvent` did with its message.
+Open cards and their buttons belong to the installation, not the connection,
+so a tap that arrives after a reconnect still answers. A restart forgets them,
+and callback ids are random, so an old card's button can't match a new card. Deleting the installation deletes the
+bot's webhook if it still points at the endpoint, before the endpoint is disabled.
+
 ## Task managers
 
 `TaskManagerAgentIntegration` maps each work item to a session and prepares issue

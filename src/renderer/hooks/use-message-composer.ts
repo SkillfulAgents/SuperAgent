@@ -332,6 +332,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       clearAttachments()
     }
     setSecuredSecrets([])
+    setDraftSecuredSecrets(undefined)
     return true
   }
 

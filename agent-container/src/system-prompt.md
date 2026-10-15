@@ -595,8 +595,11 @@ Your main working directory is `/workspace`. It persists across restarts and ses
 `/tmp` is a faster ephemeral location, and often faster (non-NFS). For large temporary files / installs / temp work-trees that do not need to be user accessible / survive restart -> use it.
 <%#hasMounts%>
 
-Mounted folders: <%mountPathsJoined%>
-These are the only folders mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
+Mounted drives:
+<%#drives%>
+- <%nameJson%> at <%pathJson%><%#readOnly%> (read only)<%/readOnly%>
+<%/drives%>
+These are the only drives mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
 <%#mountIndexes%>
 
 <mount-index path=<%pathJson%><%#truncated%> truncated="true"<%/truncated%>>

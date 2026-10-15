@@ -6325,7 +6325,7 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
-    return c.json({ error: 'Failed to list mounts' }, 500)
+    return c.json({ error: 'Failed to list drives' }, 500)
   }
 })
 
@@ -6343,10 +6343,10 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
         : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
     } catch (err) {
       if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
-      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid mount configuration' }, 400)
+      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)
       throw err
     }
-    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId }
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName }
 
     if (restart) {
       const cachedInfo = agentRegistry.get(agentSlug).container.status()
@@ -6359,7 +6359,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
     return c.json(summary, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)
-    return c.json({ error: 'Failed to add mount' }, 500)
+    return c.json({ error: 'Failed to add drive' }, 500)
   }
 })
 
@@ -6369,16 +6369,16 @@ agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const mountId = c.req.param('mountId')
     const parsed = updateMountSchema.safeParse(await c.req.json().catch(() => null))
-    if (!parsed.success) return c.json({ error: 'Invalid mount update' }, 400)
+    if (!parsed.success) return c.json({ error: 'Invalid drive update' }, 400)
     if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
-      return c.json({ error: 'Mount not found' }, 404)
+      return c.json({ error: 'Drive not found' }, 404)
     }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'updated', details: { readOnly: parsed.data.readOnly } })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to update mount:', error)
-    return c.json({ error: 'Failed to update mount' }, 500)
+    return c.json({ error: 'Failed to update drive' }, 500)
   }
 })
 
@@ -6402,7 +6402,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to remove mount:', error)
-    return c.json({ error: 'Failed to remove mount' }, 500)
+    return c.json({ error: 'Failed to remove drive' }, 500)
   }
 })
 

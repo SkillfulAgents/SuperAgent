@@ -14,7 +14,7 @@ import { askUserQuestionDef } from '../ask-user-question/definition'
 import type { PendingUserInputRequest } from './request-schema'
 
 interface UsePendingRequestsArgs {
-  sessionId: string
+  sessionId: string | null
   agentSlug: string
   pendingUserMessages?: PendingMessage[]
 }
@@ -573,7 +573,7 @@ export function usePendingRequests({
   // the transcript is what renders them.
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
   const unified = useMemo(() => {
-    const requests = unifiedRequestsData ?? []
+    const requests = sessionId ? unifiedRequestsData ?? [] : []
     // Session-scoped waits die with the turn for DISPLAY purposes — the legacy
     // arrays were cleared on session_idle, and e.g. an abandoned computer-use
     // approval deliberately survives the idle boundary server-side for
@@ -583,7 +583,7 @@ export function usePendingRequests({
     return projectUnifiedRequests(
       isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
     )
-  }, [unifiedRequestsData, isActive])
+  }, [sessionId, unifiedRequestsData, isActive])
   const pendingProxyReviews = unified.reviews
   const pendingAccountReauthRequests = unified.accountReauthRequests
   const pendingMcpReauthRequests = unified.mcpReauthRequests

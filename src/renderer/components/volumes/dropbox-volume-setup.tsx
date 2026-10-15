@@ -14,7 +14,7 @@ function DropboxLogo({ className }: { className?: string }) {
 /** The picker walks Dropbox paths; '' is the account root, which can be mounted. */
 const dropboxFolders: VolumeFolderSource<string> = {
   type: 'dropbox', label: 'Dropbox',
-  title: 'Select a Dropbox folder', description: 'Choose a folder, or select the root to mount your entire Dropbox.',
+  title: 'Select a Dropbox folder', description: 'Choose a folder, or select the root to add your entire Dropbox.',
   query: (accountId, path) => ({ accountId, path }),
   folders: data => data.folders.map(folder => ({ id: folder.id, name: folder.name, cursor: folder.id })),
   location: path => path || 'Dropbox',
@@ -41,8 +41,8 @@ function DropboxVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSavi
   }
 
   return <>
-    <VolumeSetupHeader title={step === 'account' ? 'Connect Dropbox' : 'Set up Dropbox volume'}
-      description={step === 'account' ? 'Choose an account or connect a new one.' : 'Select a folder and name it. Attached agents get read/write access.'}
+    <VolumeSetupHeader title={step === 'account' ? 'Connect Dropbox' : 'Set up Dropbox drive'}
+      description={step === 'account' ? 'Choose an account or connect a new one.' : 'Select a folder and name it. Agents you add it to get read/write access.'}
       Logo={DropboxLogo} steps={['Source', 'Account', 'Details']} step={step === 'account' ? 1 : 2} />
     {step === 'account' ? <VolumeAccountStep toolkit="dropbox" label="Dropbox" accounts={accounts} accountId={accountId} active={active}
       onSelect={selectAccount} onNext={() => { clearError(); setStep('details') }} onBack={onBack} onCancel={onCancel} />

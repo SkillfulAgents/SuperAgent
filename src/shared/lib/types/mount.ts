@@ -30,11 +30,13 @@ export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
 /** An agent's attachment, whose id and name are independent of the definition. */
 export interface MountedVolume extends StoredVolume {
   volumeId: string
+  volumeName: string
   readOnly: boolean
 }
 
 export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
   volumeId: string
+  volumeName: string
   readOnly: boolean
 }
 
@@ -45,6 +47,8 @@ export type VolumeCacheMode = 'local' | 'remote'
 export interface ContainerVolume {
   volumeId: string // attachment id; the agent token scopes its lookup
   name: string
+  /** The name people see. Older hosts omit it, and the prompt shows the folder name. */
+  volumeName?: string
   /** Older hosts omit this; the image preserves local-folder behavior in that case. */
   cacheMode?: VolumeCacheMode
   /** Lets rclone recognize aliases of the same file before replacing a target. */

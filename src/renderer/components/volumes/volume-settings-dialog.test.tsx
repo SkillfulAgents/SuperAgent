@@ -32,7 +32,7 @@ describe('volume folder selection', () => {
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/documents')
     expect(screen.getByLabelText('Name')).toHaveValue('Shared documents')
     expect(screen.getAllByRole('textbox')).toHaveLength(1)
-    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith({ name: 'Shared documents', source: { type: 'local', config: { path: '/documents' } }, visibility: 'public' })
   })
 
@@ -44,7 +44,7 @@ describe('volume folder selection', () => {
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeEnabled()
   })
 
   it('stays on source selection when the native picker is cancelled', async () => {
@@ -58,7 +58,7 @@ describe('volume folder selection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
     expect(screen.getByLabelText('Name')).toHaveValue('reports')
     await userEvent.clear(screen.getByLabelText('Name'))
-    expect(screen.getByRole('button', { name: 'Create volume' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
   })
 
   it('validates the volume name before saving and supports returning to sources', async () => {
@@ -68,7 +68,7 @@ describe('volume folder selection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Local folder' }))
     await userEvent.clear(screen.getByLabelText('Name'))
     await userEvent.type(screen.getByLabelText('Name'), 'invalid/name')
-    await userEvent.click(screen.getByRole('button', { name: 'Create volume' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Use a single folder name')
     expect(save).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))

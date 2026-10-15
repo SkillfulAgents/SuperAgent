@@ -39,7 +39,7 @@ describe('SQLite mount attachments', () => {
     expect(await getMounts('test-agent')).toEqual([])
     const hostPath = folder('myapp')
     const mount = await add(hostPath)
-    expect(mount).toEqual({ id: expect.any(String), volumeId: expect.any(String), name: 'myapp', type: 'local', config: { path: hostPath }, readOnly: false })
+    expect(mount).toEqual({ id: expect.any(String), volumeId: expect.any(String), name: 'myapp', volumeName: 'myapp', type: 'local', config: { path: hostPath }, readOnly: false })
     expect(mount.volumeId).not.toBe(mount.id)
     expect(await getMounts('test-agent')).toEqual([mount])
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
@@ -74,9 +74,10 @@ describe('SQLite mount attachments', () => {
   it('keeps mount paths and URLs when a definition is renamed', async () => {
     const original = await add(folder('notes'))
     await updateVolumeDefinition(original.volumeId, { name: 'renamed' }, viewer)
-    expect(await getMounts('test-agent')).toEqual([original])
+    expect(await getMounts('test-agent')).toEqual([{ ...original, volumeName: 'renamed' }])
+    expect((await getMountsWithHealth('test-agent')).map(m => [m.name, m.volumeName])).toEqual([['notes', 'renamed']])
     expect((await attachMount('agent-b', original.volumeId, viewer)).name).toBe('renamed')
-    expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: original.id, name: 'notes', cacheMode: 'local' }])
+    expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: original.id, name: 'notes', volumeName: 'renamed', cacheMode: 'local' }])
   })
   it('sets read only on one attachment, and every reader of it agrees', async () => {
     const mount = await add(folder('team'))
@@ -84,7 +85,7 @@ describe('SQLite mount attachments', () => {
     expect(mount.readOnly).toBe(false)
     expect(await setMountReadOnly('test-agent', mount.id, true)).toBe(true)
     expect(await setMountReadOnly('agent-b', mount.id, true)).toBe(false)
-    expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: mount.id, name: 'team', cacheMode: 'local', readOnly: true }])
+    expect((await listVolumes('test-agent')).volumes).toEqual([{ volumeId: mount.id, name: 'team', volumeName: 'team', cacheMode: 'local', readOnly: true }])
     expect((await getMountsWithHealth('test-agent'))[0].readOnly).toBe(true)
     expect((await resolveVolume('test-agent', mount.id))?.readOnly).toBe(true)
     expect((await getMountsWithHealth('agent-b'))[0].readOnly).toBe(false)
@@ -119,7 +120,7 @@ describe('SQLite mount attachments', () => {
     fs.symlinkSync(real, link)
     expect((await add(link)).config).toEqual({ path: real })
     const spaces = await add(folder('   '))
-    expect((await listVolumes('test-agent')).volumes).toContainEqual({ volumeId: spaces.id, name: '   ', cacheMode: 'local' })
+    expect((await listVolumes('test-agent')).volumes).toContainEqual({ volumeId: spaces.id, name: '   ', volumeName: '   ', cacheMode: 'local' })
   })
 })
 
@@ -131,7 +132,7 @@ describe('volume health and stored configuration', () => {
     await storedMount('v3', 'bad', { folder: notes })
     await storedMount('v4', '', { path: notes })
     expect(await listVolumes('test-agent')).toEqual({
-      volumes: [{ volumeId: 'v1', name: 'notes', cacheMode: 'local' }],
+      volumes: [{ volumeId: 'v1', name: 'notes', volumeName: 'notes', cacheMode: 'local' }],
       notMounted: [{ name: 'gone', reason: 'not found' }, { name: 'bad', reason: 'unreadable' }, { name: '', reason: 'invalid name' }],
     })
     expect((await getMountsWithHealth('test-agent')).map(m => m.health)).toEqual(['ok', 'missing', 'missing', 'missing'])
