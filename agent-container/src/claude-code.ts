@@ -20,7 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
 import { gamutPluginDir } from './gamut-plugin';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createMeetingsMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
@@ -338,6 +338,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
+  meetings: boolean;
   hasModelHints: boolean;
   modelHints: string[];
   hasConnectedAccounts: boolean;
@@ -359,6 +361,11 @@ export interface SystemPromptVars {
  * environment, the labels of whichever native web tools a vendor replaced, the
  * config dir, and the data behind the sections that only render for some agents.
  */
+/** The host said it can run meeting bots: the meeting tools get registered and advertised. */
+function meetingsAvailable(availableIntegrationFamilies?: string[]): boolean {
+  return availableIntegrationFamilies?.includes('meeting') ?? false;
+}
+
 export function buildSystemPromptVars(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
@@ -368,6 +375,7 @@ export function buildSystemPromptVars(
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
   globalInstructions?: string,
+  availableIntegrationFamilies?: string[],
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
@@ -404,6 +412,7 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
     modelHints,
     hasConnectedAccounts: connectedAccounts.length > 0,
@@ -436,6 +445,7 @@ export function generateSystemPrompt(
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
   globalInstructions?: string,
+  availableIntegrationFamilies?: string[],
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -446,6 +456,7 @@ export function generateSystemPrompt(
     capabilityPolicies,
     subagentModels,
     globalInstructions,
+    availableIntegrationFamilies,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -530,6 +541,7 @@ export interface ClaudeCodeProcessOptions {
   modelContextWindows?: ModelContextWindows;
   webSearchProvider?: string;
   webFetchProvider?: string;
+  availableIntegrationFamilies?: string[];
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -561,6 +573,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private modelContextWindows: ModelContextWindows;
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
+  private availableIntegrationFamilies: string[] | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -677,6 +690,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.modelContextWindows = options.llmRuntime?.modelContextWindows ?? options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
+    this.availableIntegrationFamilies = options.availableIntegrationFamilies;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -711,6 +725,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.capabilityPolicies,
       this.subagentModels,
       this.globalInstructions,
+      this.availableIntegrationFamilies,
     );
   }
 
@@ -965,6 +980,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       'widgets': createWidgetsMcpServer(),
       'agents': createAgentsMcpServer(() => this.sessionId),
       'chat': createChatMcpServer(() => this.sessionId),
+      ...(meetingsAvailable(this.availableIntegrationFamilies) ? { 'meetings': createMeetingsMcpServer() } : {}),
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
@@ -1793,6 +1809,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           nextPolicies,
           this.subagentModels,
           this.globalInstructions,
+          this.availableIntegrationFamilies,
         );
       }
       this.reconcilePendingCapabilityReviews();
