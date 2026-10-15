@@ -38,12 +38,12 @@ export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, 
     </div>}
     {children}
     {isAuthMode && <div className="space-y-2">
-      <Label htmlFor="volume-access">Who can attach this volume?</Label>
+      <Label htmlFor="volume-access">Who can add this drive?</Label>
       {isAdmin ? <Select value={value.visibility} onValueChange={visibility => onChange({ ...value, visibility: visibility as VolumeDetails['visibility'] })} disabled={disabled || inUse}>
         <SelectTrigger id="volume-access"><SelectValue /></SelectTrigger>
         <SelectContent><SelectItem value="private">Only me</SelectItem><SelectItem value="public">Everyone</SelectItem></SelectContent>
       </Select> : <p className="text-sm">Only me</p>}
-      {inUse && isAdmin && <p className="text-xs text-muted-foreground">Detach from all agents before changing access.</p>}
+      {inUse && isAdmin && <p className="text-xs text-muted-foreground">Remove from all agents before changing access.</p>}
     </div>}
   </>
 }

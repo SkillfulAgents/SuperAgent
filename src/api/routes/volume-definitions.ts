@@ -18,10 +18,10 @@ routes.onError((error, c) => {
     return c.json({ error: error.message }, error.status)
   }
   if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
-  if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid volume configuration' }, 400)
+  if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)
   console.error('[volumes] Definition request failed:', error)
-  if (c.req.path.endsWith('/folders') || c.req.path.endsWith('/file')) return c.json({ error: 'This volume is unavailable. Please try again.' }, 503)
-  return c.json({ error: 'Could not update volumes' }, 500)
+  if (c.req.path.endsWith('/folders') || c.req.path.endsWith('/file')) return c.json({ error: 'This drive is unavailable. Please try again.' }, 503)
+  return c.json({ error: 'Could not update drives' }, 500)
 })
 
 // These routes authorize the definition before reaching the source. A private definition

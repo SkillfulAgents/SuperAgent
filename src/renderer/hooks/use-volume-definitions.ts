@@ -12,7 +12,7 @@ export interface VolumeSettingsInput {
 async function checkedResponse(response: Response): Promise<Response> {
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.error ?? 'Could not update volumes')
+    throw new Error(body?.error ?? 'Could not update drives')
   }
   return response
 }

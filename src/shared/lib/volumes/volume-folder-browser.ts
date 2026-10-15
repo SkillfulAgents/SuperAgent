@@ -19,7 +19,7 @@ export function volumeFolderBrowser<Query>(
     } catch (error) {
       if (error instanceof VolumeError || error instanceof WorkspaceFileError) throw error
       console.error('[volumes] Folder browse failed:', error)
-      throw new VolumeError('The volume source is temporarily unavailable. Please try again.', 503)
+      throw new VolumeError('The drive source is temporarily unavailable. Please try again.', 503)
     }
   }
 }

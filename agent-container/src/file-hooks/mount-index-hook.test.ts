@@ -10,8 +10,8 @@ vi.mock('../volume-mounts', async (importOriginal) => ({
 }))
 
 const hook = new MountIndexFileHook()
-const notesHint = 'Folder index: "/mounts/notes/INDEX.md". Update the index if this change makes an entry wrong or missing.'
-const teamHint = 'Folder index: "/mounts/Team (old)/INDEX.md". Update the index if this change makes an entry wrong or missing.'
+const notesHint = 'Drive index: "/mounts/notes/INDEX.md". Update the index if this change makes an entry wrong or missing.'
+const teamHint = 'Drive index: "/mounts/Team (old)/INDEX.md". Update the index if this change makes an entry wrong or missing.'
 
 describe('MountIndexFileHook', () => {
   it.each([
@@ -53,6 +53,6 @@ describe('mountIndexCommandHint', () => {
 
   it('names every indexed folder a command touches', () => {
     expect(mountIndexCommandHint('mv /mounts/notes/a.md "/mounts/Team (old)/"')).toBe(
-      'Folder index: "/mounts/notes/INDEX.md", "/mounts/Team (old)/INDEX.md". Update the index if this change makes an entry wrong or missing.')
+      'Drive index: "/mounts/notes/INDEX.md", "/mounts/Team (old)/INDEX.md". Update the index if this change makes an entry wrong or missing.')
   })
 })

@@ -42,10 +42,10 @@ export function storedDefinition(row: Pick<VolumeRow, 'id' | 'name' | 'type' | '
 
 function ownerFor(visibility: 'public' | 'private' | undefined, viewer: VolumeViewer): string | null {
   if (visibility === 'public' || (visibility === undefined && viewer.userId === null)) {
-    if (!viewer.admin) throw new VolumeError('Only admins can create public volumes', 403)
+    if (!viewer.admin) throw new VolumeError('Only admins can create public drives', 403)
     return null
   }
-  if (viewer.userId === null) throw new VolumeError('Private volumes require a signed-in user', 400)
+  if (viewer.userId === null) throw new VolumeError('Private drives require a signed-in user', 400)
   return viewer.userId
 }
 
@@ -57,7 +57,7 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
     prepared = await prepareVolume(input.type, input.config, viewer)
   } catch (error) {
     if (error instanceof VolumeError) throw error
-    throw new VolumeError(error instanceof Error ? error.message : 'Invalid volume configuration', 400)
+    throw new VolumeError(error instanceof Error ? error.message : 'Invalid drive configuration', 400)
   }
   const config = volumeConfigSchema.parse(prepared).config
   const now = new Date()
@@ -104,9 +104,9 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
     ))).run()
   if (changesOf(result) > 0) return
   if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
-    throw new VolumeError('Detach this volume from all agents before changing its access', 409)
+    throw new VolumeError('Remove this drive from all agents before changing its access', 409)
   }
-  throw new VolumeError('Volume not found', 404)
+  throw new VolumeError('Drive not found', 404)
 }
 
 export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): Promise<void> {
@@ -116,24 +116,24 @@ export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): 
   )).run()
   if (changesOf(result) > 0) return
   if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
-    throw new VolumeError('Detach this volume from all agents before deleting it', 409)
+    throw new VolumeError('Remove this drive from all agents before deleting it', 409)
   }
-  throw new VolumeError('Volume not found', 404)
+  throw new VolumeError('Drive not found', 404)
 }
 
 /** User-facing access to a source, independent of any agent or running container. */
 export async function getVisibleVolumeDefinition(id: string, viewer: VolumeViewer): Promise<StoredVolume> {
   const row = await db.select().from(volumeDefinitions)
     .where(and(eq(volumeDefinitions.id, id), selectableVolumes(viewer))).get()
-  if (!row) throw new VolumeError('Volume not found', 404)
+  if (!row) throw new VolumeError('Drive not found', 404)
   const stored = storedDefinition(row)
-  if (!stored) throw new VolumeError('Volume configuration is unavailable', 400)
+  if (!stored) throw new VolumeError('Drive configuration is unavailable', 400)
   return stored
 }
 
 export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
   const volume = instantiateVolume(await getVisibleVolumeDefinition(id, viewer))
-  if (!volume) throw new VolumeError('Volume configuration is unavailable', 400)
+  if (!volume) throw new VolumeError('Drive configuration is unavailable', 400)
   return volume
 }
 

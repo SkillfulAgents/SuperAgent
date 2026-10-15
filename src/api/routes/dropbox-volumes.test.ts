@@ -82,7 +82,7 @@ describe('Dropbox volume access and transport', () => {
   it('passes remote mode to the container and reuses parent metadata during a cold 243-directory walk', async () => {
     const { id } = await (await create()).json()
     const mount = await attachMount('agent-a', id, { userId: 'alice', admin: false })
-    expect((await listVolumes('agent-a')).volumes).toEqual([{ volumeId: mount.id, name: mount.name, cacheMode: 'remote', caseInsensitive: true }])
+    expect((await listVolumes('agent-a')).volumes).toEqual([{ volumeId: mount.id, name: mount.name, volumeName: mount.volumeName, cacheMode: 'remote', caseInsensitive: true }])
     await handle.db.delete(proxyAuditLog).run()
     const children = Array.from({ length: 242 }, (_, i) => ({ ...folder, name: `sub${i}`, path_lower: `/team/sub${i}` }))
     forward.mockClear()

@@ -17,7 +17,7 @@ routes.onError((error, c) => {
   if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
   if (error instanceof z.ZodError || error instanceof SyntaxError) return c.json({ error: c.req.path.endsWith('/validate') ? 'Invalid connection details' : 'Invalid folder browse parameters' }, 400)
   console.error('[volumes] Setup browse failed:', error)
-  return c.json({ error: 'The volume source is temporarily unavailable. Please try again.' }, 503)
+  return c.json({ error: 'The drive source is temporarily unavailable. Please try again.' }, 503)
 })
 
 routes.get('/:type/folders', async c => c.json(await browseVolumeFolders(c.req.param('type'), c.req.query(), volumeViewer(c))))

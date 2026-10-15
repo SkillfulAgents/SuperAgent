@@ -24,15 +24,15 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
   const add = useAddMount()
   const remove = useRemoveMount()
   const [changedWhileRunning, setChangedWhileRunning] = useState<Set<string>>(new Set())
-  return <section className="min-w-0 space-y-3" aria-label="Volume agents">
-    <p className="text-xs text-muted-foreground">Running agents pick up mount changes after a restart.</p>
+  return <section className="min-w-0 space-y-3" aria-label="Drive agents">
+    <p className="text-xs text-muted-foreground">Running agents pick up drive changes after a restart.</p>
     <AgentAssignmentList
       agents={(agents.data ?? []).filter(agent => !isAuthMode || (rolesReady && canUseAgent(agent.slug)))}
       assignedSlugs={(assignment.data?.attachments ?? []).map(item => item.agentSlug)}
       isLoading={agents.isLoading || assignment.isLoading || (isAuthMode && !rolesReady)} error={agents.error ?? assignment.error}
-      sectioned assignedLabel="Agents With This Volume" unassignedLabel="Agents Without This Volume"
-      emptyAssigned="No agents have this volume mounted. Add one below."
-      toggleLabel={(agent, assigned) => `${assigned ? 'Unmount' : 'Mount'} ${volume.name} ${assigned ? 'from' : 'on'} ${agent.name}`}
+      sectioned assignedLabel="Agents With This Drive" unassignedLabel="Agents Without This Drive"
+      emptyAssigned="No agents have this drive. Add one below."
+      toggleLabel={(agent, assigned) => `${assigned ? 'Remove' : 'Add'} ${volume.name} ${assigned ? 'from' : 'to'} ${agent.name}`}
       testId={slug => `volume-agent-toggle-${volume.id}-${slug}`}
       onToggle={async (slug, next) => {
         if (next) await add.mutateAsync({ agentSlug: slug, volumeId: volume.id })
@@ -59,7 +59,7 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
   const submit = async () => {
     setError(null); setSaved(false)
     try { await save.mutateAsync({ id: volume.id, visibility }); setSaved(true) }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not save volume') }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not save drive') }
   }
   return <section className="space-y-2">
     <h3 className="text-xs font-normal text-muted-foreground">Settings</h3>
@@ -70,8 +70,8 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={onDelete}
-          disabled={save.isPending || volume.attachmentCount > 0} title={volume.attachmentCount > 0 ? 'Detach from all agents before deleting' : undefined}>
-          <Trash2 className="h-3.5 w-3.5" />Delete volume
+          disabled={save.isPending || volume.attachmentCount > 0} title={volume.attachmentCount > 0 ? 'Remove from all agents before deleting' : undefined}>
+          <Trash2 className="h-3.5 w-3.5" />Delete drive
         </Button>
         <span className="flex-1 text-xs text-muted-foreground" role="status">{saved ? 'Saved' : ''}</span>
         {isAuthMode && isAdmin && volume.attachmentCount === 0 && <Button type="submit" size="sm" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save changes'}</Button>}
@@ -80,7 +80,7 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
   </section>
 }
 
-export function VolumeDetailPage({ volume, onBack, backLabel = 'Volumes', onDelete }: { volume: VolumeDefinitionSummary; onBack: () => void; backLabel?: string; onDelete: () => void }) {
+export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelete }: { volume: VolumeDefinitionSummary; onBack: () => void; backLabel?: string; onDelete: () => void }) {
   useHideSettingsHeader(true)
   useFullWidthSettingsContent(true)
   const save = useSaveVolumeDefinition()
@@ -96,13 +96,13 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Volumes', onDele
             isSaving={save.isPending}
             onSave={async name => { await save.mutateAsync({ id: volume.id, name: parseVolumeName(name) }) }}
             onError={error => {
-              toast.error('Failed to rename volume', { description: error instanceof Error ? error.message : 'Please try again.' })
+              toast.error('Failed to rename drive', { description: error instanceof Error ? error.message : 'Please try again.' })
             }}
             readOnlyAs="h2"
             displayClassName="text-base font-medium"
             inputClassName="h-8 text-base font-medium"
             saveButtonClassName="h-7 w-7"
-            ariaLabel="Rename volume"
+            ariaLabel="Rename drive"
             saveAriaLabel="Save name"
             displayTestId="volume-title"
             inputTestId="volume-title-input"
@@ -110,7 +110,7 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Volumes', onDele
           <VolumeStatusBadge health={volume.health} />
         </div>
         <p className="text-xs text-muted-foreground truncate">{volume.sourceLabel ?? volume.hostPath}</p>
-        {volume.canManage && volume.attachmentCount > 0 && <p className="text-xs text-muted-foreground">Renaming this volume keeps existing agents’ mount paths.</p>}
+        {volume.canManage && volume.attachmentCount > 0 && <p className="text-xs text-muted-foreground">Renaming this drive keeps existing agents’ folder paths.</p>}
       </div>
       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">{volume.userId === null ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}{volume.userId === null ? 'Public' : 'Private'}</span>
     </div>

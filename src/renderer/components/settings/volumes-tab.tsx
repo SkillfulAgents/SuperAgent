@@ -45,25 +45,25 @@ export function VolumesTab() {
       setDeleting(null)
       if (selectedId === deleting.id) backToList()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete volume')
+      setError(err instanceof Error ? err.message : 'Could not delete drive')
     }
   }
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
       {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
-        : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'volumes'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading volume…' : registry.error ? 'Could not load this volume. Please try again.' : 'This volume is no longer available.'}</p></div>
+        : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>
       <div className="flex items-start justify-between gap-4">
-        <p className="text-sm text-muted-foreground">Save folders once, then attach them to any of your agents from their Volumes card.</p>
-        <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Add volume</Button>
+        <p className="text-sm text-muted-foreground">Save folders once, then add them to any of your agents from their Drives card.</p>
+        <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Add drive</Button>
       </div>
-      {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load volumes. Please try again.'}</p>}
-      {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading volumes…</p> : definitions.length === 0 ? (
+      {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
+      {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading drives…</p> : definitions.length === 0 ? (
         <div className="rounded-lg border border-dashed p-8 text-center">
           <Folder className="mx-auto mb-3 h-7 w-7 text-muted-foreground" />
-          <p className="text-sm font-medium">No saved volumes</p>
-          <p className="mt-1 text-sm text-muted-foreground">Folders you mount on an agent are saved here for reuse.</p>
+          <p className="text-sm font-medium">No saved drives</p>
+          <p className="mt-1 text-sm text-muted-foreground">Folders you add to an agent are saved here for reuse.</p>
         </div>
       ) : (
         <IntegrationList>
@@ -77,13 +77,13 @@ export function VolumesTab() {
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
                 <span className="inline-flex shrink-0 items-center gap-1">{volume.userId === null ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.userId === null ? 'Public' : 'Private'}</span>
                 <span className="shrink-0">·</span>
-                <span className="shrink-0">{volume.attachmentCount === 0 ? 'Not attached' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
+                <span className="shrink-0">{volume.attachmentCount === 0 ? 'Not added' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
               </>}
               onActivate={() => openVolume(volume.id)}
-              ariaLabel={`Open ${volume.name} volume settings`}
+              ariaLabel={`Open ${volume.name} drive settings`}
               right={<>
                 {volume.canManage && <Button variant="ghost" size="icon" aria-label={`Delete ${volume.name}`} disabled={volume.attachmentCount > 0}
-                  title={volume.attachmentCount > 0 ? 'Detach from all agents before deleting' : 'Delete saved volume'}
+                  title={volume.attachmentCount > 0 ? 'Remove from all agents before deleting' : 'Delete saved drive'}
                   onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><Trash2 className="h-4 w-4" /></Button>}
                 <RowHoverChevron />
               </>}
@@ -99,14 +99,14 @@ export function VolumesTab() {
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete saved volume?</AlertDialogTitle>
-            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved volumes. The source folder and its files will remain unchanged.</AlertDialogDescription>
+            <AlertDialogTitle>Delete saved drive?</AlertDialogTitle>
+            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved drives. The source folder and its files will remain unchanged.</AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction disabled={remove.isPending} onClick={event => { event.preventDefault(); void deleteVolume() }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{remove.isPending ? 'Deleting…' : 'Delete volume'}</AlertDialogAction>
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{remove.isPending ? 'Deleting…' : 'Delete drive'}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

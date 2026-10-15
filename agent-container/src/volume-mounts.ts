@@ -276,8 +276,8 @@ export async function unmountVolumes(deadline: number): Promise<void> {
   if (!result.drained) console.error('[volumes] Unfinished uploads preserved in the workspace:', result);
 }
 
-export function mountedVolumePaths(): string[] {
-  return mounted.map((m) => path.join(MOUNTS_DIR, m.name));
+export function mountedDrives(): { name: string; path: string }[] {
+  return mounted.map((m) => ({ name: m.volumeName ?? m.name, path: path.join(MOUNTS_DIR, m.name) }));
 }
 
 export function mountedVolumeIndexes(): { path: string; index: VolumeIndex }[] {
