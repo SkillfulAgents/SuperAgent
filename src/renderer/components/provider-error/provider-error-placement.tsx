@@ -80,7 +80,7 @@ export function currentRoutedProviderError(
 
 interface ProviderErrorPlacementProps {
   placement: Placement
-  sessionId: string
+  sessionId: string | null
   agentSlug: string
   /** Everything that normally lives here. At `composer` that is the composer plus its banners.
    *  Pass a function to learn when the current error withholds it, so voice can pause. */
@@ -119,7 +119,7 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
   const slot: ProviderErrorSlot = { displaced: showing && displaced }
   return (
     <div data-testid={showing ? `provider-error-placement-${placement}` : undefined}>
-      {showing && (
+      {showing && sessionId && (
         <resolved.Component
           key={`${agentSlug}:${sessionId}`}
           message={current.message}

@@ -53,9 +53,12 @@ vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
   getItemsFromDataTransfer: mockGetItemsFromDataTransfer,
 }))
 
+const mockStartAgent = vi.fn()
+let mockWarmStartEnabled = true
 const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
+  useStartAgent: () => ({ mutate: mockStartAgent }),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Resolve the route param to the canonical id the way the real hook does,
   // using the mocked params + agents so active-state tests behave faithfully.
@@ -94,6 +97,7 @@ const mockUseSettings = vi.fn()
 const mockUseModelSettings = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => mockUseSettings(),
+  useWarmStartOnTypeEnabled: () => mockWarmStartEnabled,
   useModelSettings: () => mockUseModelSettings(),
 }))
 
@@ -176,6 +180,7 @@ const mockUserContext = {
   user: null,
   signOut: vi.fn(),
   agentMemberCount: vi.fn((_slug: string) => 1),
+  canUseAgent: vi.fn((_slug: string) => true),
 }
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUserContext,
@@ -421,6 +426,8 @@ const localStorageStub = {
 }
 
 beforeEach(() => {
+  mockWarmStartEnabled = true
+  mockRuntimeStatus.runtimeReadiness.status = 'READY'
   mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } } })
   mockUseModelSettings.mockReturnValue({ data: { connections: [], defaultSelection: null } })
   vi.clearAllMocks()
@@ -447,6 +454,7 @@ beforeEach(() => {
   mockUserContext.isAuthMode = false
   mockUserContext.user = null
   mockUserContext.agentMemberCount.mockReturnValue(1)
+  mockUserContext.canUseAgent.mockReturnValue(true)
   mockUseAgentMembers.mockReturnValue({ data: [], isLoading: false, isError: false })
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
@@ -739,6 +747,42 @@ describe('AppSidebar — agent rows', () => {
     await user.click(row)
     // Row click does NOT toggle expansion → no session sub-items rendered.
     expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
+  })
+
+  it('offers a new-session link in the status slot that opens a blank session', () => {
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug/sessions/new')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent' }))
+    expect(link).toHaveAccessibleName('New session with Test Agent')
+  })
+
+  it('wakes on pen press before navigation and supports keyboard activation', () => {
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    expect(mockStartAgent).not.toHaveBeenCalled()
+    fireEvent.pointerDown(link, { button: 0 })
+    expect(mockStartAgent).toHaveBeenCalledWith({ slug: 'test-agent', source: 'warm-start' })
+    fireEvent.click(link, { detail: 1 })
+    expect(mockStartAgent).toHaveBeenCalledTimes(1)
+    fireEvent.click(link, { detail: 0 })
+    expect(mockStartAgent).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['disabled', 'unavailable'])('does not wake from the pen when %s', (state) => {
+    mockWarmStartEnabled = state !== 'disabled'
+    if (state === 'unavailable') mockRuntimeStatus.runtimeReadiness.status = 'RUNTIME_UNAVAILABLE'
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    fireEvent.pointerDown(link, { button: 0 })
+    fireEvent.click(link, { detail: 0 })
+    expect(mockStartAgent).not.toHaveBeenCalled()
+  })
+
+  it('offers no new-session link to a view-only member', () => {
+    mockUserContext.canUseAgent.mockReturnValue(false)
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('agent-new-session-test-agent')).not.toBeInTheDocument()
   })
 
   it('chevron click toggles expansion without selecting the agent', async () => {

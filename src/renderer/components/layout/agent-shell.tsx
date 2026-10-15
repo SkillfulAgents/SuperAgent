@@ -146,7 +146,7 @@ export function AgentShell() {
   // stays mounted across that navigation, so the ghost is intact when the leaf
   // reads it via getPendingMessages.
   const onSessionCreated = useCallback(
-    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => {
+    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean; replace?: boolean }) => {
       if (options?.voiceMode) {
         // A session started by voice opens with the voice-mode notice, which
         // draws as a boundary once fetched — no ghost bubble for it. The
@@ -167,6 +167,7 @@ export function AgentShell() {
         void navigate({
           to: '/agents/$slug/sessions/$sessionId',
           params: { slug, sessionId: newSessionId },
+          ...(options?.replace ? { replace: true } : {}),
         })
       }
     },

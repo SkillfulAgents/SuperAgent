@@ -388,7 +388,7 @@ export function useCancelQueuedMessage() {
 export function useUploadFile() {
   return useMutation({
     mutationFn: async (data: {
-      sessionId: string
+      sessionId?: string
       agentSlug: string
       file: File
       relativePath?: string
@@ -397,7 +397,9 @@ export function useUploadFile() {
       stallMs?: number
     }) => {
       return uploadFileChunked<{ path: string; filename: string; size: number }>({
-        url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
+        url: data.sessionId
+          ? `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`
+          : `/api/agents/${data.agentSlug}/upload-file`,
         file: data.file,
         fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
         onProgress: data.onProgress,
