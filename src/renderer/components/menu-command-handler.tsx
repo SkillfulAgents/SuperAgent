@@ -45,7 +45,7 @@ function useMenuCommandDispatch(): (command: MenuCommand) => void {
           openSettings()
           break
         case 'open-create-agent':
-          void createUntitledAgent()
+          void createUntitledAgent({ surface: 'app_menu' })
           break
       }
     },

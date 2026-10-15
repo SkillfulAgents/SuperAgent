@@ -9,6 +9,22 @@ export interface HoldSoundAudio {
   pause(): void
 }
 
+/**
+ * Something to hear while the agent works. The hold hook drives one of these
+ * without knowing which: the built-in loop, or the person's own music player
+ * given back for the duration.
+ */
+export interface HoldSource {
+  /** Get ready ahead of the first hold. */
+  prime(): void
+  /** Silence has run long enough: be heard. Called repeatedly while it lasts. */
+  start(): void
+  /** The hold is over: fade out where that is possible. */
+  stop(): void
+  /** Speech takes priority: be silent now. */
+  stopImmediately(): void
+}
+
 /** Loudness of the loop: well under a voice, a presence rather than music. */
 export const HOLD_VOLUME = 0.12
 const FADE_IN_MS = 900
@@ -32,7 +48,7 @@ function createDefaultAudio(): HoldSoundAudio | null {
  * in and out during ordinary transitions; speech uses stopImmediately()
  * to take priority. Each hold starts the loop from its beginning.
  */
-export class HoldSound {
+export class HoldSound implements HoldSource {
   private audio: HoldSoundAudio | null = null
   private readonly createAudio: () => HoldSoundAudio | null
   private fadeTimer: ReturnType<typeof setInterval> | null = null

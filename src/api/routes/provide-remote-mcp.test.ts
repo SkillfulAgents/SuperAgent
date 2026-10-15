@@ -317,7 +317,7 @@ vi.mock('@shared/lib/container/runtime-options', () => ({
   parseRuntimeOptions: vi.fn(),
 }))
 
-vi.mock('@shared/lib/tool-definitions/user-input-tools', () => ({
+vi.mock('@shared/lib/tools/user-input-tools', () => ({
   isBlockingUserInputToolName: vi.fn(),
 }))
 
@@ -360,7 +360,7 @@ vi.mock('../llm-polyfill', () => ({
 }))
 
 import agents from './agents'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 function createApp() {
   const app = new Hono()

@@ -2,14 +2,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import {
   providerErrorPresentationSchema,
@@ -56,6 +57,7 @@ export interface PeerUserMessage {
 
 interface StreamState {
   isActive: boolean // True from user message until query result
+  turnOutcome: SessionTurnOutcome | null // Last backend outcome; delivery metadata only
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
@@ -108,6 +110,7 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 // Global state to track streaming per session
 const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
+  turnOutcome: null,
   isStreaming: false,
   streamingMessage: null,
   streamingToolUses: [],
@@ -333,6 +336,26 @@ function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string,
   })
 }
 
+// subagent_updated fires when the container relays a subagent's frame; the CLI
+// writes that frame to the subagent transcript a few hundred ms later, so the
+// refetch it triggers can read the file just before the write. Measured live
+// (SDK 0.3.296): a resumed run's first tool call landed ~0.6s after its
+// update, and a foreground command then sends no frame for its whole run, so
+// the block showed the previous run's content until the run ended. One more
+// refetch after the updates go quiet picks the write up.
+export const SUBAGENT_TRAILING_REFETCH_MS = 1500
+const trailingSubagentRefetch = new Map<string, ReturnType<typeof setTimeout>>()
+
+function refreshSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  invalidateSubagentMessages(queryClient, sessionId, agentId)
+  const key = `${sessionId}\u0000${agentId ?? ''}`
+  clearTimeout(trailingSubagentRefetch.get(key))
+  trailingSubagentRefetch.set(key, setTimeout(() => {
+    trailingSubagentRefetch.delete(key)
+    invalidateSubagentMessages(queryClient, sessionId, agentId)
+  }, SUBAGENT_TRAILING_REFETCH_MS))
+}
+
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
@@ -450,9 +473,6 @@ function getOrCreateEventSource(
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
 
-      // Only session_active and session_idle events change isActive
-      // All other events preserve the current isActive value
-
       if (data.type === 'connected') {
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
@@ -471,6 +491,7 @@ function getOrCreateEventSource(
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUses: [],
@@ -588,6 +609,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -665,6 +687,7 @@ function getOrCreateEventSource(
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -732,6 +755,7 @@ function getOrCreateEventSource(
             isSubagent: data.isSubagent,
             taskType: data.taskType,
             description: data.description,
+            subagentType: data.subagentType,
           }
           const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
@@ -843,6 +867,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUses: [],
@@ -868,6 +893,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -909,6 +935,7 @@ function getOrCreateEventSource(
           : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: updatedTools,
@@ -950,6 +977,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -1229,9 +1257,18 @@ function getOrCreateEventSource(
             usage: existing?.usage ?? null,
             lastToolName: existing?.lastToolName ?? null,
           }
+          // A new run under a call that already finished (CLI 2.1.296+ re-runs
+          // a subagent under its launching call to hand it the result of its
+          // own background work) is running again until its next completion.
+          let completedSubagents = current.completedSubagents
+          if (data.parentToolId && completedSubagents?.has(data.parentToolId)) {
+            completedSubagents = new Set(completedSubagents)
+            completedSubagents.delete(data.parentToolId)
+          }
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
+            completedSubagents,
           })
         }
       }
@@ -1256,7 +1293,7 @@ function getOrCreateEventSource(
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          invalidateSubagentMessages(queryClient, sessionId, updated.agentId)
+          refreshSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
@@ -1288,7 +1325,7 @@ function getOrCreateEventSource(
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          invalidateSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
+          refreshSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
           invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
@@ -1362,7 +1399,7 @@ function getOrCreateEventSource(
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const updated: SubagentInfo = {
             parentToolId: data.parentToolId,
-            agentId: existing?.agentId ?? null,
+            agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: data.summary ?? existing?.progressSummary ?? null,
@@ -1388,8 +1425,10 @@ function getOrCreateEventSource(
             ...current,
             isActive: false,
             isStreaming: false,
-            streamingMessage: null,
+            streamingMessage: current.streamingMessage,
             streamingToolUses: [],
+            backgroundTasks: [],
+            isWaitingBackground: false,
             error: null,
             apiErrorCode: null,
             errorPresentation: null,
@@ -1400,6 +1439,21 @@ function getOrCreateEventSource(
         }
       }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
+
+      // Replay only the outcome and its text. Working indicators continue to
+      // use the existing session_active/session_idle/background-task handlers.
+      const next = streamStates.get(sessionId)
+      const parsedOutcome = sessionTurnOutcomeSchema.safeParse(data.turnOutcome)
+      if (next && parsedOutcome.success) {
+        const outcome = parsedOutcome.data
+        const recovery = data.type === 'connected' || data.type === 'ping'
+        streamStates.set(sessionId, {
+          ...next, turnOutcome: outcome,
+          ...((!recovery || !next.isActive) && { streamingMessage: outcome.responseText, error: outcome.error }),
+        })
+      } else if (next && data.turnOutcome === null) {
+        streamStates.set(sessionId, { ...next, turnOutcome: null })
+      }
 
       // Notify all listeners
       streamListeners.get(sessionId)?.forEach((listener) => listener())
@@ -1418,7 +1472,7 @@ function getOrCreateEventSource(
       streamStates.set(sessionId, {
         ...current,
         isStreaming: false,
-        streamingMessage: null,
+        streamingMessage: current.streamingMessage,
         streamingToolUses: [],
       })
     }

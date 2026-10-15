@@ -12,7 +12,7 @@ import {
   ACCOUNT_REAUTH_TIMEOUT_MS,
   AccountReauthManager,
 } from './account-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,

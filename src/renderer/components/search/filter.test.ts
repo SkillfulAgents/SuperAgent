@@ -9,6 +9,7 @@ function agent(
   dashboards?: ApiAgentDashboard[]
 ): ApiAgent {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug,
     displaySlug: slug,
     name,

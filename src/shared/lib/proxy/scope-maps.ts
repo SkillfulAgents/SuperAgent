@@ -17,12 +17,19 @@ export interface ProviderScopeMap {
   basePath: string;
   scopeMap: ScopeMapEntry[];
   allScopes: string[] | Record<string, string[]>;
+  /**
+   * Other providers whose scope map may classify a request this provider's
+   * token makes to the same host (e.g. a Gmail token reading a Drive file to
+   * attach it). Scopes matched this way are namespaced `<provider>:<scope>`.
+   */
+  scopeFallbacks?: string[];
 }
 
 export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "gmail": {
     provider: "gmail",
     apiHost: "gmail.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["gmail.addons.current.action.compose", "gmail.addons.current.message.action", "gmail.addons.current.message.metadata", "gmail.addons.current.message.readonly", "gmail.compose", "gmail.full", "gmail.insert", "gmail.labels", "gmail.metadata", "gmail.modify", "gmail.readonly", "gmail.send", "gmail.settings.basic", "gmail.settings.sharing"],
     scopeMap: [
@@ -160,7 +167,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
     scopeMap: [
       { method: "GET", pathPattern: "/drive/v3/operations/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
       { method: "GET", pathPattern: "/drive/v3/about", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets information about the user, the user's Drive, and system capabilities. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter)." },
-      { method: "GET", pathPattern: "/drive/v3/apps/*", sufficientScopes: ["drive", "drive.appdata", "drive.apps.readonly", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "GET", pathPattern: "/drive/v3/apps/*", sufficientScopes: ["drive", "drive.appdata", "drive.apps.readonly", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Gets a specific app." },
       { method: "GET", pathPattern: "/drive/v3/apps", sufficientScopes: ["drive.apps.readonly"], description: "Lists a user's installed apps. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info)." },
       { method: "GET", pathPattern: "/drive/v3/changes/startPageToken", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets the starting pageToken for listing future changes. For more information, see [Retrieve changes](https://developers.google.com/workspace/drive/api/guides/manage-changes)." },
       { method: "GET", pathPattern: "/drive/v3/changes", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Lists the changes for a user or shared drive. For more information, see [Retrieve changes](https://developers.google.com/workspace/drive/api/guides/manage-changes)." },
@@ -168,12 +175,12 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
       { method: "POST", pathPattern: "/drive/v3/channels/stop", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Stops watching resources through this channel. For more information, see [Notifications for resource changes](https://developers.google.com/workspace/drive/api/guides/push)." },
       { method: "POST", pathPattern: "/drive/v3/files/*/comments", sufficientScopes: ["drive", "drive.file"], description: "Creates a comment on a file. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter)." },
       { method: "DELETE", pathPattern: "/drive/v3/files/*/comments/*", sufficientScopes: ["drive", "drive.file"], description: "Deletes a comment. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments)." },
-      { method: "GET", pathPattern: "/drive/v3/files/*/comments/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "GET", pathPattern: "/drive/v3/files/*/comments/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Gets a comment by ID." },
       { method: "GET", pathPattern: "/drive/v3/files/*/comments", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Lists a file's comments. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter)." },
       { method: "PATCH", pathPattern: "/drive/v3/files/*/comments/*", sufficientScopes: ["drive", "drive.file"], description: "Updates a comment with patch semantics. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter)." },
       { method: "POST", pathPattern: "/drive/v3/drives", sufficientScopes: ["drive"], description: "Creates a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
       { method: "DELETE", pathPattern: "/drive/v3/drives/*", sufficientScopes: ["drive"], description: "Permanently deletes a shared drive for which the user is an `organizer`. The shared drive cannot contain any untrashed items. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
-      { method: "GET", pathPattern: "/drive/v3/drives/*", sufficientScopes: ["drive", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "GET", pathPattern: "/drive/v3/drives/*", sufficientScopes: ["drive", "drive.readonly"], description: "Gets a shared drive's metadata by ID." },
       { method: "POST", pathPattern: "/drive/v3/drives/*/hide", sufficientScopes: ["drive"], description: "Hides a shared drive from the default view. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
       { method: "GET", pathPattern: "/drive/v3/drives", sufficientScopes: ["drive", "drive.readonly"], description: " Lists the user's shared drives. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for shared drives](https://developers.google.com/workspace/drive/api/guides/search-shareddrives) guide." },
       { method: "POST", pathPattern: "/drive/v3/drives/*/unhide", sufficientScopes: ["drive"], description: "Restores a shared drive to the default view. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
@@ -181,31 +188,31 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
       { method: "POST", pathPattern: "/drive/v3/files/*/copy", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.photos.readonly"], description: "Creates a copy of a file and applies any requested updates with patch semantics. For more information, see [Create and manage files](https://developers.google.com/workspace/drive/api/guides/create-file)." },
       { method: "POST", pathPattern: "/upload/drive/v3/files", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Creates a file by uploading media. For more information, see [Upload file data](https://developers.google.com/workspace/drive/api/guides/manage-uploads)." },
       { method: "POST", pathPattern: "/drive/v3/files", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: " Creates a file. For more information, see [Create and manage files](https://developers.google.com/workspace/drive/api/guides/create-file). This method supports an */upload* URI and accepts uploaded media with the following characteristics: - *Maximum file size:* 5,120 GB - *Accepted Media MIME types:* `*/*` (Specify a valid MIME type, rather than the literal `*/*` value. The literal `*/*` is only used to indicate that any valid MIME type can be uploaded. For more information, see [Google Workspace and Google Drive supported MIME types](https://developers.google.com/workspace/drive/api/guides/mime-types).) For more information on uploading files, see [Upload file data](https://developers.google.com/workspace/drive/api/guides/manage-uploads). Apps creating shortcuts with the `create` method must specify the MIME type `application/vnd.google-apps.shortcut`. Apps should specify a file extension in the `name` property when inserting files with the API. For example, an operation to insert a JPEG file should specify something like `\"name\": \"cat.jpg\"` in the metadata. Subsequent `GET` requests include the read-only `fileExtension` property populated with the extension originally specified in the `name` property. When a Google Drive user requests to download a file, or when the file is downloaded through the sync client, Drive builds a full filename (with extension) based on the name. In cases where the extension is missing, Drive attempts to determine the extension based on the file's MIME type." },
-      { method: "DELETE", pathPattern: "/drive/v3/files/*", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Permanently deletes a shared drive for which the user is an `organizer`. The shared drive cannot contain any untrashed items. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
+      { method: "DELETE", pathPattern: "/drive/v3/files/*", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Permanently deletes a file owned by the user without moving it to the trash. If the target is a folder, all descendants owned by the user are also deleted." },
       { method: "DELETE", pathPattern: "/drive/v3/files/trash", sufficientScopes: ["drive"], description: "Permanently deletes all of the user's trashed files. For more information, see [Trash or delete files and folders](https://developers.google.com/workspace/drive/api/guides/delete)." },
       { method: "GET", pathPattern: "/drive/v3/files/*/export", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Exports a Google Workspace document to the requested MIME type and returns exported byte content. For more information, see [Download and export files](https://developers.google.com/workspace/drive/api/guides/manage-downloads). Note that the exported content is limited to 10 MB." },
       { method: "GET", pathPattern: "/drive/v3/files/generateIds", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Generates a set of file IDs which can be provided in create or copy requests. For more information, see [Create and manage files](https://developers.google.com/workspace/drive/api/guides/create-file)." },
-      { method: "GET", pathPattern: "/drive/v3/files/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "GET", pathPattern: "/drive/v3/files/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets a file's metadata or content by ID." },
       { method: "GET", pathPattern: "/drive/v3/files", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: " Lists the user's files. For more information, see [Search for files and folders](https://developers.google.com/workspace/drive/api/guides/search-files). This method accepts the `q` parameter, which is a search query combining one or more search terms. This method returns *all* files by default, including trashed files. If you don't want trashed files to appear in the list, use the `trashed=false` query parameter to remove trashed files from the results." },
       { method: "GET", pathPattern: "/drive/v3/files/*/listLabels", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Lists the labels on a file. For more information, see [List labels on a file](https://developers.google.com/workspace/drive/api/guides/list-labels)." },
       { method: "POST", pathPattern: "/drive/v3/files/*/modifyLabels", sufficientScopes: ["drive", "drive.file", "drive.metadata"], description: "Modifies the set of labels applied to a file. For more information, see [Set a label field on a file](https://developers.google.com/workspace/drive/api/guides/set-label). Returns a list of the labels that were added or modified." },
-      { method: "PATCH", pathPattern: "/drive/v3/files/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.metadata", "drive.scripts"], description: "Updates the metadata for a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
-      { method: "POST", pathPattern: "/drive/v3/files/*/watch", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Subscribes to changes for a user. For more information, see [Notifications for resource changes](https://developers.google.com/workspace/drive/api/guides/push)." },
+      { method: "PATCH", pathPattern: "/drive/v3/files/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.metadata", "drive.scripts"], description: "Updates a file's metadata, content, or both." },
+      { method: "POST", pathPattern: "/drive/v3/files/*/watch", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Subscribes to changes to a file." },
       { method: "POST", pathPattern: "/drive/v3/files/*/download", sufficientScopes: ["drive", "drive.file", "drive.readonly"], description: "Downloads the content of a file. For more information, see [Download and export files](https://developers.google.com/workspace/drive/api/guides/manage-downloads). Operations are valid for 24 hours from the time of creation." },
       { method: "POST", pathPattern: "/drive/v3/files/*/permissions", sufficientScopes: ["drive", "drive.file"], description: "Creates a permission for a file or shared drive. For more information, see [Share files, folders, and drives](https://developers.google.com/workspace/drive/api/guides/manage-sharing). **Warning:** Concurrent permissions operations on the same file aren't supported; only the last update is applied." },
-      { method: "DELETE", pathPattern: "/drive/v3/files/*/permissions/*", sufficientScopes: ["drive", "drive.file"], description: "Permanently deletes a shared drive for which the user is an `organizer`. The shared drive cannot contain any untrashed items. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
-      { method: "GET", pathPattern: "/drive/v3/files/*/permissions/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "DELETE", pathPattern: "/drive/v3/files/*/permissions/*", sufficientScopes: ["drive", "drive.file"], description: "Deletes a permission, removing someone's access to a file or shared drive." },
+      { method: "GET", pathPattern: "/drive/v3/files/*/permissions/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets a permission by ID." },
       { method: "GET", pathPattern: "/drive/v3/files/*/permissions", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Lists a file's or shared drive's permissions. For more information, see [Share files, folders, and drives](https://developers.google.com/workspace/drive/api/guides/manage-sharing)." },
-      { method: "PATCH", pathPattern: "/drive/v3/files/*/permissions/*", sufficientScopes: ["drive", "drive.file"], description: "Updates the metadata for a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
+      { method: "PATCH", pathPattern: "/drive/v3/files/*/permissions/*", sufficientScopes: ["drive", "drive.file"], description: "Updates a permission, changing someone's access to a file or shared drive." },
       { method: "POST", pathPattern: "/drive/v3/files/*/comments/*/replies", sufficientScopes: ["drive", "drive.file"], description: "Creates a reply to a comment. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments)." },
-      { method: "DELETE", pathPattern: "/drive/v3/files/*/comments/*/replies/*", sufficientScopes: ["drive", "drive.file"], description: "Permanently deletes a shared drive for which the user is an `organizer`. The shared drive cannot contain any untrashed items. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
-      { method: "GET", pathPattern: "/drive/v3/files/*/comments/*/replies/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "DELETE", pathPattern: "/drive/v3/files/*/comments/*/replies/*", sufficientScopes: ["drive", "drive.file"], description: "Deletes a reply." },
+      { method: "GET", pathPattern: "/drive/v3/files/*/comments/*/replies/*", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Gets a reply by ID." },
       { method: "GET", pathPattern: "/drive/v3/files/*/comments/*/replies", sufficientScopes: ["drive", "drive.file", "drive.meet.readonly", "drive.readonly"], description: "Lists a comment's replies. For more information, see [Manage comments and replies](https://developers.google.com/workspace/drive/api/guides/manage-comments)." },
-      { method: "PATCH", pathPattern: "/drive/v3/files/*/comments/*/replies/*", sufficientScopes: ["drive", "drive.file"], description: "Updates the metadata for a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
-      { method: "DELETE", pathPattern: "/drive/v3/files/*/revisions/*", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Permanently deletes a shared drive for which the user is an `organizer`. The shared drive cannot contain any untrashed items. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
-      { method: "GET", pathPattern: "/drive/v3/files/*/revisions/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "PATCH", pathPattern: "/drive/v3/files/*/comments/*/replies/*", sufficientScopes: ["drive", "drive.file"], description: "Updates a reply." },
+      { method: "DELETE", pathPattern: "/drive/v3/files/*/revisions/*", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Permanently deletes a file version." },
+      { method: "GET", pathPattern: "/drive/v3/files/*/revisions/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Gets a revision's metadata or content by ID." },
       { method: "GET", pathPattern: "/drive/v3/files/*/revisions", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.meet.readonly", "drive.metadata", "drive.metadata.readonly", "drive.photos.readonly", "drive.readonly"], description: "Lists a file's revisions. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions). **Important:** The list of revisions returned by this method might be incomplete for files with a large revision history, including frequently edited Google Docs, Sheets, and Slides. Older revisions might be omitted from the response, meaning the first revision returned may not be the oldest existing revision. The revision history visible in the Workspace editor user interface might be more complete than the list returned by the API." },
-      { method: "PATCH", pathPattern: "/drive/v3/files/*/revisions/*", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Updates the metadata for a shared drive. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives)." },
+      { method: "PATCH", pathPattern: "/drive/v3/files/*/revisions/*", sufficientScopes: ["drive", "drive.appdata", "drive.file"], description: "Updates a revision's metadata." },
       { method: "POST", pathPattern: "/drive/v3/teamdrives", sufficientScopes: ["drive"], description: "Deprecated: Use `drives.create` instead." },
       { method: "DELETE", pathPattern: "/drive/v3/teamdrives/*", sufficientScopes: ["drive"], description: "Deprecated: Use `drives.delete` instead." },
       { method: "GET", pathPattern: "/drive/v3/teamdrives/*", sufficientScopes: ["drive", "drive.readonly"], description: "Deprecated: Use `drives.get` instead." },
@@ -213,7 +220,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
       { method: "PATCH", pathPattern: "/drive/v3/teamdrives/*", sufficientScopes: ["drive"], description: "Deprecated: Use `drives.update` instead." },
       { method: "GET", pathPattern: "/drive/v3/files/*/approvals/*", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Gets an Approval by ID." },
       { method: "GET", pathPattern: "/drive/v3/files/*/approvals", sufficientScopes: ["drive", "drive.appdata", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Lists the Approvals on a file." },
-      { method: "GET", pathPattern: "/drive/v3/files/*/accessproposals/*", sufficientScopes: ["drive", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Gets the latest state of a long-running operation. Clients can use this method to poll the operation result at intervals as recommended by the API service." },
+      { method: "GET", pathPattern: "/drive/v3/files/*/accessproposals/*", sufficientScopes: ["drive", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "Gets an access proposal by ID." },
       { method: "POST", pathPattern: "/drive/v3/files/*/accessproposals/*:resolve", sufficientScopes: ["drive", "drive.file"], description: "Approves or denies an access proposal. For more information, see [Manage pending access proposals](https://developers.google.com/workspace/drive/api/guides/pending-access)." },
       { method: "GET", pathPattern: "/drive/v3/files/*/accessproposals", sufficientScopes: ["drive", "drive.file", "drive.metadata", "drive.metadata.readonly", "drive.readonly"], description: "List the access proposals on a file. For more information, see [Manage pending access proposals](https://developers.google.com/workspace/drive/api/guides/pending-access). Note: Only approvers are able to list access proposals on a file. If the user isn't an approver, a 403 error is returned." },
     ],
@@ -221,6 +228,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "googlesheets": {
     provider: "googlesheets",
     apiHost: "sheets.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["drive", "drive.file", "drive.readonly", "spreadsheets", "spreadsheets.readonly"],
     scopeMap: [
@@ -246,6 +254,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "googledocs": {
     provider: "googledocs",
     apiHost: "docs.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["documents", "documents.readonly", "drive", "drive.file", "drive.readonly"],
     scopeMap: [
@@ -257,6 +266,7 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
   "googleslides": {
     provider: "googleslides",
     apiHost: "slides.googleapis.com",
+    scopeFallbacks: ["googledrive"],
     basePath: "",
     allScopes: ["drive", "drive.file", "drive.readonly", "presentations", "presentations.readonly"],
     scopeMap: [
@@ -5144,4 +5154,20 @@ export function getScopeMap(provider: string): ProviderScopeMap | undefined {
  */
 export function getProviderSlugs(): string[] {
   return Object.keys(SCOPE_MAPS);
+}
+
+/**
+ * Split a `<provider>:<scope>` key borrowed through `toolkit`'s scopeFallbacks.
+ * Returns null for the toolkit's own scopes, including native scopes that
+ * contain ':' (e.g. Slack's `chat:write`), since their prefix is not a fallback.
+ */
+export function parseBorrowedScope(
+  toolkit: string,
+  scope: string
+): { provider: string; scope: string } | null {
+  const sep = scope.indexOf(':');
+  if (sep <= 0) return null;
+  const provider = scope.slice(0, sep);
+  if (!SCOPE_MAPS[toolkit]?.scopeFallbacks?.includes(provider)) return null;
+  return { provider, scope: scope.slice(sep + 1) };
 }

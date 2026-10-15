@@ -5,7 +5,7 @@ import * as settings from '../config/settings'
 import * as providerRuntime from '../llm-provider/connection-runtime'
 import type { ContainerInfo } from './types'
 vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'test-host-token' }))
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}), getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}), getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }), getGlobalInstructions: () => '' }))
 // These tests isolate HTTP acceptance evidence; provider persistence has its
 // own database-backed coverage in base-container-client.llm-provider.test.ts.
 vi.mock('../llm-provider/connections', () => ({

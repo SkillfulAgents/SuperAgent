@@ -469,6 +469,20 @@
     "cacheCreation1h": 0.2,
     "cacheRead": 0.010000000000000002
   },
+  "muse-wonder-1.0": {
+    "input": 4,
+    "output": 20,
+    "cacheCreation": 4,
+    "cacheCreation1h": 8,
+    "cacheRead": 0.2
+  },
+  "gemini-4-argon": {
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2,
+    "cacheCreation1h": 4,
+    "cacheRead": 0.1
+  },
   "glm-5.3": {
     "input": 1.4,
     "output": 4.4,

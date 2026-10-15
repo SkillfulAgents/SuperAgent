@@ -421,6 +421,24 @@ const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   { name: 'sdk272-bg-bash-premature-idle', settledAtEnd: true },
   { name: 'sdk272-bg-subagent-no-idle', settledAtEnd: true },
   { name: 'sdk272-bg-subagent-interrupt-noop', settledAtEnd: true },
+  // SDK 0.3.296 / CLI 2.1.296 captures (capture-fixtures.mjs in the
+  // update-claude-deps skill). A finishing task now leaves the snapshot AFTER
+  // its task_updated + task_notification (the SDK documents the order as
+  // unspecified). A subagent's own background Bash is listed in the lead
+  // snapshot with parent_task_id, the subagent itself leaves the snapshot when
+  // its turn ends, and the child's completion re-runs the subagent under the
+  // same task_id with a new run_id.
+  { name: 'sdk296-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk296-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk296-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk296-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk296-sendmessage-resumed-subagent', settledAtEnd: true },
+  // SDK 0.3.300 / CLI 2.1.300 re-captures: no protocol change from 2.1.296.
+  { name: 'sdk300-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk300-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk300-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk300-bg-subagent-nested-bg-bash', settledAtEnd: true },
+  { name: 'sdk300-sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sequential-different-types', settledAtEnd: true },
   { name: 'single-subagent-progress', settledAtEnd: true },
@@ -620,5 +638,51 @@ describe('SessionSettlementTracker — real capture replay', () => {
     const endT = frames[frames.length - 1].t;
     expect(tracker.isSettled(endT + DEFAULT_WAKE_GRACE_MS + 1)).toBe(true);
     expect(tracker.openBackgroundTaskCount).toBe(0);
+  });
+
+  it.each(FIXTURE_EXPECTATIONS.filter((f) => /^sdk(296|300)-/.test(f.name)))(
+    '$name never settles before its final idle, even between frames',
+    ({ name }) => {
+      // Each sdk296/sdk300 capture is one run that only legitimately ends at its last
+      // session_state_changed:idle. A sweep may land at any instant, so check
+      // the moment just before every next frame too — that is where the
+      // trailing-snapshot order and the nested re-run open their gaps.
+      const frames = loadFixture(name);
+      const finalIdle = frames.findLastIndex(
+        ({ frame }) => frame.subtype === 'session_state_changed' && frame.state === 'idle'
+      );
+      expect(finalIdle).toBeGreaterThan(0);
+      const tracker = new SessionSettlementTracker();
+      tracker.noteOutboundMessage();
+      for (let i = 0; i < finalIdle; i++) {
+        tracker.handleMessage(frames[i].frame, frames[i].t);
+        const before = Math.max(frames[i].t, frames[i + 1].t - 1);
+        expect(tracker.isSettled(frames[i].t), `${name}: settled at t=${frames[i].t}`).toBe(false);
+        expect(tracker.isSettled(before), `${name}: settled at t=${before}`).toBe(false);
+      }
+    }
+  );
+
+  it.each(['sdk296', 'sdk300'])('%s-bg-subagent-nested-bg-bash: the subagent leaving the snapshot does not drop its live child', (sdk) => {
+    // sdk296 at t=5129: the subagent's task_updated/task_notification completed, then a
+    // snapshot listing only its background Bash (parent_task_id = subagent).
+    // The child keeps the session busy until its own completion at t=14252;
+    // 3ms later the CLI re-runs the subagent (same task_id, new run_id) to
+    // hand it the child's result.
+    const frames = loadFixture(`${sdk}-bg-subagent-nested-bg-bash`);
+    const tracker = new SessionSettlementTracker();
+    tracker.noteOutboundMessage();
+    let sawChildOnly = false;
+    for (const { t, frame } of frames) {
+      tracker.handleMessage(frame, t);
+      if (frame.subtype !== 'background_tasks_changed') continue;
+      const tasks = frame.tasks as Array<{ task_type?: string; parent_task_id?: string }>;
+      if (tasks.length === 1 && tasks[0].task_type === 'local_bash' && tasks[0].parent_task_id) {
+        sawChildOnly = true;
+        expect(tracker.openBackgroundTaskCount).toBe(1);
+        expect(tracker.isSettled(t + DEFAULT_WAKE_GRACE_MS + 1)).toBe(false);
+      }
+    }
+    expect(sawChildOnly).toBe(true);
   });
 });

@@ -11,6 +11,11 @@ import { execFile, execFileSync, spawnSync } from 'child_process'
 import { promisify } from 'util'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { agents } from '@shared/lib/db/schema'
+
+let handle: TestDatabase
+vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 import { serve, type ServerType } from '@hono/node-server'
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
@@ -22,7 +27,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 vi.mock('@shared/lib/platform-attribution/container-token', () => ({ getPlatformContainerToken: async () => undefined }))
 
-import { addMount, listVolumes } from '@shared/lib/services/mount-service'
+import { addMount, listVolumes, setMountReadOnly } from '@shared/lib/services/mount-service'
 import { DockerContainerClient } from '@shared/lib/container/docker-container-client'
 import volumes from '../../../api/routes/volumes'
 
@@ -47,7 +52,9 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
   let server: ServerType
   const client = () => new DockerContainerClient({ agentId: 'agent-a' } as never)
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    handle = await createTestDatabase()
+    await handle.db.insert(agents).values({ slug: 'agent-a', name: 'Agent A', createdAt: new Date() }).run()
     execFileSync('docker', ['build', '-t', IMAGE, path.resolve(__dirname, '../../../../agent-container')], { stdio: 'ignore', timeout: 900_000 })
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volumes-e2e-')))
     process.env.SUPERAGENT_DATA_DIR = tmpDir
@@ -57,7 +64,8 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' })
   }, 900_000)
 
-  afterAll(() => {
+  afterAll(async () => {
+    await handle?.close()
     spawnSync('docker', ['rm', '-f', 'superagent-agent-a'], { stdio: 'ignore', timeout: 60_000 })
     server?.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -71,9 +79,9 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     }
     const notes = folder('notes')
     fs.writeFileSync(path.join(notes, 'a.txt'), 'hello')
-    const { id: notesId } = await addMount('agent-a', 'local', { path: notes })
-    await addMount('agent-a', 'local', { path: folder('late') })
-    await addMount('agent-a', 'local', { path: folder('gone') })
+    const { id: notesId } = await addMount('agent-a', 'local', { path: notes }, { userId: null, admin: true })
+    await addMount('agent-a', 'local', { path: folder('late') }, { userId: null, admin: true })
+    await addMount('agent-a', 'local', { path: folder('gone') }, { userId: null, admin: true })
     fs.rmSync(path.join(tmpDir, 'gone'), { recursive: true })
 
     const listed = await listVolumes('agent-a')
@@ -95,5 +103,28 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     expect(await sh('cat /mounts/notes/a.txt')).toBe('hello')
     await sh('echo new > /mounts/notes/b.txt')
     await waitFor(() => fs.existsSync(path.join(notes, 'b.txt')) && fs.readFileSync(path.join(notes, 'b.txt'), 'utf8') === 'new\n', 5_000)
+  }, 180_000)
+
+  it('mounts a read-only volume that reads, and refuses writes through the mount and straight to the host', async () => {
+    const docs = path.join(tmpDir, 'docs')
+    fs.mkdirSync(docs)
+    fs.writeFileSync(path.join(docs, 'a.txt'), 'hello')
+    const { id } = await addMount('agent-a', 'local', { path: docs }, { userId: null, admin: true })
+    await setMountReadOnly('agent-a', id, true)
+
+    await client().stop()
+    const { port } = server.address() as AddressInfo
+    const hostApiUrl = `http://host.docker.internal:${port}/api`
+    const started = await client().start({
+      envVars: { SUPERAGENT_HOST_API_URL: hostApiUrl, PROXY_TOKEN: 'test-token' },
+      volumes: (await listVolumes('agent-a')).volumes,
+    })
+    expect(await client().health(started.port ?? undefined)).toMatchObject({ status: 'ok' })
+
+    const sh = (script: string) => docker('exec', '--user', 'claude', 'superagent-agent-a', 'bash', '-c', script)
+    expect(await sh('cat /mounts/docs/a.txt')).toBe('hello')
+    expect(await sh('(echo x > /mounts/docs/b.txt) 2>&1 || true')).toContain('Read-only file system')
+    expect(await sh(`curl -s -o /dev/null -w '%{http_code}' -X PUT --data x -H 'Authorization: Bearer test-token' ${hostApiUrl}/volumes/${id}/b.txt`)).toBe('403')
+    expect(fs.readdirSync(docs)).toEqual(['a.txt'])
   }, 180_000)
 })

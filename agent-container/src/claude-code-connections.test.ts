@@ -712,3 +712,48 @@ describe('ClaudeCodeProcess remote MCP handshake gate', () => {
     warn.mockRestore()
   })
 })
+
+describe('ClaudeCodeProcess global instructions', () => {
+  let claudeProcess: ClaudeCodeProcess | undefined
+  useRuntimeEnv()
+
+  afterEach(async () => {
+    await claudeProcess?.stop()
+    claudeProcess = undefined
+  })
+
+  const promptOf = (i: number) => (calls[i].options.systemPrompt as { prompt: string }).prompt
+
+  it('renders the guidance as its own section ahead of the agent instructions', async () => {
+    claudeProcess = new ClaudeCodeProcess({
+      sessionId: 'global-render', workingDirectory: '/tmp',
+      userSystemPrompt: 'Agent rule', globalInstructions: '  Org rule  ',
+    })
+    await claudeProcess.start()
+    const prompt = promptOf(0)
+    expect(prompt).toContain('## Global Guidance')
+    expect(prompt).toContain('\nOrg rule')
+    expect(prompt.indexOf('## Global Guidance')).toBeLessThan(prompt.indexOf('## Agent-Specific Instructions'))
+  })
+
+  it('re-queries with the new prompt when the guidance changes, and only then', async () => {
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'global-change', workingDirectory: '/tmp', globalInstructions: 'Old rule' })
+    await claudeProcess.start()
+    expect(calls).toHaveLength(1)
+
+    // Unchanged, a whitespace-only difference, and an older host that omits it.
+    await claudeProcess.sendMessage('same', undefined, { globalInstructions: 'Old rule' })
+    await claudeProcess.sendMessage('padded', undefined, { globalInstructions: 'Old rule\n' })
+    await claudeProcess.sendMessage('absent')
+    expect(calls).toHaveLength(1)
+
+    await claudeProcess.sendMessage('edited', undefined, { globalInstructions: 'New rule' })
+    expect(calls).toHaveLength(2)
+    expect(promptOf(1)).toContain('New rule')
+    expect(promptOf(1)).not.toContain('Old rule')
+
+    await claudeProcess.sendMessage('cleared', undefined, { globalInstructions: '' })
+    expect(calls).toHaveLength(3)
+    expect(promptOf(2)).not.toContain('## Global Guidance')
+  })
+})

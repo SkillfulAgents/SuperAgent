@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import MarkdownIt from 'markdown-it'
 import {
@@ -696,4 +696,62 @@ describe('MarkdownComposerEditor block exits', () => {
     expect(screen.getByTestId('markdown-value').textContent).toBe('> onetwo')
   })
 
+})
+
+describe('MarkdownComposerEditor paste a URL over a selection', () => {
+  const markdownValue = () => screen.getByTestId('markdown-value').textContent
+
+  function editorWith(initialValue: string, from: number, to: number) {
+    render(<ControlledEditor initialValue={initialValue} />)
+    const editor = screen.getByTestId('markdown-editor')
+    setMarkdownComposerSelection(editor, from, to)
+    return editor
+  }
+
+  it('links the selected text, and one undo removes the link', () => {
+    const editor = editorWith('see docs', 5, 9)
+
+    pasteText(editor, ' https://example.com/a \n')
+    expect(markdownValue()).toBe('see [docs](https://example.com/a)')
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true })
+    expect(markdownValue()).toBe('see docs')
+  })
+
+  it('links a select-all on one line and a mailto address', () => {
+    render(<ControlledEditor initialValue="docs" />)
+    const editor = screen.getByTestId('markdown-editor')
+    selectAllMarkdownComposer(editor)
+    pasteText(editor, 'https://example.com')
+    expect(markdownValue()).toBe('[docs](https://example.com)')
+    cleanup()
+
+    pasteText(editorWith('mail me', 6, 8), 'mailto:a@example.com')
+    expect(markdownValue()).toBe('mail [me](mailto:a@example.com)')
+  })
+
+  it('pastes normally over a select-all that holds more than one text block', () => {
+    render(<ControlledEditor initialValue={'> ---\n>\n> docs'} />)
+    selectAllMarkdownComposer(screen.getByTestId('markdown-editor'))
+    pasteText(screen.getByTestId('markdown-editor'), 'https://example.com')
+    expect(markdownValue()).toBe('https://example.com')
+  })
+
+  it('pastes normally when the link would be ambiguous or hide something', () => {
+    const secretUrl = `https://example.com/?key=${'sk-proj-abcdEFGH1234ijklMNOP5678qrst'}`
+    const cases: [string, number, number, string, string][] = [
+      ['see docs', 5, 9, 'example.com', 'see example.com'],
+      ['see docs', 5, 9, 'https://example.com and more', 'see https://example.com and more'],
+      ['see docs', 5, 9, 'https://?', 'see https://?'],
+      ['see docs', 5, 9, secretUrl, `see ${secretUrl}`],
+      ['see docs', 5, 9, 'javascript:alert(1)', 'see javascript:alert(1)'],
+      ['`docs`', 1, 5, 'https://example.com', 'https://example.com'],
+      ['see docs\n\ntwo', 5, 13, 'https://example.com', 'see https://example.como'],
+    ]
+    for (const [initialValue, from, to, pasted, expected] of cases) {
+      pasteText(editorWith(initialValue, from, to), pasted)
+      expect(markdownValue()).toBe(expected)
+      cleanup()
+    }
+  })
 })

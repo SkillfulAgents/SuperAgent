@@ -7,27 +7,27 @@ import { PendingAgentReviews } from './pending-agent-reviews'
 // same store every other surface reads — not the legacy proxy-review poll.
 
 const mockUsePendingUserRequests = vi.fn()
-vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
+vi.mock('@shared/lib/tools/requests/use-pending-user-requests', () => ({
   usePendingUserRequests: (agentSlug: string, sessionId?: string) =>
     mockUsePendingUserRequests(agentSlug, sessionId),
 }))
 
-vi.mock('@renderer/components/messages/proxy-review-request-item', () => ({
+vi.mock('@shared/lib/tools/proxy-review/request', () => ({
   ProxyReviewRequestItem: ({ reviewId }: { reviewId: string }) => (
     <div data-testid={`proxy-review-${reviewId}`} />
   ),
 }))
-vi.mock('@renderer/components/messages/x-agent-review-request-item', () => ({
+vi.mock('@shared/lib/tools/x-agent-review/request', () => ({
   XAgentReviewRequestItem: ({ reviewId }: { reviewId: string }) => (
     <div data-testid={`xagent-review-${reviewId}`} />
   ),
 }))
-vi.mock('@renderer/components/messages/account-reauth-request-item', () => ({
+vi.mock('@shared/lib/tools/account-reauth/request', () => ({
   AccountReauthRequestItem: ({ proxyRequestId }: { proxyRequestId: string }) => (
     <div data-testid={`account-reauth-${proxyRequestId}`} />
   ),
 }))
-vi.mock('@renderer/components/messages/mcp-reauth-request-item', () => ({
+vi.mock('@shared/lib/tools/mcp-reauth/request', () => ({
   McpReauthRequestItem: ({ proxyRequestId }: { proxyRequestId: string }) => (
     <div data-testid={`mcp-reauth-${proxyRequestId}`} />
   ),

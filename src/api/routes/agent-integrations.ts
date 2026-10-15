@@ -1,5 +1,6 @@
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
-import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 /**
  * Shared Agent Integration CRUD Routes
  *
@@ -30,10 +31,12 @@ import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentI
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
-import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
 import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
+import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
@@ -77,6 +80,10 @@ agentIntegrationsRouter.get('/:provider/callback', async (c, next) => {
   return completeAuthorization(c)
 })
 agentIntegrationsRouter.use('*', Authenticated())
+agentIntegrationsRouter.get('/providers', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json(await agentIntegrationRegistry.listAvailableDefinitions())
+})
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
 
 const IntegrationAgentRole = EntityAgentRole({
@@ -146,10 +153,12 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
   c.header('Cache-Control', 'no-store')
   try {
     const provider = c.req.param('provider')
+    await assertIntegrationAvailable(provider)
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
     const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
-    return c.json(integrationSetupMetadataSchema.parse(metadata))
+    const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
+    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
@@ -177,7 +186,6 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
-
     await assertConnectionSelectionAccess(llmProviderId)
     const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
@@ -202,6 +210,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         createdByUserId,
       })
     } catch (err) {
+      await prepared.release()
       if (err instanceof DuplicateIntegrationIdentityError) {
         // User-facing conflict — capture at `warning` level so we can track frequency
         // but it doesn't page anyone as an error.
@@ -242,7 +251,8 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(toPublicAgentIntegration(integration), 201)
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to create agent integration:', error)
@@ -254,6 +264,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
 agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
   const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
   try {
+    await assertIntegrationAvailable(row.provider)
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
@@ -267,6 +278,36 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'agent-integration', operation: 'authorize' } })
     return c.json({ error: 'Could not authorize integration' }, 500)
+  }
+})
+
+// POST /api/agent-integrations/:integrationId/tools/:tool - Invoke an integration
+// tool on the managing person's behalf. Only tools the family exposes to
+// management are reachable; the agent's own path is the x-agent routes.
+const toolInvocationSchema = z.object({ input: z.unknown().optional() })
+agentIntegrationsRouter.post('/:integrationId/tools/:tool', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
+  const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+  const toolName = c.req.param('tool')
+  try {
+    const parsed = toolInvocationSchema.safeParse(await c.req.json().catch(() => ({})))
+    if (!parsed.success) return c.json({ error: 'Invalid tool input' }, 400)
+    if (integration.status === 'paused') return c.json({ error: 'This integration is paused' }, 409)
+    let connector = agentIntegrationManager.getConnector(integration.id)
+    if (!connector) {
+      try { await agentIntegrationManager.addIntegration(integration.id) } catch { /* reported by the manager */ }
+      connector = agentIntegrationManager.getConnector(integration.id)
+    }
+    if (!connector) return c.json({ error: 'This integration is not connected' }, 409)
+    const tool = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === toolName)
+    if (!tool || (tool.exposure !== 'management' && tool.exposure !== 'both')) return c.json({ error: 'Unknown tool' }, 404)
+    const result = await tool.execute(parsed.data.input, { source: 'management', userId: getCurrentUserId(c) })
+    return c.json({ result: result ?? null })
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid tool input' }, 400)
+    // A refusal the family explains is the person's to act on; anything else is a fault.
+    if (error instanceof IntegrationPolicyError) return c.json({ error: error.message }, 400)
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'invoke-tool' }, extra: { integrationId: integration.id, tool: toolName } })
+    return c.json({ error: error instanceof Error ? error.message : 'Tool invocation failed' }, 500)
   }
 })
 
@@ -285,7 +326,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
 
     const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
     await assertConnectionSelectionAccess(llmProviderId, integration.llmProviderId)
-    await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
+    const settingsChange = await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
 
     // Step 1: Persist DB updates first (config, name, showToolCalls)
     const updates: Record<string, unknown> = {}
@@ -309,10 +350,20 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
       await agentIntegrationManager.pauseIntegration(id)
     } else if (status === 'active') {
       await agentIntegrationManager.resumeIntegration(id)
-    } else if (config !== undefined && status !== 'paused') {
+    } else if ((config !== undefined || settingsChange?.reconnect) && status !== 'paused') {
       // Config changed while active — reconnect to pick up new credentials
       await agentIntegrationManager.removeIntegration(id)
-      if (integration.status !== 'paused') await agentIntegrationManager.addIntegration(id)
+      if (integration.status !== 'paused') {
+        try {
+          await agentIntegrationManager.addIntegration(id)
+        } catch (err) {
+          // The change is saved either way; a connection it can't make yet
+          // (e.g. a secret still to paste) is what the row's status reports.
+          captureException(err, { tags: { ...SENTRY_TAGS, operation: 'update-integration-connect' }, extra: { integrationId: id } })
+          // A pause that landed while this connect was pending wins.
+          await updateAgentIntegrationStatus(id, 'error', err instanceof Error ? err.message : String(err), { unlessPaused: true })
+        }
+      }
     }
 
     const updated = await getAgentIntegration(id)
@@ -320,7 +371,8 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
     return c.json(toPublicAgentIntegration(updated))
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     if (error instanceof DuplicateIntegrationIdentityError) {
       captureException(error, {
         tags: { ...SENTRY_TAGS, operation: 'update-integration-duplicate' },
@@ -429,6 +481,8 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
     return c.json({
       status: publicIntegrationStatus(integration),
       connected,
+      // What the running connection uses, not what the next one would.
+      transport: agentIntegrationManager.integrationTransport(integration.id),
       provider: integration.provider,
     })
   } catch (error) {

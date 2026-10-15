@@ -46,7 +46,7 @@ vi.mock('@renderer/hooks/use-browser-stream', () => ({ useBrowserStream: () => s
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ browserActive: true, isActive: true, streamingToolUses: [], activeSubagents: [] }),
 }))
-vi.mock('@renderer/hooks/use-browser-input-actions', () => ({
+vi.mock('@shared/lib/tools/request-browser-input/use-browser-input-actions', () => ({
   useBrowserInputActions: () => ({
     status: 'idle',
     submittingAction: null,
@@ -59,7 +59,7 @@ const historyMessages: ApiMessage[] = []
 vi.mock('@renderer/hooks/use-messages', () => ({ useMessages: () => ({ data: historyMessages }) }))
 const mockApiFetch = vi.fn((_url: string) => Promise.resolve({ ok: true, json: () => Promise.resolve([]) }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: (url: string) => mockApiFetch(url) }))
-vi.mock('@renderer/components/messages/tool-renderers', () => ({ getToolRenderer: () => undefined }))
+vi.mock('@shared/lib/tools/renderers', () => ({ getToolRenderer: () => undefined }))
 vi.mock('@renderer/components/file-preview/file-preview-tray-content', () => ({ FilePreviewTrayContent: () => null }))
 vi.mock('@renderer/components/workflow/workflow-tray-content', () => ({ WorkflowTrayContent: () => null }))
 vi.mock('@renderer/context/file-preview-context', () => ({

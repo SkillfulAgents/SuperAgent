@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AudioLines, MessageSquarePlus, Pause, Play } from 'lucide-react'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
-import { CommentOverlay } from '../comments/comment-overlay'
+import { useCommentBox } from '../comments/use-comment-box'
 import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
 import { useMediaKeys } from './use-media-keys'
@@ -13,17 +12,7 @@ interface AudioRendererProps {
   url: string
   filePath: string
   agentSlug: string
-  commentsEnabled?: boolean
 }
-
-interface PendingComment {
-  timestamp: number
-  rect: DOMRect
-  /** Opened with M: the editor starts the mic. */
-  listen: boolean
-}
-
-type AudioComment = FileComment & { timestamp: number }
 
 const WAVEFORM_BAR_COUNT = 112
 const MAX_WAVEFORM_ENCODED_BYTES = 15 * 1024 * 1024
@@ -37,7 +26,8 @@ function validDuration(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
-export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true }: AudioRendererProps) {
+export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -46,10 +36,10 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [hoverTime, setHoverTime] = useState<number | null>(null)
-  const [pending, setPending] = useState<PendingComment | null>(null)
   const [waveform, setWaveform] = useState(() => createFallbackWaveform(WAVEFORM_BAR_COUNT))
 
-  const { commentsFor } = useFilePreview()
+  const surface = useMemo(() => ({ time: { media: audioRef, track: timelineRef } }), [])
+  const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, filePath, agentSlug)
   const maxSeek = validDuration(duration)
   const playedRatio = maxSeek > 0 ? clamp(currentTime / maxSeek, 0, 1) : 0
   const filename = getPathName(filePath)
@@ -149,53 +139,19 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
     setCurrentTime(nextTime)
   }, [maxSeek])
 
-  const beginComment = useCallback((timestamp: number, listen = false) => {
-    const audio = audioRef.current
-    const timeline = timelineRef.current
-    if (!audio || !timeline) return
-
-    audio.pause()
-    const lockedTime = maxSeek > 0 ? clamp(timestamp, 0, maxSeek) : 0
-    const timelineRect = timeline.getBoundingClientRect()
-    const x = maxSeek > 0 ? (lockedTime / maxSeek) * timelineRect.width : timelineRect.width / 2
-    setPending({
-      timestamp: lockedTime,
-      rect: new DOMRect(x, timelineRect.height, 0, 0),
-      listen,
-    })
-    clearHoverCloseTimer()
-    setHoverTime(null)
-  }, [clearHoverCloseTimer, maxSeek])
-
-  // Read the media clock, not the last rendered time, which can trail a seek.
-  const commentAtPlayhead = (listen = false) => beginComment(audioRef.current?.currentTime ?? 0, listen)
-
-  const { rate, setRate, togglePlay } = useMediaKeys(audioRef, {
-    onComment: commentsEnabled && !pending ? commentAtPlayhead : undefined,
-  })
+  const { rate, setRate, togglePlay } = useMediaKeys(audioRef, {})
 
   const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (pending) return
     const target = event.target as HTMLElement
     if (target.closest('[data-audio-hover-tooltip]')) return
     clearHoverCloseTimer()
     setHoverTime(timeAtClientX(event.clientX))
-  }, [clearHoverCloseTimer, pending, timeAtClientX])
+  }, [clearHoverCloseTimer, timeAtClientX])
 
   const hoverRatio = hoverTime != null && maxSeek > 0 ? clamp(hoverTime / maxSeek, 0, 1) : 0.5
 
-  const commentMarkers = useMemo(() => {
-    const fileComments = commentsFor(filePath, agentSlug)
-    return fileComments
-      .filter((comment): comment is AudioComment => comment.timestamp != null)
-      .map(comment => ({
-        ...comment,
-        ratio: maxSeek > 0 ? clamp(comment.timestamp / maxSeek, 0, 1) : 0,
-      }))
-  }, [commentsFor, filePath, agentSlug, maxSeek])
-
   return (
-    <div className="flex min-h-full items-start justify-center p-5" data-testid="audio-renderer" data-media-player>
+    <div ref={containerRef} className="relative flex min-h-full items-start justify-center p-5" data-testid="audio-renderer" data-media-player>
       <div className="w-full max-w-[720px] rounded-xl border border-border/60 bg-card/70 p-4 shadow-sm sm:p-5">
         <div className="mb-5 flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -227,8 +183,8 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
         <div
           className="group relative h-28 rounded-lg border border-border/60 bg-muted/30 focus-within:ring-1 focus-within:ring-primary"
           data-testid="audio-waveform"
-          onPointerMove={commentsEnabled ? handlePointerMove : undefined}
-          onPointerLeave={commentsEnabled ? scheduleHoverClose : undefined}
+          onPointerMove={enabled ? handlePointerMove : undefined}
+          onPointerLeave={enabled ? scheduleHoverClose : undefined}
         >
           {/* Every time-based element lives in this shared inset coordinate
               system so a ratio maps to the same physical x-position. */}
@@ -288,20 +244,6 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
               />
             )}
 
-            {commentsEnabled && commentMarkers.map((comment, index) => (
-              <button
-                key={comment.id}
-                type="button"
-                onClick={() => seekTo(comment.timestamp)}
-                className="absolute -top-2 z-30 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground shadow ring-2 ring-background transition-transform hover:scale-110"
-                style={{ left: `${comment.ratio * 100}%` }}
-                title={`Comment at ${formatCommentTime(comment.timestamp)}`}
-                aria-label={`Seek to comment ${index + 1} at ${formatCommentTime(comment.timestamp)}`}
-              >
-                {index + 1}
-              </button>
-            ))}
-
             <input
               type="range"
               min={0}
@@ -315,7 +257,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
               data-testid="audio-seek"
             />
 
-            {commentsEnabled && hoverTime != null && !pending && (
+            {enabled && maxSeek > 0 && hoverTime != null && !isOpen && (
               <div
                 className="pointer-events-none absolute -top-2 z-40 -translate-x-1/2 -translate-y-full pb-1"
                 style={{ left: `${hoverRatio * 100}%` }}
@@ -328,29 +270,22 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
                   className="pointer-events-auto flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground shadow-md hover:bg-primary/90"
                   onClick={event => {
                     event.stopPropagation()
-                    beginComment(hoverTime)
+                    const timeline = timelineRef.current
+                    if (!timeline) return
+                    const { left, width, bottom } = timeline.getBoundingClientRect()
+                    open({ on: 'mouse', target: timeline, clientX: left + hoverRatio * width, clientY: bottom })
                   }}
                   data-testid="audio-hover-add-comment"
                 >
                   <MessageSquarePlus className="h-3 w-3" />
                   Add Comment
                 </button>
-                <div className="text-center text-[9px] tabular-nums text-muted-foreground">
+                <div className="text-center text-[9px] tabular-nums text-muted-foreground" data-testid="audio-hover-time">
                   {formatCommentTime(hoverTime)}
                 </div>
               </div>
             )}
 
-            {commentsEnabled && pending && (
-              <CommentOverlay
-                selection={{ text: '', rect: pending.rect, timestamp: pending.timestamp }}
-                filePath={filePath}
-                agentSlug={agentSlug}
-                autoEdit
-                autoListen={pending.listen}
-                onClose={() => setPending(null)}
-              />
-            )}
           </div>
         </div>
 
@@ -369,11 +304,11 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
           <VolumeControl mediaRef={audioRef} />
-          {commentsEnabled && (
+          {enabled && (
             <button
               type="button"
-              onClick={() => commentAtPlayhead()}
-              disabled={pending != null}
+              onClick={() => open()}
+              disabled={isOpen}
               className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
               data-testid="audio-add-comment"
             >
@@ -383,6 +318,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
           )}
         </div>
       </div>
+      {box}
     </div>
   )
 }

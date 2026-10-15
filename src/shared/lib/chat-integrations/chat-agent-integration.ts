@@ -6,7 +6,7 @@
  */
 
 import { AgentIntegration } from '../agent-integrations/agent-integration'
-import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
@@ -15,7 +15,7 @@ import { reviewCardFromRegistry } from './request-card'
 import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy, chatSettings } from './chat-policy'
 import { z } from 'zod'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
 import { incomingMessageSchema } from './message-schema'
@@ -28,7 +28,7 @@ import {
 // ── Types ───────────────────────────────────────────────────────────────
 
 export interface IncomingMessage {
-  externalMessageId: string    // Platform-specific ID (Telegram update_id, Slack message ts)
+  externalMessageId: string    // Platform-specific ID (Telegram message_id, unique per chat; Slack message ts)
   text: string
   chatId: string               // Telegram chat_id or Slack channel_id
   userId: string               // Telegram user_id or Slack user_id
@@ -425,10 +425,15 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   // ── Protected helpers for subclasses ────────────────────────────────
 
-  protected emitMessage(message: IncomingMessage): void {
-    // The manager reports acceptance failures. They do not imply the provider
-    // transport is unhealthy (and must not flip its connection status).
-    void this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message }).catch(() => {})
+  /**
+   * Hands a message to the host and resolves to what it did with it, for
+   * transports that acknowledge or redeliver. A handler failure resolves
+   * `retry`: the manager reports it, and it does not imply the provider
+   * transport is unhealthy (it must not flip its connection status).
+   */
+  protected emitMessage(message: IncomingMessage): Promise<IntegrationInputResult> {
+    return this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message })
+      .catch((): IntegrationInputResult => 'retry')
   }
 
   protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {

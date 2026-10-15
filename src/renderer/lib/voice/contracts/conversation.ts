@@ -1,4 +1,5 @@
 import type { VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
+import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 
 export type VoiceModePhase = 'listening' | 'thinking' | 'speaking'
 export type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
@@ -13,17 +14,28 @@ export interface VoiceAgentSnapshot {
   startedAt: number | null
   toolsRunning: boolean
   error: string | null
+  /** Foreground activity alone controls interruption and chained playback. */
+  background?: boolean
+  turnOutcome?: SessionTurnOutcome | null
 }
 export interface VoiceAgentState {
   active: boolean
   awaiting: boolean
   toolsUsed: boolean
+  background?: boolean
+}
+/** Display context only; never includes a submitted answer or credential. */
+export interface VoiceInputRequest {
+  id: string
+  message: string
 }
 export type VoiceAgentEvent =
   | { type: 'state'; state: VoiceAgentState }
   | { type: 'reset' }
   | { type: 'reply'; segment: number; text: string; complete: boolean }
+  | { type: 'turn-ended'; turnId: string; outcome: 'completed' | 'cancelled' }
   | { type: 'error'; message: string }
+  | { type: 'input-requests'; requests: readonly VoiceInputRequest[] }
 
 export interface VoiceConversationSnapshot {
   phase: VoiceModePhase
@@ -58,6 +70,8 @@ export interface VoiceTurnPolicy {
    * and a failed cancel is not reported. Live keeps strict ordering instead.
    */
   sendAfterFailedInterrupt: boolean
+  /** Live needs results produced during a request-card pause on resume. */
+  retainPausedReplies?: boolean
 }
 
 /** No agent API calls or stream subscriptions belong in implementations. */
@@ -76,5 +90,10 @@ export interface VoiceConversationAdapter {
   /** Silence the agent's voice: the reply still plays out, so turn-taking is unchanged. */
   setOutputMuted(muted: boolean): void
   pressMic(): void
+  /**
+   * Add a standing instruction while the conversation runs, such as who is in
+   * the room. Engines without a live instruction channel may omit it.
+   */
+  appendInstructions?(text: string): void
   close(): void
 }

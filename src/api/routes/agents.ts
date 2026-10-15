@@ -1,4 +1,7 @@
-import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -14,6 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -35,6 +39,7 @@ import {
   getAgent,
   getAgentRecord,
   updateAgent,
+  updateAgentAvatar,
   deleteAgent,
   agentExists,
   AgentContainerStopError,
@@ -58,7 +63,7 @@ import {
   type SessionDashboardDispatch,
 } from '@shared/lib/dashboard-dispatch-schema'
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
@@ -71,8 +76,8 @@ import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
-} from '@shared/lib/user-input/request-schema'
-import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
+} from '@shared/lib/tools/requests/request-schema'
+import { forkSession, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -81,7 +86,10 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, removeMount, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
+import { VolumeError } from '@shared/lib/services/volume-service'
+import { volumeViewer } from '../lib/volume-access'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -1435,6 +1443,16 @@ agents.put('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   }
 })
 
+// Appearance is shared agent metadata, with the same permission as renaming.
+agents.put('/:id/avatar', ResolveAgent(), AgentAdmin(), zValidator('json', agentAvatarSchema), async (c) => {
+  const slug = getAgentId(c)
+  const avatar = await updateAgentAvatar(slug, c.req.valid('json'))
+  if (!avatar) return c.json({ error: 'Agent not found' }, 404)
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: ['avatar'] } })
+  messagePersister.broadcastGlobal({ type: 'agent_updated', agentSlug: slug })
+  return c.json(avatar)
+})
+
 // DELETE /api/agents/:id - Delete an agent
 agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   try {
@@ -1547,7 +1565,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
     const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    if (error instanceof LlmProviderNotFoundError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
     return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
@@ -2132,7 +2150,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       201
     )
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to create session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
   }
@@ -2786,7 +2805,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // mid-turn is queued by the agent loop rather than starting a new turn.
       const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-      agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      // A rejected fresh turn is undone so the retry starts a new turn, unless a
+      // concurrent send, turn, or output has taken the session over meanwhile.
+      let undoFreshTurn: (() => void) | undefined
+      if (wasQueued) agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      else undoFreshTurn = agentRegistry.get(agentSlug).sessions.markProvisionalActive(sessionId)
 
       // A mid-turn send must not carry model/effort/speed: the container treats a
       // parameter change as interrupt/restart of the in-flight query. The
@@ -2808,7 +2831,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      try {
+        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      } catch (error) {
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
+        throw error
+      }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
@@ -2862,7 +2890,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
     })
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
@@ -3092,9 +3121,8 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
     }
     return c.json(await forkSession(slug, sourceId, opts), 201)
   } catch (error) {
-    if (error instanceof ForkSessionError) {
-      return c.json({ error: error.message }, error.status)
-    }
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to fork session:', error)
     return c.json({ error: 'Failed to fork session' }, 500)
   }
@@ -3188,7 +3216,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
       let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
@@ -3210,7 +3237,8 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
-          isActive,
+          isActive: actor.sessions.isActive(sessionId),
+          turnOutcome: actor.sessions.turnOutcome(sessionId),
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           // Always the array, even empty: an absent list reads as "unchanged" to
@@ -3239,7 +3267,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         try {
           const currentIsActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
           await stream.writeSSE({
-            data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
+            data: JSON.stringify({
+              type: 'ping', isActive: currentIsActive,
+              turnOutcome: actor.sessions.turnOutcome(sessionId),
+            }),
             event: 'message',
           })
         } catch {
@@ -6294,7 +6325,7 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
-    return c.json({ error: 'Failed to list mounts' }, 500)
+    return c.json({ error: 'Failed to list drives' }, 500)
   }
 })
 
@@ -6302,15 +6333,20 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { type, config, restart } = await c.req.json<{ type: string; config: unknown; restart?: boolean }>()
-
     let mount
+    let restart: boolean | undefined
     try {
-      mount = await addMount(agentSlug, type, config)
-    } catch (err: any) {
-      return c.json({ error: err.message || 'Invalid path' }, 400)
+      const input = addMountSchema.parse(await c.req.json())
+      restart = input.restart
+      mount = 'volumeId' in input
+        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
+        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
+    } catch (err) {
+      if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
+      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)
+      throw err
     }
-    const summary = volumeSummary(mount)
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName }
 
     if (restart) {
       const cachedInfo = agentRegistry.get(agentSlug).container.status()
@@ -6323,7 +6359,26 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
     return c.json(summary, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)
-    return c.json({ error: 'Failed to add mount' }, 500)
+    return c.json({ error: 'Failed to add drive' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/mounts/:mountId - Set read only
+agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const mountId = c.req.param('mountId')
+    const parsed = updateMountSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid drive update' }, 400)
+    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
+      return c.json({ error: 'Drive not found' }, 404)
+    }
+
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'updated', details: { readOnly: parsed.data.readOnly } })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to update mount:', error)
+    return c.json({ error: 'Failed to update drive' }, 500)
   }
 })
 
@@ -6347,7 +6402,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to remove mount:', error)
-    return c.json({ error: 'Failed to remove mount' }, 500)
+    return c.json({ error: 'Failed to remove drive' }, 500)
   }
 })
 

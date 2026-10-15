@@ -1,4 +1,5 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -86,11 +87,15 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
   })
 }
 
-export function useCreateSession() {
+export function useCreateSession(options: {
+  /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
+  agentRuntimeErrorsShownInline?: boolean
+} = {}) {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
     mutationFn: async (data: {
       agentSlug: string
       message: string
@@ -100,9 +105,9 @@ export function useCreateSession() {
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
-      // Analytics-only: distinguishes auto-started sessions (template onboarding)
-      // from user-typed ones. Not sent to the server.
-      origin?: 'user' | 'onboarding'
+      // Analytics-only: distinguishes auto-started sessions (template onboarding,
+      // todo dispatch) from user-typed ones. Not sent to the server.
+      origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
     }) => {
@@ -118,17 +123,21 @@ export function useCreateSession() {
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to create session')
+      if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
       return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
-      const inputMode = variables.inputMode
+      // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
+      const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
       track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
       // A voice-started session's first message is the entry marker, not something the person said.
-      track('message_sent', { origin, ...(inputMode ? { input_mode: 'voice_notice' } : {}) })
+      track('message_sent', {
+        origin,
+        ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
+      })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
       // Seed the caches from the response so the sidebar row and the session
       // view render immediately instead of waiting a refetch round-trip. The

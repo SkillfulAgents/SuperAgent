@@ -31,6 +31,7 @@ import {
 import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { messagePersister } from './message-persister'
+import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import path from 'path'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -178,6 +179,23 @@ export class ContainerHost {
     for (const slug of this.getRunningAgentIds()) this.runtime(slug).markStale()
   }
 
+  /** Record as stale every running agent whose webhook tools no longer match availability. */
+  reconcileWebhookRelay(available: boolean): void {
+    for (const slug of this.getRunningAgentIds()) this.runtime(slug).reconcileWebhookRelay(available)
+  }
+
+  /**
+   * Publishes the webhook relay's status to clients, and keeps running
+   * agents' webhook tools in step with it (their env says whether webhooks
+   * can be received).
+   */
+  watchWebhookRelay(relay: WebhookRelayService): () => void {
+    return watchWebhookRelay(relay, {
+      broadcast: (status) => messagePersister.broadcastGlobal({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
+      reconcileAgents: (available) => this.reconcileWebhookRelay(available),
+    })
+  }
+
   /**
    * Create runtimes for the given agent slugs and sync their statuses.
    * Call this on app startup with the list of all agent slugs.
@@ -323,8 +341,8 @@ export class ContainerHost {
     const runningIds = this.getRunningAgentIds()
     if (runningIds.length > 0) {
       // Timeout must accommodate the full escalation chain:
-      // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
-      const STOP_TIMEOUT_MS = 30000
+      // Volume preparation (20s), then the existing stop/kill/force chain (25s).
+      const STOP_TIMEOUT_MS = 50000
       const stopPromises = runningIds.map(async (slug) => {
         try {
           await Promise.race([

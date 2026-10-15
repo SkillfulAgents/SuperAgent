@@ -4,7 +4,7 @@ import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './
 import {
   userInputRequestManager,
   type UserInputRequestTransition,
-} from '@shared/lib/user-input/request-manager'
+} from '@shared/lib/tools/requests/request-manager'
 import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,

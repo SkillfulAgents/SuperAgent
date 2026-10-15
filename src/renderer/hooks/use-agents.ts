@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
+import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
+import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 
 // Re-export for convenience
@@ -174,6 +175,30 @@ export function useUpdateAgent() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', variables.slug] })
+    },
+  })
+}
+
+export function useUpdateAgentAvatar() {
+  const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
+  return useMutation({
+    mutationFn: async ({ slug, avatar }: { slug: string; avatar: AgentAvatar }) => {
+      const res = await apiFetch(`/api/agents/${slug}/avatar`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(agentAvatarSchema.parse(avatar)),
+      })
+      if (!res.ok) throw new Error('Failed to save avatar')
+      return agentAvatarSchema.parse(await res.json())
+    },
+    onSuccess: (avatar, { slug }) => {
+      updateAgentAvatarCache(queryClient, slug, avatar)
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      track('agent_avatar_changed', { color: avatar.color, shape: avatar.shape })
+    },
+    onError: (_, { avatar }) => {
+      track('agent_avatar_change_failed', { color: avatar.color, shape: avatar.shape })
     },
   })
 }

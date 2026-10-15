@@ -4,7 +4,7 @@ import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-st
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
-import { usePendingBrowserInputRequests } from '@renderer/components/messages/use-pending-requests'
+import { usePendingBrowserInputRequests } from '@shared/lib/tools/requests/use-pending-requests'
 import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])

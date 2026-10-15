@@ -4,6 +4,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ReadAloudSpeedSelect } from './read-aloud-controls'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUserMusicState } from '@renderer/hooks/use-user-music'
 import { resolveHoldSound } from '@shared/lib/voice/tts-preferences'
 import { cn } from '@shared/lib/utils/cn'
 
@@ -51,18 +52,23 @@ export function VoiceToggleButton({ label, pressed, onClick, testId, className, 
 /**
  * The controls under the mic that are voice mode's own: the reading speed
  * and the hold sound, both written to the person's settings so they hold
- * across sessions.
+ * across sessions. When voice mode is holding the person's own music, the
+ * hold control names the player; muting keeps it paused.
  */
 export function VoiceModeControls({ showSpeed = true }: { showSpeed?: boolean }) {
   const holdSound = useHoldSoundPreference()
+  const music = useUserMusicState()
   const updateUserSettings = useUpdateUserSettings()
+  const label = music.active
+    ? (holdSound ? `Keep ${music.playerName} paused` : `Let ${music.playerName} play while the agent works`)
+    : (holdSound ? 'Mute hold music' : 'Unmute hold music')
 
   return (
     <TooltipProvider delayDuration={0}>
       <div className="flex items-center gap-2" data-testid="voice-mode-controls">
         {showSpeed && <ReadAloudSpeedSelect testId="voice-mode-speed" align="center" />}
         <VoiceToggleButton
-          label={holdSound ? 'Mute hold music' : 'Unmute hold music'}
+          label={label}
           pressed={holdSound}
           testId="voice-mode-hold-sound"
           // From the settings as they are when the write runs, not as

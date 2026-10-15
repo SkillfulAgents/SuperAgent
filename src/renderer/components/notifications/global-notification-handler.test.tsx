@@ -704,6 +704,19 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
   })
 
+  it('webhook_relay_changed replaces the cached relay status', () => {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+    const status = { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null }
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'webhook_relay_changed', status })
+
+    expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
+  })
+
   it('platform_notification pops an OS notification whose click opens the detail route', async () => {
     const { showOSNotification } = await import('@renderer/lib/os-notifications')
     vi.mocked(showOSNotification).mockClear()
@@ -879,6 +892,15 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         expect.objectContaining({ slug: 'support', status: 'stopped' }),
       ])
     expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
+  it('agent_updated refreshes saved appearance in list and detail queries on other clients', () => {
+    queryClient.setQueryData(['agents'], [])
+    queryClient.setQueryData(['agents', 'agent-a'], {})
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_updated', agentSlug: 'agent-a' })
+    expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
   it('agent_created invalidates visible agents and personal roles together', () => {

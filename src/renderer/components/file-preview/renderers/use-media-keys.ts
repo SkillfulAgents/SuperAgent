@@ -55,8 +55,6 @@ export function frameSeconds(prev: FrameSample, next: FrameSample): number | nul
 interface MediaKeysOptions {
   /** Seconds one frame lasts. Video passes it, so a step pauses and moves one frame; audio steps 5 s. */
   frameStep?: () => number
-  /** Opens a comment at the playhead; absent while comments are off or one is already open. */
-  onComment?: (listen: boolean) => void
 }
 
 /**
@@ -84,15 +82,16 @@ export function useMediaKeys(mediaRef: RefObject<HTMLMediaElement | null>, optio
     const onKeyDown = (event: KeyboardEvent) => {
       const media = mediaRef.current
       const action = media && mediaKeyAction(event)
-      const { frameStep, onComment } = latest.current
-      if (!media || !action || (action.type === 'comment' && !onComment)) return
+      const { frameStep } = latest.current
+      // C and M belong to the comment box.
+      if (!media || !action || action.type === 'comment') return
       // While voice mode is on, Space belongs to the player only when focus is
       // inside it; elsewhere it interrupts the agent. K still plays and pauses.
       const inPlayer = event.target instanceof Node && media.closest('[data-media-player]')?.contains(event.target)
       if (event.key === ' ' && !inPlayer && isAnyVoiceModeActive()) return
       event.preventDefault()
-      // Holding a play or comment key toggles or opens once.
-      if (event.repeat && (action.type === 'toggle' || action.type === 'comment')) return
+      // Holding the play key toggles once.
+      if (event.repeat && action.type === 'toggle') return
       switch (action.type) {
         case 'toggle':
           togglePlay()
@@ -110,9 +109,6 @@ export function useMediaKeys(mediaRef: RefObject<HTMLMediaElement | null>, optio
           setRate(PLAYBACK_RATES[Math.min(PLAYBACK_RATES.length - 1, Math.max(0, index))])
           break
         }
-        case 'comment':
-          onComment?.(action.listen)
-          break
       }
     }
     window.addEventListener('keydown', onKeyDown)

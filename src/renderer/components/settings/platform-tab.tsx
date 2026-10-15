@@ -8,18 +8,21 @@ import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { LoginButton } from '@renderer/components/connections/login-button'
 import { ProfileSection } from './profile-section'
 import { StaleAgentsNotice } from './stale-agents-notice'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { pendingPlanChangeText, usePlatformPlanUpgrade } from '@renderer/hooks/use-platform-plan'
+import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { cn } from '@shared/lib/utils'
-import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '@shared/lib/services/platform-billing-copy'
+import type { ParsedPlatformBillingInfo, SubscriptionCreditScope } from '@shared/lib/types/skillset-schema'
 
 interface PlatformTabProps {
   readOnly?: boolean
@@ -75,15 +78,40 @@ function subscriptionLabel(b: ParsedPlatformBillingInfo): string {
 
 const VALUE_CLASS = 'text-xs text-muted-foreground truncate max-w-[260px]'
 
+// The plan row's value: the plan's name, with the subscription's state when it
+// isn't plainly active ("Pro 30 · Cancelling").
+function planLabel(b: ParsedPlatformBillingInfo, plan: NonNullable<ParsedPlatformBillingInfo['plan']>): string {
+  const status = subscriptionLabel(b)
+  return status === 'Subscribed' || status === 'Active' ? plan.name : `${plan.name} · ${status}`
+}
+
+// What the plan leaves out and what is about to change, under the plan's name.
+// `excluded` is worded by the server, which owns reading the plan's denylist.
+function PlanDetails({ billing, excluded }: { billing: ParsedPlatformBillingInfo; excluded: string | null }) {
+  const pending = billing.pendingPlanChange ? pendingPlanChangeText(billing.pendingPlanChange) : null
+  if (!excluded && !pending) return null
+  return (
+    <>
+      {excluded && <span className="block" data-testid="billing-plan-excludes">Excludes {excluded}</span>}
+      {pending && <span className="block" data-testid="billing-plan-pending">{pending}</span>}
+    </>
+  )
+}
+
 function PlatformBillingCard({
   platformBaseUrl,
   orgId,
+  role,
 }: {
   platformBaseUrl?: string | null
   orgId?: string | null
+  /** The member's org role; only owners and admins can change the plan. Unknown = offer it. */
+  role?: string | null
 }) {
   const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
   const billing = data?.billing
+  const openPlanUpgrade = usePlatformPlanUpgrade()
+  const canChangePlan = role == null || isPlatformOrgAdmin(role)
 
   async function handleManageBilling() {
     if (!platformBaseUrl || !orgId) return
@@ -130,21 +158,46 @@ function PlatformBillingCard({
           />
         ) : billing ? (
           <>
-            <SettingRow
-              name="Subscription"
-              right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
-            />
-            {billing.seat ? (
-              <SeatCreditsRow seat={billing.seat} />
+            {billing.plan ? (
+              <SettingRow
+                name="Plan"
+                subtitle={<PlanDetails billing={billing} excluded={data?.excludedModels ?? null} />}
+                right={
+                  <>
+                    <span className={VALUE_CLASS} data-testid="billing-plan-name">{planLabel(billing, billing.plan)}</span>
+                    {canChangePlan && (
+                      <Button size="sm" variant="outline" onClick={() => openPlanUpgrade()} data-testid="billing-change-plan">
+                        Change plan
+                      </Button>
+                    )}
+                  </>
+                }
+              />
             ) : (
               <SettingRow
-                name="Seat credits"
+                name="Subscription"
+                right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
+              />
+            )}
+            {billing.seat ? (
+              <SubscriptionCreditsRow
+                seat={billing.seat}
+                scope={subscriptionCreditScope(billing)}
+                periodEnd={billing.subscription.currentPeriodEnd}
+              />
+            ) : (
+              <SettingRow
+                name={SUBSCRIPTION_CREDIT_COPY[subscriptionCreditScope(billing)].credits}
                 right={<span className={VALUE_CLASS}>Not subscribed</span>}
               />
             )}
             <SettingRow
               name="Organization credits"
-              subtitle="Shared pool used after your seat quota"
+              subtitle={
+                subscriptionCreditScope(billing) === 'org'
+                  ? 'Shared pool used after your team plan credits'
+                  : 'Shared pool used after your seat quota'
+              }
               right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
             />
             <SettingRow
@@ -280,20 +333,37 @@ function CloudWorkspaceCard({
   )
 }
 
-function SeatCreditsRow({ seat }: { seat: NonNullable<ParsedPlatformBillingInfo['seat']> }) {
+// The monthly subscription credit. A pooled org (`scope: 'org'`) gets the same
+// bar with the same numbers — the proxy already sends the org's shared pool
+// under `seat` — so only the wording says whose credit it is.
+function SubscriptionCreditsRow({
+  seat,
+  scope,
+  periodEnd,
+}: {
+  seat: NonNullable<ParsedPlatformBillingInfo['seat']>
+  scope: SubscriptionCreditScope
+  periodEnd: string | null
+}) {
   const pct = seatPercentRemaining(seat)
   return (
-    <div className="py-3 px-4 space-y-1.5">
+    <div className="py-3 px-4 space-y-1.5" data-testid="subscription-credits-row" data-scope={scope}>
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium">Seat credits</span>
+        <span className="text-xs font-medium">{SUBSCRIPTION_CREDIT_COPY[scope].credits}</span>
         <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
       </div>
       <Progress percent={pct} thresholds={{ warning: 20, critical: 5 }} />
       <div className="text-[11px] text-muted-foreground">
         {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
+        {scope === 'org' && ` · shared by your whole organization${renewalNote(periodEnd)}`}
       </div>
     </div>
   )
+}
+
+function renewalNote(periodEnd: string | null): string {
+  if (!periodEnd || !Number.isFinite(Date.parse(periodEnd))) return ''
+  return `, resets ${new Date(periodEnd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
 }
 
 function HoverArrow() {
@@ -306,12 +376,14 @@ function HoverArrow() {
 
 interface WorkspaceSwitcherProps {
   orgName: string
+  /** The workspace's plan, shown beside its name. */
+  planName?: string | null
   /** Re-auth is rejected in auth mode and pointless mid-launch — see ReconnectRow. */
   switchDisabled: boolean
   onSwitch: () => void
 }
 
-function WorkspaceSwitcher({ orgName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
+function WorkspaceSwitcher({ orgName, planName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -323,6 +395,11 @@ function WorkspaceSwitcher({ orgName, switchDisabled, onSwitch }: WorkspaceSwitc
           className="flex items-center gap-1 max-w-[260px] rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="truncate">{orgName}</span>
+          {planName && (
+            <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] leading-4" data-testid="workspace-plan-badge">
+              {planName}
+            </span>
+          )}
           <ChevronsUpDown className="h-3 w-3 shrink-0 text-foreground" aria-hidden />
         </button>
       </PopoverTrigger>
@@ -513,6 +590,8 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   // The signed-in user's own profile leads this tab instead of having a tab of
   // its own. Only auth mode has a user to edit, so local installs skip it.
   const { isAuthMode } = useUser()
+  // Same snapshot the billing card reads; the plan's name also labels the workspace.
+  const plan = useBillingInfo(isConnected).data?.billing?.plan
 
   const connectLabel = isConnected ? 'Reconnect' : 'Connect'
 
@@ -562,6 +641,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
                 // action opens the same platform login Reconnect below launches.
                 <WorkspaceSwitcher
                   orgName={data?.orgName ?? '—'}
+                  planName={plan?.name}
                   switchDisabled={readOnly || isLaunching}
                   onSwitch={handleConnect}
                 />
@@ -611,7 +691,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         // Billing is non-critical display data — never let a glitch here take
         // down the Account screen. Errors render a compact, retryable fallback.
         <ErrorBoundary compact>
-          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
+          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} role={data?.role} />
         </ErrorBoundary>
       )}
 

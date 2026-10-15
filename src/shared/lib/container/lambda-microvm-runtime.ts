@@ -17,7 +17,7 @@ import type {
   GetMicrovmCommandOutput,
   RunMicrovmCommandOutput,
 } from '@aws-sdk/client-lambda-microvms'
-import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
+import { BaseContainerClient, CONTAINER_INTERNAL_PORT, withVolumesEnv } from './base-container-client'
 import type {
   ContainerConfig,
   ContainerInfo,
@@ -996,7 +996,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(options?.envVars, options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
@@ -1175,9 +1175,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return null
   }
 
-  /** FUSE in the microVM is unverified, so it mounts no volumes. */
+  /** No run flags: under no-new-privs the image's start.sh puts a root mount helper behind fusermount3. */
   public volumeRunFlags(): string | null {
-    return null
+    return ''
   }
 
   public getHostApiBaseUrl(): Promise<string> {

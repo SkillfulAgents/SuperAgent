@@ -135,9 +135,13 @@ interface VoiceConfiguredStatus {
   voices: TtsVoiceInfo[]
   /** The deployment's default among them (for anyone without their own pick). */
   defaultVoice?: string
+  /** Voices a Live conversation (a meeting bot) can speak with; empty when the provider has no Live engine. */
+  liveVoices?: TtsVoiceInfo[]
+  liveDefaultVoice?: string
 }
 
 const NOT_CONFIGURED: VoiceConfiguredStatus = { configured: false, supportsTts: false, voices: [] }
+const NO_VOICES: TtsVoiceInfo[] = []
 
 function useVoiceConfiguredStatus(): VoiceConfiguredStatus {
   const { data } = useQuery<VoiceConfiguredStatus>({
@@ -173,6 +177,12 @@ export function useIsTtsConfigured(): boolean {
 export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string | undefined } {
   const { voices, defaultVoice } = useVoiceConfiguredStatus()
   return { voices, defaultVoice }
+}
+
+/** The voices a Live conversation can speak with, as the configured provider offers them; empty without a Live engine. */
+export function useLiveVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string | undefined } {
+  const { liveVoices, liveDefaultVoice } = useVoiceConfiguredStatus()
+  return { voices: liveVoices ?? NO_VOICES, defaultVoice: liveDefaultVoice }
 }
 
 /**

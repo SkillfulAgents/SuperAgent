@@ -5,6 +5,26 @@ import userEvent from '@testing-library/user-event'
 import { InlineEditableTitle } from './inline-editable-title'
 
 describe('InlineEditableTitle', () => {
+  it('reports the end of editing after a save and after a cancel, not after a failed save', async () => {
+    const user = userEvent.setup()
+    const onEditEnd = vi.fn()
+    const onSave = vi.fn().mockRejectedValueOnce(new Error('taken')).mockResolvedValue(undefined)
+    render(<InlineEditableTitle value="Notes" canEdit isSaving={false} onSave={onSave} onEditEnd={onEditEnd} displayTestId="title" inputTestId="title-input" />)
+
+    await user.click(screen.getByTestId('title'))
+    await user.type(screen.getByTestId('title-input'), ' 2{Enter}')
+    expect(onEditEnd).not.toHaveBeenCalled()
+    await user.type(screen.getByTestId('title-input'), '{Enter}')
+    expect(onEditEnd).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByTestId('title'))
+    await user.keyboard('{Escape}')
+    expect(onEditEnd).toHaveBeenCalledTimes(2)
+    await user.click(screen.getByTestId('title'))
+    await user.keyboard('{Enter}')
+    expect(onEditEnd).toHaveBeenCalledTimes(3)
+    expect(onSave).toHaveBeenCalledTimes(2)
+  })
+
   it('enters edit mode when the title is clicked', async () => {
     const user = userEvent.setup()
 

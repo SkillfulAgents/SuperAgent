@@ -1,5 +1,6 @@
 import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import { HttpError } from '@renderer/lib/http-error'
 import { handleMutationError } from '@renderer/lib/query-client'
 import type {
   AddSessionTodoInput,
@@ -8,8 +9,13 @@ import type {
   TodoView,
   UpdateTodoInput,
 } from '@shared/lib/todos/todo-schema'
-import { todoPrompt } from '@shared/lib/todos/todo-schema'
+import { todoPrompt, type TodoAttachment } from '@shared/lib/todos/todo-schema'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useCreateAgentForPrompt } from './use-create-agent-for-prompt'
+import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { useExperiment } from './use-experiment'
+import { useAddMount, useRemoveMount } from './use-mounts'
 import { useCreateSession } from './use-sessions'
 
 export type { TodoView }
@@ -20,7 +26,7 @@ export { TODOS_QUERY_KEY }
 
 async function readError(res: Response, fallback: string): Promise<Error> {
   const body = await res.json().catch(() => null) as { error?: string } | null
-  return new Error(body?.error || fallback)
+  return new HttpError(res.status, body?.error || fallback)
 }
 
 async function send<T>(path: string, method: string, body: unknown, fallback: string): Promise<T> {
@@ -160,6 +166,11 @@ export function useDeleteTodo() {
 
 const START_TODO_MUTATION_KEY = ['start-todo'] as const
 
+function pointedPaths(list: readonly TodoAttachment[]): string[] {
+  return list.flatMap((att) => (att.kind === 'mount' ? [] : [att.path]))
+}
+
+
 /** Errors useCreateSession already toasted, so a failed start doesn't say it twice. */
 const reportedBySessionCreation = new WeakSet<Error>()
 
@@ -182,11 +193,22 @@ export function useStartingTodoIds(): Set<string> {
   ])
 }
 
+/** What starting needs to know about a draft. */
+export type StartableTodo = Pick<TodoView, 'id' | 'title' | 'description' | 'agentSlug' | 'newAgent' | 'model' | 'llmProviderId' | 'effort' | 'speed'>
+
 /**
  * Hands a draft to its agent: claims the draft on the server, creates a
  * session with the brief as its first message through the same endpoint the
  * composer uses, then links the item to that session. Resolves with the
  * started item.
+ *
+ * A draft for a new agent first gets one, named from its brief the same way
+ * the new-agent composer names one from its first message, and is assigned
+ * to it. Should the start then fail, the draft keeps that agent, so starting
+ * again does not make another.
+ *
+ * The session runs on the draft's picked model, effort and speed, or the
+ * agent's defaults for what was not picked.
  *
  * The claim is what keeps a draft to one session: a second start, from this
  * tab or another, is refused before it creates anything. The brief sent is
@@ -199,19 +221,49 @@ export function useStartingTodoIds(): Set<string> {
 export function useStartTodo() {
   const queryClient = useQueryClient()
   const createSession = useCreateSession()
+  const createAgentForPrompt = useCreateAgentForPrompt()
+  const { track } = useAnalyticsTracking()
+  const addMount = useAddMount()
+  const removeMount = useRemoveMount()
   return useMutation({
     mutationKey: START_TODO_MUTATION_KEY,
-    mutationFn: async (todo: Pick<TodoView, 'id' | 'agentSlug'>) => {
-      if (!todo.agentSlug) throw new Error('Pick an agent to start this')
+    mutationFn: async (todo: StartableTodo) => {
+      let agentSlug = todo.agentSlug
+      if (!agentSlug && todo.newAgent) {
+        const agent = await createAgentForPrompt(todoPrompt(todo))
+        track('agent_created', { source: 'new', surface: 'todo', num_skills_added_at_creation: 0 })
+        putTodo(queryClient, await send<TodoView>(`/api/todos/${todo.id}`, 'PATCH', { agentSlug: agent.slug }, 'The agent was created, but the todo could not be given to it'))
+        agentSlug = agent.slug
+      }
+      if (!agentSlug) throw new Error('Pick an agent to start this')
       const { claim, todo: claimed } = await send<{ claim: string; todo: TodoView }>(
         `/api/todos/${todo.id}/claim`, 'POST', {}, 'Could not start the todo',
       )
+      const slug = claimed.agentSlug ?? agentSlug
+      const list = claimed.attachments ?? []
+      const bound: { mountId: string; containerPath: string; hostPath: string }[] = []
       let sessionId: string
       try {
-        sessionId = (await createSession.mutateAsync({ agentSlug: claimed.agentSlug ?? todo.agentSlug, message: todoPrompt(claimed) })).id
+        for (const att of list) {
+          if (att.kind !== 'mount') continue
+          const result = await addMount.mutateAsync({ agentSlug: slug, hostPath: att.hostPath, restart: true })
+          bound.push({ mountId: result.id, containerPath: mountPathOf(result.name), hostPath: att.hostPath })
+        }
+        try {
+          sessionId = (await createSession.mutateAsync({
+            agentSlug: slug,
+            origin: 'todo',
+            message: appendAttachedFiles(appendMountedFolders(todoPrompt(claimed), bound), pointedPaths(list)),
+            ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
+            ...(claimed.effort ? { effort: claimed.effort } : {}),
+            ...(claimed.speed ? { speed: claimed.speed } : {}),
+          })).id
+        } catch (error) {
+          if (error instanceof Error) reportedBySessionCreation.add(error)
+          throw error
+        }
       } catch (error) {
-        if (error instanceof Error) reportedBySessionCreation.add(error)
-        // Nothing started: let the draft be started again.
+        await Promise.all(bound.map((mount) => removeMount.mutateAsync({ agentSlug: slug, mountId: mount.mountId, restart: true }).catch(() => {})))
         void apiFetch(`/api/todos/${todo.id}/release`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
