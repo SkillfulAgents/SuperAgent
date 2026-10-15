@@ -206,13 +206,15 @@ interface OpenQuestionCard {
 }
 
 /**
- * An installation's open cards and what their buttons mean. They outlive a
- * connection, as the cards stay in the chat: a tap can arrive after a
- * reconnect (a settings change, or updates Telegram or the relay held while
- * the host was away). A restart forgets them, and taps on older cards do nothing:
- * callback ids are random, so a new card's can't match an old one's.
+ * What an installation keeps across its connections, in this process.
+ *
+ * Its open cards and what their buttons mean, since the cards stay in the
+ * chat: a tap can arrive after a reconnect (a settings change, or updates
+ * Telegram or the relay held while the host was away). A restart forgets
+ * them, and taps on older cards do nothing: callback ids are random, so a new
+ * card's can't match an old one's.
  */
-interface TelegramCards {
+interface TelegramInstallationState {
   // Callback ids → their toolUseId mappings (Telegram callback_data is limited to 64 bytes)
   callbacks: Map<string, { toolUseId: string; value: unknown; ts: number }>
   pendingQuestions: Map<string, PendingQuestion>
@@ -226,25 +228,33 @@ interface TelegramCards {
   // Relayed updates acted on, as `${botId}:${update_id}`: one the relay offers again, even
   // to a later connection, would toggle a multi-select card back.
   handledUpdates: Set<string>
+  // The latest connection's webhook setup, which the next connection waits out before it
+  // touches Telegram: the manager stops waiting for a teardown after a few seconds, and a
+  // setWebhook left in flight (which Telegram may apply even if we give up on it) would
+  // undo the next connection's choice.
+  webhookSetup: Promise<unknown>
 }
 
-const cardsByInstallation = new Map<string, TelegramCards>()
+const installations = new Map<string, TelegramInstallationState>()
 
-function newCards(): TelegramCards {
-  return { callbacks: new Map(), pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map(), handledUpdates: new Set() }
+function newInstallationState(): TelegramInstallationState {
+  return {
+    callbacks: new Map(), pendingQuestions: new Map(), pendingMultiSelect: new Map(), openQuestionCard: new Map(),
+    handledUpdates: new Set(), webhookSetup: Promise.resolve(),
+  }
 }
 
-/** The installation's open cards; a connector without one keeps its own. */
-function cardsFor(integrationId: string | undefined): TelegramCards {
-  if (!integrationId) return newCards()
-  let cards = cardsByInstallation.get(integrationId)
-  if (!cards) cardsByInstallation.set(integrationId, cards = newCards())
-  return cards
+/** The installation's state; a connector without one keeps its own. */
+function installationState(integrationId: string | undefined): TelegramInstallationState {
+  if (!integrationId) return newInstallationState()
+  let state = installations.get(integrationId)
+  if (!state) installations.set(integrationId, state = newInstallationState())
+  return state
 }
 
 /** The installation is gone. */
-export function forgetTelegramCards(integrationId: string): void {
-  cardsByInstallation.delete(integrationId)
+export function forgetTelegramInstallation(integrationId: string): void {
+  installations.delete(integrationId)
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
@@ -264,12 +274,12 @@ export class TelegramConnector extends ChatAgentIntegration {
   // First-poll batching: accumulate messages before sending them all at once
   private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: 'private' | 'group' | 'supergroup' }> = new Map()
 
-  private readonly cards: TelegramCards
-  private readonly callbackDataMap: TelegramCards['callbacks']
+  private readonly shared: TelegramInstallationState
+  private readonly callbackDataMap: TelegramInstallationState['callbacks']
   private static readonly CALLBACK_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
-  private readonly pendingQuestions: TelegramCards['pendingQuestions']
-  private readonly pendingMultiSelect: TelegramCards['pendingMultiSelect']
-  private readonly openQuestionCard: TelegramCards['openQuestionCard']
+  private readonly pendingQuestions: TelegramInstallationState['pendingQuestions']
+  private readonly pendingMultiSelect: TelegramInstallationState['pendingMultiSelect']
+  private readonly openQuestionCard: TelegramInstallationState['openQuestionCard']
 
   // Animated DM draft streaming: per-chat non-zero draft id.
   private nextDraftId = 1
@@ -303,11 +313,11 @@ export class TelegramConnector extends ChatAgentIntegration {
     private integration?: Pick<AgentIntegrationRecord, 'id' | 'agentSlug' | 'createdByUserId'>,
   ) {
     super()
-    this.cards = cardsFor(integration?.id)
-    this.callbackDataMap = this.cards.callbacks
-    this.pendingQuestions = this.cards.pendingQuestions
-    this.pendingMultiSelect = this.cards.pendingMultiSelect
-    this.openQuestionCard = this.cards.openQuestionCard
+    this.shared = installationState(integration?.id)
+    this.callbackDataMap = this.shared.callbacks
+    this.pendingQuestions = this.shared.pendingQuestions
+    this.pendingMultiSelect = this.shared.pendingMultiSelect
+    this.openQuestionCard = this.shared.openQuestionCard
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -316,6 +326,9 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.disconnecting = false
     this.startupError = null
     const generation = ++this.generation
+    // The previous connection's setWebhook, if still in flight, lands before this one chooses.
+    await this.shared.webhookSetup.catch(() => {})
+    if (generation !== this.generation) return
     const bot = this.bot = new Bot(this.config.botToken)
     this.registerHandlers(bot)
 
@@ -323,7 +336,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // long polling otherwise, or if the webhook can't be set right now.
     const relay = this.integration ? this.host.relay : null
     const setup = relay && this.integration ? this.setUpWebhook(bot, this.integration, generation) : Promise.resolve(null)
-    this.webhookSetup = setup
+    this.webhookSetup = this.shared.webhookSetup = setup
     const webhook = await setup
     if (generation !== this.generation) return
     if (relay && webhook?.set) {
@@ -1118,7 +1131,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     }
     const { update } = check
     const key = `${this.config.botToken.split(':')[0]}:${update.update_id}`
-    const handled = this.cards.handledUpdates
+    const handled = this.shared.handledUpdates
     if (handled.has(key)) return 'duplicate'
     let result: RelayAcceptResult
     try {

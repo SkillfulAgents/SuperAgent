@@ -72,7 +72,7 @@ export const chatProviders: IntegrationProvider[] = [
     'telegram', telegramConfigSchema, async () => (await import('./telegram-connector')).TelegramConnector,
     (Connector, config, appLink, record) => new Connector(config, appLink, record),
     async record => {
-      (await import('./telegram-connector')).forgetTelegramCards(record.id)
+      (await import('./telegram-connector')).forgetTelegramInstallation(record.id)
       // The bot stops posting to the endpoint, which is disabled after this.
       const config = parseChatIntegrationConfig('telegram', record.config) as TelegramConfig | null
       if (!config?.relay) return

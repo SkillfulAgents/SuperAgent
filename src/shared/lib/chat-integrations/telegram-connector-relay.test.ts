@@ -47,7 +47,7 @@ vi.mock('./telegram-webhooks', async (importOriginal) => ({
 }))
 
 import { captureException } from '@shared/lib/error-reporting'
-import { TelegramConnector, forgetTelegramCards } from './telegram-connector'
+import { TelegramConnector, forgetTelegramInstallation } from './telegram-connector'
 import { ensureTelegramWebhook, telegramSecretToken } from './telegram-webhooks'
 import { IntegrationRelays } from '../agent-integrations/relay-transport'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
@@ -78,7 +78,7 @@ beforeEach(() => {
   telegram.calls.length = 0
   telegram.failures.clear()
   telegram.gates.clear()
-  forgetTelegramCards('int-1')
+  forgetTelegramInstallation('int-1')
   vi.mocked(captureException).mockClear()
   vi.mocked(ensureTelegramWebhook).mockReset().mockResolvedValue(webhook)
   relay = createFakeWebhookRelay()
@@ -282,6 +282,27 @@ describe('TelegramConnector through the webhook', () => {
     await disconnectingSecond
     await connectingSecond
     expect(second.activeTransport()).toBeNull()
+  })
+
+  it('makes the next connection wait out a setWebhook its predecessor left in flight', async () => {
+    let openSetWebhook!: () => void
+    telegram.gates.set('setWebhook', new Promise(resolve => { openSetWebhook = resolve }))
+    const old = connector()
+    const connectingOld = old.connect()
+    await vi.waitFor(() => expect(methods()).toContain('setWebhook'))
+    // The manager stops waiting for a teardown after a few seconds and connects the replacement.
+    const disconnectingOld = old.disconnect()
+    const next = connector(null)
+    const connectingNext = next.connect()
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(methods()).not.toContain('deleteWebhook')
+
+    openSetWebhook()
+    await Promise.all([connectingOld, disconnectingOld, connectingNext])
+    expect(methods().indexOf('deleteWebhook')).toBeGreaterThan(methods().indexOf('setWebhook'))
+    expect(next.activeTransport()).toBe('direct')
+    await next.disconnect()
   })
 
   it('gives every button its own random callback id, within Telegram’s 64 bytes', async () => {
