@@ -36,6 +36,7 @@ import {
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
+import { createInvalidationCoalescer } from '@renderer/lib/invalidation-coalescer'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
   NotificationActionContextSchema,
@@ -84,6 +85,14 @@ const SESSION_LIFECYCLE_ECHO = {
   session_idle: { isActive: false, isAwaitingInput: false },
   session_error: { isActive: false, isAwaitingInput: false },
 } satisfies Record<string, SessionStatusPatch>
+
+// Session events arrive in bursts (active, awaiting, idle within one turn) and
+// from every agent in the workspace — on the shared e2e server, from every
+// parallel worker too. The echo above patches the caches at once, so the
+// list-wide refetches behind it only confirm: they run once per burst rather
+// than once per event, since each full agents-list refetch updates every
+// subscriber of that list in every open tab.
+const SESSION_CONFIRMATION_DELAY_MS = 500
 
 function isNotificationTypeEnabled(
   settings: UserSettingsData | undefined,
@@ -257,6 +266,7 @@ export function GlobalNotificationHandler() {
     const url = `${baseUrl}/api/notifications/stream`
     const es = new EventSource(url)
     streamRef.current = es
+    const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
 
     es.onmessage = (event) => {
       try {
@@ -473,19 +483,26 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['sessions'] })
             }
-            // Todo board columns are live session state.
-            queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
-            // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.)
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.).
+            // The event's own agent refetches now; the list (whose prefix also
+            // covers every cached agent detail) confirms with the batch.
             if (eventAgentSlug) {
               queryClient.invalidateQueries({ queryKey: ['agents', eventAgentSlug] })
             }
-            // Artifacts may have been created/modified during the session
-            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            confirmations.invalidate(['agents'])
+            // Todo board columns are live session state.
+            confirmations.invalidate(TODOS_QUERY_KEY)
+            // Artifacts may have been created/modified during the session —
+            // that agent's, not every agent's.
+            if (eventAgentSlug) {
+              invalidateAgentArtifacts(queryClient, eventAgentSlug)
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            }
 
             // Automation session lists show isActive status — refresh them
-            queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
-            queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
+            confirmations.invalidate(['webhook-trigger-sessions'])
+            confirmations.invalidate(['scheduled-task-sessions'])
 
             break
           }
@@ -624,7 +641,7 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
             }
             // Todo cards show a pending wake as waiting.
-            queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+            confirmations.invalidate(TODOS_QUERY_KEY)
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })
@@ -707,6 +724,7 @@ export function GlobalNotificationHandler() {
 
     return () => {
       disposeLiveness()
+      confirmations.flush()
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
       if (streamRef.current === es) streamRef.current = null
