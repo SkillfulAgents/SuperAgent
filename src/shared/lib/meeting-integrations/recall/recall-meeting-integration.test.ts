@@ -39,9 +39,12 @@ describe('recallRecordingLink', () => {
   })
 })
 
+const alice = { agentSlug: 'helper', createdByUserId: 'alice' }
+const unowned = { agentSlug: 'helper', createdByUserId: null }
+
 const transport = (kind: RecallTransport['kind'] = 'platform'): RecallTransport => ({
   kind, baseUrl: kind === 'platform' ? 'https://proxy.example/v1/recall' : 'https://us-west-2.recall.ai/api/v1',
-  authorization: async owner => kind === 'platform' ? `Bearer platform-token::${owner ?? 'none'}` : 'Token key',
+  authorization: async owner => kind === 'platform' ? `Bearer platform-token::${owner.createdByUserId ?? 'none'}` : 'Token key',
 })
 
 describe('RecallBotHost', () => {
@@ -50,7 +53,7 @@ describe('RecallBotHost', () => {
       expect(init?.headers).toMatchObject({ Authorization: 'Bearer platform-token::alice' })
       return new Response(JSON.stringify({ id: 'bot-7', status_changes: [] }), { status: 201 })
     })
-    const host = new RecallBotHost(new RecallClient(transport(), 'alice', fetchImpl as typeof fetch))
+    const host = new RecallBotHost(new RecallClient(transport(), alice, fetchImpl as typeof fetch))
     const result = await host.createBot({ meetingUrl: 'https://meet.google.com/abc-defg-hij', platform: 'google_meet', botName: 'Ada', participantPageUrl: 'https://app.example/meeting/m1?token=t' })
     expect(result).toEqual({ botId: 'bot-7' })
     expect(fetchImpl.mock.calls[0][0]).toBe('https://proxy.example/v1/recall/bot/')
@@ -69,7 +72,7 @@ describe('RecallBotHost', () => {
   })
   it('asks for participant events at the callback URL when the family offers one', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: 'bot-8', status_changes: [] }), { status: 201 }))
-    const host = new RecallBotHost(new RecallClient(transport('direct'), null, fetchImpl as unknown as typeof fetch))
+    const host = new RecallBotHost(new RecallClient(transport('direct'), unowned, fetchImpl as unknown as typeof fetch))
     await host.createBot({ meetingUrl: 'https://meet.google.com/abc-defg-hij', platform: 'google_meet', botName: 'Ada', participantPageUrl: 'https://app.example/meeting/m1?token=t', eventsUrl: 'https://app.example/api/meeting-participant/m1/events/?token=t' })
     expect((fetchImpl.mock.calls[0] as unknown[])[0]).toBe("https://us-west-2.recall.ai/api/v1/bot/")
     expect((fetchImpl.mock.calls[0] as unknown[])[1]).toMatchObject({ headers: { Authorization: 'Token key' } })
@@ -77,7 +80,7 @@ describe('RecallBotHost', () => {
     expect(body.recording_config.realtime_endpoints).toEqual([{ type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update'] }])
   })
   it('reduces Recall participant webhooks to family events and ignores the rest', () => {
-    const host = new RecallBotHost(new RecallClient(transport(), null))
+    const host = new RecallBotHost(new RecallClient(transport(), unowned))
     expect(host.parseEvent({ event: 'participant_events.join', data: { data: { participant: { id: 100, name: 'Iddo', is_host: true } } } }))
       .toEqual({ kind: 'join', participant: { id: '100', name: 'Iddo', isHost: true } })
     expect(host.parseEvent({ event: 'participant_events.speech_on', data: { data: { participant: { id: '7', name: null } } } }))
@@ -87,15 +90,15 @@ describe('RecallBotHost', () => {
   })
   it('turns proxy refusals into messages a person can act on', async () => {
     const fetchImpl = vi.fn(async () => new Response('billing hold', { status: 402 }))
-    const client = new RecallClient(transport(), 'alice', fetchImpl as unknown as typeof fetch)
+    const client = new RecallClient(transport(), alice, fetchImpl as unknown as typeof fetch)
     await expect(client.getBot('bot-1')).rejects.toMatchObject({ status: 402, message: expect.stringMatching(/billing/) })
-    const down = new RecallClient(transport(), 'alice', (async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch)
+    const down = new RecallClient(transport(), alice, (async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch)
     await expect(down.leaveCall('bot-1')).rejects.toBeInstanceOf(RecallApiError)
   })
   it('has no recording for a bot Recall or the proxy no longer knows, and still surfaces other faults', async () => {
-    const gone = new RecallBotHost(new RecallClient(transport(), 'alice', (async () => new Response('{"detail":"Not found."}', { status: 404 })) as unknown as typeof fetch))
+    const gone = new RecallBotHost(new RecallClient(transport(), alice, (async () => new Response('{"detail":"Not found."}', { status: 404 })) as unknown as typeof fetch))
     await expect(gone.recordingLink('bot-1')).resolves.toBeNull()
-    const broken = new RecallBotHost(new RecallClient(transport(), 'alice', (async () => new Response('upstream error', { status: 502 })) as unknown as typeof fetch))
+    const broken = new RecallBotHost(new RecallClient(transport(), alice, (async () => new Response('upstream error', { status: 502 })) as unknown as typeof fetch))
     await expect(broken.recordingLink('bot-1')).rejects.toMatchObject({ status: 502 })
   })
 })

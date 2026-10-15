@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { IntegrationPolicyError } from '../../agent-integrations/errors'
-import type { RecallTransport } from './transport'
+import type { RecallOwner, RecallTransport } from './transport'
 
 /** https://docs.recall.ai/reference/bot_create */
 export const recallBotSchema = z.object({
@@ -43,7 +43,7 @@ export interface RecallCreateBotRequest {
  * because the platform bills bot time to them.
  */
 export class RecallClient {
-  constructor(private readonly transport: RecallTransport, private readonly ownerUserId: string | null, private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly transport: RecallTransport, private readonly owner: RecallOwner, private readonly fetchImpl: typeof fetch = fetch) {}
 
   private async request<T>(path: string, schema: z.ZodType<T>, init: RequestInit = {}): Promise<T> {
     let response: Response
@@ -51,7 +51,7 @@ export class RecallClient {
       response = await this.fetchImpl(`${this.transport.baseUrl}${path}`, {
         ...init,
         headers: {
-          Authorization: await this.transport.authorization(this.ownerUserId), Accept: 'application/json',
+          Authorization: await this.transport.authorization(this.owner), Accept: 'application/json',
           ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...(init.headers ?? {}),
         },
         signal: init.signal ?? AbortSignal.timeout(20_000),
