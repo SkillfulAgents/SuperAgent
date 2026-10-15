@@ -140,7 +140,11 @@ export function AgentContextMenu({
   // else. It is also the only way to file an agent on touch, where dragging a
   // row between folders is not a realistic gesture.
   const { data: userSettings } = useUserSettings()
-  const { data: allAgents } = useAgents()
+  // Filing needs every agent, but only when it runs. This menu wraps every
+  // sidebar row, so it keeps the list fetched without re-rendering on its
+  // changes (each status refetch would otherwise re-render every row), and the
+  // write reads the current list from the cache.
+  useAgents({ notifyOnChangeProps: [] })
   const updateSettings = useUpdateUserSettings()
   const folders = useMemo(() => sanitizeFolders(userSettings?.agentFolders), [userSettings?.agentFolders])
   const assignedFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
@@ -169,12 +173,12 @@ export function AgentContextMenu({
   const buildSections = useCallback(
     (current: UserSettingsData) =>
       buildFolderSections(
-        applyAgentOrder(allAgents ?? [], current.agentOrder),
+        applyAgentOrder(queryClient.getQueryData<ApiAgent[]>(['agents']) ?? [], current.agentOrder),
         current.agentFolders,
         current.agentFolderAssignments,
         current.agentListOrder
       ),
-    [allAgents]
+    [queryClient]
   )
 
   const handleMoveToFolder = useCallback((folderId: string) => {
