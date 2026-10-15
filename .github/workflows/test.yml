@@ -208,12 +208,12 @@ jobs:
           # two on one server; six raised both.
           PLAYWRIGHT_WORKERS: '4'
           # Playwright cuts shards as contiguous runs of tests in file order,
-          # and the slow streaming specs (stop-*, thinking-*, transcript-*,
-          # user-input-requests, voice-*) sort last: equal counts gave the
-          # last shard twice the work of the first. These are test counts per
-          # shard that equalized measured test time; re-fit them when a shard
-          # runs well over the others.
-          PWTEST_SHARD_WEIGHTS: '134:88:90:43:43'
+          # and per-test cost is uneven along that order (the streaming specs
+          # sort late), so equal counts leave one shard far behind. These are
+          # test counts per shard, one per shard, colon-separated, fitted to
+          # equalize test time measured in CI; re-fit them when a shard runs
+          # well over the others.
+          PWTEST_SHARD_WEIGHTS: '100:69:94:89:69'
           PLAYWRIGHT_OUTPUT_DIR: test-results/web
           PLAYWRIGHT_HTML_REPORT: playwright-report/web
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/5
