@@ -1,5 +1,8 @@
 # ---- builder: full install + web/server build ----
-FROM node:22-slim AS builder
+# Runs on the build host's platform: dist/ is plain JS (natives stay external
+# in tsup.config.ts), so one native build serves every target platform instead
+# of a second one under QEMU. Only the deps stage needs target-arch binaries.
+FROM --platform=$BUILDPLATFORM node:22-slim AS builder
 
 WORKDIR /app
 

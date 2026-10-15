@@ -25,6 +25,7 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
+import { WEBHOOK_RELAY_QUERY_KEY } from '@renderer/hooks/use-webhook-relay'
 import {
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
@@ -585,6 +586,10 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
+          case 'agent_updated':
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+
           case 'agent_created':
             // Agent-created child creation lands outside the human create mutation,
             // so refresh both caches the direct-create path invalidates together.
@@ -618,6 +623,8 @@ export function GlobalNotificationHandler() {
             if (sessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
             }
+            // Todo cards show a pending wake as waiting.
+            queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })
@@ -649,6 +656,10 @@ export function GlobalNotificationHandler() {
             // Runtime readiness changed (e.g., image pull started/completed)
             queryClient.invalidateQueries({ queryKey: ['settings'] })
             queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
+            break
+
+          case 'webhook_relay_changed':
+            queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
             break
         }
       } catch {

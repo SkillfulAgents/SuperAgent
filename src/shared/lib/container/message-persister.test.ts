@@ -2,6 +2,8 @@ import { isQueuedSessionSend } from './session-send-context'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
 import { WebSocketServer } from 'ws'
+import { describeWebhookRelayUnavailable } from '@shared/lib/webhook-relay/errors'
+import type { WebhookRelayUnavailableReason } from '@shared/lib/webhook-relay/types'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SchedMockFn = (...args: any[]) => any
@@ -139,7 +141,15 @@ const mockUpdateRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
 const mockDisableRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve())
 const mockListRelayEndpointEvents = vi.fn<MockFn>(() => Promise.resolve({ filterExp: null, events: [] }))
 const mockTestRelayEndpointFilter = vi.fn<MockFn>()
+// Receiving by default: the webhook tools gate on the relay's availability
+// (NOT on Composio mode — custom endpoints must work with a personal Composio
+// key).
+const mockRelayUnavailableReason = vi.fn(() => null as WebhookRelayUnavailableReason | null)
 vi.mock('@shared/lib/webhook-relay', () => ({
+  webhooksUnavailableMessage: (what: string) => {
+    const reason = mockRelayUnavailableReason()
+    return reason ? describeWebhookRelayUnavailable(what, reason) : null
+  },
   getWebhookRelay: () => ({
     createEndpoint: (...args: unknown[]) => mockCreateRelayEndpoint(...args),
     updateEndpoint: (...args: unknown[]) => mockUpdateRelayEndpoint(...args),
@@ -149,9 +159,6 @@ vi.mock('@shared/lib/webhook-relay', () => ({
   }),
 }))
 
-// Platform-authed by default: the create/update endpoint handlers gate on the
-// access token (NOT on Composio mode — custom endpoints must work with a
-// personal Composio key).
 const mockGetPlatformAccessToken = vi.fn(() => 'opaque_token' as string | null)
 const mockGetStoredPlatformMemberId = vi.fn(() => null as string | null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
@@ -220,7 +227,8 @@ import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-mem
 // the persister routes to through the singletons.
 attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
+import * as toolRegistry from '@shared/lib/tools/registry'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { attribution } from '@shared/lib/platform-attribution'
 
@@ -353,6 +361,58 @@ describe('MessagePersister', () => {
     sseCleanup()
     messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
     vi.clearAllMocks()
+  })
+
+  describe('replayable turn outcomes', () => {
+    const snapshot = () => messagePersister.getSessionTurnOutcome(AGENT_SLUG, SESSION_ID)
+    const emit = (content: Record<string, unknown>) => mockClient._sendMessage(content)
+    const result = () => emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
+    const idle = () => emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    const text = (value: string) => emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: value }] } })
+
+    it('retains streamed text when no complete assistant frame was delivered', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emit({ type: 'stream_event', event: { type: 'message_start' } })
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Invoice 42 was sent.' } } })
+      result()
+      expect(snapshot()).toMatchObject({ status: 'completed', responseText: 'Invoice 42 was sent.' })
+    })
+
+    it('records the existing idle decision and retains its text across reattachment', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      text('Invoice 42 was sent.')
+      result()
+      expect(snapshot()).toBeNull()
+      idle()
+      const completed = snapshot()
+      expect(completed).toMatchObject({ status: 'completed', responseText: 'Invoice 42 was sent.' })
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      expect(snapshot()).toEqual(completed)
+      idle()
+      expect(snapshot()).toEqual(completed)
+    })
+
+    it('records cancellation without changing the activity of surviving background work', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      text('Partial work.')
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-task', task_type: 'local_bash' }] })
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      expect(snapshot()).toMatchObject({ status: 'cancelled', responseText: 'Partial work.' })
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(sseEvents.findLast(e => e.type === 'session_waiting_background').turnOutcome.status).toBe('cancelled')
+    })
+
+    it('retains the latest partial side effect on an error before its assistant frame', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      text('Preparing the invoice.')
+      emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'partial' } } })
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Invoice 42 was sent.' } } })
+      emit({ type: 'result', subtype: 'error_during_execution', errors: ['Receipt upload failed.'] })
+      expect(snapshot()).toMatchObject({ status: 'failed', responseText: 'Invoice 42 was sent.' })
+      idle()
+      expect(snapshot()?.status).toBe('failed')
+    })
   })
 
   describe('session summary activity', () => {
@@ -1095,6 +1155,22 @@ describe('MessagePersister', () => {
       const messagesUpdated = sseEvents.filter(e => e.type === 'messages_updated')
       expect(subagentEvents.length).toBeGreaterThanOrEqual(1)
       expect(messagesUpdated).toHaveLength(0)
+    })
+
+    it("learns the subagent's agentId from the frame's agent_id (SDK 0.3.292+)", () => {
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'tool-agent-id',
+        agent_id: 'a1b2c3d4e5f6a7b8c',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Sidechain text' }] },
+      })
+
+      const withAgentId = sseEvents.filter(
+        (e) => e.type === 'subagent_updated' && e.parentToolId === 'tool-agent-id' && e.agentId
+      )
+      expect(withAgentId.length).toBeGreaterThanOrEqual(1)
+      expect(withAgentId.every((e) => e.agentId === 'a1b2c3d4e5f6a7b8c')).toBe(true)
     })
 
     it('does not filter messages without parent_tool_use_id', () => {
@@ -2840,7 +2916,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        'remote_mcp'
+        expect.objectContaining({ kind: 'remote_mcp' })
       )
     })
 
@@ -4076,6 +4152,39 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
 
       globalCleanup()
+    })
+
+    it('dispatches and recovers request tools by their registered kind, including aliases', () => {
+      const originalLookup = toolRegistry.getToolDefinition
+      const definition = originalLookup('mcp__user-input__request_secret')
+      const lookup = vi.spyOn(toolRegistry, 'getToolDefinition').mockImplementation((name) =>
+        name === 'SecretAlias' ? definition : originalLookup(name),
+      )
+      try {
+        simulateToolUse('SecretAlias', 'alias-live', { secretName: 'API_KEY' })
+        expect(requestCards('secret')).toHaveLength(1)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+        messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
+          { toolUseId: 'alias-recovered', toolName: 'SecretAlias' },
+        ])
+        expect(userInputRequestManager.getOpenRequest('alias-recovered', AGENT_SLUG)).toMatchObject({
+          kind: 'secret', payload: { recovered: true },
+        })
+      } finally {
+        lookup.mockRestore()
+      }
+    })
+
+    it('does not recover script approvals or delivery tools as unconditional waits', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
+        { toolUseId: 'script-recovery', toolName: 'mcp__user-input__request_script_run' },
+        { toolUseId: 'file-recovery', toolName: 'mcp__user-input__deliver_file' },
+      ])
+      expect(userInputRequestManager.getOpenRequest('script-recovery', AGENT_SLUG)).toBeNull()
+      expect(userInputRequestManager.getOpenRequest('file-recovery', AGENT_SLUG)).toBeNull()
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('does not recover awaiting input for an inactive session', () => {
@@ -6243,6 +6352,7 @@ describe('MessagePersister', () => {
 
       mockIsPlatformComposioActive.mockReturnValue(true)
       mockGetPlatformAccessToken.mockReturnValue('opaque_token')
+      mockRelayUnavailableReason.mockReturnValue(null)
       mockGetStoredPlatformMemberId.mockReturnValue(null)
       mockResolvePlatformMemberForCandidates.mockReturnValue(null)
       mockContainerClientFetch.mockResolvedValue({ ok: true })
@@ -6335,6 +6445,20 @@ describe('MessagePersister', () => {
             body: expect.stringContaining('only available with platform Composio'),
           }),
         )
+      })
+
+      it('rejects while the relay that delivers its events is unavailable', async () => {
+        mockRelayUnavailableReason.mockReturnValue('stopped')
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-norelay', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Test',
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-setup-norelay/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toBe('Webhook triggers are unavailable: the webhook relay is not running')
+        expect(mockEnableComposioTrigger).not.toHaveBeenCalled()
       })
 
       it('rejects when connected account not found', async () => {
@@ -6709,8 +6833,8 @@ describe('MessagePersister', () => {
         expect(mockDisableRelayEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
       })
 
-      it('rejects when there is no platform auth', async () => {
-        mockGetPlatformAccessToken.mockReturnValue(null)
+      it('rejects with the reason while the relay is unavailable', async () => {
+        mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
 
         simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-5', {
           name: 'No platform',
@@ -6718,11 +6842,13 @@ describe('MessagePersister', () => {
         })
 
         const rejectCall = await flushHandlers('/inputs/tool-mint-5/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
+        expect(JSON.parse(rejectCall[1].body).reason).toBe(
+          'Custom webhook endpoints are unavailable: the platform is not connected',
+        )
         expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
       })
 
-      it('mints with a personal Composio key as long as platform auth exists', async () => {
+      it('mints with a personal Composio key as long as the relay is available', async () => {
         // Custom endpoints live on the platform proxy, not Composio — a user
         // who brings their own Composio key must still be able to mint.
         mockIsPlatformComposioActive.mockReturnValue(false)
@@ -7088,7 +7214,7 @@ describe('MessagePersister', () => {
         expect(JSON.parse(rejectCall[1].body).reason).toContain('Unexpected token')
       })
 
-      it('rejects non-custom triggers and missing platform auth', async () => {
+      it('rejects non-custom triggers, and everything while the relay is unavailable', async () => {
         mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
         simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-5', {
           trigger_id: 'trigger_custom_1',
@@ -7096,7 +7222,7 @@ describe('MessagePersister', () => {
         await flushHandlers('/inputs/tool-insp-5/reject')
         expect(mockListRelayEndpointEvents).not.toHaveBeenCalled()
 
-        mockGetPlatformAccessToken.mockReturnValue(null)
+        mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
         simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-6', {
           trigger_id: 'trigger_custom_1',
         })

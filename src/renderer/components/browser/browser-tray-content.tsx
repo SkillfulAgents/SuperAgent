@@ -8,10 +8,10 @@ import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
-import { DeclineButton } from '@renderer/components/messages/decline-button'
+import { DeclineButton } from '@shared/lib/tools/requests/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,

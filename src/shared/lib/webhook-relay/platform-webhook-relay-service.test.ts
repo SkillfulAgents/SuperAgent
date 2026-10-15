@@ -295,6 +295,43 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.ackedIds()).toEqual([a.id, b.id])
     })
 
+    it('keeps delivering fresh events while one of them keeps retrying', async () => {
+      startRelay({ retryDelaysMs: [10 * 60_000] })
+      const [stuck] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'], async (events) =>
+        new Map(events.map((event) => [event.id, event.id === stuck.id ? 'retry' as const : 'accepted' as const])),
+      )
+      relay.register(c)
+      await settle()
+
+      const [fresh] = platform.add('sub_a', 'whep_two')
+      relay.register(consumer(['whep_two'], async () => 'accepted', 'sub_a', 'other'))
+      const [next] = platform.add('sub_a', 'whep_one')
+      relay.wake()
+      await settle()
+
+      // No time has passed: the stuck event's backoff held back nothing else.
+      expect(platform.ackedIds()).toEqual(expect.arrayContaining([fresh.id, next.id]))
+      expect(platform.ackedIds()).not.toContain(stuck.id)
+      expect(c.accept).toHaveBeenLastCalledWith([next])
+    })
+
+    it('offers waiting retries again at once on retryNow', async () => {
+      startRelay({ retryDelaysMs: [10 * 60_000] })
+      const [event] = platform.add('sub_a', 'whep_one')
+      const results: RelayAcceptResult[] = ['retry', 'accepted']
+      const c = consumer(['whep_one'], async () => results.shift()!)
+      const handle = relay.register(c)
+      await settle()
+      expect(platform.acks).toEqual([])
+
+      handle.retryNow()
+      await settle()
+
+      expect(c.accept).toHaveBeenCalledTimes(2)
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
     it('treats a throwing consumer as a retry', async () => {
       startRelay({ retryDelaysMs: [5_000] })
       platform.add('sub_a', 'whep_one')
@@ -888,13 +925,14 @@ describe('PlatformWebhookRelayService', () => {
       })
     })
 
-    it('never claims the local scope with an org token', async () => {
+    it('never claims the local scope with an org token, and reports idle rather than connecting', async () => {
       orgToken = true
       startRelay()
       relay.register(consumer(['whep_one'], undefined, LOCAL_RELAY_SCOPE))
       await settle()
 
       expect(platform.claim).not.toHaveBeenCalled()
+      expect(relay.snapshot()).toMatchObject({ available: true, transport: 'idle' })
     })
   })
 
@@ -970,7 +1008,29 @@ describe('PlatformWebhookRelayService', () => {
       startRelay()
 
       await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toBeInstanceOf(WebhookRelayUnavailableError)
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toMatchObject({ reason: 'platform_disconnected' })
       expect(endpoints.create).not.toHaveBeenCalled()
+    })
+
+    it('rejects provisioning while stopped, as the snapshot reports', async () => {
+      createRelay()
+      expect(relay.snapshot()).toMatchObject({ available: false, unavailableReason: 'stopped' })
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toMatchObject({ reason: 'stopped' })
+
+      relay.start()
+      relay.stop()
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toMatchObject({ reason: 'stopped' })
+      expect(endpoints.create).not.toHaveBeenCalled()
+    })
+
+    it('still takes an endpoint down while stopped, as long as the platform is connected', async () => {
+      createRelay()
+
+      await relay.disableEndpoint('sub_a', 'whep_old')
+      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_old')
+
+      token = null
+      await expect(relay.disableEndpoint('sub_a', 'whep_old')).rejects.toMatchObject({ reason: 'platform_disconnected' })
     })
 
     it('a host with no relay rejects provisioning', async () => {

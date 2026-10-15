@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
-import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
-import type { VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
+import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
+import { useUser } from '@renderer/context/user-context'
+import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
+import type { VolumeSummary, MountSummaryWithHealth } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -15,11 +18,11 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 }
 
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<VolumeSummaryWithHealth[]>({
+  return useQuery<MountSummaryWithHealth[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch mounts'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch drives'))
       return res.json()
     },
     enabled: !!agentSlug,
@@ -30,16 +33,22 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; hostPath: string; restart?: boolean }) => {
-      if (!data.hostPath) {
+    mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private' } & (
+      { hostPath: string; volumeId?: never; type?: never; config?: never }
+      | { volumeId: string; hostPath?: never; type?: never; config?: never }
+      | (VolumeSource & { volumeId?: never; hostPath?: never })
+    )) => {
+      if (!data.volumeId && !data.type && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'local', config: { path: data.hostPath }, restart: data.restart }),
+        body: JSON.stringify(data.volumeId
+          ? { volumeId: data.volumeId, restart: data.restart }
+          : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
       })
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add drive'))
       return res.json() as Promise<VolumeSummary>
     },
     onSuccess: () => {
@@ -47,6 +56,8 @@ export function useAddMount() {
       // canonical id, but this mutation can fire from the session composer's
       // display-slug route, so a targeted key would miss it.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }
@@ -58,10 +69,31 @@ export function useRemoveMount() {
     mutationFn: async (data: { agentSlug: string; mountId: string; restart?: boolean }) => {
       const url = `/api/agents/${data.agentSlug}/mounts/${data.mountId}${data.restart ? '?restart=true' : ''}`
       const res = await apiFetch(url, { method: 'DELETE' })
-      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove mount'))
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove drive'))
     },
     onSuccess: () => {
       // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
+    },
+  })
+}
+
+export function useSetMountReadOnly() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (data: { agentSlug: string; mountId: string; readOnly: boolean }) => {
+      const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts/${data.mountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ readOnly: data.readOnly }),
+      })
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to update drive'))
+    },
+    onSuccess: () => {
+      // Bare prefix - see useAddMount.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
     },
   })
@@ -70,13 +102,20 @@ export function useRemoveMount() {
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
   const mounts = Array.isArray(mountsData) ? mountsData : []
+  const registry = useVolumeDefinitions()
+  const definitions = registry.data ?? []
+  const { canUseAgent } = useUser()
+  const canModifyMounts = canUseAgent(agentSlug)
+  const canCreateMount = canModifyMounts
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
   const removeMount = useRemoveMount()
+  const setMountReadOnly = useSetMountReadOnly()
   const [pendingRestart, setPendingRestart] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
 
   // A stopped agent picks up mount changes on next start — no restart needed.
   useEffect(() => {
@@ -86,19 +125,47 @@ export function useVolumesManager(agentSlug: string) {
     }
   }, [isAgentRunning, pendingRestart])
 
-  const handleAddMount = async () => {
-    const dirPath = await window.electronAPI?.openDirectory()
-    if (!dirPath) return
-    await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
+  const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
+    if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')
+    const validatedSource = volumeConfigSchema.parse(source)
+    if (validatedSource.type === 'local' && !canUseHostFeatures()) throw new Error('Select a folder in the desktop app')
+    setOperationError(null)
+    // Create + attach through one atomic API operation. Let the dialog surface
+    // errors and retain the form so retrying cannot leave an unused definition.
+    await addMount.mutateAsync({ agentSlug, ...validatedSource, name, visibility })
     if (isAgentRunning) setPendingRestart(true)
   }
 
-  const handleRemove = async (mountId: string) => {
+  const handleAttach = async (volumeId: string) => {
+    if (!canModifyMounts) return
     try {
+      setOperationError(null)
+      await addMount.mutateAsync({ agentSlug, volumeId })
+      if (isAgentRunning) setPendingRestart(true)
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Failed to add drive')
+    }
+  }
+
+  const handleRemove = async (mountId: string) => {
+    if (!canModifyMounts) return
+    try {
+      setOperationError(null)
       await removeMount.mutateAsync({ agentSlug, mountId })
       if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
-      console.error('Failed to remove mount:', error)
+      setOperationError(error instanceof Error ? error.message : 'Failed to remove drive')
+    }
+  }
+
+  const handleSetReadOnly = async (mountId: string, readOnly: boolean) => {
+    if (!canModifyMounts) return
+    try {
+      setOperationError(null)
+      await setMountReadOnly.mutateAsync({ agentSlug, mountId, readOnly })
+      if (isAgentRunning) setPendingRestart(true)
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Failed to update drive')
     }
   }
 
@@ -124,19 +191,23 @@ export function useVolumesManager(agentSlug: string) {
 
   return {
     mounts,
-    isLoading,
+    definitions,
+    isLoading: isLoading || registry.isLoading,
+    operationError: operationError ?? (registry.error ? 'Could not load saved drives' : null),
+    canModifyMounts,
+    canCreateMount,
     pendingRestart,
     isRestarting,
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // A mount is a path on the machine that runs the agent. Picking one here
-    // opens *this* computer's directory picker, so it only means something when
-    // this computer is also the one running them. Existing mounts still list —
-    // they are real on whichever Superagent is being driven.
-    canAddMount: canUseHostFeatures(),
-    handleAddMount,
+    isUpdatingMount: setMountReadOnly.isPending,
+    // Dropbox creation and saved volumes work on every target. Local folders keep the OS picker.
+    canAddMount: canModifyMounts,
+    handleCreateMount,
+    handleAttach,
     handleRemove,
+    handleSetReadOnly,
     handleRestart,
   }
 }

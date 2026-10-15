@@ -1,6 +1,7 @@
 import { FlaskConical } from 'lucide-react'
 import { Switch } from '@renderer/components/ui/switch'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { experimentEnabled, listExperiments } from '@shared/lib/experiments'
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -13,6 +14,7 @@ const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 export function ExperimentsTab() {
   const { data: userSettings, isLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
+  const { track } = useAnalyticsTracking()
   const experiments = listExperiments()
 
   return (
@@ -45,7 +47,14 @@ export function ExperimentsTab() {
                       id={switchId}
                       checked={experimentEnabled(userSettings?.experiments, experiment.id)}
                       onCheckedChange={(checked: boolean) => {
-                        updateUserSettings.mutate({ experiments: { [experiment.id]: checked } })
+                        const props = { experiment_key: experiment.id, enabled: checked }
+                        updateUserSettings.mutate(
+                          { experiments: { [experiment.id]: checked } },
+                          {
+                            onSuccess: () => track('experiment_toggled', props),
+                            onError: () => track('experiment_toggle_failed', props),
+                          },
+                        )
                       }}
                       disabled={isLoading}
                       data-testid={`experiment-switch-${experiment.id}`}

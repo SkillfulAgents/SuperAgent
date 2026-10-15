@@ -74,17 +74,16 @@ export class SessionPage {
   }
 
   private async clickEnabledSendButton(timeout = 10000) {
+    let button: Locator | undefined
     await expect.poll(async () => {
-      const button = await this.findMatchingLocator(this.getSendButtonLocators(), { enabled: true })
-      if (!button) return 'waiting'
+      button = await this.findMatchingLocator(this.getSendButtonLocators(), { enabled: true })
+      return !!button
+    }, { timeout }).toBe(true)
 
-      try {
-        await button.click({ timeout: 1000 })
-        return 'clicked'
-      } catch {
-        return 'retry'
-      }
-    }, { timeout }).toBe('clicked')
+    // A click can submit successfully before its navigation wait times out.
+    // Poll only for readiness; retrying the click after submission either
+    // waits forever on the cleared composer or sends a duplicate message.
+    await button!.click({ timeout })
   }
 
   /**

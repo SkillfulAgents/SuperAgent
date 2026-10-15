@@ -123,7 +123,7 @@ describe('uploadFileChunked (XHR transport)', () => {
   it('surfaces the backend error message on a non-2xx response', async () => {
     const p = uploadFileChunked({ url: '/api/x', file: file(10) })
     FakeXHR.instances[0].respond(413, { error: 'too big' })
-    await expect(p).rejects.toThrow('too big')
+    await expect(p).rejects.toMatchObject({ name: 'HttpError', status: 413, message: 'too big' })
   })
 
   it('uses the fallback message on a network error', async () => {

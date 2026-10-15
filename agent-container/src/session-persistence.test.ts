@@ -107,6 +107,7 @@ describe('SessionPersistence', () => {
         effort: 'high',
         model: 'claude-opus-5',
         metadata: { isAutomated: false },
+        globalInstructions: 'Reply in plain English.',
       });
 
       expect(writes).toHaveBeenCalledTimes(1);
@@ -117,6 +118,7 @@ describe('SessionPersistence', () => {
         effort: 'high',
         model: 'claude-opus-5',
         metadata: { isAutomated: false },
+        globalInstructions: 'Reply in plain English.',
       });
     } finally {
       vi.doUnmock('./atomic-file');

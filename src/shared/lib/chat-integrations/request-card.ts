@@ -10,11 +10,11 @@
  * card shapes they always did.
  */
 
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type {
   PendingUserInputRequest,
   UserInputRequestKind,
-} from '@shared/lib/user-input/request-schema'
+} from '@shared/lib/tools/requests/request-schema'
 import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 
 /**

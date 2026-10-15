@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ConnectionConfig } from './connection-schema'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { ModelAvailability } from './model-availability-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
@@ -82,6 +83,9 @@ export abstract class BaseLlmProvider {
 
   readonly supportsUsage: boolean = false
 
+  /** Whether model availability may need a provider-backed policy request. */
+  readonly supportsModelAvailability: boolean = false
+
   /** Read-only allowance snapshot; never gates inference or model selection. */
   async getUsage(): Promise<ProviderUsage> {
     return { status: 'unsupported', observedAt: new Date().toISOString(), limits: [] }
@@ -137,6 +141,24 @@ export abstract class BaseLlmProvider {
    * See ./model-catalog.ts for how a stored selection resolves against this.
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
+
+  /**
+   * Current restrictions for a connection's catalog, for the account the
+   * current request or run is attributed to. Null means unrestricted. Model
+   * selection treats an unavailable model like an unset one. `fresh` re-reads
+   * the provider's source instead of its cache.
+   */
+  async getModelAvailability(_catalog: ModelDefinition[], _options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
+    return null
+  }
+
+  /** A live turn failed with this error; a provider may drop state it proves stale. */
+  noteTurnError(_status: number | undefined, _body: unknown): void {}
+
+  /** Public cache identity for availability; changes when provider account context changes. */
+  getModelAvailabilityRevision(): string | null {
+    return null
+  }
 
   /**
    * Get the default model for a given purpose, as a bare family alias

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FileTabBar } from './file-tab-bar'
-import type { PreviewTab } from '@renderer/context/file-preview-context'
+import { getPreviewTabKey, type PreviewTab } from '@renderer/context/file-preview-context'
 
 const tabs: PreviewTab[] = [
   {
@@ -77,7 +77,7 @@ describe('FileTabBar', () => {
   it('renders folder and file tabs, marks the active one, and selects by index', async () => {
     const user = userEvent.setup()
     const onTabClick = vi.fn()
-    render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={onTabClick} onCloseTab={vi.fn()} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={0} onTabClick={onTabClick} onCloseTab={vi.fn()} />)
 
     const rendered = screen.getAllByTestId('file-tab')
     expect(rendered).toHaveLength(2)
@@ -89,11 +89,24 @@ describe('FileTabBar', () => {
     expect(onTabClick).toHaveBeenCalledWith(1)
   })
 
+  it('keeps a pinned directory selectable without offering a close button', async () => {
+    const onTabClick = vi.fn()
+    const onCloseTab = vi.fn()
+    const pinnedTabs = tabs.map(tab => tab.kind === 'folder' ? { ...tab, closable: false } : tab)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={pinnedTabs} activeIndex={1} onTabClick={onTabClick} onCloseTab={onCloseTab} />)
+
+    expect(screen.queryByRole('button', { name: 'Close reports' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close summary.md' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'reports' }))
+    expect(onTabClick).toHaveBeenCalledWith(0)
+    expect(onCloseTab).not.toHaveBeenCalled()
+  })
+
   it('closes by discriminated key without selecting the tab', async () => {
     const user = userEvent.setup()
     const onTabClick = vi.fn()
     const onCloseTab = vi.fn()
-    render(<FileTabBar tabs={tabs} activeIndex={1} onTabClick={onTabClick} onCloseTab={onCloseTab} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={1} onTabClick={onTabClick} onCloseTab={onCloseTab} />)
 
     await user.click(screen.getAllByTestId('file-tab-close')[0])
     expect(onCloseTab).toHaveBeenCalledWith('folder:test-agent:/workspace/reports')
@@ -106,7 +119,7 @@ describe('FileTabBar', () => {
   it('closes on Enter without nesting an interactive element inside a button', async () => {
     const user = userEvent.setup()
     const onCloseTab = vi.fn()
-    render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={onCloseTab} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={onCloseTab} />)
 
     const close = screen.getAllByTestId('file-tab-close')[0]
     expect(close.tagName).toBe('BUTTON')
@@ -120,7 +133,7 @@ describe('FileTabBar', () => {
   // Every other tab collapses to icon + close; the one the user is reading keeps
   // room for its name.
   it('holds a wider floor for the active tab than for the rest', () => {
-    render(<FileTabBar tabs={tabs} activeIndex={1} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={1} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
     const [inactive, active] = screen.getAllByTestId('file-tab')
     expect(active.className).toContain('min-w-[9.5rem]')
     expect(inactive.className).toContain('min-w-[4.25rem]')
@@ -128,7 +141,7 @@ describe('FileTabBar', () => {
 
   it('hides the arrows while every tab fits', () => {
     fakeLayout({ visible: 400, content: 300, tabWidth: 150 })
-    render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
     expect(screen.queryByTestId('file-tab-arrows')).toBeNull()
     expect(screen.getByTestId('file-tab-bar')).not.toHaveAttribute('data-overflowing')
   })
@@ -136,7 +149,7 @@ describe('FileTabBar', () => {
   it('shows arrows on overflow, scrolls one tab per click, and disables at each end', () => {
     // two 100px tabs in a 120px group: 81px of overflow (100 + 1 gap + 100 - 120)
     fakeLayout({ visible: 120, content: 201, tabWidth: 100 })
-    render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
 
     const earlier = screen.getByRole('button', { name: 'Earlier tabs' })
     const later = screen.getByRole('button', { name: 'Later tabs' })
@@ -158,10 +171,10 @@ describe('FileTabBar', () => {
 
   it('scrolls the active tab into view when it is selected off-screen', () => {
     fakeLayout({ visible: 120, content: 201, tabWidth: 100 })
-    const { rerender } = render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
+    const { rerender } = render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
     expect(scrollLeft()).toBe(0)
 
-    rerender(<FileTabBar tabs={tabs} activeIndex={1} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
+    rerender(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={1} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
     // second tab spans 101..201; revealing it in a 120px window means scrolling to 81
     expect(scrollLeft()).toBe(81)
   })
@@ -170,7 +183,7 @@ describe('FileTabBar', () => {
   // into the strip rather than move focus somewhere invisible.
   it('scrolls a tab into view when it takes focus without being selected', () => {
     fakeLayout({ visible: 120, content: 201, tabWidth: 100 })
-    render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
+    render(<FileTabBar getTabKey={getPreviewTabKey} tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
     expect(scrollLeft()).toBe(0)
 
     fireEvent.focus(screen.getAllByTestId('file-tab-select')[1])
@@ -182,7 +195,7 @@ describe('FileTabBar', () => {
       fakeLayout({ visible: 400, content: 300, tabWidth: 150 })
       const onLeadingTabFlush = vi.fn()
       render(
-        <FileTabBar
+        <FileTabBar getTabKey={getPreviewTabKey}
           tabs={tabs}
           activeIndex={0}
           onTabClick={vi.fn()}
@@ -197,7 +210,7 @@ describe('FileTabBar', () => {
       fakeLayout({ visible: 400, content: 300, tabWidth: 150 })
       const onLeadingTabFlush = vi.fn()
       render(
-        <FileTabBar
+        <FileTabBar getTabKey={getPreviewTabKey}
           tabs={tabs}
           activeIndex={1}
           onTabClick={vi.fn()}
@@ -212,7 +225,7 @@ describe('FileTabBar', () => {
       fakeLayout({ visible: 120, content: 201, tabWidth: 100 })
       const onLeadingTabFlush = vi.fn()
       render(
-        <FileTabBar
+        <FileTabBar getTabKey={getPreviewTabKey}
           tabs={tabs}
           activeIndex={0}
           onTabClick={vi.fn()}

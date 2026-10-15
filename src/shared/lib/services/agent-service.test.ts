@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import {
   SAMPLE_INSTRUCTIONS,
   SAMPLE_INSTRUCTIONS_MINIMAL,
@@ -59,6 +60,8 @@ import {
   listAgents,
   listAgentsWithStatus,
   createAgent,
+  createAgentFromExistingWorkspace,
+  updateAgentAvatar,
   updateAgent,
   deleteAgent,
   agentExists,
@@ -411,6 +414,21 @@ Instructions`
   // ============================================================================
 
   describe('createAgent', () => {
+    it('assigns stored avatars through both direct creation and the import/install entry point', async () => {
+      for (const create of [() => createAgent({ name: 'Direct' }), () => createAgentFromExistingWorkspace('Imported')]) {
+        const agent = await create()
+        expect(agent.avatar).toEqual((await getAgentRecord(agent.slug))?.avatar)
+        expect(agentAvatarSchema.safeParse(agent.avatar).success).toBe(true)
+        const before = await getAgentInstructionsContent(agent.slug)
+        const chosen = { color: 'duo-red-amber', shape: 'bloom' } as const
+        expect(await updateAgentAvatar(agent.slug, chosen)).toEqual(chosen)
+        expect((await getAgentWithStatus(agent.slug))?.avatar).toEqual(chosen)
+        expect(await getAgentInstructionsContent(agent.slug)).toBe(before)
+        await updateAgent(agent.slug, { name: 'Renamed' })
+        expect((await getAgentRecord(agent.slug))?.avatar).toEqual(chosen)
+      }
+    })
+
     it('creates agent with name only', async () => {
       const agent = await createAgent({ name: 'New Agent' })
 

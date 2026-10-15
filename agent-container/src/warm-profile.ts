@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { CreateSessionRequest } from './types';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
@@ -38,6 +39,7 @@ export const warmProfileSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
   capabilityPolicies: agentCapabilityPoliciesSchema,
+  globalInstructions: globalInstructionsSchema,
 });
 
 export type WarmProfile = z.infer<typeof warmProfileSchema>;
@@ -90,6 +92,7 @@ function buildProfile(
     effort: defaults ? defaults.effort : request.effort,
     speed: defaults ? defaults.speed : request.speed,
     capabilityPolicies: request.capabilityPolicies,
+    globalInstructions: request.globalInstructions,
   });
 }
 

@@ -1,0 +1,239 @@
+import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
+import { useState, useRef, useCallback } from 'react'
+import { CloudUpload, FileIcon, X } from 'lucide-react'
+import { useRequestHandler } from '../requests/use-request-handler'
+import { Button } from '@renderer/components/ui/button'
+import { DeclineButton } from '../requests/decline-button'
+import { RequestItemShell } from '../requests/request-item-shell'
+import { RequestItemActions } from '../requests/request-item-actions'
+import { cn } from '@shared/lib/utils/cn'
+
+interface FileRequestItemProps {
+  toolUseId: string
+  description: string
+  fileTypes?: string
+  sessionId: string
+  agentSlug: string
+  readOnly?: boolean
+  onComplete: () => void
+}
+
+export function FileRequestItem({
+  toolUseId,
+  description,
+  fileTypes,
+  sessionId,
+  agentSlug,
+  readOnly,
+  onComplete,
+}: FileRequestItemProps) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const { status, error, submit, setError } = useRequestHandler(onComplete)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileSelect = useCallback((files: FileList | File[]) => {
+    const file = Array.from(files)[0]
+    if (file) {
+      setSelectedFile(file)
+      setError(null)
+    }
+  }, [setError])
+
+  const handleUpload = () => {
+    if (!selectedFile) return
+    submit(async () => {
+      const { path } = await uploadFileChunked<{ path: string }>({
+        url: `/api/agents/${agentSlug}/sessions/${sessionId}/upload-file`,
+        file: selectedFile,
+      })
+
+      const provideResponse = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/provide-file`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ toolUseId, filePath: path }),
+        }
+      )
+      if (!provideResponse.ok) {
+        const data = await provideResponse.json()
+        throw new Error(data.error || 'Failed to provide file')
+      }
+    }, 'uploaded')
+  }
+
+  const handleDecline = (reason?: string) => {
+    submit(async () => {
+      const response = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/provide-file`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            toolUseId,
+            decline: true,
+            declineReason: reason || 'User declined to provide the file',
+          }),
+        }
+      )
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || 'Failed to decline request')
+      }
+    }, 'declined')
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    if (e.dataTransfer.files.length > 0) {
+      handleFileSelect(e.dataTransfer.files)
+    }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleFileSelect(e.target.files)
+      e.target.value = ''
+    }
+  }
+
+  const isCompleted = status === 'uploaded' || status === 'declined'
+
+  return (
+    <RequestItemShell
+      title={description}
+      subtitle={fileTypes ? `Accepted file types: ${fileTypes}` : undefined}
+      theme="blue"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
+      waitingText="Waiting for response"
+      completed={
+        isCompleted
+          ? {
+              icon: (
+                <FileIcon
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    status === 'uploaded' ? 'text-green-500' : 'text-red-500'
+                  )}
+                />
+              ),
+              label: <span className="text-sm truncate">{description}</span>,
+              statusLabel: status === 'uploaded' ? 'File uploaded' : 'Declined',
+              isSuccess: status === 'uploaded',
+            }
+          : null
+      }
+      readOnly={readOnly ? {} : false}
+      error={error}
+      data-testid={isCompleted ? 'file-request-completed' : 'file-request'}
+      data-status={isCompleted ? status : undefined}
+    >
+      <div className="pt-3">
+        {/* Drop zone / file picker */}
+        <div
+          className={cn(
+            'group relative border rounded-md p-4 text-center cursor-pointer transition-colors',
+            isDragOver
+              ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900'
+              : selectedFile
+                ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/50'
+                : 'border-border bg-white dark:bg-blue-500/10 hover:border-border'
+          )}
+          role="button"
+          tabIndex={0}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              fileInputRef.current?.click()
+            }
+          }}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={handleInputChange}
+            accept={fileTypes || undefined}
+          />
+          {selectedFile ? (
+            <>
+              <div className="flex items-center justify-center gap-2">
+                <FileIcon className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                  {selectedFile.name}
+                </span>
+                <span className="text-xs text-blue-500 dark:text-blue-400">
+                  ({(selectedFile.size / 1024).toFixed(1)} KB)
+                </span>
+                <button
+                  type="button"
+                  className="hidden h-6 w-6 items-center justify-center rounded-full border border-border bg-white text-foreground transition-colors group-hover:inline-flex hover:bg-muted focus-visible:bg-muted dark:bg-background"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setSelectedFile(null)
+                    setError(null)
+                  }}
+                  aria-label="Remove selected file"
+                  title="Remove selected file"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center gap-2 whitespace-pre-line text-sm text-foreground/80 dark:text-foreground/80">
+              <CloudUpload className="h-5 w-5" />
+              <div>
+                Click to browse, or
+                {'\n'}
+                drag & drop file here
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <RequestItemActions>
+        <DeclineButton
+          onDecline={handleDecline}
+          disabled={status === 'submitting'}
+          showIcon={false}
+          className="border-border text-foreground hover:bg-muted"
+        />
+
+        <Button
+          onClick={handleUpload}
+          loading={status === 'submitting'}
+          disabled={!selectedFile || status === 'submitting'}
+          size="xs"
+          className="min-w-28 bg-blue-600 text-white hover:bg-blue-700"
+        >
+          Upload file
+        </Button>
+      </RequestItemActions>
+    </RequestItemShell>
+  )
+}

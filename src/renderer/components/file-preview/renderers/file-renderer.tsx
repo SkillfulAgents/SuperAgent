@@ -8,7 +8,6 @@ import { VideoRenderer } from './video-renderer'
 import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 import { previewKind } from '@renderer/lib/file-types'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
@@ -16,7 +15,8 @@ const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.
 interface FileRendererProps {
   filePath: string
   fileUrl: string
-  agentSlug: string
+  agentSlug?: string
+  downloadUrl?: string
   pdfPage: number
   onPdfPageChange: (page: number) => void
 }
@@ -24,33 +24,32 @@ interface FileRendererProps {
 export function FileRenderer({
   filePath,
   fileUrl,
-  agentSlug,
+  agentSlug = '',
+  downloadUrl,
   pdfPage,
   onPdfPageChange,
 }: FileRendererProps) {
-  const { commentsEnabled } = useFilePreview()
-
   switch (previewKind(filePath)) {
     case 'markdown':
-      return <MarkdownRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <MarkdownRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'html':
       return <HtmlRenderer url={fileUrl} />
 
     case 'csv':
-      return <CsvRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <CsvRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'text':
-      return <TextRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <TextRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'image':
-      return <ImageRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <ImageRenderer key={filePath} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'video':
-      return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'audio':
-      return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+      return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} />
 
     case 'pdf':
       return (
@@ -66,12 +65,11 @@ export function FileRenderer({
             agentSlug={agentSlug}
             pageNumber={pdfPage}
             onPageChange={onPdfPageChange}
-            commentsEnabled={commentsEnabled}
           />
         </Suspense>
       )
 
     default:
-      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} />
+      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
   }
 }
