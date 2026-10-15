@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA-20261015-175248-g4o3 agent can successfully use browser tools to navigate to https://example.com and report the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing the agent list",
+    "Found and clicked on \"QA-20261015-175248-g4o3\" agent in the sidebar — Successfully opened the agent configuration page with message input field visible",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed into the input field and sent by clicking the Send button, creating a new session named \"Browser Page Title Check\"",
+    "Waited for agent response (up to 3 minutes) — Agent completed work in 6 seconds, making 3 tool calls (ToolSearch, Open Browser, Close Browser) and using 152,501 tokens",
+    "Verified response mentions \"Example Domain\" — The agent response clearly states: 'The page title is \"Example Domain\". The page loaded normally, and I closed the browser afterward.'"
+  ],
+  "bugs": [],
+  "durationMs": 106852,
+  "sessionId": "0e5044b3-b748-4b92-bb14-308d9452695a",
+  "cost": {
+    "inputTokens": 584,
+    "outputTokens": 17259,
+    "cacheCreationTokens": 101864,
+    "cacheReadTokens": 1935710,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.40778
+  }
+}
