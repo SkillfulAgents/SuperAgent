@@ -109,10 +109,10 @@ const STREAM_ID = 'voice:s1'
 
 function setup(options: { startWithAgentTurn?: boolean } = {}) {
   const send = vi.fn(async (_text: string) => true)
-  const props = { active: true, paused: false }
+  const props = { active: true, paused: false, sessionId: 's1' }
   const hook = renderHook(
-    ({ active, paused }: { active: boolean; paused: boolean }) =>
-      useVoiceMode({ sessionId: 's1', agentSlug: 'agent', active, paused, send, ...options }),
+    ({ active, paused, sessionId }: { active: boolean; paused: boolean; sessionId: string }) =>
+      useVoiceMode({ sessionId, agentSlug: 'agent', active, paused, send, ...options }),
     { initialProps: { ...props } },
   )
   const listener = h.listeners[h.listeners.length - 1]
@@ -432,6 +432,20 @@ describe('useVoiceMode', () => {
     expect(result.current.outputMuted).toBe(false)
 
     rerender({ active: true })
+    const listener = h.listeners[h.listeners.length - 1]
+    expect(listener.setMuted).not.toHaveBeenCalledWith(true)
+    expect(reader.setMuted).toHaveBeenLastCalledWith(false)
+  })
+
+  it('starting voice mode in another session clears both mutes, so it starts listening and audible', () => {
+    const { result, rerender } = setup()
+    act(() => {
+      result.current.setMicMuted(true)
+      result.current.setOutputMuted(true)
+    })
+    rerender({ sessionId: 's2' })
+    expect(result.current.micMuted).toBe(false)
+    expect(result.current.outputMuted).toBe(false)
     const listener = h.listeners[h.listeners.length - 1]
     expect(listener.setMuted).not.toHaveBeenCalledWith(true)
     expect(reader.setMuted).toHaveBeenLastCalledWith(false)

@@ -42,6 +42,18 @@ export function isAnyVoiceModeActive(): boolean {
   return active.size > 0
 }
 
+// Whether voice mode's composer is on screen, so Space on the page belongs
+// to it. The floating orb leaves Space to the page.
+let takesSpace = false
+
+export function setVoiceModeTakesSpace(on: boolean): void {
+  takesSpace = on
+}
+
+export function voiceModeTakesSpace(): boolean {
+  return takesSpace
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)

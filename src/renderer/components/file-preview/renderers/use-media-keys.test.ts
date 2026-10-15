@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, renderHook } from '@testing-library/react'
-import { setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { setVoiceModeActive, setVoiceModeTakesSpace } from '@renderer/lib/voice-mode-handoff'
 import { frameSeconds, mediaKeyAction, useMediaKeys } from './use-media-keys'
 
 const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) => {
@@ -95,7 +95,7 @@ describe('useMediaKeys', () => {
     expect(video.currentTime).toBe(2.25)
   })
 
-  it('while voice mode is on, takes Space only from focus inside the player; K always plays', () => {
+  it("while voice mode's composer is on screen, takes Space only from focus inside the player; K always plays", () => {
     const player = document.body.appendChild(document.createElement('div'))
     player.setAttribute('data-media-player', '')
     const video = player.appendChild(document.createElement('video'))
@@ -104,7 +104,7 @@ describe('useMediaKeys', () => {
     const voiceFrame = document.body.appendChild(document.createElement('div'))
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
     renderHook(() => useMediaKeys({ current: video }, {}))
-    setVoiceModeActive('session-1', true)
+    setVoiceModeTakesSpace(true)
     try {
       expect(fireEvent.keyDown(document.body, { key: ' ' })).toBe(true)
       expect(fireEvent.keyDown(voiceFrame, { key: ' ' })).toBe(true)
@@ -114,9 +114,25 @@ describe('useMediaKeys', () => {
       fireEvent.keyDown(slider, { key: ' ' })
       expect(play).toHaveBeenCalledTimes(2)
     } finally {
-      setVoiceModeActive('session-1', false)
+      setVoiceModeTakesSpace(false)
       player.remove()
       voiceFrame.remove()
+    }
+  })
+
+  it('keeps Space while voice mode runs from the floating orb', () => {
+    const player = document.body.appendChild(document.createElement('div'))
+    player.setAttribute('data-media-player', '')
+    const video = player.appendChild(document.createElement('video'))
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    renderHook(() => useMediaKeys({ current: video }, {}))
+    setVoiceModeActive('session-1', true)
+    try {
+      expect(fireEvent.keyDown(document.body, { key: ' ' })).toBe(false)
+      expect(play).toHaveBeenCalledOnce()
+    } finally {
+      setVoiceModeActive('session-1', false)
+      player.remove()
     }
   })
 })

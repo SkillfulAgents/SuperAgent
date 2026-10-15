@@ -65,6 +65,18 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   const [outputMuted, setOutputMutedState] = useState(false)
   const outputMutedRef = useRef(false)
 
+  // The mutes last as long as one session's voice mode: leaving it, or
+  // starting it in another session, clears them, so the next entry starts
+  // listening and audible. Declared before the conversation effect so a new
+  // session's conversation starts unmuted.
+  const muteOwner = active ? sessionId : null
+  useEffect(() => {
+    micMutedRef.current = false
+    setMicMutedState(false)
+    outputMutedRef.current = false
+    setOutputMutedState(false)
+  }, [muteOwner])
+
   useEffect(() => {
     setSnapshot(IDLE)
     setAgent(IDLE_AGENT)
@@ -132,16 +144,6 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
       if (coordinator.current === turns) coordinator.current = null
     }
   }, [active, engine, sessionId, agentSlug])
-
-  // The mutes last as long as voice mode: leaving it clears them, so the
-  // next entry starts listening and audible.
-  useEffect(() => {
-    if (active) return
-    micMutedRef.current = false
-    setMicMutedState(false)
-    outputMutedRef.current = false
-    setOutputMutedState(false)
-  }, [active])
 
   useEffect(() => {
     // Pause the adapter first so nothing new reaches a paused coordinator;

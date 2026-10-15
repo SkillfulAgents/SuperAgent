@@ -5,9 +5,10 @@ import { useHoldSound } from '@renderer/hooks/use-hold-sound'
 import { useUserMusicPreference, useUserMusicSession, userMusicSupported } from '@renderer/hooks/use-user-music'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUser } from '@renderer/context/user-context'
+import { resolveRouteAgentId, useAgents } from '@renderer/hooks/use-agents'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
-import { registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { registerVoiceModeExit, setVoiceModeActive, setVoiceModeTakesSpace } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
@@ -95,7 +96,8 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
       { onError: (err) => console.warn('Voice-mode notice not delivered:', err) },
     )
   }, [])
-  const sendMessage = useSendMessage({ agentRuntimeErrorsShownInline: true })
+  // Nothing here renders a send error inline, so every failure keeps its toast.
+  const sendMessage = useSendMessage()
 
   const start = useCallback((next: VoiceSession) => {
     if (!next.openedByVoice) notify(next, VOICE_MODE_ENTERED_MESSAGE)
@@ -129,6 +131,15 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
       exitTimerRef.current = { sessionId: session.sessionId, timer }
     }
   }, [session, exit, notify])
+
+  // Deleting the agent deletes the session too: end voice mode with it. The
+  // session may name the agent by its display slug, so resolve it first.
+  const { data: agents } = useAgents()
+  const agentDeleted = !!session && !!agents
+    && !agents.some((agent) => agent.slug === resolveRouteAgentId(session.agentSlug, agents))
+  useEffect(() => {
+    if (agentDeleted) exit()
+  }, [agentDeleted, exit])
 
   const { data: messages } = useMessages(sessionId, agentSlug)
   // Transport bound only; the host trims to the voice model's token budget.
@@ -167,6 +178,12 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
   // listener is bound once per voice session.
   const latest = useRef({ voice, view })
   latest.current = { voice, view }
+  // Space on the page is voice mode's only while its composer is on screen.
+  const takesSpace = active && view?.kind === 'composer'
+  useEffect(() => {
+    setVoiceModeTakesSpace(takesSpace)
+    return () => setVoiceModeTakesSpace(false)
+  }, [takesSpace])
   useEffect(() => {
     if (!active) return
     const onKeyDown = (event: KeyboardEvent) => {
