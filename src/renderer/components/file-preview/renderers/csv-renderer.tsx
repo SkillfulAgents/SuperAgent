@@ -6,7 +6,6 @@ import { TextRenderer } from './text-renderer'
 import { useFileContent } from './use-file-content'
 import { useCommentBox } from '../comments/use-comment-box'
 import type { CellRef } from '../comments/kinds'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 
 interface CsvRendererProps {
   url: string
@@ -76,7 +75,6 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
   const [view, setView] = useState<'table' | 'raw'>('table')
   const containerRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
-  const { commentsEnabled } = useFilePreview()
 
   const { data, isLoading, error } = useFileContent(url)
   const sizeTruncated = data?.truncated ?? false
@@ -169,7 +167,7 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
       </div>
 
       {view === 'raw' ? (
-        <TextRenderer url={url} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
+        <TextRenderer url={url} filePath={filePath} agentSlug={agentSlug} />
       ) : (
         <>
           <div ref={gridRef}>

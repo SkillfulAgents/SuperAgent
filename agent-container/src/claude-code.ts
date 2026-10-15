@@ -24,10 +24,10 @@ import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpS
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
-import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
-import { mountedVolumes } from './volume-mounts';
+import { mountedVolumeIndexes, mountedVolumes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
@@ -348,6 +348,7 @@ export interface SystemPromptVars {
   envVars: string[];
   hasMounts: boolean;
   mountPathsJoined: string;
+  mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
 }
@@ -415,6 +416,7 @@ export function buildSystemPromptVars(
     // Each path is rendered as a JSON string literal. A folder name is user
     // bytes, and a raw newline or `#` in it would read as prompt structure.
     mountPathsJoined: mounts.map((m) => JSON.stringify(m.path) + (m.readOnly ? ' (read only)' : '')).join(', '),
+    mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };
@@ -1457,6 +1459,15 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
         PostToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              async (input) => {
+                const hint = mountIndexCommandHint(((input as any).tool_input as Record<string, unknown> | undefined)?.command);
+                return hint ? { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: hint } } : {};
+              },
+            ],
+          },
           {
             matcher: 'Read',
             hooks: [

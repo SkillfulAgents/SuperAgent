@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+
+const openPlanUpgradeMock = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/hooks/use-platform-plan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-platform-plan')>()),
+  usePlatformPlanUpgrade: () => openPlanUpgradeMock,
+}))
 
 const useUserMock = vi.fn()
 const platformConnectMock = vi.fn()
@@ -167,5 +174,87 @@ describe('PlatformTab after connect', () => {
     render(<PlatformTab />)
     expect(screen.getByText('Connected.')).toBeInTheDocument()
     expect(screen.getByTestId('stale-agents-notice')).toBeInTheDocument()
+  })
+})
+
+describe('PlatformTab plan (SUP-1143)', () => {
+  const connected = (role: string | null = 'owner') => ({
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', role, platformBaseUrl: 'https://platform.example.com' },
+  })
+  // `excludedModels` is the server's wording; the tab shows it and never reads the denylist.
+  const snapshot = (extra: Record<string, unknown>, excludedModels: string | null = null) => ({
+    data: {
+      connected: true,
+      excludedModels,
+      billing: {
+        configured: true,
+        subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: '2026-10-27T16:00:00Z', creditScope: 'seat' },
+        seat: { balanceCents: 15000, startingBalanceCents: 40000 },
+        orgPool: { poolBalanceCents: 500 },
+        plan: null,
+        pendingPlanChange: null,
+        ...extra,
+      },
+    },
+    isLoading: false, isFetching: false, error: null, refetch: vi.fn(),
+  })
+
+  beforeEach(() => {
+    useUserMock.mockReturnValue(localUser)
+    platformConnectMock.mockReturnValue(connected())
+    openPlanUpgradeMock.mockReset()
+  })
+
+  afterEach(() => {
+    billingInfoMock.mockReset()
+    billingInfoMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  })
+
+  it('names a Pro 30 workspace\'s plan and the models it excludes, beside the workspace too', async () => {
+    billingInfoMock.mockReturnValue(snapshot({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-', 'gpt-6-astra'] } }, 'Claude Fable and GPT Astra'))
+    render(<PlatformTab />)
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 30')
+    expect(screen.getByTestId('billing-plan-excludes')).toHaveTextContent('Excludes Claude Fable and GPT Astra')
+    expect(screen.getByTestId('workspace-plan-badge')).toHaveTextContent('Pro 30')
+    await userEvent.setup().click(screen.getByTestId('billing-change-plan'))
+    expect(openPlanUpgradeMock).toHaveBeenCalledWith()
+  })
+
+  it('shows a scheduled downgrade with its date', () => {
+    billingInfoMock.mockReturnValue(snapshot({
+      plan: { id: 'pro-200', name: 'Pro 200', deniedModels: [] },
+      pendingPlanChange: { toPlan: { id: 'pro-30', name: 'Pro 30' }, effectiveAt: '2026-11-13T12:00:00Z' },
+    }))
+    render(<PlatformTab />)
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 200')
+    expect(screen.queryByTestId('billing-plan-excludes')).not.toBeInTheDocument()
+    expect(screen.getByTestId('billing-plan-pending')).toHaveTextContent(/^Switching to Pro 30 on Nov 13$/)
+  })
+
+  it('keeps the subscription state on the plan\'s name when it is not plainly active', () => {
+    billingInfoMock.mockReturnValue(snapshot({
+      subscription: { status: 'cancellation_scheduled', paymentStatus: 'current', currentPeriodEnd: null, creditScope: 'seat' },
+      plan: { id: 'pro-100', name: 'Pro 100', deniedModels: [] },
+    }))
+    render(<PlatformTab />)
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 100 · Cancelling')
+  })
+
+  it('offers Change plan only to owners and admins', () => {
+    platformConnectMock.mockReturnValue(connected('member'))
+    billingInfoMock.mockReturnValue(snapshot({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] } }))
+    render(<PlatformTab />)
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 30')
+    expect(screen.queryByTestId('billing-change-plan')).not.toBeInTheDocument()
+  })
+
+  it('keeps the plain subscription row for an unsubscribed workspace', () => {
+    billingInfoMock.mockReturnValue(snapshot({ subscription: { status: 'none', paymentStatus: null, currentPeriodEnd: null, creditScope: 'seat' } }))
+    render(<PlatformTab />)
+    expect(screen.queryByTestId('billing-plan-name')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-plan-badge')).not.toBeInTheDocument()
+    expect(screen.getByText('Subscription')).toBeInTheDocument()
   })
 })

@@ -1,4 +1,3 @@
-import type { LucideIcon } from 'lucide-react'
 import type { ToolDefinition } from './types'
 
 /** Bind React views to shared metadata without duplicating names or summaries. */
@@ -60,7 +59,7 @@ export interface ToolRenderer {
   /**
    * Custom icon for this tool (optional)
    */
-  icon?: LucideIcon
+  icon?: React.ComponentType<{ className?: string }>
 
   /**
    * Custom component for the expanded view
@@ -79,4 +78,7 @@ export interface ToolRenderer {
    * Rendered after the summary text, before the chevron
    */
   CollapsedContent?: React.ComponentType<CollapsedContentProps>
+
+  /** A more specific renderer for this input, e.g. a Bash call to a known service. */
+  resolve?: (input: unknown) => ToolRenderer | undefined
 }

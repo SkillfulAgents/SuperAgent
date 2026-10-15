@@ -262,6 +262,10 @@ export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefine
   return flags.split(/\s+/).some((flag) => flag.length > 4 && text.includes(flag.toLowerCase()))
 }
 
+export function withVolumesEnv(envVars: StartOptions['envVars'], volumes: StartOptions['volumes']): StartOptions['envVars'] {
+  return volumes?.length ? { ...envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : envVars
+}
+
 /**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
  */
@@ -742,10 +746,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // The volume list travels with the volume run flags: a run that drops one drops both.
       let volumes = options?.volumes?.length ? options.volumes : undefined
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const envFile = () => this.buildEnvFile(
-        volumes ? { ...options?.envVars, SUPERAGENT_VOLUMES: JSON.stringify(volumes) } : options?.envVars,
-        options?.agentName,
-      )
+      const envFile = () => this.buildEnvFile(withVolumesEnv(options?.envVars, volumes), options?.agentName)
       let { flag: envFileFlag, cleanup: cleanupEnvFile } = await envFile()
       const containerName = this.getContainerName()
 

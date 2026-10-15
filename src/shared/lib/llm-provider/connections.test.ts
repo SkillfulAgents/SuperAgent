@@ -805,3 +805,82 @@ describe('summarizer selection', () => {
     await expect(deleteConnection(sub, admin)).rejects.toThrow(listed.deletionBlockedReason)
   })
 })
+
+describe('a model the provider says cannot run counts as unset (SUP-1124)', () => {
+  const locked = new Set<string>()
+  const three = [
+    { id: 'model-a', label: 'A', family: 'a', isLatest: true, supportedEfforts: ['low' as const] },
+    { id: 'model-b', label: 'B', family: 'b', isLatest: true, isDefault: true, supportedEfforts: ['low' as const] },
+    { id: 'model-c', label: 'C', family: 'c', isLatest: true, supportedEfforts: ['low' as const] },
+  ]
+  beforeEach(() => {
+    locked.clear()
+    const create = providerRegistry.createLlmProvider
+    vi.spyOn(providerRegistry, 'createLlmProvider').mockImplementation((id, config) => {
+      const provider = create(id, config)
+      // Stand in for a plan: the provider reports the locked ids as unavailable.
+      provider.getModelAvailability = async (catalog) => {
+        const unavailable = catalog.filter(m => locked.has(m.id)).map(m => ({ modelId: m.id, reason: `${m.label} isn't included.` }))
+        return unavailable.length ? { unavailable, summary: null, action: null } : null
+      }
+      return provider
+    })
+  })
+  async function addThree(name = 'Planned') {
+    return saveConnection(
+      { name, provider: 'generic', userId: null, config: { apiKeys: { genericApiKey: 'key', genericBaseUrl: 'https://planned.example' } }, modelOverrides: three },
+      admin,
+    )
+  }
+
+  it('skips a locked agent default to the global default, and returns to it once it can run', async () => {
+    const id = await addThree()
+    await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
+    locked.add('model-b')
+    expect(await resolveSelectionHierarchy(storedSelection('b', id))).toMatchObject({ llmProviderId: id, wireModel: 'model-a' })
+    locked.clear()
+    expect(await resolveSelectionHierarchy(storedSelection('b', id))).toMatchObject({ wireModel: 'model-b' })
+  })
+
+  it('skips a locked global default to its connection\'s default, then to any model it can run', async () => {
+    const id = await addThree()
+    await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
+    locked.add('model-a')
+    expect(await resolveSelectionHierarchy()).toMatchObject({ wireModel: 'model-b' })
+    locked.add('model-b')
+    expect(await resolveSelectionHierarchy()).toMatchObject({ wireModel: 'model-c' })
+  })
+
+  it('keeps the global default when nothing can run, so the provider\'s refusal says why', async () => {
+    const id = await addThree()
+    await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
+    for (const model of three) locked.add(model.id)
+    expect(await resolveSelectionHierarchy()).toMatchObject({ wireModel: 'model-a' })
+  })
+
+  it('leaves saved settings as saved', async () => {
+    const id = await addThree()
+    await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
+    locked.add('model-a')
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: id, model: 'a' })
+    expect((await listConnections(admin)).find(c => c.id === id)?.defaultModel).toBe('model-b')
+  })
+
+  it('moves a locked helper model to its connection\'s runnable default', async () => {
+    const id = await addThree()
+    await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
+    expect(await resolveHelperSelection()).toMatchObject({ wireModel: 'model-a' })
+    locked.add('model-a')
+    expect(await resolveHelperSelection()).toMatchObject({ wireModel: 'model-b' })
+  })
+
+  it('gives the container a runnable browser model and offers subagents only runnable models', async () => {
+    const id = await addThree()
+    await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
+    await state.db!.update(llmConnections).set({ browserModel: 'c' }).where(eq(llmConnections.id, id)).run()
+    locked.add('model-c')
+    const runtime = await connectionRuntime(await resolveExecutionSelection(), 'test-agent')
+    expect(runtime).toMatchObject({ model: 'model-a', browserModel: 'model-a' })
+    expect(runtime.subagentModels.map(model => model.id)).toEqual(['model-a', 'model-b'])
+  })
+})

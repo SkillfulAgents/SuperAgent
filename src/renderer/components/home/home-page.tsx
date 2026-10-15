@@ -1137,7 +1137,7 @@ export function HomePage() {
             >
               <Waypoints className="h-8 w-8" />
               <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
-              <Button size="sm" onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
+              <Button size="sm" onClick={() => { void createUntitledAgent({ surface: 'home' }) }} disabled={isCreatingAgent}>
                 <Plus className="h-4 w-4 mr-1" />
                 New Agent
               </Button>
@@ -1176,7 +1176,7 @@ export function HomePage() {
               ) : (
                 <Button
                   size="sm"
-                  onClick={() => { void createUntitledAgent() }}
+                  onClick={() => { void createUntitledAgent({ surface: 'home' }) }}
                   className="app-no-drag"
                   disabled={isCreatingAgent}
                 >
@@ -1269,7 +1269,7 @@ export function HomePage() {
                 <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
                 <HomeEmptySkeletonBoard
                   ctaRef={emptyCtaRef}
-                  onCreate={() => { void createUntitledAgent() }}
+                  onCreate={() => { void createUntitledAgent({ surface: 'home' }) }}
                   isCreating={isCreatingAgent}
                 />
               </div>

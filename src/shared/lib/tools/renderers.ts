@@ -125,11 +125,13 @@ const toolRenderers = new Map([
 ].map(renderer => [renderer.definition, renderer]))
 
 /**
- * Get the renderer for a specific tool, or undefined for fallback
+ * Get the renderer for a specific tool, or undefined for fallback.
+ * With the call's input, a renderer may narrow to a more specific one.
  */
-export function getToolRenderer(toolName: string): ToolRenderer | undefined {
+export function getToolRenderer(toolName: string, input?: unknown): ToolRenderer | undefined {
   const definition = getToolDefinition(toolName)
-  return definition ? toolRenderers.get(definition) : undefined
+  const renderer = definition ? toolRenderers.get(definition) : undefined
+  return (input !== undefined && renderer?.resolve?.(input)) || renderer
 }
 
 /**

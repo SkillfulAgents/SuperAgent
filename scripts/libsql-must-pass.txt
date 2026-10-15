@@ -43,6 +43,8 @@ src/shared/lib/agent-integrations/agent-integration-delivery.test.ts
 
 src/shared/lib/email-integrations/email-integration.test.ts
 src/shared/lib/email-integrations/transport.test.ts
+src/shared/lib/email-integrations/transport-relay.test.ts
+src/shared/lib/email-integrations/webhooks.test.ts
 src/api/routes/email-integrations.test.ts
 src/shared/lib/services/agent-integration-message-service.test.ts
 src/shared/lib/container/base-container-client.llm-provider.test.ts
@@ -61,3 +63,4 @@ src/shared/lib/volumes/volumes.e2e.test.ts
 src/api/routes/dropbox-volumes.test.ts
 src/api/routes/google-drive-volumes.test.ts
 src/api/routes/s3-volumes.test.ts
+src/shared/lib/chat-integrations/imessage-webhooks.test.ts

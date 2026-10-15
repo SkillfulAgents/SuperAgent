@@ -105,9 +105,9 @@ export function useCreateSession(options: {
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
-      // Analytics-only: distinguishes auto-started sessions (template onboarding)
-      // from user-typed ones. Not sent to the server.
-      origin?: 'user' | 'onboarding'
+      // Analytics-only: distinguishes auto-started sessions (template onboarding,
+      // todo dispatch) from user-typed ones. Not sent to the server.
+      origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
     }) => {
@@ -130,7 +130,7 @@ export function useCreateSession(options: {
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
-      // Onboarding auto-sends are neither typed nor spoken, so they stay unstamped.
+      // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
       const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
       track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
       // A voice-started session's first message is the entry marker, not something the person said.

@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod'
+import { integrationRelayConfigShape } from '../agent-integrations/transport'
 
 export const telegramConfigSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
@@ -43,7 +44,16 @@ export const imessageConfigSchema = z.object({
     .min(1, 'Phone number is required')
     .regex(/^\+[1-9]\d{6,14}$/, 'Phone number must be in E.164 format (e.g. +15551234567)'),
   token: z.string().min(1, 'Token is required'),
+  /** The relay endpoint the gateway delivers to while the socket is down; minted on the first connect with a relay. */
+  ...integrationRelayConfigShape,
+  /** Signs the gateway's webhook deliveries. Generated with the endpoint and never shown. */
+  webhookSecret: z.string().min(16).max(256).optional(),
 })
+
+/** Config the host writes itself; a settings patch or setup input can't supply it. */
+const HOST_OWNED_FIELDS: Partial<Record<string, readonly string[]>> = {
+  imessage: ['relay', 'webhookSecret'],
+}
 
 export const imessageSetupSchema = z.object({
   phoneNumber: z.string()
@@ -103,6 +113,12 @@ export function parseChatIntegrationConfig(
   }
 }
 
+/** Drops the fields only the host may write from caller-supplied config. */
+export function withoutHostOwnedConfig(provider: ChatProvider, config: Record<string, unknown>): Record<string, unknown> {
+  const owned = HOST_OWNED_FIELDS[provider] ?? []
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !owned.includes(key)))
+}
+
 /**
  * Merge an API config patch with the credential-bearing stored config.
  * Omitted credentials and conventional masked placeholders preserve the
@@ -113,7 +129,7 @@ export function mergeChatIntegrationConfig(
   storedConfigJson: string,
   patch: unknown,
 ): ChatConfig {
-  const parsedPatch = configPatchSchema.parse(patch)
+  const parsedPatch = withoutHostOwnedConfig(provider, configPatchSchema.parse(patch))
   const credentialFields = CREDENTIAL_FIELDS[provider]
   const unmaskedPatch = Object.fromEntries(
     Object.entries(parsedPatch).filter(([key, value]) =>

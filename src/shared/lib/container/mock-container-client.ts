@@ -2070,6 +2070,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Persist while active with deliberately divergent live text — regression
     // for completed thinking cards stranding at the transcript tail.
     ['think with missing deltas', new ActiveDivergentThinkingScenario()],
+    // A Bash call through the connected-account proxy: the row names the service
+    ['check github through proxy', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS "$PROXY_BASE_URL/acct/api.github.com/user" -H "Authorization: Bearer $PROXY_TOKEN"', description: 'Check the signed-in profile' },
+      '{"login":"octocat"}',
+      'You are signed in as octocat.'
+    )],
+    // A direct curl to a host Gamut ships an icon for: the row stays Bash and shows that icon
+    ['query linear directly', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -d @query.json', description: 'Query open issues' },
+      '{"data":{"issues":{"nodes":[]}}}',
+      'No open issues.'
+    )],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',

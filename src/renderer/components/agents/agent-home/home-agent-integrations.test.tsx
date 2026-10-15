@@ -1,12 +1,4 @@
-const platformState = vi.hoisted(() => ({ connected: true }))
-vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: platformState }) }))
-const relayState = vi.hoisted(() => ({ available: true }))
-vi.mock('@renderer/hooks/use-webhook-relay', () => ({ useWebhookRelay: () => ({ data: relayState }) }))
-// A provider that only receives webhooks, alongside the real ones.
-vi.mock('@renderer/components/agent-integrations/setup-providers', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@renderer/components/agent-integrations/setup-providers')>()
-  return { ...actual, integrationSetupProviders: [...actual.integrationSetupProviders, { slug: 'hooks', label: 'Hooks', requiresRelay: true, Setup: () => null }] }
-})
+const availability = vi.hoisted(() => ({ providers: ['telegram', 'slack', 'imessage', 'linear', 'platform-email'] as string[] | undefined }))
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -24,6 +16,7 @@ const mockUseChatIntegrations = vi.fn()
 const mockUseChatIntegrationAccess = vi.fn()
 
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useAvailableAgentIntegrationProviders: () => ({ data: availability.providers?.map(provider => ({ provider })) }),
   useAgentIntegrations: (...args: unknown[]) => mockUseChatIntegrations(...args),
   useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
@@ -86,7 +79,7 @@ describe('HomeAgentIntegrations', () => {
   })
 
   beforeEach(() => {
-  platformState.connected = true
+  availability.providers = ['telegram', 'slack', 'imessage', 'linear', 'platform-email']
     vi.clearAllMocks()
     mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
@@ -173,31 +166,23 @@ it('does not invite viewers to configure providers or render an empty setup grid
   expect(container.querySelector('.grid')).toBeNull()
 })
 
-it('only offers Email on Platform-connected deployments', async () => {
+it('offers only the providers the host makes available', () => {
   mockCanManage.mockReturnValue(true)
-  platformState.connected = false
   mockUseChatIntegrations.mockReturnValue({ data: [] })
-  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  availability.providers = ['slack']
+  const { rerender } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Connect via Slack' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
-})
-
-it('offers Email to connected Platform owners', () => {
-  platformState.connected = true
-  mockCanManage.mockReturnValue(true)
-  mockUseChatIntegrations.mockReturnValue({ data: [] })
-  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  availability.providers = ['platform-email']
+  rerender(<HomeAgentIntegrations agentSlug="test-agent" />)
   expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Connect via Slack' })).not.toBeInTheDocument()
 })
 
-it('offers relay-only providers only while the webhook relay is available', () => {
-  mockCanManage.mockReturnValue(true)
-  mockUseChatIntegrations.mockReturnValue({ data: [] })
-  relayState.available = false
-  const { unmount } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.queryByRole('button', { name: 'Connect via Hooks' })).not.toBeInTheDocument()
-  unmount()
-
-  relayState.available = true
+it('offers nothing until host availability is known and preserves installed rows', () => {
+  availability.providers = undefined
+  mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
   renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Hooks' })).toBeInTheDocument()
+  expect(screen.getByText('Test Bot')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Add Integration/ })).not.toBeInTheDocument()
 })

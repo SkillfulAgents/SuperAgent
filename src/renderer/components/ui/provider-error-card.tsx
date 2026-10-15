@@ -1,6 +1,6 @@
 import { useContext, useMemo, useState } from 'react'
 import type { Components } from 'react-markdown'
-import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
+import { CircleDollarSign, Info, Lock, TriangleAlert, type LucideIcon } from 'lucide-react'
 
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
@@ -15,6 +15,7 @@ const ICONS: Record<string, LucideIcon> = {
   info: Info,
   'triangle-alert': TriangleAlert,
   'circle-dollar-sign': CircleDollarSign,
+  lock: Lock,
 }
 
 const OPAQUE_DARK: Record<ProviderErrorPresentation['severity'], string> = {

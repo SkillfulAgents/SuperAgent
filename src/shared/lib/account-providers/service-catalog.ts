@@ -442,6 +442,11 @@ export function getProvider(slug: string): Provider | undefined {
   return SUPPORTED_PROVIDERS.find((p) => p.slug === slug)
 }
 
+/** The provider's display name, or its slug capitalized when the catalog does not list it. */
+export function getProviderDisplayName(slug: string): string {
+  return getProvider(slug)?.displayName ?? `${slug.charAt(0).toUpperCase()}${slug.slice(1)}`
+}
+
 export function getAllProviders(providerName?: ProviderName): Provider[] {
   if (!providerName) return SUPPORTED_PROVIDERS
   const key = SLUG_KEY[providerName]

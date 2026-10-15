@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
-import { locateAnchor, placeMarkers, refineAnchor, resolveAnchor, selectionToAnchor } from './anchor'
+import { describeAnchor, locateAnchor, placeMarkers, refineAnchor, resolveAnchor } from './anchor'
 import type { CommentSurface } from './kinds'
-import type { PointerAt } from './kinds/types'
+import type { PointerAt, SelectionAt } from './kinds/types'
 
 function box(rect: [number, number, number, number], tag = 'div'): HTMLElement {
   const el = document.createElement(tag)
@@ -98,13 +98,101 @@ describe('locateAnchor', () => {
   })
 })
 
-describe('selectionToAnchor', () => {
-  it('keeps the precedence the comment list always used: cell, text, time, point, file', () => {
-    const cell = { row: 1, col: 0, column: 'Name', value: 'Ada' }
-    expect(selectionToAnchor({ text: 'Ada', cell })).toEqual({ kind: 'cell', cell })
-    expect(selectionToAnchor({ text: 'teh', timestamp: 3, x: 1, y: 2 })).toEqual({ kind: 'text', quote: 'teh' })
-    expect(selectionToAnchor({ text: '', timestamp: 3, x: 1, y: 2 })).toEqual({ kind: 'time', seconds: 3, point: { x: 1, y: 2 } })
-    expect(selectionToAnchor({ text: '', x: 1, y: 2 })).toEqual({ kind: 'point', x: 1, y: 2 })
-    expect(selectionToAnchor({ text: '' })).toEqual({ kind: 'file' })
+describe('text comments', () => {
+  /** A file whose blocks carry their source lines, like the markdown and text viewers render it. */
+  function file(blocks: [string, string][]): { root: HTMLElement; els: HTMLElement[]; surface: CommentSurface } {
+    const root = box([0, 0, 100, 100])
+    const els = blocks.map(([lines, text]) => {
+      const p = document.createElement('p')
+      p.setAttribute('data-comment-lines', lines)
+      p.textContent = text
+      root.append(p)
+      return p
+    })
+    return { root, els, surface: { text: { blocks: { current: root } } } }
+  }
+  function select(start: Node, startOffset: number, end: Node, endOffset: number, text: string): SelectionAt {
+    const range = document.createRange()
+    range.setStart(start, startOffset)
+    range.setEnd(end, endOffset)
+    return { on: 'selection', range, text }
+  }
+
+  it('gives a selection the lines of every block it covers, but not the block its end only touches', () => {
+    const { els: [intro, body, next], surface } = file([['1-1', 'Intro'], ['3-4', 'Body text'], ['6-6', 'Next']])
+
+    expect(resolveAnchor(surface, select(intro.firstChild!, 2, body.firstChild!, 4, 'tro\nBody'))).toEqual({ kind: 'text', quote: 'tro\nBody', lines: { start: 1, end: 4 } })
+    // A triple-click ends at the start of the next block.
+    expect(resolveAnchor(surface, select(body.firstChild!, 0, next, 0, 'Body text\n'))).toEqual({ kind: 'text', quote: 'Body text', lines: { start: 3, end: 4 } })
+  })
+
+  it('takes the innermost block a selection covers, not the list item around it', () => {
+    const { root, surface } = file([])
+    const item = document.createElement('li')
+    item.setAttribute('data-comment-lines', '5-7')
+    const para = document.createElement('p')
+    para.setAttribute('data-comment-lines', '7-7')
+    para.textContent = 'Second para'
+    item.append(para)
+    root.append(item)
+
+    expect(resolveAnchor(surface, select(para.firstChild!, 0, para.firstChild!, 6, 'Second'))).toEqual({ kind: 'text', quote: 'Second', lines: { start: 7, end: 7 } })
+  })
+
+  it('spans a parent list item and its child when the selection covers both', () => {
+    const { root, surface } = file([])
+    const parent = document.createElement('li')
+    parent.setAttribute('data-comment-lines', '1-2')
+    parent.append('Parent')
+    const child = document.createElement('li')
+    child.setAttribute('data-comment-lines', '2-2')
+    child.textContent = 'Child'
+    parent.append(child)
+    root.append(parent)
+
+    expect(resolveAnchor(surface, select(parent.firstChild!, 0, child.firstChild!, 5, 'Parent\nChild'))).toEqual({ kind: 'text', quote: 'Parent\nChild', lines: { start: 1, end: 2 } })
+  })
+
+  it('quotes a block without the comment pins drawn inside it', () => {
+    const { els: [block], surface } = file([['4-4', 'Ship it.']])
+    const pin = document.createElement('span')
+    pin.setAttribute('data-comment-marker', '')
+    pin.textContent = '1'
+    block.append(pin)
+
+    expect(resolveAnchor(surface, at('mouse', block))).toEqual({ kind: 'text', quote: 'Ship it.', lines: { start: 4, end: 4 } })
+  })
+
+  it('tells the second "Ship it." from the first, and puts its marker there', () => {
+    const { els: [, second], surface } = file([['2-2', 'Ship it.'], ['9-9', 'Ship it.']])
+
+    const anchor = resolveAnchor(surface, at('mouse', second))
+    expect(anchor).toEqual({ kind: 'text', quote: 'Ship it.', lines: { start: 9, end: 9 } })
+    expect(locateAnchor(surface, anchor!, false)).toEqual([{ host: second, x: 100, y: 0 }])
+    expect(describeAnchor(anchor!)).toBe('Line 9: > "Ship it."')
+  })
+
+  it('leaves a key between blocks to the whole file, and a quote without lines out of the file', () => {
+    const { root, surface } = file([['1-1', 'Intro']])
+
+    expect(resolveAnchor(surface, at('mouse', root))).toBeNull()
+    expect(resolveAnchor(surface, { on: 'elsewhere' })).toEqual({ kind: 'file' })
+    expect(locateAnchor(surface, { kind: 'text', quote: 'Intro' }, false)).toEqual([])
+  })
+
+  it('caps a long quote and escapes its quotes, like a cell value', () => {
+    expect(describeAnchor({ kind: 'text', quote: 'x'.repeat(250), lines: { start: 1, end: 1 } })).toBe(`Line 1: > "${'x'.repeat(200)}…"`)
+    expect(describeAnchor({ kind: 'text', quote: 'say "hi"' })).toBe('> "say \\"hi\\""')
+  })
+
+  it('puts a PDF comment on its page: a selection keeps its quote, anything else is the page', () => {
+    const root = box([0, 0, 100, 100])
+    root.textContent = 'Total due'
+    const surface: CommentSurface = { text: { blocks: { current: root } }, part: { label: 'Page', value: 3 } }
+
+    const quoted = resolveAnchor(surface, select(root.firstChild!, 0, root.firstChild!, 5, 'Total'))!
+    const page = resolveAnchor(surface, { on: 'elsewhere' })!
+    expect(describeAnchor(quoted)).toBe('Page 3: > "Total"')
+    expect(describeAnchor(page)).toBe('Page 3')
   })
 })

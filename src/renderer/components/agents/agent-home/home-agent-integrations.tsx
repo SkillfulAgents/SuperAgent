@@ -1,11 +1,9 @@
-import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { useAgentIntegrations, useAgentIntegrationAccess, type AgentIntegrationListItem } from '@renderer/hooks/use-agent-integrations'
+import { useAvailableAgentIntegrationProviders, useAgentIntegrations, useAgentIntegrationAccess, type AgentIntegrationListItem } from '@renderer/hooks/use-agent-integrations'
 import { deriveAgentIntegrationState, formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { AgentIntegrationPill } from '@renderer/components/agent-integrations/agent-integration-pill'
 import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
@@ -49,11 +47,9 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const navigate = useNavigate()
   const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
-  const { data: platform } = usePlatformAuthStatus()
-  const { data: relay } = useWebhookRelay()
+  const { data: availableProviders } = useAvailableAgentIntegrationProviders()
   const providers = integrationSetupProviders
-    .filter(provider => !provider.platformOnly || platform?.connected)
-    .filter(provider => !provider.requiresRelay || relay?.available)
+    .filter(provider => availableProviders?.some(available => available.provider === provider.slug))
     .filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug

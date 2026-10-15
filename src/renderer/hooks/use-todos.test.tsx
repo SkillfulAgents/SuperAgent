@@ -103,7 +103,7 @@ describe('useStartTodo', () => {
     const started = await result.current.mutateAsync(draft())
 
     expect(state.calls[0]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
-    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', message: 'Churn\n\nWhy did it spike?' })
+    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', origin: 'todo', message: 'Churn\n\nWhy did it spike?' })
     expect(state.calls).toContainEqual({ path: '/api/todos/t1/start', method: 'POST', body: { sessionId: 'session-9', claim: 'c1' } })
     expect(started).toMatchObject({ column: 'working', sessionId: 'session-9' })
   })
@@ -116,6 +116,7 @@ describe('useStartTodo', () => {
 
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
+      origin: 'todo',
       message: 'Churn\n\nWhy did it spike?',
       model: 'claude-opus-5-5',
       llmProviderId: 'anthropic-main',
@@ -134,8 +135,8 @@ describe('useStartTodo', () => {
     expect(state.createAgentForPrompt).toHaveBeenCalledWith('Churn\n\nWhy did it spike?')
     expect(state.calls[0]).toEqual({ path: '/api/todos/t1', method: 'PATCH', body: { agentSlug: 'churn-analyst' } })
     expect(state.calls[1]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
-    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'churn-analyst', message: 'Churn\n\nWhy did it spike?' })
-    expect(state.track).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'todo' }))
+    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'churn-analyst', origin: 'todo', message: 'Churn\n\nWhy did it spike?' })
+    expect(state.track).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'new', surface: 'todo' }))
   })
 
   it('creates nothing when the new agent could not be made', async () => {
@@ -203,6 +204,7 @@ describe('useStartTodo', () => {
 
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
+      origin: 'todo',
       message: 'Churn\n\nWhy did it spike?\n\n[Attached files:]\n- /workspace/uploads/note.txt',
     })
   })
@@ -220,6 +222,7 @@ describe('useStartTodo', () => {
     expect(mountAt).toBeGreaterThan(claimAt)
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
+      origin: 'todo',
       message: 'Churn\n\nWhy did it spike?\n\n[Mounted folders (read-write):]\n- /mounts/notes (from /tmp/notes)\n\n[Attached files:]\n- /workspace/uploads/notes/',
     })
   })
