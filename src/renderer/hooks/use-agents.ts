@@ -67,7 +67,7 @@ function resolveCached(slug: string, agents: ApiAgent[]): string {
  */
 export function useResolvedAgentId(slug: string | undefined): string | undefined {
   const select = useCallback((agents: ApiAgent[]) => (slug ? resolveCached(slug, agents) : undefined), [slug])
-  const { data } = useAgents({ select })
+  const { data } = useAgents({ select, poll: false })
   return data ?? resolveRouteAgentId(slug, undefined)
 }
 
@@ -82,6 +82,12 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   enabled?: boolean
   /** `[]` keeps the list fetched and cached without ever re-rendering the caller. */
   notifyOnChangeProps?: []
+  /**
+   * `false` for narrow subscriptions mounted once per sidebar row: the list's
+   * main consumers keep the fallback poll, and an interval per observer is
+   * re-armed on every list update — hundreds of timers per agent event.
+   */
+  poll?: false
 }) {
   return useQuery<ApiAgent[], Error, TData>({
     queryKey: ['agents'],
@@ -99,7 +105,7 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     select: options?.select,
     notifyOnChangeProps: options?.notifyOnChangeProps,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
-    refetchInterval: 60000,
+    refetchInterval: options?.poll === false ? false : 60000,
   })
 }
 

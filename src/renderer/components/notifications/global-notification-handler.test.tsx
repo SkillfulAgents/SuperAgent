@@ -826,6 +826,62 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 
+  describe('session lifecycle refetches', () => {
+    beforeEach(() => vi.useFakeTimers())
+    afterEach(() => vi.useRealTimers())
+
+    const callsWith = (spy: { mock: { calls: unknown[][] } }, queryKey: unknown[]) =>
+      spy.mock.calls.filter(([filters]) => JSON.stringify(filters) === JSON.stringify({ queryKey })).length
+
+    it('refreshes the event\'s own agent at once and confirms list-wide state once per burst', () => {
+      queryClient.setQueryData(['artifacts', 'agent-a'], [])
+      queryClient.setQueryData(['artifacts', 'agent-c'], [])
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+      simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
+      simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-b', sessionId: 's2' })
+      simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+
+      // The event's own agent: its sessions, its detail, its artifacts.
+      expect(callsWith(invalidateSpy, ['sessions', 'agent-a'])).toBe(2)
+      expect(callsWith(invalidateSpy, ['agents', 'agent-a'])).toBe(2)
+      expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+      expect(queryClient.getQueryState(['artifacts', 'agent-c'])?.isInvalidated).toBe(false)
+
+      // The full list, todos and automation lists only confirm the echo: they
+      // wait for the batch, then run once for the whole burst.
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(0)
+      act(() => {
+        vi.advanceTimersByTime(500)
+      })
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['webhook-trigger-sessions'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['scheduled-task-sessions'])).toBe(1)
+    })
+
+    it('runs queued confirmations when the stream is torn down', () => {
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { unmount } = render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      simulateSSEMessage(getLatestEventSource(), { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+
+      unmount()
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+    })
+  })
+
   it('marks only the announced dashboard thumbnail ready without a refetch', () => {
     queryClient.setQueryData(['agents'], [{
       slug: 'agent-a',

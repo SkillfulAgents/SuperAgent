@@ -144,7 +144,7 @@ export function AgentContextMenu({
   // sidebar row, so it keeps the list fetched without re-rendering on its
   // changes (each status refetch would otherwise re-render every row), and the
   // write reads the current list from the cache.
-  useAgents({ notifyOnChangeProps: [] })
+  useAgents({ notifyOnChangeProps: [], poll: false })
   const updateSettings = useUpdateUserSettings()
   const folders = useMemo(() => sanitizeFolders(userSettings?.agentFolders), [userSettings?.agentFolders])
   const assignedFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
