@@ -60,8 +60,9 @@ describe('getProviderCatalog', () => {
       ['anthropic', 'claude-opus-5-5'],
       ['openai', 'gpt-6.1-sol'],
       ['xai', 'grok-4.7'],
+      ['gemini', 'gemini-4-argon'],
       ['kimi', 'kimi-k3'],
-      ['meta', 'muse-spark-1.3'],
+      ['meta', 'muse-wonder-1.0'],
       ['zai', 'glm-5.3-flash'],
       ['deepseek', 'deepseek-v4.1-flash'],
     ])
@@ -141,6 +142,8 @@ describe('getProviderCatalog', () => {
     ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.5', ['low', 'medium', 'high']],
+    ['gemini-4-argon', ['low', 'medium', 'high']],
+    ['muse-wonder-1.0', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.2', ['low', 'medium', 'high', 'xhigh']],
     ['muse-spark-1.3-contributor', ['low', 'medium', 'high', 'xhigh']],
@@ -711,6 +714,12 @@ describe('resolveModelForProvider', () => {
   it('resolves the default haiku summarizer to Haiku 5.5 on every Claude-catalog provider', () => {
     for (const provider of ['anthropic', 'claude-subscription', 'platform'] as const) {
       expect(resolveModelForProvider('haiku', provider, 'summarizer')).toBe('claude-haiku-5-5')
+    }
+  })
+
+  it('defaults the browser model to Haiku 5.5 on every Claude-catalog provider', () => {
+    for (const provider of ['anthropic', 'claude-subscription', 'openrouter', 'platform'] as const) {
+      expect(resolveModelForProvider('mystery', provider, 'browser')).toBe('claude-haiku-5-5')
     }
   })
 

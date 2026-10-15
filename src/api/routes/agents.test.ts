@@ -267,6 +267,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     coalesceIfRecovering: vi.fn(() => false),
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
+    markSessionIdle: vi.fn(),
+    markSessionProvisionallyActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     getTurnGeneration: vi.fn(() => 0),
     isSessionWaitingBackground: vi.fn(() => false),
@@ -405,6 +407,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgent: vi.fn(),
   getAgentRecord: vi.fn(),
   updateAgent: vi.fn(),
+  updateAgentAvatar: vi.fn(),
   deleteAgent: vi.fn(),
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
@@ -734,6 +737,10 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 // Import the agents router after all mocks are set up
 import agents from './agents'
 import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
+import { CredentialRefreshError } from '../../../agent-container/src/credential-refresh-error'
+import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
+import { ProviderRefreshUnavailableError } from '@shared/lib/agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
@@ -749,7 +756,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
@@ -758,8 +765,8 @@ import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, 
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { AgentInputRequests } from '@shared/lib/user-input/agent-input-requests'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
+import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
@@ -1461,6 +1468,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
 
 describe('agent startup — POST /:id/start', () => {
   const runningAgent = {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'test-agent',
     displaySlug: 'test-agent',
     name: 'Test Agent',
@@ -3899,7 +3907,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     try {
       const res = await postJson(app, URL, { content: 'hello', llmProviderId: 'private-provider' })
       expect(res.status).toBe(404)
-      expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+      expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
       expect(mockSendMessage).not.toHaveBeenCalled()
       expect(mockDbInsertValues).not.toHaveBeenCalled()
     } finally {
@@ -6145,6 +6153,57 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
   })
 })
 
+describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  const reconnectRequired = () =>
+    new MessageNotAcceptedError('unavailable', 'Provider unavailable', {
+      cause: new ProviderReconnectRequiredError(new CredentialRefreshError(401).message),
+    })
+
+  const undoFreshTurn = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(messagePersister.markSessionProvisionallyActive).mockReturnValue(undoFreshTurn)
+  })
+
+  it('undoes a fresh turn so the retry is not treated as queued', async () => {
+    mockSendMessage.mockRejectedValueOnce(reconnectRequired())
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(424)
+    expect(await res.json()).toMatchObject({ code: 'provider_reconnect_required' })
+    expect(messagePersister.markSessionProvisionallyActive).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells the client when to retry a temporary refresh outage', async () => {
+    mockSendMessage.mockRejectedValueOnce(
+      new MessageNotAcceptedError('unavailable', 'Provider unavailable', {
+        cause: new ProviderRefreshUnavailableError(new CredentialRefreshError(503).message),
+      }))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Retry-After')).toBe('30')
+    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a running turn active when a queued follow-up is rejected', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container unavailable'))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(500)
+    expect(messagePersister.markSessionActive).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(messagePersister.markSessionProvisionallyActive).not.toHaveBeenCalled()
+    expect(undoFreshTurn).not.toHaveBeenCalled()
+  })
+})
+
 describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messages/:uuid', () => {
   let app: ReturnType<typeof createApp>
   const UUID = '123e4567-e89b-12d3-a456-426614174000'
@@ -6233,6 +6292,7 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
 
   it('returns x-agent and widget repair history for the resolved target agent', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([{
+      avatar: { color: 'tonal-blue', shape: 'circle' } as const,
       slug: 'target',
       displaySlug: 'target',
       name: 'Target',
@@ -6343,6 +6403,7 @@ describe('GET /api/agents (enriched summary)', () => {
   let app: ReturnType<typeof createApp>
 
   const baseAgent = {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'agent-1',
     displaySlug: 'agent-one-agent-1',
     name: 'Agent One',
@@ -10011,5 +10072,45 @@ describe('cross-agent session scoping', () => {
       expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
       expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: ATTACKER }), OWN_SESSION)
     })
+  })
+})
+
+describe('PUT /api/agents/:id/avatar', () => {
+  let app: ReturnType<typeof createApp>
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it.each(['duo-red-amber', 'tonal-cobalt'] as const)('saves a validated %s pair and announces the change to other clients', async color => {
+    const avatar = { color, shape: 'bloom' } as const
+    vi.mocked(updateAgentAvatar).mockResolvedValue(avatar)
+    const response = await app.request('/api/agents/test-agent/avatar', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(avatar),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(avatar)
+    expect(updateAgentAvatar).toHaveBeenCalledWith('test-agent', avatar)
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+  })
+
+  it.each([
+    null,
+    { color: null, shape: 'circle' },
+    { color: 'tonal-blue', shape: null },
+    { color: 'unknown', shape: 'circle' },
+    { color: 'Cobalt', shape: 'circle' },
+    { color: 'tonal-blue', shape: 'unknown' },
+    { color: 'tonal-blue' },
+    { color: 'tonal-blue', shape: 'circle', extra: true },
+  ])('rejects an invalid or incomplete avatar %j without writing', async avatar => {
+    const response = await app.request('/api/agents/test-agent/avatar', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(avatar),
+    })
+    expect(response.status).toBe(400)
+    expect(updateAgentAvatar).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
   })
 })

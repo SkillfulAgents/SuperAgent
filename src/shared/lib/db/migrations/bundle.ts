@@ -547,5 +547,67 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790976371108,
     "hash": "774e659ffccb8ffb46e8353cda10d8671b515628c81918b66109e70915bcf607"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_volumes` (\n\t`id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`volume_id` text NOT NULL,\n\t`name` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `id`),\n\tFOREIGN KEY (`agent_slug`) REFERENCES `agents`(`slug`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`volume_id`) REFERENCES `volume_definitions`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `agent_volumes_source_unique` ON `agent_volumes` (`agent_slug`,`volume_id`);",
+      "\nCREATE UNIQUE INDEX `agent_volumes_name_unique` ON `agent_volumes` (`agent_slug`,`name`);",
+      "\nCREATE INDEX `agent_volumes_volume_idx` ON `agent_volumes` (`volume_id`);",
+      "\nCREATE TABLE `volume_definitions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`name` text NOT NULL,\n\t`type` text NOT NULL,\n\t`config` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `volume_definitions_owner_idx` ON `volume_definitions` (`user_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1791396692104,
+    "hash": "da77e2d0b25863a67be69d795f493e621854e8803599b49766e79460819d9fe6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `new_agent` integer DEFAULT false NOT NULL;",
+      "\nALTER TABLE `todos` ADD `model` text;",
+      "\nALTER TABLE `todos` ADD `llm_provider_id` text;",
+      "\nALTER TABLE `todos` ADD `effort` text;",
+      "\nALTER TABLE `todos` ADD `speed` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1791587287364,
+    "hash": "ccb3ac557a4bd7f0eef3ed27cf5565d1aef1081f89551803b42299e6e31ee1a6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `agents` ADD `avatar_color` text DEFAULT 'tonal-blue' NOT NULL;",
+      "\nALTER TABLE `agents` ADD `avatar_shape` text DEFAULT 'circle' NOT NULL;",
+      "\n-- Backfill once in the same atomic migration as the column additions. Keep\n-- this historical palette fixed: later palette edits must not reassign agents.\n-- Applying abs after the remainder avoids SQLite's minimum-integer overflow.\nUPDATE `agents` SET\n  `avatar_color` = CASE abs(random() % 12)\n    WHEN 0 THEN 'tonal-red'\n    WHEN 1 THEN 'tonal-orange'\n    WHEN 2 THEN 'tonal-amber'\n    WHEN 3 THEN 'tonal-green'\n    WHEN 4 THEN 'tonal-forest'\n    WHEN 5 THEN 'tonal-teal'\n    WHEN 6 THEN 'tonal-blue'\n    WHEN 7 THEN 'tonal-cobalt'\n    WHEN 8 THEN 'tonal-purple'\n    WHEN 9 THEN 'tonal-blush'\n    WHEN 10 THEN 'tonal-pink'\n    ELSE 'tonal-brown'\n  END,\n  `avatar_shape` = CASE abs(random() % 8)\n    WHEN 0 THEN 'circle'\n    WHEN 1 THEN 'squircle'\n    WHEN 2 THEN 'triangle'\n    WHEN 3 THEN 'diamond'\n    WHEN 4 THEN 'hexagon'\n    WHEN 5 THEN 'pill'\n    WHEN 6 THEN 'arch'\n    ELSE 'bloom'\n  END;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1791852666500,
+    "hash": "509e144ec0676c120491a0a92af8f5d94780b0930658d88b80472d1748f89f0b"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `attachments` text DEFAULT '[]' NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791910293234,
+    "hash": "9d13dd97eda5eafbcfce764cef25fd88b30999af8969a83b62999e392ce56f21"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `agent_volumes` ADD `read_only` integer DEFAULT false NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791924124387,
+    "hash": "51ec4cbbcee73557e8d2840d2d286a03279a78dd6b5d29e7d51f23ed7e943b98"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_integration_meetings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`meeting_url` text NOT NULL,\n\t`platform` text NOT NULL,\n\t`bot_name` text NOT NULL,\n\t`mode` text DEFAULT 'voice' NOT NULL,\n\t`bot_id` text,\n\t`status` text DEFAULT 'requested' NOT NULL,\n\t`status_detail` text,\n\t`session_id` text,\n\t`context` text,\n\t`participant_token_hash` text NOT NULL,\n\t`created_by_user_id` text,\n\t`requested_at` integer NOT NULL,\n\t`joined_at` integer,\n\t`ended_at` integer,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `agent_integration_meetings_integration_idx` ON `agent_integration_meetings` (`integration_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_session_idx` ON `agent_integration_meetings` (`agent_slug`,`session_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_status_idx` ON `agent_integration_meetings` (`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792093164911,
+    "hash": "3a227888890cbbc01667d8ecaed1a7604e1830fb29d0148e6e92dc5a5ba5b3de"
   }
 ]

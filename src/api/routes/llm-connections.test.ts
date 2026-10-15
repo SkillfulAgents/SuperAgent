@@ -99,6 +99,16 @@ afterEach(async () => {
 })
 
 describe('connection API ownership and root protection', () => {
+  it('exposes provider model availability only to connection viewers', async () => {
+    const created = await request('', 'POST', draft('alice'), 'alice')
+    const { id } = await created.json()
+    const own = await request(`/${id}/model-availability`, 'GET', undefined, 'alice')
+    expect(own.status).toBe(200)
+    expect(await own.json()).toBeNull()
+    expect((await request(`/${id}/model-availability`, 'GET', undefined, 'bob')).status).toBe(404)
+    expect((await request(`/${id}/model-availability`, 'GET', undefined, 'admin')).status).toBe(404)
+  })
+
   it('keeps runtime key status on the selected connection when its saved model retires', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', '')
     const created = await request('', 'POST', draft())

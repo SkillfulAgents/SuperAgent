@@ -41,7 +41,8 @@ test.describe('Chat integration connector page', () => {
 
     // The External Integrations HomeCollapsible lists the integration row.
     const mainContent = appPage.getMainContent()
-    await expect(mainContent.getByText('External Integrations')).toBeVisible()
+    // Exact: until the list loads, the card's empty state also mentions "external integrations".
+    await expect(mainContent.getByText('External Integrations', { exact: true })).toBeVisible()
     await expect(mainContent.getByText('E2E Overhaul Bot')).toBeVisible({ timeout: 10000 })
 
     // Click the integration row - IntegrationRow renders role="button" when interactive.

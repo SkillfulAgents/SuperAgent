@@ -1,7 +1,10 @@
+import { isSafeInternalPath } from './safe-internal-path'
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
+import { isMeetingParticipantPage } from './meeting-participant-page'
 import { reportCloudSessionRejected } from './cloud-session'
 import { addRendererBreadcrumb } from './error-reporting'
+import { HttpError } from './http-error'
 import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './workspace-unavailable'
 
 /**
@@ -57,6 +60,8 @@ export function handleWorkspaceUnavailableResponse(
 // URL right after clearRedirectStash() dropped it (shared-tab leak).
 export async function handleUnauthorizedResponse(status: number, path: string): Promise<void> {
   if (status !== 401 || path.startsWith('/api/auth/') || !isAuthMode()) return
+  // The meeting page has no login to expire; a 401 there is the meeting's own credential ending.
+  if (isMeetingParticipantPage()) return
   if (hasInteractiveLogin()) {
     if (!deliberateSignOut) {
       // Interactive login is web-only, so pathname+search is the route; the
@@ -91,21 +96,7 @@ export function clearDeliberateSignOut(): void {
   deliberateSignOut = false
 }
 
-/**
- * A safe internal path. Must start with a single `/` and reject anything the
- * router/browser could resolve into an off-site (open-redirect) navigation:
- * `//host` and `/\host` (protocol-relative / UNC), and a leading encoded
- * separator (`/%2f…`, `/%5c…`) that would decode into one. A deeper encoded `%2f`
- * (in a query, say) is fine — only a leading one is dangerous. Current callers
- * pass browser-normalized `window.location.*`; this is the open-redirect backstop
- * for any future caller that stashes a hand-built path.
- */
-export function isSafeInternalPath(p: string | null): p is string {
-  if (!p) return false
-  if (!/^\/(?![/\\])/.test(p)) return false // single leading slash only
-  if (/^\/(?:%2f|%5c)/i.test(p)) return false // encoded separator right after it
-  return true
-}
+export { isSafeInternalPath }
 
 /**
  * Read AND clear the post-login redirect stash, validated as a safe internal
@@ -159,12 +150,7 @@ export function stashRedirectTarget(path: string): void {
  * Thrown by `apiJson` on a non-2xx response, carrying the HTTP status so route
  * loaders can map it: 403/404 → `notFound()`, 5xx/network → `errorComponent`.
  */
-export class HttpError extends Error {
-  constructor(public status: number) {
-    super(`HTTP ${status}`)
-    this.name = 'HttpError'
-  }
-}
+export { HttpError } from './http-error'
 
 /**
  * Loader-only fetch: returns parsed JSON, throwing `HttpError` on a non-2xx

@@ -1,0 +1,72 @@
+import { defineToolRenderer } from '../renderer-types'
+import { File } from 'lucide-react'
+import { readDef, type ReadInput } from './definition'
+import type { ToolRendererProps, StreamingToolRendererProps } from '../renderer-types'
+
+function ExpandedView({ input, result, isError }: ToolRendererProps) {
+  const { file_path, offset, limit } = readDef.parseInput(input)
+
+  return (
+    <div className="space-y-2">
+      {/* File path */}
+      {file_path && (
+        <div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
+          <div className="bg-background rounded p-2 text-xs font-mono truncate">
+            {file_path}
+            {(offset !== undefined || limit !== undefined) && (
+              <span className="text-muted-foreground ml-2">
+                {offset !== undefined && `offset: ${offset}`}
+                {offset !== undefined && limit !== undefined && ', '}
+                {limit !== undefined && `limit: ${limit}`}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Content */}
+      {result && (
+        <div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
+            {isError ? 'Error' : 'Content'}
+          </div>
+          <pre
+            className={`bg-background rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
+              isError ? 'text-red-800 dark:text-red-200' : ''
+            }`}
+          >
+            {result}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StreamingView({ partialInput }: StreamingToolRendererProps) {
+  let parsed: ReadInput = {}
+  try {
+    parsed = JSON.parse(partialInput)
+  } catch {
+    // Still streaming
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
+        <pre className="bg-background rounded p-2 text-xs overflow-x-auto font-mono whitespace-pre-wrap break-all">
+          {parsed.file_path || <span className="text-muted-foreground italic">...</span>}
+          <span className="animate-pulse">|</span>
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+export const readRenderer = defineToolRenderer(readDef, {
+  icon: File,
+  ExpandedView,
+  StreamingView,
+})

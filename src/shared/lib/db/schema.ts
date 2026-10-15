@@ -528,10 +528,42 @@ export const agents = sqliteTable('agents', {
   slug: text('slug').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  // Constant SQL defaults permit SQLite's non-null column upgrade without
+  // rebuilding this referenced table. The migration backfills random values;
+  // every runtime insert supplies a random pair through the agent catalog.
+  avatarColor: text('avatar_color').notNull().default('tonal-blue'),
+  avatarShape: text('avatar_shape').notNull().default('circle'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   runtime: text('runtime').notNull().default('local'),
   workspaceHandle: text('workspace_handle'),
 })
+
+// Reusable sources. A NULL owner makes a volume available to every user.
+export const volumeDefinitions = sqliteTable('volume_definitions', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  config: text('config').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+
+// An attachment owns its mount name and WebDAV identity; renaming a definition
+// never changes a running agent's /mounts/<name> path.
+export const agentVolumes = sqliteTable('agent_volumes', {
+  id: text('id').notNull(),
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  readOnly: integer('read_only', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.id] }),
+  agentVolumeUnique: uniqueIndex('agent_volumes_source_unique').on(table.agentSlug, table.volumeId),
+  agentNameUnique: uniqueIndex('agent_volumes_name_unique').on(table.agentSlug, table.name),
+  volumeIdx: index('agent_volumes_volume_idx').on(table.volumeId),
+}))
 
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
@@ -754,6 +786,41 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
 }))
 
+// Meetings an agent was asked to attend (meeting integration family). The
+// session mapping stays in chat_integration_sessions (externalChatId = meeting
+// id); this row carries the bot lifecycle the participant page and UI follow.
+export const agentIntegrationMeetings = sqliteTable('agent_integration_meetings', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  agentSlug: text('agent_slug').notNull(),
+  meetingUrl: text('meeting_url').notNull(),
+  platform: text('platform').notNull(),
+  botName: text('bot_name').notNull(),
+  // How the agent takes part: 'voice' | 'silent' | 'listen' (see meeting-integrations/schemas.ts).
+  mode: text('mode').notNull().default('voice'),
+  // Provider's bot handle; null until the host accepted the join.
+  botId: text('bot_id'),
+  status: text('status').notNull().default('requested'),
+  statusDetail: text('status_detail'),
+  sessionId: text('session_id'),
+  // The person's brief for this meeting, as given at join time.
+  context: text('context'),
+  // sha256 of the one-time participant page token; the token itself is only in the page URL.
+  participantTokenHash: text('participant_token_hash').notNull(),
+  createdByUserId: text('created_by_user_id'),
+  requestedAt: integer('requested_at', { mode: 'timestamp_ms' }).notNull(),
+  joinedAt: integer('joined_at', { mode: 'timestamp_ms' }),
+  endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  integrationIdx: index('agent_integration_meetings_integration_idx').on(table.integrationId),
+  sessionIdx: index('agent_integration_meetings_session_idx').on(table.agentSlug, table.sessionId),
+  statusIdx: index('agent_integration_meetings_status_idx').on(table.status),
+}))
+export type AgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferSelect
+export type NewAgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferInsert
+
 // Slack participation is independent of session routing: multiple threads can
 // share one channel session. Keep the bounded, least-recently-used thread list
 // across connector recreation, scoped to the installation and bot identity.
@@ -828,6 +895,14 @@ export const todos = sqliteTable('todos', {
   title: text('title').notNull(),
   description: text('description').notNull().default(''),
   agentSlug: text('agent_slug'),
+  // A draft to be given to an agent created for it on start, named from its
+  // brief. Never set together with agentSlug: the start assigns the new agent.
+  newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
+  // What to start it on, where the person picked over the agent's defaults.
+  model: text('model'),
+  llmProviderId: text('llm_provider_id'),
+  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that
@@ -844,6 +919,8 @@ export const todos = sqliteTable('todos', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   startedAt: integer('started_at', { mode: 'timestamp_ms' }),
   completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+  // Files held with the item. A JSON list, validated when read.
+  attachments: text('attachments').notNull().default('[]'),
 }, (table) => ({
   userIdx: index('todos_user_idx').on(table.userId),
   // Session and agent deletion find the rows that point at them.

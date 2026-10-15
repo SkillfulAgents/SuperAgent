@@ -1,4 +1,5 @@
 import { getModelContextWindowMap } from './model-catalog'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'
@@ -38,17 +39,13 @@ export async function resolveConnectionRuntimeInherit(
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
-export class LlmSelectionAccessError extends Error {
-  constructor() { super('LLM provider not found') }
-}
-
 export async function assertConnectionSelectionAccess(
   llmProviderId: string | null | undefined,
   currentId?: string | null
 ) {
   if (!llmProviderId) return
   const row = await getConnection(llmProviderId)
-  if (!row) throw new LlmSelectionAccessError()
+  if (!row) throw new LlmProviderNotFoundError()
   if (
     !canSelectConnection(
       row,
@@ -56,7 +53,7 @@ export async function assertConnectionSelectionAccess(
       currentId ?? undefined
     )
   ) {
-    throw new LlmSelectionAccessError()
+    throw new LlmProviderNotFoundError()
   }
 }
 
@@ -78,9 +75,14 @@ export const LLM_ENV_KEYS = [
 export async function connectionRuntime(resolved: ResolvedConnection, agentId: string) {
   const { connection, provider, wireModel } = resolved
   const catalog = connectionCatalog(connection)
+  // Models the provider says cannot run now (e.g. the plan excludes them) count
+  // as unset: a helper model falls back to the main one, and subagents are not offered them.
+  const availability = await provider.getModelAvailability(catalog)
+  const unavailable = new Set(availability?.unavailable.map(entry => entry.modelId))
+  const runnableCatalog = catalog.filter(model => !unavailable.has(model.id))
   const subagent = (selection: string | null) =>
     resolveSelection(selection ? { llmProviderId: connection.id, model: selection } : null, [
-      { id: connection.id, catalog },
+      { id: connection.id, catalog: runnableCatalog },
     ])?.wireModel ?? wireModel
   const env = Object.fromEntries(LLM_ENV_KEYS.map((key) => [key, '']))
   for (const [key, value] of Object.entries(await provider.getContainerEnvVars({ id: agentId }))) {
@@ -105,7 +107,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
     browserModel: subagent(connection.browserModel),
     dashboardBuilderModel: subagent(connection.dashboardModel),
     modelPromptHints: [...getContainerModelPromptHints(wireModel, catalog), ...(provider.mediaPrompt ? [provider.mediaPrompt] : [])],
-    subagentModels: getSubagentModelCatalog(catalog),
+    subagentModels: getSubagentModelCatalog(runnableCatalog),
     modelContextWindows: getModelContextWindowMap(catalog),
     env,
   }

@@ -16,6 +16,8 @@ export interface BackgroundTaskRef {
   taskType?: string
   /** The runtime's own description — the label when the transcript has no launching call. */
   description?: string
+  /** A subagent task's type, from the runtime's task list (SDK >= 0.3.293). */
+  subagentType?: string
 }
 
 export interface BackgroundTaskLabel {
@@ -47,11 +49,12 @@ function resultText(result: unknown): string {
 }
 
 // A task with no launching call in this transcript — a subagent launched it,
-// or the call predates what is loaded — still has the runtime's description.
+// the call predates what is loaded, or its result has not arrived yet — still
+// has the runtime's description, and a subagent its type.
 function genericLabel(task: BackgroundTaskRef): BackgroundTaskLabel {
   const detail = task.description || null
   if (task.isWorkflow) return { title: 'Background workflow', detail }
-  if (task.isSubagent) return { title: 'Background agent', detail }
+  if (task.isSubagent) return { title: task.subagentType || 'Background agent', detail }
   return { title: 'Background command', detail }
 }
 

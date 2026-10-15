@@ -51,7 +51,7 @@ export function useBlockBreakout(
 
     measure()
 
-    if (!contentArea || typeof ResizeObserver === 'undefined') return
+    if (!contentArea || !canBreakOut || typeof ResizeObserver === 'undefined') return
     // Re-centre when the chat area resizes. Content changes (e.g. a table still
     // streaming) re-run this effect via the `content` dependency, so we don't
     // observe the block itself — that would risk a resize-observer feedback loop.

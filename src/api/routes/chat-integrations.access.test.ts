@@ -103,7 +103,7 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
     notifyAccessApproved: (...args: unknown[]) => mockNotifyChatApproved(...args),
     releaseExternalSession: (...args: unknown[]) => mockTearDownChatSession(...args),
     reconcileAccess: (...args: unknown[]) => mockReconcileAccess(...args),
-    isIntegrationConnected: vi.fn(() => false),
+    isIntegrationConnected: vi.fn(() => false), integrationTransport: () => null,
     addIntegration: vi.fn(),
     integrationCreated: (...args: unknown[]) => mockSendContactCard(...args),
     removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
@@ -218,7 +218,7 @@ describe('chat-integrations access routes', () => {
       body: JSON.stringify({ llmProviderId: 'deleted-provider' }),
     })
     expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+    expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
     expect(updateAgentIntegration).not.toHaveBeenCalled()
   })
 

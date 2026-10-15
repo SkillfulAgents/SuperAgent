@@ -8,6 +8,7 @@ import type { NavigateOptions } from '@tanstack/react-router'
  */
 export type AgentView =
   | { kind: 'home' }
+  | { kind: 'newSession' }
   | { kind: 'session'; id: string }
   | { kind: 'task'; id: string }
   | { kind: 'webhook'; id: string }
@@ -73,6 +74,8 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
   switch (view.kind) {
     case 'home':
       return { to: '/agents/$slug', params: { slug } }
+    case 'newSession':
+      return { to: '/agents/$slug/sessions/new', params: { slug } }
     case 'session':
       return { to: '/agents/$slug/sessions/$sessionId', params: { slug, sessionId: view.id } }
     case 'task':
@@ -132,6 +135,8 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: null, view: { kind: 'notifications' } }
     case '/agents/$slug':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'home' } }
+    case '/agents/$slug/sessions/new':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'newSession' } }
     case '/agents/$slug/sessions/$sessionId':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'session', id: p.sessionId ?? '' } }
     case '/agents/$slug/tasks/$taskId':

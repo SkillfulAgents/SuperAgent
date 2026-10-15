@@ -1,5 +1,5 @@
-
-import { Copy, Square, Trash2, Volume2 } from 'lucide-react'
+import { useState } from 'react'
+import { Copy, ExternalLink, Square, Trash2, Volume2 } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -7,6 +7,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
+import { openExternalUrl } from '@renderer/lib/open-external'
 
 interface MessageContextMenuProps {
   text: string
@@ -16,7 +17,16 @@ interface MessageContextMenuProps {
   readAloud?: { active: boolean; onToggle: () => void }
 }
 
+function webLinkAt(target: EventTarget | null): string | null {
+  if (!(target instanceof Element)) return null
+  const anchor = target.closest('a[href]')
+  if (!(anchor instanceof HTMLAnchorElement)) return null
+  return anchor.protocol === 'http:' || anchor.protocol === 'https:' ? anchor.href : null
+}
+
 export function MessageContextMenu({ text, children, onRemove, readAloud }: MessageContextMenuProps) {
+  const [linkHref, setLinkHref] = useState<string | null>(null)
+
   const handleCopy = async () => {
     try {
       const selection = window.getSelection()?.toString()
@@ -28,10 +38,16 @@ export function MessageContextMenu({ text, children, onRemove, readAloud }: Mess
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
+      <ContextMenuTrigger asChild onContextMenu={(event) => setLinkHref(webLinkAt(event.target))}>
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent>
+        {linkHref && (
+          <ContextMenuItem onClick={() => void openExternalUrl(linkHref)} data-testid="context-open-link">
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Open link in new tab
+          </ContextMenuItem>
+        )}
         <ContextMenuItem onClick={handleCopy}>
           <Copy className="h-4 w-4 mr-2" />
           Copy

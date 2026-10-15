@@ -32,6 +32,8 @@ export function isBinaryContentType(contentType: string | null): boolean {
   if (ct.startsWith('text/')) return false
   if (isJsonContentType(ct)) return false
   if (ct.startsWith('application/x-www-form-urlencoded')) return false
+  // Drive's single-request upload is an opaque multipart/related byte stream.
+  if (/^multipart\/related(?:\s*;|$)/.test(ct)) return true
   if (ct.startsWith('multipart/')) return false
   return true
 }

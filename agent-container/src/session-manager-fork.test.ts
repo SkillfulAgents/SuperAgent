@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -141,10 +142,14 @@ describe('SessionManager.forkSession', () => {
   })
 
   it('refuses while the source has a live process mid-turn', async () => {
+    const process = Object.assign(new EventEmitter(), {
+      isRunning: () => true,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    })
     // Reach into the live map the way the eviction test does.
     ;(manager as any).sessions.set('src-1', {
       session: { id: 'src-1' },
-      process: { isRunning: () => true },
+      process,
       subscribers: new Set(),
       settlement: { isSettled: () => false },
     })

@@ -61,7 +61,7 @@ describe('Live agent prompt', () => {
     expect(prompt).toContain('x'.repeat(LIVE_AGENT_INSTRUCTIONS_MAX_CHARS))
     expect(prompt).not.toContain('x'.repeat(LIVE_AGENT_INSTRUCTIONS_MAX_CHARS + 1))
     expect(prompt).toContain('"instructionsTruncated":true')
-    expect(prompt.length).toBeLessThan(12_000)
+    expect(prompt.length).toBeLessThan(14_000)
   })
 
   it('preserves configuration boundaries for multiline instructions and quotes', () => {

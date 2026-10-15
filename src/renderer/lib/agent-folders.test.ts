@@ -23,6 +23,7 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 function makeAgent(slug: string): ApiAgent {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug,
     displaySlug: slug,
     name: slug,
@@ -333,8 +334,8 @@ describe('assignAgentToFolder', () => {
 
 describe('uniqueFolderName', () => {
   it('suffixes a counter on collision', () => {
-    expect(uniqueFolderName([])).toBe('New Folder')
-    expect(uniqueFolderName([{ id: 'f1', name: 'New Folder' }])).toBe('New Folder 2')
+    expect(uniqueFolderName([])).toBe('New Section')
+    expect(uniqueFolderName([{ id: 'f1', name: 'New Section' }])).toBe('New Section 2')
   })
 
   it('deduplicates a typed base name against existing folders', () => {

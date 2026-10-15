@@ -3,7 +3,7 @@ import { ChevronDown, Circle, CircleCheckBig, Loader2, Monitor, X } from 'lucide
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
-import { RequestError } from './request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'

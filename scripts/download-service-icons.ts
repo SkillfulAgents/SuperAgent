@@ -47,10 +47,10 @@ const SHARED_ICON_SLUGS: Record<string, string> = {
   'cloudflare-radar': 'cloudflare',
 }
 
-// Slugs that don't match the Composio API name directly
+// Slugs that don't match the Composio API name directly. (The Teams mark is served
+// under 'microsoft_teams' as-is; 'microsoft-teams' returns the grey placeholder.)
 const SLUG_TO_API_NAME: Record<string, string> = {
   'atlassian': 'jira',
-  'microsoft_teams': 'microsoft-teams',
   'googlecalendar': 'google-calendar',
   'googledrive': 'google-drive',
   'googlesheets': 'google-sheets',

@@ -86,10 +86,10 @@ test.describe('File Preview', () => {
     }).toBeLessThanOrEqual(1)
   })
 
-  test('agent home bookmark preview overlays the wide page', async ({ page }) => {
+  test('agent home bookmark preview overlays the wide page and draws diagrams', async ({ page }) => {
     await agentPage.createAgent(`HomeFilePreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
-    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report')
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report\n\n```mermaid\nflowchart LR\n  A --> B\n```')
 
     const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
       data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
@@ -101,6 +101,7 @@ test.describe('File Preview', () => {
     await expect(bookmark).toBeVisible({ timeout: 10000 })
     await bookmark.click()
     await expect(markdown(page).getByRole('heading', { name: 'Daily Report' })).toBeVisible({ timeout: 10000 })
+    await expect(markdown(page).getByTestId('mermaid-diagram')).toBeVisible({ timeout: 10000 })
 
     const homeBox = await page.getByTestId('agent-home').boundingBox()
     const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
@@ -313,8 +314,7 @@ test.describe('File Preview', () => {
     const csv = page.getByTestId('csv-renderer')
     await expect(csv).toBeVisible({ timeout: 10000 })
 
-    // Near the pane's right edge, the Comment button and the editor it opens both
-    // slide left to end 8px inside the pane. At 800px the drawer is the compact overlay
+    // Near the pane's right edge, the comment box slides left to end 8px inside the pane. At 800px the drawer is the compact overlay
     // and slides in with a transform, so wait for its left edge to land.
     const containerX = (await page.getByTestId('file-preview-container').boundingBox())!.x
     await expect.poll(async () => (await page.getByTestId('tray-drawer').boundingBox())?.x).toBe(containerX)
@@ -323,20 +323,19 @@ test.describe('File Preview', () => {
     await csv.getByRole('cell', { name: '30', exact: true }).click()
     await expect(overlay).toBeVisible()
     expect(await rightEdge(overlay)).toBe(paneRight - 8)
-    // Moved to a cell with room, the open button follows the click and stops shifting.
+    // Clicking another cell moves the open box to the click, still inside the pane.
+    const width = (await overlay.boundingBox())!.width
     const aliceBox = (await csv.getByRole('cell', { name: 'alice@example.com' }).boundingBox())!
     const aliceX = Math.round(aliceBox.x + aliceBox.width / 2)
     await page.mouse.click(aliceX, aliceBox.y + aliceBox.height / 2)
-    await expect.poll(async () => Math.round((await overlay.boundingBox())!.x)).toBe(aliceX)
+    await expect.poll(async () => rightEdge(overlay)).toBe(Math.min(Math.round(aliceX + width), paneRight - 8))
     await csv.getByRole('cell', { name: '30', exact: true }).click()
-    await overlay.getByRole('button', { name: 'Comment' }).click()
     await expect(page.getByPlaceholder('Add your comment...')).toBeVisible()
     expect(await rightEdge(overlay)).toBe(paneRight - 8)
     await overlay.getByRole('button', { name: 'Cancel' }).click()
 
-    // Click a data cell → comment affordance appears.
+    // Clicking a data cell opens the comment box on it.
     await csv.getByRole('cell', { name: 'alice@example.com' }).click()
-    await overlay.getByRole('button', { name: 'Comment' }).click()
 
     // Add a comment for that cell.
     await page.getByPlaceholder('Add your comment...').fill('This email looks wrong')
@@ -361,7 +360,7 @@ test.describe('File Preview', () => {
 
     const composer = sessionPage.getMessageInput()
     await expect(composer).toContainText('File feedback on data.csv:')
-    await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com"):')
+    await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com")')
     await expect(composer).toContainText('This email looks wrong')
     await expect(composer).toBeFocused()
     await expect(sessionPage.getUserMessages()).toHaveCount(userMessageCount)
@@ -476,7 +475,7 @@ test.describe('File Preview', () => {
     await tray.getByRole('button', { name: 'Submit' }).click()
     const composer = sessionPage.getMessageInput()
     await expect(composer).toContainText('File feedback on clip.mp4:')
-    await expect(composer).toContainText('At 0:00.00 at position (50%, 50%):')
+    await expect(composer).toContainText('At 0:00.00 at position (50%, 50%)')
     await expect(composer).toContainText('Trim the intro here')
   })
 
@@ -534,19 +533,28 @@ test.describe('File Preview', () => {
     await expect(page.getByTestId('audio-element')).toBeAttached()
     await expect(page.getByTestId('audio-waveform')).toBeVisible()
     await expect(page.getByTestId('audio-add-comment')).toBeVisible()
+    // Hovering picks a time only once the length is known; the fixture can't decode, so report one.
+    await page.getByTestId('audio-element').evaluate((a: HTMLAudioElement) => {
+      Object.defineProperty(a, 'duration', { configurable: true, value: 8 })
+      a.dispatchEvent(new Event('loadedmetadata'))
+    })
 
     await page.getByTestId('audio-waveform').hover({ position: { x: 160, y: 56 } })
     const hoverComment = page.getByTestId('audio-hover-add-comment')
     await expect(hoverComment).toBeVisible()
+    const hovered = (await page.getByTestId('audio-hover-time').innerText()).trim()
+    expect(hovered).not.toBe('0:00.00')
     await hoverComment.click()
 
     const overlay = page.locator('[data-comment-overlay]')
-    await expect(overlay.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(overlay.getByText(`At ${hovered}`, { exact: true })).toBeVisible({ timeout: 5000 })
+    // The box opens under the waveform, not at the top of the window.
+    expect((await overlay.boundingBox())!.y).toBeGreaterThan((await page.getByTestId('audio-timeline').boundingBox())!.y)
     await page.getByPlaceholder('Add your comment...').fill('Remove this background noise')
     await overlay.getByRole('button', { name: 'Add' }).click()
 
     const tray = page.getByTestId('file-preview-tray')
-    await expect(tray.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText(`At ${hovered}`, { exact: true })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('Remove this background noise')).toBeVisible()
 
     await tray.getByRole('button', { name: 'Submit' }).click()
@@ -579,8 +587,8 @@ test.describe('File Preview', () => {
       // The compact overlay covers the chat outright, so the slide-over dim stays hidden.
       await expect(page.getByTestId('tray-drawer-scrim')).toHaveCSS('display', 'none')
 
-      // Poll while the full-width tray slides in. Compact mode replaces the
-      // right-side panel control with a left-side close button.
+      // Poll until the full-width tray finishes sliding in, including its
+      // alignment with the chat. Compact mode puts the close button on the left.
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
         const title = page.getByTestId('file-preview-title')
@@ -590,14 +598,13 @@ test.describe('File Preview', () => {
           expect(box).not.toBeNull()
           expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
         }
+        const containerBox = await page.getByTestId('file-preview-container').boundingBox()
+        const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
+        expect(containerBox).not.toBeNull()
+        expect(drawerBox).not.toBeNull()
+        expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
+        expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
       }).toPass({ timeout: 5000 })
-
-      const containerBox = await page.getByTestId('file-preview-container').boundingBox()
-      const drawerBox = await page.getByTestId('tray-drawer').boundingBox()
-      expect(containerBox).not.toBeNull()
-      expect(drawerBox).not.toBeNull()
-      expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
-      expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
     })
   })
 
@@ -840,6 +847,76 @@ test.describe('File Preview', () => {
     })
   })
 
+  test('opens an image comment on the first click and moves it with the next', async ({ page }) => {
+    await agentPage.createAgent(`ImageComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/chart.png', Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAZAAAADICAIAAABJdyC1AAACBElEQVR42u3UMREAMAgAsVIvKEM+JlDBwF0i4YePrH4AF3wJAMMCMCzAsAAMC8CwAMMCMCwAwwIMC8CwAAwLMCwAwwIwLMCwAAwLwLAAwwIwLADDAgwLwLAADAswLADDAjAswLAADAswLADDAjAswLAADAvAsADDAjAsAMMCDAvAsAAMCzAsAMMCMCzAsAAMC8CwAMMCMCwAwwIMC8CwAAwLMCwAwwIwLMCwAAwLMCwAwwIwLMCwAAwLwLAAwwIwLADDAgwLwLAADAswLADDAjAswLAADAvAsADDAjAsAMMCDAvAsAAMCzAsAMMCMCzAsAAMCzAsAMMCMCzAsAAMC8CwAMMCMCwAwwIMC8CwAAwLMCwAwwIwLMCwAAwLwLAAwwIwLADDAgwLwLAADAswLADDAjAswLAADAswLADDAjAswLAADAvAsADDAjAsAMMCDAvAsAAMCzAsAMMCMCzAsAAMC8CwAMMCMCwAwwIMC8CwAAwLMCwAwwIwLMCwAAwLMCwAwwIwLMCwAAwLwLAAwwIwLADDAgwLwLAADAswLADDAjAswLAADAvAsADDAjAsAMMCDAvAsAAMCzAsAMMCMCzAsAAMCzAsAMMCMCzAsAAMC8CwAMMCMCwAwwIMC8CwAAwLMCwAwwIwLMCwAAwLwLAAwwIwLADDAgwLwLAADAswLIA9A/AEAwMksi6dAAAAAElFTkSuQmCC',
+      'base64',
+    ))
+    await sessionPage.sendMessage('deliver image')
+    await sessionPage.waitForResponse(15000)
+    await page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true }).click()
+    const image = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
+    await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth), { timeout: 10000 }).toBe(400)
+    // The drawer grows in: measure the image once it has its size.
+    await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(300)
+    const at = async (x: number, y: number) => {
+      const b = (await image.boundingBox())!
+      await page.mouse.click(b.x + b.width * x, b.y + b.height * y)
+    }
+
+    const overlay = page.locator('[data-comment-overlay]')
+    await at(0.25, 0.5)
+    await expect(overlay.getByText('At position (25%, 50%)')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Make this lighter')
+    await at(0.75, 0.15)
+    await expect(overlay.getByText('At position (75%, 15%)')).toBeVisible()
+    await expect(page.getByPlaceholder('Add your comment...')).toHaveValue('Make this lighter')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    await expect(page.getByTestId('file-preview-tray').getByText('At position (75%, 15%)')).toBeVisible()
+  })
+
+  test('comments on markdown by selecting text and with C, each on its own lines', async ({ page }) => {
+    await agentPage.createAgent(`MarkdownComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Release notes\n\nThe build is green.\n\nShip it.\n\n## Later\n\nShip it.\n')
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    const doc = markdown(page)
+    await expect(doc.getByRole('heading', { name: 'Later' })).toBeVisible({ timeout: 10000 })
+    const overlay = page.locator('[data-comment-overlay]')
+    const tray = page.getByTestId('file-preview-tray')
+
+    // Selecting shows the chip first, so copying is not interrupted.
+    await doc.getByText('The build is green.').click({ clickCount: 3 })
+    await overlay.getByRole('button', { name: 'Comment' }).click()
+    await expect(overlay.getByText('Line 3: > "The build is green."')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Link the run')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    // C over the second "Ship it." points at that one, not the first.
+    await doc.getByText('Ship it.').nth(1).hover()
+    await page.keyboard.press('c')
+    await expect(overlay.getByText('Line 9: > "Ship it."')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Not yet')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    await expect(tray.getByText('Line 3: > "The build is green."')).toBeVisible()
+    await expect(tray.getByText('Line 9: > "Ship it."')).toBeVisible()
+    await expect(doc.getByText('1', { exact: true })).toBeVisible()
+    await expect(doc.getByText('2', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(true)
+
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('Line 3: > "The build is green."')
+    await expect(composer).toContainText('Line 9: > "Ship it."')
+    await expect.poll(() => page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(false)
+  })
+
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
     await agentPage.createAgent(`MultiFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -865,10 +942,12 @@ test.describe('File Preview', () => {
     // second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
-    const chartPill = getDeliveredFileRow(page, 'chart.png').first()
-    await expect(chartPill).toBeVisible({ timeout: 10000 })
-    await chartPill.click()
-    await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 10000 })
+    const chartThumbnail = page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true })
+    await expect(chartThumbnail).toBeVisible({ timeout: 10000 })
+    await chartThumbnail.click()
+    // The inline thumbnail remains in the chat when the drawer changes tabs.
+    const previewImage = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
+    await expect(previewImage).toBeVisible({ timeout: 10000 })
 
     // Both files now have tabs.
     await expect(fileTab(page, 'report.md')).toBeVisible()
@@ -877,13 +956,13 @@ test.describe('File Preview', () => {
     // Switch back to the markdown tab → markdown content returns, image is gone.
     await fileTab(page, 'report.md').click()
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('img[alt="chart.png"]')).not.toBeVisible()
+    await expect(previewImage).not.toBeVisible()
 
     await expect(page.getByTestId('file-preview-copy')).toBeVisible()
 
     // Switch forward to the image tab again → image renderer returns.
     await fileTab(page, 'chart.png').click()
-    await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 5000 })
+    await expect(previewImage).toBeVisible({ timeout: 5000 })
 
     // A PNG has nothing copyable, so the header drops the action.
     await expect(page.getByTestId('file-preview-copy')).toHaveCount(0)

@@ -55,12 +55,14 @@ const SETTINGS_TAB_TITLES = {
   notifications: 'Notifications',
   platform: 'Account',
   connections: 'Connections',
+  volumes: 'Drives',
   usage: 'Usage',
   llm: 'Model Provider',
   runtime: 'Container Runtime',
   browser: 'Browser Use',
   web: 'Web Search',
   capabilities: 'Subagents',
+  'global-guidance': 'Global Guidance',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',
@@ -131,6 +133,8 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
   switch (view.kind) {
     case 'home':
       return input.location.selectedAgentSlug ? joinWithBrand(agentTitle) : APP_TITLE
+    case 'newSession':
+      return `New Session${VIEW_SEPARATOR}${agentTitle}`
     case 'session':
       return `${cleanTitlePart(input.sessionName) ?? 'Session'}${VIEW_SEPARATOR}${agentTitle}`
     case 'task':

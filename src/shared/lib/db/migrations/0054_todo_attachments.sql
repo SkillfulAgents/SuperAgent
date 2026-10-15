@@ -1,0 +1,1 @@
+ALTER TABLE `todos` ADD `attachments` text DEFAULT '[]' NOT NULL;

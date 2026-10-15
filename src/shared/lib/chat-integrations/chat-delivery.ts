@@ -1,10 +1,10 @@
 import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
-import type { PendingUserInputRequest } from '../user-input/request-schema'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
-import { getToolDefinition } from '../tool-definitions/registry'
-import { formatToolName } from '../tool-definitions/types'
+import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/registry'
+import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
@@ -58,10 +58,16 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
 
 /**
  * A short, user-facing message for a turn that ended in an error. Curated by the
- * SDK error code; never echoes the raw internal error (which can leak file paths,
- * tokens, or stack text into the chat).
+ * session's provider (`errorPresentation.chatText`) or by the SDK error code;
+ * never echoes the raw internal error (which can leak file paths, tokens, or
+ * stack text into the chat).
  */
-function friendlyErrorMessage(apiErrorCode: string | null | undefined): string {
+export function friendlyErrorMessage(apiErrorCode: string | null | undefined, errorPresentation?: unknown): string {
+  // The session's provider recognized the error and worded it for chat (e.g. a
+  // plan refusing the integration's model). Checked first: the CLI may tag such
+  // a refusal `authentication_failed`, which would otherwise read as a credential problem.
+  const chatText = (errorPresentation as { chatText?: unknown } | null | undefined)?.chatText
+  if (typeof chatText === 'string' && chatText.trim()) return chatText
   const code = (apiErrorCode ?? '').toLowerCase()
   if (code.includes('overload')) return '⚠️ The assistant is overloaded right now. Please try again in a moment.'
   if (code.includes('rate') || code.includes('429')) return '⚠️ Hit a rate limit. Please wait a few seconds and try again.'
@@ -282,9 +288,9 @@ export async function processSSEEvent(
       // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
       // below), not off the streamed input — so we never read a host-side path
       // before the in-container tool has validated the file exists. It falls
-      // through to isUserRequestTool() here, which just resets the tool input.
+      // through to shouldHideToolStatusInChat() here, which just resets the tool input.
 
-      if (isUserRequestTool(toolName)) {
+      if (shouldHideToolStatusInChat(toolName)) {
         managed.currentToolInput = ''
         break
       }
@@ -383,7 +389,7 @@ export async function processSSEEvent(
       if (!managed.turnNotified) {
         managed.turnNotified = true
         try {
-          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null, data.errorPresentation) })
         } catch (err) {
           // Delivery failed — release the latch so a later notice isn't suppressed.
           managed.turnNotified = false
@@ -481,19 +487,8 @@ async function sendDeliveredFile(
 
 // ── Exported pure functions (testable) ────────────────────────────────
 
-const USER_REQUEST_TOOLS = new Set([
-  'AskUserQuestion',
-  'mcp__user-input__request_secret',
-  'mcp__user-input__request_file',
-  'mcp__user-input__deliver_file',
-  'mcp__user-input__request_connected_account',
-  'mcp__user-input__request_remote_mcp',
-  'mcp__user-input__request_browser_input',
-  'mcp__user-input__request_script_run',
-])
-
-export function isUserRequestTool(toolName: string): boolean {
-  return USER_REQUEST_TOOLS.has(toolName)
+export function shouldHideToolStatusInChat(toolName: string): boolean {
+  return getToolPresentation(toolName).hideToolStatusInChat
 }
 
 /**
