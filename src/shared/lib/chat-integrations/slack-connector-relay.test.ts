@@ -195,11 +195,18 @@ describe('SlackConnector through the webhook', () => {
     expect(inputs).toEqual([])
   })
 
-  it('without a relay, connects for sending only and reports itself disconnected so it is rebuilt', async () => {
-    const instance = await connected(webhookConfig({ appToken: 'xapp-1' }), null)
+  it('fails to connect without a relay, so the manager retries it as through any outage', async () => {
+    await expect(connected(webhookConfig({ appToken: 'xapp-1' }), null)).rejects.toThrow(/webhook relay is unavailable/)
+    // Its app no longer delivers over Socket Mode, so no socket was opened.
     expect(slack.sockets.started).toBe(0)
-    expect(instance.isConnected()).toBe(false)
-    expect(instance.activeTransport()).toBeNull()
+  })
+
+  it('handles a post the endpoint checked against the secret before this one, without vouching for this one', async () => {
+    const instance = await connected(webhookConfig({ webhookStatus: undefined }))
+    const held = messageEvent('sent before the secret was rotated')
+    expect((await deliver([held, 'old-secret', { edgeVerified: true }])).get(`whe_${held.event_id}`)).toBe('accepted')
+    expect(inputs).toHaveLength(1)
+    expect(recordSlackWebhookStatus).not.toHaveBeenCalled()
     await instance.disconnect()
   })
 
@@ -239,22 +246,32 @@ describe('SlackConnector moving from Socket Mode to the webhook', () => {
     expect(slack.sockets.closed).toBe(0)
     expect(instance.activeTransport()).toBe('direct')
 
-    // A post the endpoint accepted was signed before the secret changed: not the saved secret's fault.
+    // Slack signs every request: an unsigned URL check is anyone's who learned the URL.
     vi.mocked(recordSlackWebhookStatus).mockClear()
     const second = await connected(pending())
-    await deliver([messageEvent('old'), 'old-secret', { edgeVerified: true }])
+    await deliver([{ type: 'url_verification', challenge: 'c3' }, null, { handshake: true }])
     expect(recordSlackWebhookStatus).not.toHaveBeenCalled()
     await instance.disconnect()
     await second.disconnect()
   })
 
-  it('receives through the webhook alone if the socket can’t open', async () => {
+  it('keeps retrying a socket that didn’t open while waiting for the webhook, and reports itself down meanwhile', async () => {
     slack.sockets.failStart = true
     const instance = await connected(pending())
-    expect(instance.activeTransport()).toBe('relay')
+    // Slack may still deliver over Socket Mode: down until the socket is.
+    expect(instance.isConnected()).toBe(false)
+    expect(instance.activeTransport()).toBeNull()
+    // The webhook stays attached for Slack's first post.
     await deliver([messageEvent('via webhook'), SECRET])
     expect(inputs).toHaveLength(1)
     await instance.disconnect()
+
+    slack.sockets.failStart = false
+    vi.mocked(SocketModeClient.prototype.start).mockImplementationOnce(async () => { throw new Error('blip') })
+    const retried = await connected(pending())
+    await vi.waitFor(() => expect(retried.isConnected()).toBe(true), { timeout: 3000 })
+    expect(retried.activeTransport()).toBe('direct')
+    await retried.disconnect()
   })
 
   it('still fails a Socket Mode connect that has no webhook to fall back on', async () => {

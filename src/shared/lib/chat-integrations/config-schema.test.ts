@@ -78,11 +78,11 @@ describe('slackConfigSchema', () => {
     expect(merged).toEqual({ botToken: 'xoxb-123', appToken: 'xapp-456', signingSecret: 'secret' })
   })
 
-  it('forgets that posts verified when the signing secret changes', () => {
-    const stored = JSON.stringify({ botToken: 'xoxb-123', signingSecret: 'secret', relay, webhookStatus: 'verified' })
-    expect(mergeChatIntegrationConfig('slack', stored, { onlyMentioned: true })).toMatchObject({ webhookStatus: 'verified' })
-    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: ' secret ' })).toMatchObject({ webhookStatus: 'verified' })
-    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: '••••••••' })).toMatchObject({ webhookStatus: 'verified' })
+  it('forgets what posts showed whenever a signing secret is saved, even the same one', () => {
+    const stored = JSON.stringify({ botToken: 'xoxb-123', signingSecret: 'secret', relay, webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { onlyMentioned: true })).toMatchObject({ webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: '••••••••' })).toMatchObject({ webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: ' secret ' })).not.toHaveProperty('webhookStatus')
     expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: 'rotated' })).not.toHaveProperty('webhookStatus')
   })
 })

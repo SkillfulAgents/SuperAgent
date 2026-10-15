@@ -59,7 +59,7 @@ describe('SlackSetup', () => {
     fireEvent.change(screen.getByLabelText('Bot Token'), { target: { value: 'xoxb-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(state.requests[1]).toEqual({ url: '/api/agent-integrations/int-9', method: 'PATCH', body: { status: 'active', showToolCalls: false, sessionTimeout: null, config: { botToken: 'xoxb-1', signingSecret: 'secret', onlyMentioned: true } } })
+    expect(state.requests[1]).toEqual({ url: '/api/agent-integrations/int-9', method: 'PATCH', body: { status: 'active', showToolCalls: false, sessionTimeout: null, config: { botToken: 'xoxb-1', signingSecret: 'secret', onlyMentioned: true, answerInThread: false, newSessionPerThread: false } } })
   })
 
   it('uses Socket Mode without a relay, or when webhooks are turned off', async () => {

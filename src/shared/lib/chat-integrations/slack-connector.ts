@@ -502,6 +502,9 @@ export class SlackConnector extends ChatAgentIntegration {
     this.socketMode = !!appToken && this.webhookStatus !== 'verified'
     if (!this.socketMode && !webhook) throw new Error('Slack needs an app-level token for Socket Mode, or its webhooks set up')
     const relay = webhook ? this.host.relay : null
+    // Nothing else can bring Slack's posts in; they wait on the relay, and the
+    // manager retries this connect as it would through a network outage.
+    if (!this.socketMode && !relay) throw new Error('Slack delivers to this agent’s webhook, but the webhook relay is unavailable')
 
     // Fail fast on the underlying API calls (auth.test, apps.connections.open):
     // retry pacing belongs to our loop below and to the manager's health-check
@@ -744,15 +747,17 @@ export class SlackConnector extends ChatAgentIntegration {
     }
 
     // Start Socket Mode (requires valid app-level token with connections:write)
+    let socketOpen = false
     if (this.socketMode && !this.disconnecting) {
       try {
         await app.start()
+        socketOpen = true
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        // The app may already post to the webhook, which keeps this connection receiving.
         if (!this.relayAttachment) throw new Error(`Slack Socket Mode failed to start (check app-level token and connections:write scope): ${msg}`)
-        console.warn(`[SlackConnector] Socket Mode failed to start; receiving through the webhook only: ${msg}`)
-        this.socketMode = false
+        // Until a post to the webhook verifies, the app may still be on Socket
+        // Mode: keep trying it, while the webhook stays attached for that post.
+        console.warn(`[SlackConnector] Socket Mode failed to start; retrying while waiting for Slack’s first post to the webhook: ${msg}`)
       }
       // A post to the webhook verified while the socket was opening.
       if (!this.socketMode) void receiver?.client.disconnect().catch(() => {})
@@ -765,10 +770,10 @@ export class SlackConnector extends ChatAgentIntegration {
       throw new Error('Slack connector was disconnected during connect')
     }
     this.started = this.socketMode
-    this.connected = this.socketMode
-    if (this.socketMode) console.log(`[SlackConnector] Socket Mode connected${this.relayAttachment ? ', waiting for Slack’s first post to the webhook' : ''}`)
-    else if (this.relayAttachment) console.log(`[SlackConnector] Receiving through the webhook for ${this.integration?.id}`)
-    else console.warn(`[SlackConnector] ${this.integration?.id} receives through its webhook, but the webhook relay is unavailable; posts wait on it until it’s back`)
+    this.connected = this.socketMode && socketOpen
+    if (this.socketMode && !socketOpen) this.scheduleReconnect()
+    else if (this.socketMode) console.log(`[SlackConnector] Socket Mode connected${this.relayAttachment ? ', waiting for Slack’s first post to the webhook' : ''}`)
+    else console.log(`[SlackConnector] Receiving through the webhook for ${this.integration?.id}`)
   }
 
   /** The installation's webhook, once it's set up; only a connector built for an installation uses it. */
@@ -873,12 +878,14 @@ export class SlackConnector extends ChatAgentIntegration {
   }
 
   isConnected(): boolean {
+    // Until a post to the webhook verifies, the socket is what Slack delivers to.
+    if (this.socketMode) return this.connected
     // Through the webhook, posts wait on the relay while it's down, so being attached is enough.
-    return this.connected || !!this.relayAttachment?.isAttached()
+    return !!this.relayAttachment?.isAttached()
   }
 
   activeTransport() {
-    if (this.socketMode && this.connected) return 'direct' as const
+    if (this.socketMode) return this.connected ? 'direct' as const : null
     return this.relayAttachment?.isAttached() ? 'relay' as const : null
   }
 
@@ -1369,11 +1376,12 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!app || this.disconnecting || generation !== this.generation) return 'retry'
     const check = checkSlackWebhook(event, signingSecret)
     if (!check.ok) {
-      if (check.reason === 'signature') this.webhookRejected(event, check.edgeVerified, signingSecret, endpointId)
+      if (check.reason === 'signature') this.webhookRejected(event, check.signed, signingSecret, endpointId)
       else console.warn(`[SlackConnector] Discarding relayed post ${event.id}: malformed`)
       return 'discard'
     }
-    this.webhookVerified(signingSecret, endpointId)
+    // One the endpoint checked against the secret before this one says nothing about this one.
+    if (check.verifiedBy === 'host') this.webhookVerified(signingSecret, endpointId)
     // Slack checking the URL: the endpoint answered it.
     if (check.kind === 'handshake') return 'discard'
 
@@ -1405,12 +1413,12 @@ export class SlackConnector extends ChatAgentIntegration {
     this.retireSocket()
   }
 
-  /** A post whose signature doesn't match the saved secret. */
-  private webhookRejected(event: RelayEvent, edgeVerified: boolean, signingSecret: string, endpointId: string): void {
+  /** A post the endpoint didn't vouch for, whose signature doesn't match the saved secret. */
+  private webhookRejected(event: RelayEvent, signed: boolean, signingSecret: string, endpointId: string): void {
     console.warn(`[SlackConnector] Discarding relayed post ${event.id}: its signature doesn't match the signing secret`)
-    // Once posts have verified, a mismatch isn't the app's. One the endpoint
-    // accepted was signed before the secret changed.
-    if (this.webhookStatus || edgeVerified) return
+    // Once posts have verified, a mismatch isn't the app's; Slack signs every
+    // request, so an unsigned one isn't either.
+    if (this.webhookStatus || !signed) return
     this.webhookStatus = 'rejected'
     this.recordWebhookStatus('rejected', signingSecret, endpointId)
   }

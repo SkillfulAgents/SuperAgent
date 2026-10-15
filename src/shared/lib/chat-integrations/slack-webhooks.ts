@@ -18,27 +18,17 @@ import { z } from 'zod'
 import { db } from '../db'
 import { changesOf } from '../db/batch'
 import { chatIntegrations } from '../db/schema'
-import { webhookEnvelopeSchema, type VerificationProfile } from '../services/webhook-endpoint-schema'
+import { webhookEnvelopeSchema } from '../services/webhook-endpoint-schema'
 import { WebhookRelayUnavailableError, getWebhookRelay, type RelayEvent } from '../webhook-relay'
 import { removeIntegrationWebhooks, setUpIntegrationWebhooks } from '../agent-integrations/relay-transport'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import { integrationRelayBindingSchema, type IntegrationRelayBinding } from '../agent-integrations/transport'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
-import { mergeChatIntegrationConfig, parseChatIntegrationConfig, slackConfigFieldsSchema, slackConfigSchema, type SlackConfig } from './config-schema'
+import { isMaskedCredential, mergeChatIntegrationConfig, parseChatIntegrationConfig, slackConfigFieldsSchema, slackConfigSchema, type SlackConfig } from './config-schema'
 import { chatDefinitions } from './definitions'
+import { slackVerificationProfile } from './slack-verification'
 
-/** How the endpoint checks Slack's v0 signature: `v0=` hex HMAC-SHA256 of `v0:{timestamp}:{body}`. */
-export function slackVerificationProfile(signingSecret: string): VerificationProfile {
-  return {
-    algorithm: 'hmac-sha256',
-    encoding: 'hex',
-    header: 'x-slack-signature',
-    prefix: 'v0=',
-    template: 'v0:{timestamp}:{body}',
-    timestamp_header: 'x-slack-request-timestamp',
-    secret: signingSecret,
-  }
-}
+export { slackVerificationProfile }
 
 /** The endpoint checks posts against this signing secret from now on. */
 export async function updateSlackWebhookSecret(relay: IntegrationRelayBinding, signingSecret: string): Promise<void> {
@@ -78,20 +68,27 @@ export async function recordSlackWebhookStatus(
 const slackBodySchema = z.object({ type: z.string().min(1) }).loose()
 export type SlackRequestBody = z.infer<typeof slackBodySchema>
 
+/**
+ * `verifiedBy`: `host` when the post matches the saved secret; `endpoint`
+ * when it doesn't, but the endpoint checked it as it arrived (it was signed
+ * with the secret before this one). `signed`: the post carried a signature at
+ * all, as Slack's always do.
+ */
 export type SlackWebhookCheck =
-  | { ok: true; kind: 'handshake' }
-  | { ok: true; kind: 'request'; body: SlackRequestBody }
+  | { ok: true; kind: 'handshake'; verifiedBy: 'host' }
+  | { ok: true; kind: 'request'; body: SlackRequestBody; verifiedBy: 'host' | 'endpoint' }
   | { ok: false; reason: 'malformed' }
-  /** `edgeVerified`: the endpoint accepted its signature as it arrived, so the secret has changed since. */
-  | { ok: false; reason: 'signature'; edgeVerified: boolean }
+  | { ok: false; reason: 'signature'; signed: boolean }
 
 function header(headers: Record<string, string> | undefined, name: string): string | undefined {
   return Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1]
 }
 
 /**
- * A relayed post's body, if Slack signed it with this secret. Interactivity
- * posts are form-encoded (`payload=<json>`); events are JSON.
+ * A relayed post's body, if Slack signed it: with this secret, or with the
+ * one the endpoint checked it against as it arrived. Slack's URL check skips
+ * the endpoint's verification, so only this secret verifies it.
+ * Interactivity posts are form-encoded (`payload=<json>`); events are JSON.
  */
 export function checkSlackWebhook(event: RelayEvent, signingSecret: string): SlackWebhookCheck {
   const envelope = webhookEnvelopeSchema.safeParse(event.payload)
@@ -102,17 +99,16 @@ export function checkSlackWebhook(event: RelayEvent, signingSecret: string): Sla
   const timestamp = Number(header(headers, 'x-slack-request-timestamp'))
   // Fresh as of when the endpoint received it, however long it then waited.
   const receivedMs = Date.parse(receivedAt ?? event.createdAt)
-  const edgeVerified = envelope.data.verified
-  if (!signature || !Number.isFinite(timestamp)) return { ok: false, reason: 'signature', edgeVerified }
-  const valid = isValidSlackRequest({
+  const valid = !!signature && Number.isFinite(timestamp) && isValidSlackRequest({
     signingSecret,
     body: raw,
     headers: { 'x-slack-signature': signature, 'x-slack-request-timestamp': timestamp },
     nowMilliseconds: Number.isFinite(receivedMs) ? receivedMs : Date.now(),
   })
-  if (!valid) return { ok: false, reason: 'signature', edgeVerified }
+  const handshake = envelope.data.kind === 'handshake'
+  if (!valid && (handshake || !envelope.data.verified)) return { ok: false, reason: 'signature', signed: !!signature }
   // Slack checking the URL, which the endpoint already answered.
-  if (envelope.data.kind === 'handshake') return { ok: true, kind: 'handshake' }
+  if (handshake) return { ok: true, kind: 'handshake', verifiedBy: 'host' }
 
   let body: unknown
   try {
@@ -122,7 +118,7 @@ export function checkSlackWebhook(event: RelayEvent, signingSecret: string): Sla
     return { ok: false, reason: 'malformed' }
   }
   const parsed = slackBodySchema.safeParse(body)
-  return parsed.success ? { ok: true, kind: 'request', body: parsed.data } : { ok: false, reason: 'malformed' }
+  return parsed.success ? { ok: true, kind: 'request', body: parsed.data, verifiedBy: valid ? 'host' : 'endpoint' } : { ok: false, reason: 'malformed' }
 }
 
 /**
@@ -141,12 +137,17 @@ const settingsInputSchema = z.object({
 
 const installation = (id: string) => and(eq(chatIntegrations.id, id), eq(chatIntegrations.provider, 'slack'))
 
-/** Stores the endpoint unless the installation has one by now. */
-async function saveWebhook(integrationId: string, relay: IntegrationRelayBinding): Promise<void> {
+/**
+ * Stores the endpoint with the secret it checks posts against, unless the
+ * installation has one by now. Together, so a change that fails after this
+ * can't leave webhooks without their secret.
+ */
+async function saveWebhook(integrationId: string, relay: IntegrationRelayBinding, signingSecret: string): Promise<void> {
   const binding = JSON.stringify(integrationRelayBindingSchema.parse(relay))
+  const secret = slackConfigFieldsSchema.shape.signingSecret.unwrap().parse(signingSecret)
   // Only these fields, so a concurrent settings edit is kept.
   const result = await db.update(chatIntegrations)
-    .set({ config: sql`json_remove(json_set(${chatIntegrations.config}, '$.relay', json(${binding})), '$.webhookStatus')`, updatedAt: new Date() })
+    .set({ config: sql`json_remove(json_set(${chatIntegrations.config}, '$.relay', json(${binding}), '$.signingSecret', ${secret}), '$.webhookStatus')`, updatedAt: new Date() })
     .where(and(installation(integrationId), isNull(sql`json_extract(${chatIntegrations.config}, '$.relay')`))).run()
   if (changesOf(result) === 0) throw new IntegrationSetupError('Webhooks are already set up')
 }
@@ -160,33 +161,61 @@ async function forgetWebhook(integrationId: string, appToken?: string): Promise<
     .where(installation(integrationId)).run()
 }
 
+/** A credential this change supplies: present, and not a masked placeholder. */
+function supplied(patch: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = patch?.[key]
+  return typeof value === 'string' && value.trim() && !isMaskedCredential(value) ? value.trim() : undefined
+}
+
+/** A bot token is checked before it's saved, so a mistyped one can't strand an installation that has none yet. */
+async function checkBotToken(botToken: string): Promise<void> {
+  let result: { ok?: boolean; error?: string }
+  try {
+    const response = await fetch('https://slack.com/api/auth.test', { headers: { Authorization: `Bearer ${botToken}` }, signal: AbortSignal.timeout(15_000) })
+    result = z.object({ ok: z.boolean(), error: z.string().optional() }).loose().parse(await response.json())
+  } catch {
+    throw new IntegrationSetupError('Couldn’t reach Slack to check the bot token. Try again.')
+  }
+  if (!result.ok) throw new IntegrationSetupError(`Bot token invalid: ${result.error ?? 'unknown error'}`)
+}
+
 /**
  * Settings that set webhooks up (`webhooks: true`, with a signing secret
  * saved or in the same change), remove them (`webhooks: false`, with an
- * app-level token for Socket Mode), or give the endpoint a new signing secret.
+ * app-level token for Socket Mode), or give the endpoint a signing secret.
  * The app itself is switched in Slack, by its owner.
  */
 export async function updateSlackWebhookSettings(record: AgentIntegrationRecord, input: unknown): Promise<{ reconnect: boolean }> {
   const { settings, config: patch } = settingsInputSchema.parse(input)
+  const webhooks = settings?.webhooks
+  const secret = supplied(patch, 'signingSecret')
+  const botToken = supplied(patch, 'botToken')
+  // Anything else (other settings, pausing, repairing an unreadable row) isn't this function's.
+  if (webhooks === undefined && !secret && !botToken) return { reconnect: false }
   const stored = parseChatIntegrationConfig('slack', record.config) as SlackConfig | null
-  if (!stored) throw new IntegrationSetupError('This Slack integration’s settings can’t be read. Remove it and set it up again.')
+  if (!stored) {
+    if (webhooks !== undefined) throw new IntegrationSetupError('This Slack integration’s settings can’t be read. Fix its tokens first.')
+    return { reconnect: false }
+  }
+  if (botToken && !stored.botToken) await checkBotToken(botToken)
   // What the installation holds once this change's config is saved.
   const next = patch ? mergeChatIntegrationConfig('slack', record.config, patch) as SlackConfig : stored
-  const newSecret = next.signingSecret !== stored.signingSecret ? next.signingSecret : undefined
-  const webhooks = settings?.webhooks
 
   if (webhooks === true && !stored.relay) {
     if (!next.signingSecret) throw new IntegrationSetupError('Paste the app’s signing secret first. It’s how this agent knows a request came from Slack.')
-    await setUpIntegrationWebhooks(record, chatDefinitions.slack, relay => saveWebhook(record.id, relay), slackVerificationProfile(next.signingSecret))
+    const signingSecret = next.signingSecret
+    await setUpIntegrationWebhooks(record, chatDefinitions.slack, relay => saveWebhook(record.id, relay, signingSecret), slackVerificationProfile(signingSecret))
     return { reconnect: true }
   }
   if (webhooks === false && stored.relay) {
+    if (!next.botToken) throw new IntegrationSetupError('Finish setting up the Slack app first.')
     if (!next.appToken) throw new IntegrationSetupError('Paste the app-level token first. Without webhooks, Slack delivers over Socket Mode.')
     await removeIntegrationWebhooks(record, () => forgetWebhook(record.id, next.appToken !== stored.appToken ? next.appToken : undefined))
     return { reconnect: true }
   }
-  if (newSecret && stored.relay) {
-    await updateSlackWebhookSecret(stored.relay, newSecret)
+  // Saving the secret again also repairs an endpoint that never got it.
+  if (secret && stored.relay) {
+    await updateSlackWebhookSecret(stored.relay, secret)
     return { reconnect: true }
   }
   return { reconnect: false }

@@ -39,6 +39,7 @@ vi.mock('@shared/lib/webhook-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/webhook-relay')>()),
   getWebhookRelay: () => ({ createEndpoint: relay.create, updateEndpoint: relay.update, disableEndpoint: relay.disable, register: vi.fn() }),
 }))
+import { sql } from 'drizzle-orm'
 import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { slackVerificationProfile } from '@shared/lib/chat-integrations/slack-webhooks'
 import router from './agent-integrations'
@@ -54,11 +55,14 @@ async function stored(id: string) {
   return { status: row.status, config: JSON.parse(row.config) }
 }
 
+const slackApi = vi.hoisted(() => ({ authTest: { ok: true } as Record<string, unknown> }))
 beforeEach(async () => {
   vi.clearAllMocks(); handle = await createTestDatabase(); testDb = handle.db
   vi.stubEnv('HOST_PUBLIC_URL', 'https://public.example/')
+  slackApi.authTest = { ok: true }
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json(slackApi.authTest)))
 })
-afterEach(async () => { await handle.close(); vi.unstubAllEnvs() })
+afterEach(async () => { await handle.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals() })
 
 it('creates a Slack installation with its webhook URL before the app exists, then connects it with the app’s credentials', async () => {
   const created = await create({ webhooks: true, onlyMentioned: true })
@@ -75,6 +79,30 @@ it('creates a Slack installation with its webhook URL before the app exists, the
   expect(runtime.resume).toHaveBeenCalledWith(row.id)
   expect((await stored(row.id)).config).toMatchObject({ botToken: 'xoxb-1', signingSecret: 'signing-secret', onlyMentioned: true, relay: { endpointId: 'whep_1' } })
   expect(await finished.json()).toMatchObject({ hasCredentials: true, slack: { botTokenSaved: true, signingSecretSaved: true } })
+})
+
+it('keeps a waiting installation as it was when its bot token is mistyped', async () => {
+  const row = await (await create({ webhooks: true })).json()
+  slackApi.authTest = { ok: false, error: 'invalid_auth' }
+  const typo = await patch(row.id, { config: { botToken: 'xoxb-typo', signingSecret: 'signing-secret' }, status: 'active' })
+  expect(typo.status).toBe(400)
+  expect((await typo.json()).error).toBe('Bot token invalid: invalid_auth')
+  expect(runtime.resume).not.toHaveBeenCalled()
+  expect(await stored(row.id)).toMatchObject({ status: 'disconnected', config: { relay: { endpointId: 'whep_1' } } })
+  expect((await stored(row.id)).config).not.toHaveProperty('botToken')
+})
+
+it('mints the endpoint checking Slack’s signatures when the app’s credentials come with the create', async () => {
+  const created = await create({ webhooks: true, botToken: 'xoxb-1', signingSecret: 'signing-secret' })
+  expect(created.status).toBe(201)
+  expect(relay.create).toHaveBeenCalledExactlyOnceWith('sub_owner', { name: 'Slack integration for agent', verification: slackVerificationProfile('signing-secret') })
+  expect(runtime.add).toHaveBeenCalled()
+})
+
+it('still pauses a Slack row whose config it can’t read', async () => {
+  const row = await (await create({ botToken: 'xoxb-1', appToken: 'xapp-1' })).json()
+  await testDb.run(sql`update chat_integrations set config = '{"onlyMentioned":true}' where id = ${row.id}`)
+  expect((await patch(row.id, { status: 'paused' })).status).toBe(200)
 })
 
 it('sets webhooks up on a Socket Mode installation, and removes them again', async () => {

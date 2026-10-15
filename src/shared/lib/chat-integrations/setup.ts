@@ -3,6 +3,7 @@ import type { IntegrationProviderSetup } from '../agent-integrations/setup-types
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import { IMESSAGE_GATEWAY_URL, imessageSetupSchema, slackConfigFieldsSchema, slackConfigSchema, withoutHostOwnedConfig, type ChatProvider } from './config-schema'
 
+import { slackVerificationProfile } from './slack-verification'
 import { inputSchema, telegramResultSchema, slackResultSchema, tokenResultSchema, telegramTestInputSchema, slackTestInputSchema, slackSetupInputSchema } from './setup-schema'
 
 /** Both user and agent creation paths use these hooks; API code never exchanges credentials. */
@@ -64,5 +65,9 @@ function prepareSlack(input: Record<string, unknown>) {
   // The endpoint is added to it before it's stored.
   const parsed = slackConfigFieldsSchema.parse(config)
   const ready = !!parsed.botToken && !!parsed.signingSecret
-  return { config: inputSchema.parse(parsed), relay: true, ...(ready ? {} : { status: 'disconnected' as const }) }
+  return {
+    config: inputSchema.parse(parsed), relay: true,
+    ...(parsed.signingSecret ? { verification: slackVerificationProfile(parsed.signingSecret) } : {}),
+    ...(ready ? {} : { status: 'disconnected' as const }),
+  }
 }

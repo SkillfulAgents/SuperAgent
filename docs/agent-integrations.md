@@ -265,19 +265,25 @@ The endpoint carries a Slack v0 verification profile (`slackVerificationProfile`
 so forgeries are refused as they arrive. The host verifies each post again with
 `isValidSlackRequest`, as of the post's `received_at`, because a claim can come
 long after the post, and because Slack's URL check skips the endpoint's
-verification.
+verification. A post that fails the host's check but that the endpoint
+verified was signed with the previous secret (it arrived before a rotation),
+so it is still handled; it just doesn't count toward `webhookStatus`.
 
 A connection with webhooks keeps Socket Mode (when it has an app-level token)
-until a post through the relay verifies. Slack signs its URL check, so saving
-the request URL is enough. That post records `webhookStatus: 'verified'` and
-closes the socket; later connections receive through the relay only. A URL
-check that fails verification records `rejected`, and the card asks for the
-secret again. A new signing secret clears the status and updates the
-endpoint's profile.
+until a post the host itself verifies arrives through the relay. Slack signs
+its URL check, so saving the request URL is enough. That post records
+`webhookStatus: 'verified'` and closes the socket; later connections receive
+through the relay only. Until then the socket is what reports the connection's
+health, and a socket that fails to open keeps retrying while the relay stays
+attached for that first post. A signed URL check that fails verification
+records `rejected`, and the card asks for the secret again; an unsigned one
+isn't Slack's and changes nothing. Saving a signing secret, even the same one,
+clears the status and gives the endpoint that secret. Finishing a webhook-first
+installation checks its bot token with `auth.test` before saving it.
 
-Without a relay, a verified installation still connects for sending, but it
-reports itself disconnected, so health checks rebuild it until the relay is
-back. Relayed bodies go through `app.processEvent()`, into the same Bolt
+Without a relay, a verified installation has nothing to receive through, so its
+connect fails, and the manager retries it as it would through a network
+outage. Relayed bodies go through `app.processEvent()`, into the same Bolt
 handlers as Socket Mode. They are deduplicated on `event_id` / `trigger_id`.
 Answer buttons carry their request in the button value, so a click that
 reaches another connection, or arrives after a restart, still answers.

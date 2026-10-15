@@ -68,12 +68,12 @@ describe('slackVerificationProfile', () => {
 
 describe('checkSlackWebhook', () => {
   it('reads a signed event, in either body encoding', () => {
-    expect(checkSlackWebhook(relayedSlackPost(message, SECRET), SECRET)).toEqual({ ok: true, kind: 'request', body: message })
-    expect(checkSlackWebhook(relayedSlackPost(message, SECRET, { base64: true }), SECRET)).toEqual({ ok: true, kind: 'request', body: message })
+    expect(checkSlackWebhook(relayedSlackPost(message, SECRET), SECRET)).toEqual({ ok: true, kind: 'request', body: message, verifiedBy: 'host' })
+    expect(checkSlackWebhook(relayedSlackPost(message, SECRET, { base64: true }), SECRET)).toEqual({ ok: true, kind: 'request', body: message, verifiedBy: 'host' })
   })
 
   it('reads a signed interaction from its form-encoded payload', () => {
-    expect(checkSlackWebhook(relayedSlackPost(click, SECRET, { form: true }), SECRET)).toEqual({ ok: true, kind: 'request', body: click })
+    expect(checkSlackWebhook(relayedSlackPost(click, SECRET, { form: true }), SECRET)).toEqual({ ok: true, kind: 'request', body: click, verifiedBy: 'host' })
   })
 
   it('checks freshness as of when the endpoint received the post, not when it is claimed', () => {
@@ -82,21 +82,28 @@ describe('checkSlackWebhook', () => {
     expect(checkSlackWebhook(claimedLate, SECRET).ok).toBe(true)
     // Already stale when it arrived: a replay.
     const replayed = relayedSlackPost(message, SECRET, { timestamp: hourAgo })
-    expect(checkSlackWebhook(replayed, SECRET)).toEqual({ ok: false, reason: 'signature', edgeVerified: false })
+    expect(checkSlackWebhook(replayed, SECRET)).toEqual({ ok: false, reason: 'signature', signed: true })
   })
 
-  it('rejects another secret, a missing signature, or a changed body, saying whether the endpoint had accepted it', () => {
-    expect(checkSlackWebhook(relayedSlackPost(message, 'other-secret'), SECRET)).toEqual({ ok: false, reason: 'signature', edgeVerified: false })
-    expect(checkSlackWebhook(relayedSlackPost(message, null), SECRET)).toEqual({ ok: false, reason: 'signature', edgeVerified: false })
-    const tampered = relayedSlackPost(message, SECRET, { edgeVerified: true })
+  it('rejects another secret, a missing signature, or a changed body', () => {
+    expect(checkSlackWebhook(relayedSlackPost(message, 'other-secret'), SECRET)).toEqual({ ok: false, reason: 'signature', signed: true })
+    expect(checkSlackWebhook(relayedSlackPost(message, null), SECRET)).toEqual({ ok: false, reason: 'signature', signed: false })
+    const tampered = relayedSlackPost(message, SECRET)
     ;(tampered.payload as { body: string }).body = JSON.stringify({ ...message, event: { ...message.event, text: 'transfer' } })
-    expect(checkSlackWebhook(tampered, SECRET)).toEqual({ ok: false, reason: 'signature', edgeVerified: true })
+    expect(checkSlackWebhook(tampered, SECRET)).toEqual({ ok: false, reason: 'signature', signed: true })
   })
 
-  it('verifies Slack’s URL check like any post, then reports it as the handshake', () => {
+  it('accepts a post the endpoint checked as it arrived, signed with the secret before this one', () => {
+    expect(checkSlackWebhook(relayedSlackPost(message, 'old-secret', { edgeVerified: true }), SECRET))
+      .toEqual({ ok: true, kind: 'request', body: message, verifiedBy: 'endpoint' })
+  })
+
+  it('verifies Slack’s URL check like any post, then reports it as the handshake; the endpoint never checks those', () => {
     const challenge = { type: 'url_verification', token: 't', challenge: 'abc' }
-    expect(checkSlackWebhook(relayedSlackPost(challenge, SECRET, { handshake: true }), SECRET)).toEqual({ ok: true, kind: 'handshake' })
-    expect(checkSlackWebhook(relayedSlackPost(challenge, 'other-secret', { handshake: true }), SECRET)).toMatchObject({ ok: false, reason: 'signature' })
+    expect(checkSlackWebhook(relayedSlackPost(challenge, SECRET, { handshake: true }), SECRET)).toEqual({ ok: true, kind: 'handshake', verifiedBy: 'host' })
+    expect(checkSlackWebhook(relayedSlackPost(challenge, 'other-secret', { handshake: true }), SECRET)).toEqual({ ok: false, reason: 'signature', signed: true })
+    expect(checkSlackWebhook(relayedSlackPost(challenge, 'other-secret', { handshake: true, edgeVerified: true }), SECRET)).toMatchObject({ ok: false, reason: 'signature' })
+    expect(checkSlackWebhook(relayedSlackPost(challenge, null, { handshake: true }), SECRET)).toEqual({ ok: false, reason: 'signature', signed: false })
   })
 
   it('rejects bodies that are not Slack requests, even signed', () => {
@@ -164,15 +171,60 @@ describe('updateSlackWebhookSettings', () => {
     expect(relayEndpoints.disable).toHaveBeenCalledWith('sub_owner', 'whep_9')
   })
 
-  it('gives the endpoint a new signing secret', async () => {
+  it('gives the endpoint the signing secret saved, even the same one again', async () => {
     const row = await installation({ botToken: 'xoxb-1', appToken: 'xapp-1', signingSecret: SECRET, relay })
     expect(await updateSlackWebhookSettings(row, { config: { signingSecret: 'new-secret' } })).toEqual({ reconnect: true })
     expect(relayEndpoints.update).toHaveBeenCalledWith('sub_owner', 'whep_9', { verification: slackVerificationProfile('new-secret') })
 
-    // The same secret again, or other settings, leave the endpoint alone.
+    // Saved again, it repairs an endpoint that never got it.
     vi.clearAllMocks()
-    expect(await updateSlackWebhookSettings(row, { config: { signingSecret: SECRET, onlyMentioned: true } })).toEqual({ reconnect: false })
+    expect(await updateSlackWebhookSettings(row, { config: { signingSecret: SECRET } })).toEqual({ reconnect: true })
+    expect(relayEndpoints.update).toHaveBeenCalledWith('sub_owner', 'whep_9', { verification: slackVerificationProfile(SECRET) })
+
+    // A masked placeholder, or other settings, leave the endpoint alone.
+    vi.clearAllMocks()
+    expect(await updateSlackWebhookSettings(row, { config: { signingSecret: '••••••••', onlyMentioned: true } })).toEqual({ reconnect: false })
     expect(relayEndpoints.update).not.toHaveBeenCalled()
+  })
+
+  it('stores the secret with the endpoint, so webhooks never lack one', async () => {
+    const row = await installation({ botToken: 'xoxb-1', appToken: 'xapp-1' })
+    await updateSlackWebhookSettings(row, { settings: { webhooks: true }, config: { signingSecret: SECRET } })
+    expect(await storedConfig(row.id)).toMatchObject({ signingSecret: SECRET, relay: { endpointId: 'whep_1' } })
+  })
+
+  it('leaves other changes alone, even on a row it can’t read', async () => {
+    const id = await createAgentIntegration({ agentSlug: 'agent', provider: 'slack', config: { onlyMentioned: true }, createdByUserId: 'owner' })
+    const broken = (await getAgentIntegration(id))!
+    expect(await updateSlackWebhookSettings(broken, { status: 'paused' })).toEqual({ reconnect: false })
+    expect(await updateSlackWebhookSettings(broken, { config: { botToken: 'xoxb-1', appToken: 'xapp-1' } })).toEqual({ reconnect: false })
+    await expect(updateSlackWebhookSettings(broken, { settings: { webhooks: true } })).rejects.toBeInstanceOf(IntegrationSetupError)
+  })
+
+  it('removes webhooks only from an installation whose app is set up', async () => {
+    const waiting = await installation({ signingSecret: SECRET, relay })
+    await expect(updateSlackWebhookSettings(waiting, { settings: { webhooks: false }, config: { appToken: 'xapp-1' } })).rejects.toThrow(/Finish setting up/)
+    expect(relayEndpoints.disable).not.toHaveBeenCalled()
+    expect((await storedConfig(waiting.id)).relay).toEqual(relay)
+  })
+
+  it('checks a bot token before an installation without one saves it', async () => {
+    const fetch = vi.fn(async () => Response.json({ ok: false, error: 'invalid_auth' }))
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const waiting = await installation({ signingSecret: SECRET, relay })
+      await expect(updateSlackWebhookSettings(waiting, { config: { botToken: 'xoxb-typo', signingSecret: SECRET } })).rejects.toThrow('Bot token invalid: invalid_auth')
+      expect(fetch).toHaveBeenCalledWith('https://slack.com/api/auth.test', expect.objectContaining({ headers: { Authorization: 'Bearer xoxb-typo' } }))
+      expect(relayEndpoints.update).not.toHaveBeenCalled()
+
+      // A Socket Mode installation changing its token isn't checked here.
+      fetch.mockClear()
+      const socket = await installation({ botToken: 'xoxb-1', appToken: 'xapp-1' })
+      await updateSlackWebhookSettings(socket, { config: { botToken: 'xoxb-2' } })
+      expect(fetch).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('refuses a new signing secret while the relay can’t take it', async () => {

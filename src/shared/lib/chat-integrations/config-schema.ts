@@ -99,6 +99,11 @@ const configPatchSchema = z.record(z.string(), z.unknown())
 
 const MASKED_CREDENTIAL = /^(?:(?:\*|•){4,}(?:[A-Za-z0-9_-]{0,4})?|redacted|\[redacted\]|<redacted>)$/i
 
+/** A conventional placeholder for a credential the API never reads back. */
+export function isMaskedCredential(value: string): boolean {
+  return MASKED_CREDENTIAL.test(value)
+}
+
 const CREDENTIAL_FIELDS: Record<ChatProvider, readonly string[]> = {
   telegram: ['botToken'],
   slack: ['botToken', 'appToken', 'signingSecret'],
@@ -170,9 +175,7 @@ export function mergeChatIntegrationConfig(
   if (!stored) return validateChatIntegrationConfig(provider, unmaskedPatch)
 
   const merged: Record<string, unknown> = { ...stored, ...unmaskedPatch }
-  // Slack's posts haven't been seen to verify with a new signing secret yet.
-  if (provider === 'slack' && slackConfigSchema.shape.signingSecret.safeParse(merged.signingSecret).data !== (stored as SlackConfig).signingSecret) {
-    delete merged.webhookStatus
-  }
+  // A signing secret saved again (even the same one) hasn't been seen to verify yet.
+  if (provider === 'slack' && 'signingSecret' in unmaskedPatch) delete merged.webhookStatus
   return validateChatIntegrationConfig(provider, merged)
 }

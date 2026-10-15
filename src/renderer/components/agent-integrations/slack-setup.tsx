@@ -107,7 +107,9 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice }: IntegrationSetupP
     setBusy(true); setFeedback(null)
     try {
       await finish.mutateAsync({ id: created.id, status: 'active', showToolCalls: behavior.showToolCalls, sessionTimeout: behavior.sessionTimeout,
-        config: { botToken: botToken.trim(), signingSecret: signingSecret.trim(), ...slackBehaviorConfig(behavior) } })
+        // Every toggle, so one turned off after the installation was created is too.
+        config: { botToken: botToken.trim(), signingSecret: signingSecret.trim(), onlyMentioned: behavior.onlyMentioned,
+          answerInThread: behavior.answerInThread, newSessionPerThread: behavior.answerInThread && behavior.newSessionPerThread } })
       void queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) })
       onClose()
     } catch (error) {

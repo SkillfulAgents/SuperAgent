@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { chatProviderSetup } from './setup'
+import { slackVerificationProfile } from './slack-verification'
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, IMESSAGE_GATEWAY_URL } from './config-schema'
 const context = { agentSlug: 'agent', callbackUrl: 'https://host/callback' }
 afterEach(() => vi.unstubAllGlobals())
@@ -33,8 +34,9 @@ it('sets Slack up over Socket Mode with both tokens, or with webhooks before its
   // The endpoint is minted with the installation, which waits for the app's credentials.
   expect(await setup.prepare({ webhooks: true, onlyMentioned: true, relay: { endpointId: 'forged' }, webhookStatus: 'verified' }, context))
     .toEqual({ config: { onlyMentioned: true }, relay: true, status: 'disconnected' })
+  // With the signing secret already, the endpoint checks Slack's signatures from the start.
   expect(await setup.prepare({ webhooks: true, botToken: 'bot', signingSecret: 'secret' }, context))
-    .toEqual({ config: { botToken: 'bot', signingSecret: 'secret' }, relay: true })
+    .toEqual({ config: { botToken: 'bot', signingSecret: 'secret' }, relay: true, verification: slackVerificationProfile('secret') })
 })
 it('does not claim iMessage credentials are verified before exchanging the code on creation', async () => {
   const fetch = vi.fn(async () => Response.json({ token: 'issued-token' }))
