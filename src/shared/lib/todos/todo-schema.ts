@@ -82,6 +82,16 @@ export const createTodoSchema = z
   })
 export type CreateTodoInput = z.infer<typeof createTodoSchema>
 
+/** What a todo says, to suggest an agent for it. */
+export const suggestTodoAgentSchema = z
+  .object({ title: titleSchema, description: descriptionSchema.default('') })
+  .strict()
+  .refine((todo) => todo.title.length > 0 || todo.description.trim().length > 0, {
+    message: 'A todo needs a title or a description',
+  })
+
+export type SuggestTodoAgentInput = z.infer<typeof suggestTodoAgentSchema>
+
 /**
  * Edits a draft. `agentSlug: null` unassigns. Assigning an agent clears
  * `newAgent` and setting `newAgent` clears the agent, so it is one or the

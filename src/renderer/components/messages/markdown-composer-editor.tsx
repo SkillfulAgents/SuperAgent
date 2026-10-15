@@ -47,6 +47,8 @@ export interface MarkdownComposerEditorProps {
   securedSecrets?: SecuredSecret[]
   onRemoveSecuredSecrets?: (secrets: SecuredSecret[]) => void
   onEditorElement?: (element: HTMLDivElement | null) => void
+  /** Shown at the end of the last line, outside the text. */
+  endWidget?: HTMLElement | null
 }
 
 const CARET_SENTINEL = '\u2063'
@@ -734,6 +736,32 @@ function buildSecretDecorationsPlugin(
   })
 }
 
+const endWidgetKey = new PluginKey<HTMLElement | null>('composer-end-widget')
+
+function buildEndWidgetPlugin(): Plugin<HTMLElement | null> {
+  return new Plugin<HTMLElement | null>({
+    key: endWidgetKey,
+    state: {
+      init: () => null,
+      apply: (tr, previous) => {
+        const next = tr.getMeta(endWidgetKey) as HTMLElement | null | undefined
+        return next === undefined ? previous : next
+      },
+    },
+    props: {
+      decorations: (state) => {
+        const element = endWidgetKey.getState(state)
+        if (!element) return null
+        // Inside the last textblock, so it sits on the last line rather than below it.
+        const end = TextSelection.atEnd(state.doc).from
+        return DecorationSet.create(state.doc, [
+          Decoration.widget(end, element, { side: 1, key: 'end-widget', ignoreSelection: true, stopEvent: () => true }),
+        ])
+      },
+    },
+  })
+}
+
 function setEditorA11yState(view: EditorView, placeholder: string, disabled: boolean) {
   const isEmpty = view.state.doc.childCount === 1
     && view.state.doc.firstChild?.type.name === 'paragraph'
@@ -769,6 +797,7 @@ export function MarkdownComposerEditor({
   securedSecrets = [],
   onRemoveSecuredSecrets,
   onEditorElement,
+  endWidget = null,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
     'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
@@ -820,6 +849,7 @@ export function MarkdownComposerEditor({
         history(),
         buildCaretSentinelPlugin(),
         secretPlugin,
+        buildEndWidgetPlugin(),
       ],
     })
 
@@ -1011,6 +1041,12 @@ export function MarkdownComposerEditor({
     if (!view) return
     view.dispatch(view.state.tr.setMeta(secretDecorationsMeta, true).setMeta('addToHistory', false))
   }, [potentialSecrets, securedSecrets])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || endWidgetKey.getState(view.state) === endWidget) return
+    view.dispatch(view.state.tr.setMeta(endWidgetKey, endWidget).setMeta('addToHistory', false))
+  }, [endWidget])
 
   return (
     <>

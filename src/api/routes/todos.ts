@@ -13,11 +13,13 @@
  */
 import { Hono, type Context } from 'hono'
 import type { z } from 'zod'
+import pLimit from 'p-limit'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
-import { agentExists } from '@shared/lib/services/agent-service'
+import { getConfiguredDecisionProvider } from '@shared/lib/decision'
+import { agentExists, listAgents } from '@shared/lib/services/agent-service'
 import { listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import {
   addSessionTodo,
@@ -35,6 +37,7 @@ import {
   updateDraft,
   type TodoWriteResult,
 } from '@shared/lib/services/todo-service'
+import { suggestTodoAgent } from '@shared/lib/todos/suggest-agent'
 import { isExperimentEnabled } from '@shared/lib/services/user-settings-service'
 import {
   addSessionTodoSchema,
@@ -44,6 +47,7 @@ import {
   releaseStartSchema,
   renameTodoSchema,
   startTodoSchema,
+  suggestTodoAgentSchema,
   todoAskFor,
   todoColumn,
   todoStatusChangeSchema,
@@ -157,6 +161,25 @@ todosRouter.post('/', async (c) => {
   }
   const row = await createTodo(getCurrentUserId(c), input)
   return c.json(await viewOf(c, row), 201)
+})
+
+// POST /api/todos/suggest-agent — which of the person's agents the decision
+// model ranks first for this todo. `null` when no decision model is set up or
+// it fails: the person picks, as without one.
+todosRouter.post('/suggest-agent', async (c) => {
+  const input = await parseBody(c, suggestTodoAgentSchema)
+  if (!input) return c.json({ error: 'Invalid todo' }, 400)
+  if (!getConfiguredDecisionProvider()) return c.json({ suggestion: null })
+  const records = await listAgents()
+  const readable = await getReadableAgentIds(c, records.map((record) => record.slug))
+  const limit = pLimit(5)
+  const candidates = await Promise.all(records.filter((record) => readable.has(record.slug)).map((record) => limit(async () => ({
+    slug: record.slug,
+    name: record.name,
+    description: record.description,
+    lastActivityAt: (await agentRegistry.get(record.slug).sessions.summary()).lastActivityAt,
+  }))))
+  return c.json({ suggestion: await suggestTodoAgent(input, candidates) })
 })
 
 // POST /api/todos/sessions — put a session that already exists on the board,

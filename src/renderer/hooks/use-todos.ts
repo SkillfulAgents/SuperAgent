@@ -5,6 +5,7 @@ import { handleMutationError } from '@renderer/lib/query-client'
 import type {
   AddSessionTodoInput,
   CreateTodoInput,
+  SuggestTodoAgentInput,
   TodoStatusChange,
   TodoView,
   UpdateTodoInput,
@@ -85,6 +86,17 @@ export function useCreateTodo() {
     mutationFn: (input: CreateTodoInput) => send<TodoView>('/api/todos', 'POST', input, 'Failed to save the draft'),
     onSuccess: (todo) => putTodo(queryClient, todo),
     onError: () => refreshBoard(queryClient),
+  })
+}
+
+/** The agent the decision model suggests for a todo, or null when there is none to suggest. */
+export function useSuggestTodoAgent() {
+  return useMutation({
+    mutationFn: async (input: SuggestTodoAgentInput) =>
+      (await send<{ suggestion: { agentSlug: string } | null }>('/api/todos/suggest-agent', 'POST', input, 'Failed to suggest an agent'))
+        .suggestion?.agentSlug ?? null,
+    // A failed suggestion opens the agent picker instead.
+    meta: { skipGlobalErrorToast: true },
   })
 }
 

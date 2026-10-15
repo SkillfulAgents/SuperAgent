@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { createPortal } from 'react-dom'
 import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { deriveTodoTitle, TODO_TITLE_MAX, type TodoAttachment } from '@shared/lib/todos/todo-schema'
@@ -27,6 +28,7 @@ import {
   useSetTodoStatus,
   useStartTodo,
   useStartingTodoIds,
+  useSuggestTodoAgent,
   useUpdateTodo,
   type TodoView,
 } from '@renderer/hooks/use-todos'
@@ -185,6 +187,15 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const deleteTodo = useDeleteTodo()
   const setTodoStatus = useSetTodoStatus()
   const startTodo = useStartTodo()
+  const suggestTodoAgent = useSuggestTodoAgent()
+  const [suggesting, setSuggesting] = useState(false)
+  // The suggested agent and the text it was picked for.
+  const [suggested, setSuggested] = useState<{ slug: string; text: string } | null>(null)
+  const [descriptionEnd] = useState(() => {
+    const slot = document.createElement('span')
+    slot.contentEditable = 'false'
+    return slot
+  })
   // A draft opened from the board is never mid-start (its card doesn't open
   // then), but its start may begin elsewhere while this is open.
   const alreadyStarting = useStartingTodoIds().has(initial?.id ?? '')
@@ -406,15 +417,15 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     },
   }
 
-  // What waits for the agent: dropped or pasted items, or (from the paperclip) the attach menu.
-  const [askAgent, setAskAgent] = useState<{ held: DataTransferResult | null } | null>(null)
+  // What waits for the agent: dropped or pasted items, the attach menu (from the paperclip), or Start.
+  const [askAgent, setAskAgent] = useState<{ held: DataTransferResult | null; toStart?: boolean } | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   // Attach once the picked agent has rendered, so the uploads go to it.
   useEffect(() => {
     if (!askAgent || !fields.agentSlug) return
     setAskAgent(null)
     if (askAgent.held) files.addItems(askAgent.held)
-    else setAttachMenuOpen(true)
+    else if (!askAgent.toStart) setAttachMenuOpen(true)
   // `files.addItems` is stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askAgent, fields.agentSlug])
@@ -431,6 +442,14 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   const hasAgent = !!agent || fields.newAgent
   const written = !!(fields.title.trim() || fields.description.trim() || files.attachments.length)
   const canStart = hasAgent && !alreadyStarting && written && !finishing && !saveBlocked
+  // Auto sits at the end of the last line written: the description's, else the title's.
+  const todoText = `${fields.title}\n${fields.description}`
+  // A suggested agent can be picked again once the text changes; one the person picked stays.
+  const canResuggest = !!suggested && suggested.slug === fields.agentSlug && suggested.text !== todoText &&
+    files.attachments.length === 0
+  const canAuto = (!hasAgent || canResuggest) && !alreadyStarting && !finishing && !saveBlocked
+  const autoInDescription = canAuto && !!fields.description.trim()
+  const autoAfterTitle = canAuto && !autoInDescription && !!fields.title.trim()
 
   // Model, effort and speed follow the chosen agent's defaults, as in the
   // composer, until the person picks; a pick is kept with the draft.
@@ -473,6 +492,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       trigger={
         agent ? (
           <Button variant="outline" size="sm" className="h-[34px] gap-1.5 text-xs" data-testid="todo-assign-agent">
+            {suggested?.slug === fields.agentSlug && <span className="text-muted-foreground">Suggested:</span>}
             <span className="max-w-[12rem] truncate">{agent.name}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </Button>
@@ -511,6 +531,38 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
     return ok
   }
 
+  // Fills in the agent the decision model picks; the person starts it. Without
+  // a suggestion, the person picks.
+  const suggestAgent = async () => {
+    if (suggesting) return
+    setSuggesting(true)
+    const { title, description, agentSlug: before } = fieldsRef.current
+    const slug = await suggestTodoAgent.mutateAsync({ title: title.trim(), description }).catch(() => null)
+    setSuggesting(false)
+    // The person picked an agent while this ran.
+    if (closingRef.current || fieldsRef.current.newAgent || fieldsRef.current.agentSlug !== before) return
+    if (slug && bySlug.has(slug)) {
+      setSuggested({ slug, text: `${title}\n${description}` })
+      if (slug !== before) change({ agentSlug: slug, newAgent: false })
+    } else if (!before) {
+      setAskAgent({ held: null, toStart: true })
+    }
+  }
+
+  const autoButton = (
+    <button
+      type="button"
+      onClick={() => void suggestAgent()}
+      disabled={suggesting}
+      aria-keyshortcuts="Tab"
+      className="ml-2 inline-flex items-center gap-1 align-middle text-xs font-normal tracking-normal text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-60"
+      data-testid="todo-auto-agent"
+    >
+      <kbd className="inline-flex h-4 items-center rounded border border-current/40 px-1 text-[10px] font-medium leading-none">Tab</kbd>
+      {suggesting ? 'Picking…' : 'Auto agent'}
+    </button>
+  )
+
   const start = async () => {
     if (!canStart || closingRef.current) return
     closingRef.current = true
@@ -539,8 +591,18 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       failed()
     }
   }
-  // ⌘↩ starts from either the title or the description.
-  const startOnModEnter = (e: { key: string; metaKey: boolean; ctrlKey: boolean; preventDefault: () => void }) => {
+  // ⌘↩ starts from either field. Tab accepts Auto agent, like autocomplete, but
+  // only in the field the hint sits in. Shift-Tab still moves focus or outdents.
+  const onDraftKeyDown = (
+    e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; preventDefault: () => void },
+    field: 'title' | 'description',
+  ) => {
+    const autoHere = field === 'description' ? autoInDescription : autoAfterTitle
+    if (e.key === 'Tab' && autoHere && !suggesting && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault()
+      void suggestAgent()
+      return
+    }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       void start()
@@ -651,8 +713,10 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       <Dialog open={askAgent !== null && !fields.agentSlug} onOpenChange={(open) => { if (!open) setAskAgent(null) }}>
         <DialogContent className="max-w-sm" data-testid="todo-pick-agent-to-attach">
           <DialogHeader>
-            <DialogTitle className="font-medium">{PICK_AGENT_TO_ATTACH}</DialogTitle>
-            <DialogDescription>Files are uploaded to that agent&apos;s workspace.</DialogDescription>
+            <DialogTitle className="font-medium">{askAgent?.toStart ? 'Pick an agent to start' : PICK_AGENT_TO_ATTACH}</DialogTitle>
+            <DialogDescription>
+              {askAgent?.toStart ? 'No agent could be suggested for this todo.' : <>Files are uploaded to that agent&apos;s workspace.</>}
+            </DialogDescription>
           </DialogHeader>
           {/* The draft's own picker, shown in place. No New Agent row: a new agent has no workspace yet. */}
           <AgentDropdown value={null} onValueChange={(slug) => change({ agentSlug: slug, newAgent: false })} inline testId="todo-attach-agent" />
@@ -663,20 +727,29 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       </Dialog>
       {/* Title row: the title is the header; controls sit on its right. */}
       <div className="flex items-start gap-3 px-5 pt-5">
-        <DialogTitle asChild>
-          <input
-            value={fields.title}
-            readOnly={saveBlocked && !canCorrectSave(saveError)}
-            onChange={(e) => change({ title: e.target.value })}
-            onKeyDown={startOnModEnter}
-            // Unnamed, the card shows a title taken from the description.
-            placeholder={deriveTodoTitle(fields.description) || 'Task title'}
-            maxLength={TODO_TITLE_MAX}
-            aria-label="Task title"
-            className="min-w-0 flex-1 bg-transparent text-2xl font-medium leading-tight tracking-tight placeholder:text-muted-foreground/60 focus:outline-none"
-            data-testid="todo-draft-title"
-          />
-        </DialogTitle>
+        <div className="relative min-w-0 flex-1">
+          <DialogTitle asChild>
+            <input
+              value={fields.title}
+              readOnly={saveBlocked && !canCorrectSave(saveError)}
+              onChange={(e) => change({ title: e.target.value })}
+              onKeyDown={(e) => onDraftKeyDown(e, 'title')}
+              // Unnamed, the card shows a title taken from the description.
+              placeholder={deriveTodoTitle(fields.description) || 'Task title'}
+              maxLength={TODO_TITLE_MAX}
+              aria-label="Task title"
+              className="w-full bg-transparent text-2xl font-medium leading-tight tracking-tight placeholder:text-muted-foreground/60 focus:outline-none"
+              data-testid="todo-draft-title"
+            />
+          </DialogTitle>
+          {autoAfterTitle && (
+            // The invisible copy of the title pushes Auto to just after the text.
+            <div className="pointer-events-none absolute inset-0 flex items-center overflow-hidden whitespace-pre text-2xl font-medium leading-tight tracking-tight">
+              <span className="invisible">{fields.title}</span>
+              <span className="pointer-events-auto">{autoButton}</span>
+            </div>
+          )}
+        </div>
         <DialogDescription className="sr-only">Write the task, pick an agent, and start it when it is ready.</DialogDescription>
 
         <div className="-mr-1.5 -mt-1 flex shrink-0 items-center gap-0.5">
@@ -744,12 +817,14 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
             value={fields.description}
             disabled={saveBlocked && !canCorrectSave(saveError)}
             onChange={(description) => change({ description })}
-            onKeyDown={startOnModEnter}
+            onKeyDown={(e) => onDraftKeyDown(e, 'description')}
             placeholder="Describe what you want to get done. Paste links for context."
             minRows={expanded ? 12 : 3}
             className="mt-5 text-[15px] leading-7"
             dataTestId="todo-draft-editor"
+            endWidget={autoInDescription ? descriptionEnd : null}
           />
+          {autoInDescription && createPortal(autoButton, descriptionEnd)}
         </div>
       </div>
 
