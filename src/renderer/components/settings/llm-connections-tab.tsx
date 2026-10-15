@@ -229,6 +229,19 @@ export function LlmConnectionsTab() {
                 onCheckedChange={(enableToolSearch) => updateSettings.mutate({ enableToolSearch })}
               />
             </div>
+            <div className="py-3 px-4 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <label htmlFor="llm-idle-compaction" className="text-xs font-medium">
+                  Idle compaction
+                </label>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Summarize long idle chats before their cache expires to save cost.</p>
+              </div>
+              <Switch
+                id="llm-idle-compaction"
+                checked={settings?.idleCompaction !== false}
+                onCheckedChange={(idleCompaction) => updateSettings.mutate({ idleCompaction })}
+              />
+            </div>
           </div>
         </div>
       )}

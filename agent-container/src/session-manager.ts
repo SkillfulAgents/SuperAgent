@@ -41,6 +41,15 @@ interface SessionData {
   streamDroppedMidTurn?: StreamCloseInfo & { at: number };
   // Pending undelivered-turn report; cancelled if a subscriber comes back.
   undeliveredTurnTimer?: ReturnType<typeof setTimeout>;
+  // Prompt size of the last main-thread request, from its usage.
+  contextTokens?: number;
+  // When the last main-thread request started; the prompt cache TTL runs from here.
+  lastRequestAt?: number;
+  // Set when an idle /compact is sent; cleared by the next real message.
+  idleCompacted?: boolean;
+  // Host settings from the latest request; undefined = on / no auto-sleep.
+  idleCompaction?: boolean;
+  autoSleepMs?: number;
 }
 
 export interface StreamCloseInfo {
@@ -71,6 +80,12 @@ const DEFAULT_UNDELIVERED_TURN_GRACE_MS = 60_000;
 const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
 const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
 const IDLE_EVICTION_POLL_MS = 30_000;
+// Compact a large idle conversation while its 5-minute prompt cache is still
+// warm, so the next turn rewrites a short summary instead of the full history.
+// Below ~200k tokens the compaction usually costs more than it saves.
+const PROMPT_CACHE_TTL_MS = 5 * 60_000;
+const DEFAULT_IDLE_COMPACT_AFTER_MS = 4 * 60_000;
+const DEFAULT_IDLE_COMPACT_MIN_TOKENS = 200_000;
 
 // Minutes → ms. < 0 disables that class; 0 = evict as soon as idle.
 // Parsed once at startup so misconfiguration is loud.
@@ -90,6 +105,11 @@ function idleEvictionMsFromEnv(
     return defaultMinutes * 60_000;
   }
   return minutes * 60_000;
+}
+
+// Host auto-sleep minutes → ms; 0 or absent means the container never sleeps.
+function autoSleepMs(minutes: number | undefined): number | undefined {
+  return minutes && minutes > 0 ? minutes * 60_000 : undefined;
 }
 
 function formatIdleThreshold(ms: number): string {
@@ -143,6 +163,9 @@ export class SessionManager extends EventEmitter {
   // cold starts (SESSION_PREWARM=0) without a redeploy.
   private readonly prewarmEnabled: boolean;
   private readonly undeliveredTurnGraceMs: number;
+  private readonly idleCompactAfterMs: number;
+  private readonly evictionPollMs: number;
+  private readonly idleCompactMinTokens: number;
 
   constructor(
     baseWorkingDirectory: string = '/workspace',
@@ -153,6 +176,8 @@ export class SessionManager extends EventEmitter {
       evictionPollMs?: number;
       prewarmEnabled?: boolean;
       undeliveredTurnGraceMs?: number;
+      idleCompactAfterMs?: number;
+      idleCompactMinTokens?: number;
     }
   ) {
     super();
@@ -163,6 +188,9 @@ export class SessionManager extends EventEmitter {
       options?.prewarmEnabled ?? !['0', 'false'].includes((process.env.SESSION_PREWARM ?? '').trim().toLowerCase());
     this.wakeGraceMs = options?.wakeGraceMs;
     this.undeliveredTurnGraceMs = options?.undeliveredTurnGraceMs ?? DEFAULT_UNDELIVERED_TURN_GRACE_MS;
+    this.idleCompactAfterMs = options?.idleCompactAfterMs ?? DEFAULT_IDLE_COMPACT_AFTER_MS;
+    this.evictionPollMs = options?.evictionPollMs ?? IDLE_EVICTION_POLL_MS;
+    this.idleCompactMinTokens = options?.idleCompactMinTokens ?? DEFAULT_IDLE_COMPACT_MIN_TOKENS;
     this.idleEvictionMs =
       options?.idleEvictionMs ??
       idleEvictionMsFromEnv(
@@ -183,7 +211,7 @@ export class SessionManager extends EventEmitter {
         this.evictIdleSessions().catch((error) => {
           console.error('[SessionManager] Idle eviction sweep failed:', error);
         });
-      }, options?.evictionPollMs ?? IDLE_EVICTION_POLL_MS);
+      }, this.evictionPollMs);
       // Never keep the process alive just for the reaper.
       this.evictionTimer.unref?.();
     }
@@ -421,6 +449,9 @@ export class SessionManager extends EventEmitter {
         stateEventsAuthority: true,
       }),
       eviction: null,
+      idleCompaction: request.idleCompaction,
+      lastRequestAt: Date.now(),
+      autoSleepMs: autoSleepMs(request.autoSleepTimeoutMinutes),
       // Seeded, not derived from query-start: this path starts the process
       // before SessionData exists (see the await process.start() above), so the
       // first query-start predates the listener registered below. Every later
@@ -939,7 +970,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string; idleCompaction?: boolean; autoSleepTimeoutMinutes?: number }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -960,6 +991,12 @@ export class SessionManager extends EventEmitter {
     // busy, or it becomes unevictable until the next real turn.
     const expectsResponse = options?.shouldQuery !== false;
     sessionData.settlement.noteOutboundMessage({ expectsResponse });
+    if (expectsResponse) {
+      sessionData.idleCompacted = false;
+      sessionData.lastRequestAt = Date.now();
+    }
+    if (options?.idleCompaction !== undefined) sessionData.idleCompaction = options.idleCompaction;
+    if (options?.autoSleepTimeoutMinutes !== undefined) sessionData.autoSleepMs = autoSleepMs(options.autoSleepTimeoutMinutes);
 
     // A real message into an automated session is human-originated unless the
     // host explicitly marks it as another automated turn (x-agent follow-up).
@@ -1092,6 +1129,16 @@ export class SessionManager extends EventEmitter {
     const wasBusy = sessionData.settlement.getState().runtime === 'busy';
     sessionData.settlement.handleMessage(message);
 
+    // A main-thread tool result starts the next model request.
+    if (message.type === 'user' && message.parent_tool_use_id === null) {
+      sessionData.lastRequestAt = Date.now();
+    }
+    if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+      const usage = message.message.usage;
+      sessionData.contextTokens =
+        usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+    }
+
     // Release browser lock when an automated session's turn completes.
     // The SDK query keeps the for-await loop alive waiting for the next user
     // message, so the 'exit' event never fires for idle sessions. Releasing
@@ -1151,6 +1198,25 @@ export class SessionManager extends EventEmitter {
       : this.idleEvictionMs;
   }
 
+  // Interactive only: automated runs rarely get a next turn to benefit.
+  private shouldCompactIdle(data: SessionData, now: number): boolean {
+    if (data.idleCompaction === false) return false;
+    if (data.session.metadata?.isAutomated || data.idleCompacted) return false;
+    if ((data.contextTokens ?? 0) < this.idleCompactMinTokens) return false;
+    const requestAt = data.lastRequestAt ?? data.session.lastActivity.getTime();
+    return now >= this.idleCompactDueAt(data, requestAt) && now - requestAt < PROMPT_CACHE_TTL_MS;
+  }
+
+  // The cache TTL counts from the request start, so a long reply eats into it.
+  // Eviction and auto-sleep count from the turn end; land one sweep before them.
+  // The compaction turn then restarts both idle clocks.
+  private idleCompactDueAt(data: SessionData, requestAt: number): number {
+    const idleSince = data.session.lastActivity.getTime();
+    const stops = [this.idleEvictionMs, data.autoSleepMs ?? -1].filter((ms) => ms >= 0);
+    const beforeStop = idleSince + Math.min(...stops) - this.evictionPollMs;
+    return Math.min(requestAt + this.idleCompactAfterMs, beforeStop);
+  }
+
   // Stop the claude subprocess of sessions idle past their class threshold.
   // Interactive default 5m; automated (cron/webhook) default 0 = next sweep.
   // Eviction only stops the process — SessionData + claudeSessionId survive so
@@ -1162,6 +1228,16 @@ export class SessionManager extends EventEmitter {
       if (data.eviction) continue; // already evicting
       if (!data.settlement.isSettled(now)) continue;
       if (!data.process.isRunning()) continue; // already cold
+      if (this.shouldCompactIdle(data, now)) {
+        data.idleCompacted = true;
+        console.log(`[Session ${sessionId}] Compacting idle session (${data.contextTokens} tokens) before its prompt cache expires`);
+        // Tell the host before the turn starts: nobody asked for it, so it must not end in a "finished" notification.
+        this.broadcast(sessionId, { type: 'system', subtype: 'idle_compact' });
+        data.process.sendMessage('/compact').catch((error) => {
+          console.error(`[Session ${sessionId}] Idle compaction failed:`, error);
+        });
+        continue;
+      }
       const thresholdMs = this.idleThresholdMs(data);
       if (thresholdMs < 0) continue; // disabled for this class
       if (now - data.session.lastActivity.getTime() < thresholdMs) continue;

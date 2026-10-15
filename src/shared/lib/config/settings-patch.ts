@@ -208,6 +208,7 @@ export const generalSettingsPatchSchema = z.object({
   analyticsTargets: z.array(analyticsTargetSchema),
   shareErrorReports: z.boolean(),
   enableToolSearch: z.boolean(),
+  idleCompaction: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
   globalInstructions: globalInstructionsSchema,
 }).partial().strict()
@@ -479,6 +480,10 @@ export const generalSettingsComponent = {
         patch.enableToolSearch !== undefined
           ? patch.enableToolSearch
           : before.enableToolSearch,
+      idleCompaction:
+        patch.idleCompaction !== undefined
+          ? patch.idleCompaction
+          : before.idleCompaction,
       agentCapabilities:
         patch.agentCapabilities !== undefined
           ? {
@@ -522,6 +527,7 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     analyticsTargets: patch.analyticsTargets,
     shareErrorReports: patch.shareErrorReports,
     enableToolSearch: patch.enableToolSearch,
+    idleCompaction: patch.idleCompaction,
     agentCapabilities: patch.agentCapabilities,
     globalInstructions: patch.globalInstructions,
   }

@@ -323,6 +323,8 @@ export interface AppSettings {
    * expand deferred tools (see BaseLlmProvider.toolSearchEnv).
    */
   enableToolSearch?: boolean
+  /** Compact a large idle conversation before its prompt cache expires. */
+  idleCompaction?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
   /**
@@ -420,6 +422,7 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
   enableToolSearch: boolean
+  idleCompaction: boolean
   agentCapabilities: AgentCapabilitySettings
 }
 
@@ -432,7 +435,7 @@ export interface GlobalSettingsResponse {
  */
 export type ModelPickerSettingsResponse = Pick<
   GlobalSettingsResponse,
-  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
+  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'idleCompaction' | 'modelPricing'
 > & {
   connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
   defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
@@ -482,6 +485,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentEffort: 'medium',
   },
   enableToolSearch: true,
+  idleCompaction: true,
   agentCapabilities: DEFAULT_AGENT_CAPABILITIES,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
@@ -629,6 +633,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     apiTarget: coerceApiTarget(loaded.apiTarget),
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
+    idleCompaction: loaded.idleCompaction ?? DEFAULT_SETTINGS.idleCompaction,
     // Sanitize per-field: an unknown tier (hand-edited file, future version)
     // falls back to that field's default instead of poisoning the section —
     // resetting the whole section would silently lift a valid 'block'.

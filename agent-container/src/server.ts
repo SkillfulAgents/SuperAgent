@@ -281,6 +281,8 @@ app.post('/sessions/:id/messages', async (c) => {
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
       globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
+      idleCompaction: body.idleCompaction,
+      autoSleepTimeoutMinutes: body.autoSleepTimeoutMinutes,
     });
 
     return c.json({ success: true }, 201);
@@ -2390,6 +2392,8 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
         globalInstructions: globalInstructionsSchema.parse(payload.globalInstructions),
+        idleCompaction: payload.idleCompaction,
+        autoSleepTimeoutMinutes: payload.autoSleepTimeoutMinutes,
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);

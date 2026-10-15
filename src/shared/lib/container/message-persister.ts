@@ -398,6 +398,8 @@ interface StreamingState {
   // Subtype of the most recent result — gates the completion notification when
   // idle arrives via session_state_changed (resume-exits pause, not finish).
   lastResultSubtype: string | null
+  // The running turn is the container's idle /compact, not work the user asked for.
+  idleCompactTurn?: boolean
   isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
 }
 
@@ -727,6 +729,7 @@ class MessagePersister {
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: prior?.lastResultSubtype ?? null,
+      idleCompactTurn: prior?.idleCompactTurn,
       lastResultCleanSuccess: prior?.lastResultCleanSuccess ?? false,
       provisionalActivity: prior?.provisionalActivity ?? null,
       activityGeneration: prior?.activityGeneration,
@@ -980,10 +983,12 @@ class MessagePersister {
           backgroundTasks: backgroundTaskList(state),
         })
       } else {
+        const idleCompactTurn = state.idleCompactTurn
+        state.idleCompactTurn = false
         this.finalizeIdle(agentSlug, sessionId, state)
         // Completion notification at the real end of the work. Skip
         // resume-exits: the session is pausing for a resume, not done.
-        if (state.lastResultSubtype === 'success' && state.agentSlug) {
+        if (state.lastResultSubtype === 'success' && state.agentSlug && !idleCompactTurn) {
           notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
             responseText: state.lastAssistantText,
             responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
@@ -1849,6 +1854,8 @@ class MessagePersister {
     const wasActive = state.isActive
     state.activityGeneration = (state.activityGeneration ?? 0) + 1
     state.isActive = true
+    // A user message queued behind an idle /compact makes the turn theirs again.
+    state.idleCompactTurn = false
     // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
     state.waitingBackground = false
@@ -2704,6 +2711,8 @@ class MessagePersister {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(agentSlug, sessionId, state, toolUseId!, summary)
           }
+        } else if (content.subtype === 'idle_compact') {
+          state.idleCompactTurn = true
         } else if (content.subtype === 'process_evicted') {
           if (typeof content.process_instance === 'string' && content.process_instance === state.processInstanceId) {
             // Remember eviction across an in-flight send or metadata read; a
