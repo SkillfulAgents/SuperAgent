@@ -210,6 +210,8 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   /** Joins in flight by invite URL, so two requests for the same call made at once share one bot. */
   private pendingJoins = new Map<string, Promise<PublicMeeting>>()
+  /** Meetings asked to leave before their bot existed; the join sends the bot home once it does. */
+  private cancelRequested = new Set<string>()
 
   async requestJoin(input: unknown, invocation?: IntegrationToolInvocation): Promise<PublicMeeting> {
     const request = joinMeetingInputSchema.parse(input)
@@ -252,12 +254,19 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
         eventsUrl: `${participantPath}/events/?token=${encodeURIComponent(token)}`,
       })
       await setMeetingBot(meeting.id, botId)
-      // A leave that arrived while the host was starting the bot has already ended
-      // the row; the bot it did not know about must not stay in the call.
-      const ended = await getMeeting(meeting.id)
-      if (!ended || isTerminalMeetingStatus(ended.status)) {
-        await this.bots.leaveCall(botId).catch(error => captureException(error, { tags: { component: 'meeting-integration', operation: 'leave-after-cancel' }, extra: { meetingId: meeting.id } }))
-        return toPublicMeeting(ended ?? meeting)
+      if (this.cancelRequested.delete(meeting.id)) {
+        // Someone asked to leave while the host was still starting the bot. Send it
+        // home now that it exists; if the host cannot be reached the row stays open
+        // and tracked, so Leave can be repeated and the expiry sweep still finds it.
+        try {
+          await this.bots.leaveCall(botId)
+          await this.settle(meeting.id, 'ended', 'Left before joining')
+        } catch (error) {
+          captureException(error, { tags: { component: 'meeting-integration', operation: 'leave-after-cancel' }, extra: { meetingId: meeting.id } })
+          await transitionMeeting(meeting.id, 'joining', 'Leave requested, but the meeting bot host could not be reached; try again')
+          this.track(meeting.id)
+        }
+        return toPublicMeeting((await getMeeting(meeting.id))!)
       }
       await transitionMeeting(meeting.id, 'joining')
     } catch (error) {
@@ -286,10 +295,17 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   async leave(meetingId: string, reason: string): Promise<PublicMeeting> {
     const meeting = await this.requireMeeting(meetingId)
-    if (!isTerminalMeetingStatus(meeting.status)) {
-      if (meeting.botId) await this.bots.leaveCall(meeting.botId)
-      await this.settle(meeting.id, 'ended', reason)
+    if (isTerminalMeetingStatus(meeting.status)) return toPublicMeeting(meeting)
+    if (!meeting.botId) {
+      // The host is still starting the bot, so there is nothing to send home yet.
+      // The row stays open until the join can do it: ending it now would leave a
+      // bot nobody tracks in the call.
+      this.cancelRequested.add(meeting.id)
+      await transitionMeeting(meeting.id, meeting.status, 'Leave requested; the meeting bot is still being started')
+      return toPublicMeeting((await getMeeting(meeting.id))!)
     }
+    await this.bots.leaveCall(meeting.botId)
+    await this.settle(meeting.id, 'ended', reason)
     return toPublicMeeting((await getMeeting(meeting.id))!)
   }
 

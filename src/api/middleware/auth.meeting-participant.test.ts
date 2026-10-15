@@ -33,7 +33,14 @@ function app() {
   // What the participant page uses: its agent's session, files and browser view, and the voice routes.
   api.get('/api/agents/:id/files/*', ResolveAgent(), AgentRead(), c => c.json({ role: getAuthorizedAgentRole(c), participant: getMeetingParticipant(c)?.meetingId }))
   api.post('/api/agents/:id/sessions/:sessionId/messages', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.post('/api/agents/:id/sessions/:sessionId/interrupt', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.get('/api/agents/:id/sessions/:sessionId/stream', ResolveAgent(), AgentRead(), c => c.json({ ok: true }))
   api.get('/api/agents/:id/browser/status', ResolveAgent(), AgentRead(), c => c.json({ ok: true }))
+  // Writes under the session the page never makes; AgentUser() alone would let them through.
+  api.post('/api/agents/:id/sessions/:sessionId/fork', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.post('/api/agents/:id/sessions/:sessionId/capability-review', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.post('/api/agents/:id/sessions/:sessionId/provide-connected-account', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
+  api.patch('/api/agents/:id/sessions/:sessionId', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
   api.post('/api/voice/live/agents/:id/session', ResolveAgent(), AgentUser(), c => c.json(me(c)))
   api.get('/api/voice/configured', c => c.json(me(c)))
   // Routes under the same prefixes that grant by account rather than agent role.
@@ -77,7 +84,16 @@ describe('meeting participant credential through the auth middlewares', () => {
     expect(read.status).toBe(200)
     expect(await read.json()).toEqual({ role: 'user', participant: 'm1' })
     expect((await app().request('/api/agents/research/sessions/s1/messages', { method: 'POST' })).status).toBe(200)
+    expect((await app().request('/api/agents/research/sessions/s1/interrupt', { method: 'POST' })).status).toBe(200)
+    expect((await app().request('/api/agents/research/sessions/s1/stream')).status).toBe(200)
     expect((await app().request('/api/agents/research/browser/status')).status).toBe(200)
+  })
+  it('may not write anything else into its own session: no fork, no capability review, no account provisioning', async () => {
+    expect((await app().request('/api/agents/research/sessions/s1/fork', { method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/agents/research/sessions/s1/capability-review', { method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/agents/research/sessions/s1/provide-connected-account', { method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/agents/research/sessions/s1', { method: 'PATCH' })).status).toBe(403)
+    expect(attributed).toEqual([])
   })
   it('is refused for another agent, another session, or owner-level operations', async () => {
     expect((await app().request('/api/agents/other/files/x')).status).toBe(403)

@@ -151,6 +151,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
     'EventSource — global notification stream',
   'hooks/use-message-stream.ts': 'EventSource — per-session message stream',
   'hooks/use-browser-stream.ts': 'WebSocket — browser view frames',
+  'components/meeting/meeting-participant-page.tsx':
+    'EventSource — the meeting bot\'s roster stream, token-gated by query because the bot\'s browser has no session',
 }
 
 // ---------------------------------------------------------------------------

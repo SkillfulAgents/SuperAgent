@@ -41,7 +41,8 @@ class FakeHost implements MeetingBotHost {
     this.created.push(request); return { botId: `bot-${this.created.length}` }
   }
   async getBotStatus() { if (this.unreachable) throw new Error('503 from the bot host'); return this.status }
-  async leaveCall(botId: string) { this.left.push(botId) }
+  failLeave = false
+  async leaveCall(botId: string) { if (this.failLeave) throw new Error('503 from the bot host'); this.left.push(botId) }
   async sendChatMessage(botId: string, message: string) { this.chats.push([botId, message]) }
   async recordingLink(botId: string) { return { url: `https://cdn.example/${botId}.mp4`, linkExpiresAt: null } }
   parseEvent(body: unknown) {
@@ -169,18 +170,41 @@ describe('MeetingAgentIntegration', () => {
     expect((await getMeeting(meeting.id))?.status).toBe('ended')
   })
 
-  it('sends a bot home when the meeting was ended while the host was still starting it', async () => {
+  it('sends a bot home when leave was asked for while the host was still starting it', async () => {
     host.holdCreate = true
     const joining = integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     await vi.advanceTimersByTimeAsync(0)
     const [row] = await listMeetings('integration')
     expect(row.botId).toBeNull()
-    await integration.leave(row.id, 'changed my mind')
+    // Nothing to send home yet, so the row stays open and says so.
+    const asked = await integration.leave(row.id, 'changed my mind')
+    expect(asked).toMatchObject({ status: 'requested', statusDetail: expect.stringMatching(/Leave requested/) })
     host.releaseCreate()
     const meeting = await joining
-    expect(meeting.status).toBe('ended')
+    expect(meeting).toMatchObject({ status: 'ended', statusDetail: 'Left before joining' })
     expect(host.created).toHaveLength(1)
     expect(host.left).toEqual(['bot-1'])
+    expect(integration['pollers'].size).toBe(0)
+  })
+
+  it('keeps a bot it could not send home after a cancelled start tracked, so leave can be repeated', async () => {
+    host.holdCreate = true
+    const joining = integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    await vi.advanceTimersByTimeAsync(0)
+    const [row] = await listMeetings('integration')
+    await integration.leave(row.id, 'changed my mind')
+    host.failLeave = true
+    host.releaseCreate()
+    const meeting = await joining
+    expect(meeting).toMatchObject({ status: 'joining', statusDetail: expect.stringMatching(/could not be reached/) })
+    expect((await getMeeting(row.id))?.botId).toBe('bot-1')
+    expect(host.left).toEqual([])
+    expect(integration['pollers'].size).toBe(1)
+    // The host comes back: the next leave works and ends the meeting.
+    host.failLeave = false
+    await integration.leave(row.id, 'second try')
+    expect(host.left).toEqual(['bot-1'])
+    expect((await getMeeting(row.id))?.status).toBe('ended')
     expect(integration['pollers'].size).toBe(0)
   })
 

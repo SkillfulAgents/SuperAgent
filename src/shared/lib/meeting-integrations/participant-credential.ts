@@ -20,23 +20,27 @@ import { verifyParticipantToken } from './store'
 export const MEETING_PARTICIPANT_COOKIE = 'gamut_meeting_participant'
 
 /**
- * The requests a participant credential may make at all: the meeting's own
- * agent session (the agent middlewares then confine it to that agent and that
- * session), reading the agent's files and the browser view's status, and the
- * voice routes that mint the call's voice session with the person's provider.
- * Nothing sessionless that writes: no listing or creating sessions, no
+ * The requests a participant credential may make at all, which is what the
+ * participant page makes: reading its own agent session (messages, stream,
+ * media; the agent middlewares then confine it to that agent and that
+ * session), sending a message into it and interrupting it (the two writes a
+ * conversation needs), reading the agent's files and the browser view's
+ * status, and the voice routes that mint the call's voice session with the
+ * person's provider. No other write under the session (no fork, no capability
+ * review, no account provisioning), nothing sessionless that writes, no
  * browser actions. Everything else is the app, where the bot's browser has no
  * business, so the credential never stands in for the person there.
  */
-const PARTICIPANT_REQUESTS: ReadonlyArray<{ methods: readonly string[] | null; path: RegExp }> = [
-  { methods: null, path: /^\/api\/agents\/[^/]+\/sessions\/[^/]+(\/|$)/ },
+const PARTICIPANT_REQUESTS: ReadonlyArray<{ methods: readonly string[]; path: RegExp }> = [
+  { methods: ['GET', 'HEAD'], path: /^\/api\/agents\/[^/]+\/sessions\/[^/]+(\/|$)/ },
+  { methods: ['POST'], path: /^\/api\/agents\/[^/]+\/sessions\/[^/]+\/(messages|interrupt)$/ },
   { methods: ['GET', 'HEAD'], path: /^\/api\/agents\/[^/]+\/files\// },
   { methods: ['GET', 'HEAD'], path: /^\/api\/agents\/[^/]+\/browser\/status$/ },
-  { methods: null, path: /^\/api\/(voice|stt)\// },
+  { methods: ['GET', 'HEAD', 'POST', 'DELETE'], path: /^\/api\/(voice|stt)\// },
 ]
 
 export function meetingParticipantMayRequest(method: string, path: string): boolean {
-  return PARTICIPANT_REQUESTS.some(rule => rule.path.test(path) && (rule.methods === null || rule.methods.includes(method.toUpperCase())))
+  return PARTICIPANT_REQUESTS.some(rule => rule.path.test(path) && rule.methods.includes(method.toUpperCase()))
 }
 
 export interface MeetingParticipantPrincipal {
