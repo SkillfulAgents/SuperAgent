@@ -20,6 +20,8 @@ interface SessionViewProps {
   agentSlug: string
   sessionId: string | null
   onSessionCreated?: PendingMessagesContextValue['onSessionCreated']
+  /** Kept mounted out of sight for its voice conversation; not being viewed. */
+  background?: boolean
 }
 
 /**
@@ -33,7 +35,7 @@ interface SessionViewProps {
  * `AgentShell`, so they survive leaving this leaf for a sibling sub-view and
  * coming back.
  */
-export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSessionCreated }: SessionViewProps) {
+export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSessionCreated, background = false }: SessionViewProps) {
   useRenderTracker('SessionView')
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
@@ -50,7 +52,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
   } = usePendingMessages()
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
-  const search = useSessionSearch(!!sessionId, sessionId)
+  const search = useSessionSearch(!!sessionId && !background, sessionId)
 
   // Context usage: prefer live stream data, fall back to persisted session metadata
   const contextUsage = sessionId ? streamContextUsage ?? session?.lastUsage ?? null : null
@@ -58,7 +60,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId || background) return
     const clearWrites = () => {
       markSessionNotificationsRead.mutate(sessionId)
       // "Mark as unread" survives until the session is *reopened*, so it clears
@@ -80,11 +82,11 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
     // a small delay to avoid marking as read on quick navigation.
     const timeout = setTimeout(clearWrites, 1000)
     return () => clearTimeout(timeout)
-  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId, background]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Also mark notifications as read when the tab regains focus while viewing it
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId || background) return
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         markSessionNotificationsRead.mutate(sessionId)
@@ -92,7 +94,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId, background]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // A genuine 404 (deep-link to a non-existent / deleted session) → ambiguous
   // not-found. The pending-messages guard means a just-created session
@@ -188,6 +190,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
               pendingWakeAt={session?.pendingWakeAt}
               pendingWakeTaskId={session?.pendingWakeTaskId}
               pendingWakeNote={session?.pendingWakeNote}
+              background={background}
             />
           </div>
         </WorkflowProvider>

@@ -212,13 +212,15 @@ function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolea
  * level it moves to comes from the mic while the person talks and from the
  * reply's output while the agent does.
  */
-function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnalyser, onClick }: {
+export function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnalyser, onClick, size = MIC_SIZE, className }: {
   phase: VoiceModePhase
   ready: boolean
   userSpeaking: boolean
   getAnalyser: () => AnalyserNode | null
   getOutputAnalyser: () => AnalyserNode | null
   onClick: () => void
+  size?: number
+  className?: string
 }) {
   const orbState = orbStateFor(phase, ready, userSpeaking)
   const levelSource = phase === 'speaking' ? getOutputAnalyser : getAnalyser
@@ -235,10 +237,11 @@ function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnal
         // Sized by the canvas, which already carries ~23px of clear space around the sphere; the margins top it up so the orb floats evenly.
         'voice-mic relative mx-1 mb-3 flex shrink-0 items-center justify-center overflow-hidden rounded-full',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className,
       )}
     >
       {/* Greyscale until the connection is up. */}
-      <VoiceOrb state={orbState} monochrome={!ready} size={MIC_SIZE} getAnalyser={levelSource} />
+      <VoiceOrb state={orbState} monochrome={!ready} size={size} getAnalyser={levelSource} />
     </button>
   )
 }
