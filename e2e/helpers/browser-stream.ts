@@ -18,7 +18,7 @@ export async function mockBrowserStream(page: Page, width: number, height: numbe
   const frame = Buffer.from(data, 'base64')
   const messages: string[] = []
   let socket: WebSocketRoute | undefined
-  await page.routeWebSocket('**/api/agents/*/browser/stream', (ws) => {
+  await page.routeWebSocket(/\/api\/agents\/[^/]+\/browser\/stream(\?|$)/, (ws) => {
     socket = ws
     ws.onMessage((message) => messages.push(String(message)))
     ws.send(

@@ -60,3 +60,39 @@ describe('BrowserFrameRelay', () => {
     expect(socket.sent.map(entry => entry.data)).toEqual(['new'])
   })
 })
+
+describe('BrowserFrameRelay with VP8 frames', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const vp8 = (keyFrame: boolean, label: string) => Buffer.concat([Buffer.from([0x56, 0x50, 0x38, keyFrame ? 1 : 0]), Buffer.from(label)])
+  const labels = (socket: FakeSocket) => socket.sent.filter(entry => entry.binary).map(entry => entry.data.slice(4))
+
+  it('asks for a keyframe after dropping a frame and skips frames until it arrives', () => {
+    const socket = new FakeSocket()
+    const requestKeyframe = vi.fn()
+    const relay = new BrowserFrameRelay(socket, 100, requestKeyframe)
+    relay.forward(vp8(true, 'key-1'), true)
+    socket.bufferedAmount = 500
+    relay.forward(vp8(false, 'delta-1'), true)
+    relay.forward(vp8(false, 'delta-2'), true)
+    expect(requestKeyframe).toHaveBeenCalledTimes(1)
+    socket.bufferedAmount = 0
+    // Built on the dropped frames, so it would decode as garbage.
+    relay.forward(vp8(false, 'delta-3'), true)
+    relay.forward(vp8(true, 'key-2'), true)
+    relay.forward(vp8(false, 'delta-4'), true)
+    expect(labels(socket)).toEqual(['key-1', 'key-2', 'delta-4'])
+  })
+
+  it('holds a keyframe on a congested socket and sends it before the next frame', () => {
+    const socket = new FakeSocket()
+    const relay = new BrowserFrameRelay(socket, 100, vi.fn())
+    socket.bufferedAmount = 500
+    relay.forward(vp8(true, 'key-1'), true)
+    socket.bufferedAmount = 0
+    relay.forward(vp8(false, 'delta-1'), true)
+    vi.advanceTimersByTime(FRAME_DRAIN_POLL_MS * 2)
+    expect(labels(socket)).toEqual(['key-1', 'delta-1'])
+  })
+})

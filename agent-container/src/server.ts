@@ -49,7 +49,8 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
-import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
+import { VP8_STREAM_CODEC, type BrowserTabInfo, type BrowserTabListMessage } from './browser-stream-protocol';
+import { Vp8ScreencastEncoder } from './screencast-encoder';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -2254,7 +2255,9 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
       return;
     }
 
+    const wantsVp8 = url.searchParams.get('codec') === VP8_STREAM_CODEC;
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      if (wantsVp8) vp8Viewers.add(ws);
       handleBrowserStreamConnection(ws);
     });
     return;
@@ -2456,7 +2459,17 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
+  /** Set when the viewer asked for VP8; frames go through it instead of out as JPEGs. */
+  encoder: Vp8ScreencastEncoder | null;
 } | null = null;
+
+/** Viewers that opened the stream with `?codec=vp8`. */
+const vp8Viewers = new WeakSet<WebSocket>();
+
+function screencastParams(state: NonNullable<typeof cdpScreencast>): Record<string, unknown> {
+  // VP8 re-encodes these frames inside the container, so a cleaner source is nearly free.
+  return { format: 'jpeg', quality: state.encoder ? 90 : 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 };
+}
 
 /** Derive the CDP HTTP endpoint from the current browser state */
 function getCdpHttpEndpoint(): string {
@@ -2804,6 +2817,11 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
     lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
     autoFollow: prevAutoFollow, pendingSelections: new Set(),
+    encoder: vp8Viewers.has(clientWs)
+      ? new Vp8ScreencastEncoder((message) => {
+        if (cdpScreencast === state && clientWs.readyState === WebSocket.OPEN) clientWs.send(message);
+      })
+      : null,
     navigation: createBrowserNavigation({
       targetId,
       sendCommand(method, params) {
@@ -2831,9 +2849,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-        format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-      }));
+      cdpWs.send(cdpMsg(state, 'Page.startScreencast', screencastParams(state)));
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
       // Discover the main frame ID so we only forward loading events for the
@@ -2852,9 +2868,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
         state.cdpSessionId = msg.result.sessionId;
-        cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-          format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-        }));
+        cdpWs.send(cdpMsg(state, 'Page.startScreencast', screencastParams(state)));
         // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
         cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
@@ -2874,13 +2888,17 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
           if (meta && (meta.deviceWidth !== state.lastDeviceWidth || meta.deviceHeight !== state.lastDeviceHeight)) {
             state.lastDeviceWidth = meta.deviceWidth;
             state.lastDeviceHeight = meta.deviceHeight;
+            // libvpx can't change size mid-stream; start a new one at the new size.
+            state.encoder?.reset();
             clientWs.send(JSON.stringify({
               type: 'metadata',
               deviceWidth: meta.deviceWidth,
               deviceHeight: meta.deviceHeight,
             }));
           }
-          clientWs.send(Buffer.from(msg.params.data, 'base64'));
+          const jpeg = Buffer.from(msg.params.data, 'base64');
+          if (state.encoder) state.encoder.push(jpeg);
+          else clientWs.send(jpeg);
         }
       } else if (msg.method === 'Page.frameStartedLoading' || msg.method === 'Page.frameStoppedLoading') {
         // Only forward loading state for the main frame — subframes (ads,
@@ -2904,6 +2922,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
 
   cdpWs.on('close', () => {
     state.navigation.dispose();
+    state.encoder?.close();
     // If this wasn't our active connection (already replaced by a tab switch), ignore
     if (cdpScreencast?.cdpWs !== cdpWs) return;
 
@@ -2950,6 +2969,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
 
 function cleanupCdpScreencast() {
   if (!cdpScreencast) return;
+  cdpScreencast.encoder?.close();
   if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
     cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
     cdpScreencast.cdpWs.close();
@@ -3162,7 +3182,9 @@ function handleBrowserStreamConnection(ws: WebSocket) {
       const data = JSON.parse(rawData.toString());
       if (!cdpScreencast) return;
 
-      if (data.type === 'switch_tab' && data.targetId) {
+      if (data.type === 'keyframe_request') {
+        cdpScreencast.encoder?.requestKeyframe();
+      } else if (data.type === 'switch_tab' && data.targetId) {
         // User wants to view a specific tab
         const allTargets = await getAllPageTargets();
         const target = allTargets.find(t => t.id === data.targetId);

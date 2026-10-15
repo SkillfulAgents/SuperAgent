@@ -1,5 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
-import type { BrowserTabInfo, BrowserNavigateAction } from '@shared/lib/browser-stream-protocol'
+import {
+  VP8_FRAME_HEADER_BYTES,
+  VP8_STREAM_CODEC,
+  isVp8FrameMessage,
+  isVp8KeyFrameMessage,
+  type BrowserKeyframeRequest,
+  type BrowserTabInfo,
+  type BrowserNavigateAction,
+} from '@shared/lib/browser-stream-protocol'
 import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-stream-state'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
@@ -97,6 +105,55 @@ export function useBrowserStream({
   const rafIdRef = useRef<number | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
 
+  const paint = useCallback((image: ImageBitmap | VideoFrame, width: number, height: number) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    // Cache context — desynchronized skips the compositor for lower latency
+    if (!ctxRef.current) {
+      ctxRef.current = canvas.getContext('2d', { desynchronized: true })
+    }
+    const ctx = ctxRef.current
+    if (!ctx) return
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width
+      canvas.height = height
+      const newRatio = `${width} / ${height}`
+      setAspectRatio(prev => prev === newRatio ? prev : newRatio)
+    }
+    ctx.drawImage(image, 0, 0)
+  }, [canvasRef])
+
+  // --- VP8 frames (when the container encodes video) ---
+  const decoderRef = useRef<VideoDecoder | null>(null)
+  const vp8TimestampRef = useRef(0)
+
+  const decodeVp8 = useCallback((bytes: Uint8Array, requestKeyframe: () => void) => {
+    const keyFrame = isVp8KeyFrameMessage(bytes)
+    let decoder = decoderRef.current
+    if (!decoder || decoder.state === 'closed') {
+      // A delta frame can't start a stream; the next keyframe will.
+      if (!keyFrame) return
+      decoder = new VideoDecoder({
+        output: (frame) => {
+          // Every frame must still be decoded during a window resize; only painting is skipped.
+          if (!isResizingWindowRef.current) paint(frame, frame.displayWidth, frame.displayHeight)
+          frame.close()
+        },
+        error: () => {
+          decoderRef.current = null
+          requestKeyframe()
+        },
+      })
+      decoder.configure({ codec: 'vp8', optimizeForLatency: true })
+      decoderRef.current = decoder
+    }
+    decoder.decode(new EncodedVideoChunk({
+      type: keyFrame ? 'key' : 'delta',
+      timestamp: vp8TimestampRef.current++,
+      data: bytes.subarray(VP8_FRAME_HEADER_BYTES),
+    }))
+  }, [paint])
+
   const renderFrame = useCallback((blob: Blob) => {
     pendingBlobRef.current = blob
 
@@ -108,32 +165,16 @@ export function useBrowserStream({
         pendingBlobRef.current = null
         if (!latestBlob) return
 
-        const canvas = canvasRef.current
-        if (!canvas) return
-        // Cache context — desynchronized skips the compositor for lower latency
-        if (!ctxRef.current) {
-          ctxRef.current = canvas.getContext('2d', { desynchronized: true })
-        }
-        const ctx = ctxRef.current
-        if (!ctx) return
-
         // Decode image off the main thread
         createImageBitmap(latestBlob).then((bitmap) => {
-          const needsResize = canvas.width !== bitmap.width || canvas.height !== bitmap.height
-          if (needsResize) {
-            canvas.width = bitmap.width
-            canvas.height = bitmap.height
-            const newRatio = `${bitmap.width} / ${bitmap.height}`
-            setAspectRatio(prev => prev === newRatio ? prev : newRatio)
-          }
-          ctx.drawImage(bitmap, 0, 0)
+          paint(bitmap, bitmap.width, bitmap.height)
           bitmap.close()
         }).catch(() => {
           // Ignore decode errors (corrupt frame)
         })
       })
     }
-  }, [canvasRef])
+  }, [paint])
 
   // --- WebSocket connection ---
   useEffect(() => {
@@ -154,10 +195,17 @@ export function useBrowserStream({
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream`
+    const codecQuery = typeof VideoDecoder === 'undefined' ? '' : `?codec=${VP8_STREAM_CODEC}`
+    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream${codecQuery}`
 
     const ws = new WebSocket(wsUrl)
+    ws.binaryType = 'arraybuffer'
     wsRef.current = ws
+    const requestKeyframe = () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'keyframe_request' } satisfies BrowserKeyframeRequest))
+      }
+    }
     // Set by a browser_closed frame: the server has already dropped its browser
     // state, so the close that follows needs no status check and no retry.
     let browserGone = false
@@ -174,6 +222,12 @@ export function useBrowserStream({
         // During window resize, skip frame rendering entirely to keep resize smooth
         const resizing = isResizingWindowRef.current
 
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data)
+          if (isVp8FrameMessage(bytes)) decodeVp8(bytes, requestKeyframe)
+          else if (!resizing) renderFrame(new Blob([bytes], { type: 'image/jpeg' }))
+          return
+        }
         if (event.data instanceof Blob) {
           if (!resizing) renderFrame(event.data)
           return
@@ -289,11 +343,13 @@ export function useBrowserStream({
       }
       pendingBlobRef.current = null
       ctxRef.current = null
+      if (decoderRef.current && decoderRef.current.state !== 'closed') decoderRef.current.close()
+      decoderRef.current = null
       ws.close()
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, decodeVp8, reconnectKey, setViewingTargetId])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {

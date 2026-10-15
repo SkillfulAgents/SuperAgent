@@ -14,7 +14,10 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
-import { BrowserFrameRelay } from './browser-frame-relay'
+import { BrowserFrameRelay, MAX_BUFFERED_FRAME_BYTES } from './browser-frame-relay'
+import { VP8_STREAM_CODEC, type BrowserKeyframeRequest } from '@shared/lib/browser-stream-protocol'
+
+const KEYFRAME_REQUEST = JSON.stringify({ type: 'keyframe_request' } satisfies BrowserKeyframeRequest)
 
 const browserWss = new WebSocketServer({ noServer: true })
 
@@ -40,6 +43,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         return
       }
       ;(request as any)._agentId = agentSlug
+      ;(request as any)._wantsVp8 = url.searchParams.get('codec') === VP8_STREAM_CODEC
 
       // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
       authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
@@ -68,6 +72,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     const agentSlug = (request as any)._agentId as string | undefined
     if (!agentSlug) { ws.close(1011, 'Invalid path'); return }
     const canInput = (request as any)._canInput === true
+    const wantsVp8 = (request as any)._wantsVp8 === true
 
     try {
         // Cached status only — no runtime query
@@ -80,7 +85,10 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         }
 
         console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
-        const upstream = actor.container.openWebSocket('/browser/stream')
+        const upstream = actor.container.openWebSocket(
+          '/browser/stream',
+          wantsVp8 ? { search: `?codec=${VP8_STREAM_CODEC}` } : undefined,
+        )
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
@@ -91,12 +99,15 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         // Forward frames from container to client, preserving text/binary
         // framing. The relay holds screencast frames back while the client's
         // link is congested and sends the newest once it drains (see its doc).
-        const relay = new BrowserFrameRelay(ws)
+        const relay = new BrowserFrameRelay(ws, MAX_BUFFERED_FRAME_BYTES, () => {
+          if (upstream.readyState === WebSocket.OPEN) upstream.send(KEYFRAME_REQUEST)
+        })
         upstream.on('message', (data, isBinary) => relay.forward(data as Buffer, isBinary))
 
         // Forward input events from client to container (only if user has 'user' role)
         ws.on('message', (data, isBinary) => {
-          if (!canInput) return // Viewers can watch but not send input
+          // Viewers can watch but not send input; a keyframe request only repairs their picture.
+          if (!canInput && !(!isBinary && data.toString() === KEYFRAME_REQUEST)) return
           if (upstream.readyState === WebSocket.OPEN) {
             upstream.send(data, { binary: isBinary })
           }
