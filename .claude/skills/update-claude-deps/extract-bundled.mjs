@@ -226,9 +226,11 @@ function extractSkill(entry) {
   const at = text.indexOf(entry.anchor);
   if (at < 0) fail(`skill "${entry.name}" registration anchor not found: ${entry.anchor}`);
   const reg = chunkAt(at);
-  const wrapper = reg.source.match(/getPromptForCommand\(\)\{return (\w+)\(\)\}/);
+  // 2.1.300 made the method `async` and minified the wrapper to `$tr`, so
+  // allow both and match names beyond \w (as for workflows above).
+  const wrapper = reg.source.match(/(?:async )?getPromptForCommand\(\)\{return ([\w$]+)\(\)\}/);
   if (!wrapper) fail(`${entry.name}: getPromptForCommand shape changed`);
-  const bodyFn = reg.source.match(new RegExp(`function ${wrapper[1]}\\(\\)\\{return\\[\\{type:"text",text:(\\w+)\\(\\)\\}\\]\\}`));
+  const bodyFn = reg.source.match(new RegExp(`function ${escapeRe(wrapper[1])}\\(\\)\\{return\\[\\{type:"text",text:([\\w$]+)\\(\\)\\}\\]\\}`));
   if (!bodyFn) fail(`${entry.name}: prompt wrapper shape changed`);
   const descM = reg.source.match(/description:`((?:[^`\\]|\\.)*)`/);
   if (!descM) fail(`${entry.name}: description template not found`);
@@ -237,10 +239,10 @@ function extractSkill(entry) {
   // The body function lives in another chunk: the one that both defines and exports it.
   const fn = bodyFn[1];
   const candidates = [];
-  const defRe = new RegExp(`function ${fn}\\(\\)\\{`, 'g');
+  const defRe = new RegExp(`function ${escapeRe(fn)}\\(\\)\\{`, 'g');
   for (const m of text.matchAll(defRe)) {
     const c = chunkAt(m.index);
-    if (new RegExp(`export\\{[^}]*(?<![\\w$])${fn}(?![\\w$])[^}]*\\}\\s*$`).test(c.source)) candidates.push(c);
+    if (new RegExp(`export\\{[^}]*(?<![\\w$])${escapeRe(fn)}(?![\\w$])[^}]*\\}\\s*$`).test(c.source)) candidates.push(c);
   }
   if (candidates.length !== 1) fail(`${entry.name}: expected exactly one chunk defining and exporting ${fn}(), found ${candidates.length}`);
   const body = candidates[0];
@@ -260,6 +262,10 @@ function applyPatches(content, entry) {
     console.log(`local patch: ${JSON.stringify(from)} -> ${JSON.stringify(to)} (${n}x)`);
   }
   return out;
+}
+
+function escapeRe(s) {
+  return s.replace(/\$/g, '\\$');
 }
 
 function readJson(p) {

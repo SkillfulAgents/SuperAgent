@@ -559,15 +559,20 @@ describe('sdk 0.3.206 capture replays', () => {
 //   - a subagent's own background Bash is listed in the lead snapshot with
 //     parent_task_id, the subagent leaves the snapshot when its turn ends, and
 //     the child's completion re-runs the subagent under the same task_id.
-const SDK296_FIXTURES = [
-  'sdk296-bg-bash-premature-idle',
-  'sdk296-bg-subagent-no-idle',
-  'sdk296-bg-subagent-interrupt-noop',
-  'sdk296-bg-subagent-nested-bg-bash',
-  'sdk296-sendmessage-resumed-subagent',
+// SDK 0.3.300 / CLI 2.1.300 re-captured the same scenarios with no protocol
+// change (same task bookend, snapshot and idle order), so every assertion
+// below runs against both generations.
+const SDK296_SCENARIOS = [
+  'bg-bash-premature-idle',
+  'bg-subagent-no-idle',
+  'bg-subagent-interrupt-noop',
+  'bg-subagent-nested-bg-bash',
+  'sendmessage-resumed-subagent',
 ]
 
-describe('sdk 0.3.296 capture replays', () => {
+describe.each(['sdk296', 'sdk300'])('%s capture replays', (sdk) => {
+  const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
+
   afterEach(() => {
     vi.clearAllMocks()
   })
@@ -578,7 +583,7 @@ describe('sdk 0.3.296 capture replays', () => {
     { host: 'reattached', phase: 'rerun' },
     { host: 'cold', phase: 'rerun' },
   ] as const)('completes the automatic rerun with a $host host attached during $phase work', async ({ host, phase }) => {
-    const { meta, streamEntries } = await loadFixture('sdk296-bg-subagent-nested-bg-bash')
+    const { meta, streamEntries } = await loadFixture(`${sdk}-bg-subagent-nested-bg-bash`)
     const contents = streamEntries.map(entry => entry.message.content as Record<string, unknown>)
     const child = contents.find(c => c['subtype'] === 'task_started' && typeof c['parent_task_id'] === 'string')!
     const agentId = child['parent_task_id'] as string
@@ -668,7 +673,7 @@ describe('sdk 0.3.296 capture replays', () => {
     // The trailing-snapshot order: completed arrives while the snapshot still
     // lists the task (the persister holds it), then the next frame drops it.
     // The row must end by that frame, not linger to some later one.
-    const { streamEntries, sseEvents } = await replayTracked('sdk296-bg-bash-premature-idle')
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-bg-bash-premature-idle`)
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
     const completedIdx = contents.findIndex((c) => c['subtype'] === 'task_notification' && c['status'] === 'completed')
     const trailingIdx = contents.findIndex(
@@ -682,7 +687,7 @@ describe('sdk 0.3.296 capture replays', () => {
   })
 
   it("carries the snapshot's subagent_type onto the background subagent's row", async () => {
-    const { sseEvents } = await replayTracked('sdk296-bg-subagent-no-idle')
+    const { sseEvents } = await replayTracked(`${sdk}-bg-subagent-no-idle`)
     const rows = sseEvents
       .filter((e) => e['type'] === 'background_task_started' || e['type'] === 'background_task_updated')
       .filter((e) => e['isSubagent'] === true)
@@ -694,7 +699,7 @@ describe('sdk 0.3.296 capture replays', () => {
     // The resumed run's frames still name the ORIGINAL Agent call in
     // parent_tool_use_id; its task_started names the SendMessage call. The
     // frames' agent_id routes them to the live run.
-    const { streamEntries, sseEvents } = await replayTracked('sdk296-sendmessage-resumed-subagent')
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-sendmessage-resumed-subagent`)
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
     const starts = contents.filter((c) => c['subtype'] === 'task_started' && c['task_type'] === 'local_agent')
     expect(starts).toHaveLength(2)
@@ -713,7 +718,7 @@ describe('sdk 0.3.296 capture replays', () => {
   })
 
   it("a subagent's background Bash keeps the session waiting after the subagent itself completes", async () => {
-    const { streamEntries, timeline, sseEvents } = await replayTracked('sdk296-bg-subagent-nested-bg-bash')
+    const { streamEntries, timeline, sseEvents } = await replayTracked(`${sdk}-bg-subagent-nested-bg-bash`)
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
     const childStart = contents.find((c) => c['subtype'] === 'task_started' && typeof c['parent_task_id'] === 'string')
     expect(childStart, 'capture has a task launched by the subagent').toBeDefined()

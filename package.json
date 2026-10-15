@@ -61,8 +61,8 @@
     "test:libsql": "node scripts/run-libsql-tests.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.34.4",
-    "@anthropic-ai/sdk": "^0.133.0",
+    "@anthropic-ai/bedrock-sdk": "^0.35.0",
+    "@anthropic-ai/sdk": "^0.134.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@aws-sdk/client-s3": "^3.1149.0",
     "@hono/node-server": "^1.13.7",
