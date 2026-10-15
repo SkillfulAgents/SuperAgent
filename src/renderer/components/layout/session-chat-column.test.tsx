@@ -56,6 +56,7 @@ const mockStream = {
 }
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStream,
+  useTurnRevision: () => 0,
 }))
 
 // A composer-placed error component that withholds the composer, like the paywall while blocked.

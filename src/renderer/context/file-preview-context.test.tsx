@@ -4,6 +4,10 @@ import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, reloadChangedTabs, useFilePreview, type FileTab, type PreviewTab } from './file-preview-context'
 
+// The edit highlight starts afresh on each new turn of the session stream; these tests drive tabs directly.
+const stream = vi.hoisted(() => ({ turnRevision: 0 }))
+vi.mock('@renderer/hooks/use-message-stream', () => ({ useTurnRevision: () => stream.turnRevision }))
+
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
 let mockView = { kind: 'session' as const, id: 'session-1' }
@@ -500,5 +504,29 @@ describe('reloadChangedTabs', () => {
     const tabs = [tab('/workspace/a.md'), tab('/workspace/b.csv', 'agent-2')]
     expect(versions(reloadChangedTabs(tabs, null, ['/workspace'], 2))).toEqual([2, 2])
     expect(reloadChangedTabs(tabs, 'agent-1', ['/workspace/other.md'], 2)).toBe(tabs)
+  })
+})
+
+describe('edits since the last turn that changed the file', () => {
+  const agentWrapper = ({ children }: { children: ReactNode }) => <FilePreviewProvider agentSlug="agent-1">{children}</FilePreviewProvider>
+
+  it('grows one highlight per turn and starts a new one at the first change after a new turn', () => {
+    stream.turnRevision = 0
+    const { result, rerender } = renderHook(() => useFilePreview(), { wrapper: agentWrapper })
+    act(() => result.current.openFile('/workspace/notes.md', 'agent-1'))
+    const turnStarts = () => { stream.turnRevision++; rerender() }
+    const shownAs = (text: string) => act(() => result.current.recordShownText('/workspace/notes.md', 'agent-1', text))
+    const before = () => result.current.editsFor('/workspace/notes.md', 'agent-1')?.before
+
+    shownAs('a')
+    act(() => turnStarts())
+    shownAs('b')
+    shownAs('c')
+    expect(before()).toBe('a')
+
+    act(() => turnStarts())
+    expect(before()).toBe('a')
+    shownAs('d')
+    expect(before()).toBe('c')
   })
 })

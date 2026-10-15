@@ -133,10 +133,11 @@ const RENDERED_FENCES = [
 // tail would re-render incomplete output on every delta, so it stays a code block.
 const settledPre = (htmlPreview: boolean): Components['pre'] =>
   function SettledPre({ children, node }) {
-  // A wrapper carries the lines: a scrolling pre would clip a comment pin on its corner.
+  // A wrapper carries the lines and any edit mark: a scrolling pre would clip a pin or band on its corner.
   const lines = commentLines(node)
+  const edit = typeof node?.properties?.dataEdit === 'string' ? node.properties.dataEdit : undefined
   const block = settledFence(htmlPreview, children, node)
-  return lines ? <div data-comment-lines={lines}>{block}</div> : block
+  return lines || edit ? <div data-comment-lines={lines} data-edit={edit}>{block}</div> : block
 }
 
 function settledFence(htmlPreview: boolean, children: ReactNode, node: ElementContent | undefined): ReactNode {

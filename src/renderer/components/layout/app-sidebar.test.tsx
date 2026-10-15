@@ -91,6 +91,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ isStreaming: false }),
+  useTurnRevision: () => 0,
 }))
 
 const mockUseSettings = vi.fn()

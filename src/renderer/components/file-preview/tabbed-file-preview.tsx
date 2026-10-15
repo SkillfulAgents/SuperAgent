@@ -18,6 +18,7 @@ interface TabbedFilePreviewProps<T extends FileBrowserTab> {
   file?: { path: string; inlineUrl?: string | null; downloadUrl?: string | null; agentSlug?: string; size?: number | null } | null
   folderContent?: ReactNode
   folderActions?: ReactNode
+  fileActions?: ReactNode
   onPdfPageChange: (page: number) => void
   trailing?: ReactNode
   footer?: ReactNode
@@ -26,7 +27,7 @@ interface TabbedFilePreviewProps<T extends FileBrowserTab> {
 /** The same tab rail, title actions and preview card for agent and volume files. */
 export function TabbedFilePreview<T extends FileBrowserTab>({
   tabs, getTabKey, activeTabIndex, onSelectTab, onCloseTab, file,
-  folderContent, folderActions, onPdfPageChange, trailing, footer,
+  folderContent, folderActions, fileActions, onPdfPageChange, trailing, footer,
 }: TabbedFilePreviewProps<T>) {
   const [leadingTabFlush, setLeadingTabFlush] = useState(false)
   const onLeadingTabFlush = useCallback((flush: boolean) => setLeadingTabFlush(flush), [])
@@ -67,6 +68,7 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
             <TooltipProvider delayDuration={300}>
               <div className="flex shrink-0 items-center gap-1 text-muted-foreground">
                 {activeTab.kind === 'folder' && folderActions}
+                {activeTab.kind === 'file' && fileActions}
                 {file?.inlineUrl && isCopyableTextFile(file.path) && (
                   <CopyFileButton fileUrl={file.inlineUrl} displayName={activeTab.displayName} />
                 )}

@@ -16,10 +16,12 @@ vi.mock('./use-file-content', () => ({
   useFileContent: () => ({ data: { text, truncated: false }, isLoading: false, error: null }),
 }))
 
-const { comments } = vi.hoisted(() => ({ comments: [] as { anchor: unknown }[] }))
+const { comments, edits } = vi.hoisted(() => ({ comments: [] as { anchor: unknown }[], edits: { current: undefined as unknown } }))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ commentsFor: () => comments, addComment: vi.fn(), commentsEnabled: true }),
+  useFilePreview: () => ({
+    commentsFor: () => comments, addComment: vi.fn(), commentsEnabled: true, editsFor: () => edits.current, recordShownText: vi.fn(),
+  }),
 }))
 
 describe('MarkdownRenderer', () => {
@@ -44,6 +46,18 @@ describe('MarkdownRenderer', () => {
     expect(marked.map(el => `${el.tagName.toLowerCase()} ${el.getAttribute('data-comment-lines')}`)).toEqual([
       'h1 1-1', 'p 3-3', 'li 5-5', 'th 7-7', 'th 7-7', 'td 9-9', 'td 9-9', 'div 11-13', 'div 15-18',
     ])
+  })
+
+  it('marks an edited code block on the one wrapper that carries its comment lines', () => {
+    text = '# Title\n\n```ts\nconst x = 2\n```'
+    edits.current = { now: text, before: '# Title\n\n```ts\nconst x = 1\n```', show: true, fresh: false }
+    const { container } = render(<MarkdownRenderer url="/doc.md" filePath="/workspace/doc.md" agentSlug="test-agent" />)
+    edits.current = undefined
+
+    const wrapper = container.querySelector('pre')?.parentElement
+    expect(wrapper?.getAttribute('data-edit')).toBe('changed')
+    expect(wrapper?.getAttribute('data-comment-lines')).toBe('3-5')
+    expect(wrapper?.parentElement?.closest('[data-edit]')).toBeNull()
   })
 
   it('leaves chat code blocks bare: only the drawer stamps lines', () => {
