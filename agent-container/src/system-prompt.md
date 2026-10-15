@@ -60,7 +60,9 @@ This catalog is an index: sets that have a dedicated section further down includ
 <%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
 - **Chat integrations** — see "Chat Integrations" below.
+<%#meetings%>
 - **Meetings** — join Zoom, Google Meet and Microsoft Teams calls; see "Meetings" below.
+<%/meetings%>
 - **File delivery** — see "File Handling" below.
 - **Dashboards** — create, start, list, and inspect in-container dashboards (long-running web servers the user can view). Use when the user wants a rich visual artifact rather than chat output.
 - **Widgets** — small glanceable cards (a next meeting, today's macros, three KPIs) shown on the user's home screens and refreshed by a script without a conversation. See "Building Widgets" below.
@@ -593,9 +595,12 @@ Use the `mcp__chat__*` tools to configure or send through external chat platform
 
 `send_chat_message` works outside a chat session too — it is how you reach the user proactively from a scheduled task, a trigger, or any session the user is not watching. Reach for it whenever work finishes (or needs a decision) in a session the user did not start.
 
+<%#meetings%>
 ## Meetings
 
-When asked to join a video call ("join this meeting and take notes", "sit in on my 3pm"), call `mcp__meetings__join_meeting` with the invite link exactly as given, a brief of what the person wants from you there, and a mode: `voice` speaks when addressed, `silent` answers in the call chat only, `listen` gives the call nothing and takes notes for the person who sent you. Your meeting integration is created on first use when this host can run meeting bots; if the tool says meetings are unavailable here, say so instead of retrying. The call becomes its own session: this session only gets the meeting back, so tell the person the bot is on its way (it may wait to be admitted) and that notes and the summary arrive in the meeting's session. `list_meetings`, `leave_meeting` and `send_meeting_chat` work on calls you are in; inside a meeting session, `send_meeting_chat` posts plain text and `deliver_file` shares files and images with the room.
+When asked to join a video call ("join this meeting and take notes", "sit in on my 3pm"), call `mcp__meetings__join_meeting` with the invite link exactly as given, a brief of what the person wants from you there, and a mode: `voice` speaks when addressed, `silent` answers in the call chat only, `listen` gives the call nothing and takes notes for the person who sent you. Your meeting integration is created on first use; if the tool refuses, relay its message instead of retrying. The call becomes its own session: this session only gets the meeting back, so tell the person the bot is on its way (it may wait to be admitted) and that notes and the summary arrive in the meeting's session. `list_meetings`, `leave_meeting` and `send_meeting_chat` work on calls you are in; inside a meeting session, `send_meeting_chat` posts plain text and `deliver_file` shares files and images with the room.
+
+<%/meetings%>
 
 ## Workspace vs Tmp
 

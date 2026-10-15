@@ -46,6 +46,21 @@ import { getPlatformContainerToken } from '../platform-attribution/container-tok
 import { getPlatformProxyBaseUrl } from '../platform-auth/config'
 import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
 
+/**
+ * The integration families whose providers this host can run, by the same
+ * availability the setup routes use. Loaded on demand: the registry pulls in
+ * every family, and those reach back into this client.
+ */
+async function listAvailableIntegrationFamilies(): Promise<string[]> {
+  try {
+    const { agentIntegrationRegistry } = await import('@shared/lib/agent-integrations/registry')
+    return [...new Set((await agentIntegrationRegistry.listAvailableDefinitions()).map(definition => definition.family))]
+  } catch (error) {
+    captureException(error, { tags: { component: 'container', operation: 'integration-availability' } })
+    return []
+  }
+}
+
 const execAsync = promisify(exec)
 
 /**
@@ -1283,6 +1298,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const activeWebProvider = getActiveWebProvider()
       const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
       const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
+      // Which integration families this host can run (meetings need a public address and a bot
+      // service), so the container registers only tool sets with a working route behind them.
+      const availableIntegrationFamilies = await listAvailableIntegrationFamilies()
       // Host-authoritative launch policies (allow/review/block for subagents and
       // workflows), resolved from global settings here so every session-creation
       // caller inherits them. Never taken from the request — a caller (or the
@@ -1314,6 +1332,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           modelContextWindows,
           webSearchProvider,
           webFetchProvider,
+          availableIntegrationFamilies,
           maxOutputTokens: options.maxOutputTokens,
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,

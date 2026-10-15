@@ -186,8 +186,9 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
 /**
  * Meetings (server name 'meetings' → mcp__meetings__join_meeting and friends).
  * The tools call the host's /api/x-agent/meetings routes, which set the agent's
- * meeting integration up on first use; whether this host can run meeting bots
- * at all is the host's answer, so the server is always registered, like chat.
+ * meeting integration up on first use. Registered only when the host reports
+ * the meeting family as available (`availableIntegrationFamilies` on the
+ * session), so a tool whose route would refuse is never listed.
  */
 export function createMeetingsMcpServer() {
   return createSdkMcpServer({
