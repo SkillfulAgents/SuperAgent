@@ -8,7 +8,8 @@ import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings } from '@shared/lib/config/settings'
-import { resolveAuthSettings } from './auth-settings'
+import { isPlatformControlledAuth, resolveAuthSettings } from './auth-settings'
+import { applyPlatformRoleFromAccount } from './platform-role'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
@@ -145,6 +146,9 @@ function createAuthInstance() {
         },
         create: {
           after: async (createdUser) => {
+            // Platform-controlled deployments take every role from the platform
+            // at sign-in, and approval is forced off there: nothing to bootstrap.
+            if (isPlatformControlledAuth()) return
             try {
               // Atomic: only promote if this is the sole user in the table
               const result = await db
@@ -179,8 +183,17 @@ function createAuthInstance() {
         },
       },
       account: {
+        // A platform account row is written with the platform's latest id_token
+        // on browser sign-in, account linking, and token refresh. Unguarded: a
+        // failed role write fails the request.
+        create: {
+          after: async (account) => {
+            await applyPlatformRoleFromAccount(account)
+          },
+        },
         update: {
           after: async (account) => {
+            if (account) await applyPlatformRoleFromAccount(account)
             // Auto-clear mustChangePassword when a user changes their password.
             // The changePassword endpoint calls updateAccount() which returns the
             // full row via .returning(), so we have userId and providerId here.

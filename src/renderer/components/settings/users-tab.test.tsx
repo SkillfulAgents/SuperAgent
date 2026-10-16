@@ -62,7 +62,7 @@ describe('UsersTab', () => {
       platformControlled: true,
       platformInviteHref: 'https://platform.example/dashboard/organizations/org_1?tab=team',
     })
-    expect(screen.getByText(/Invite members on Platform/i)).toBeInTheDocument()
+    expect(screen.getByText(/Invite members and set roles on Platform/i)).toBeInTheDocument()
     await user.click(screen.getByTestId('users-invite-button'))
     expect(openExternalUrl).toHaveBeenCalledWith(
       'https://platform.example/dashboard/organizations/org_1?tab=team',
@@ -71,7 +71,7 @@ describe('UsersTab', () => {
 
   it('disables invite and skips local dialog when platform-controlled without href', () => {
     renderUsers({ platformControlled: true })
-    expect(screen.getByText(/Invite members on Platform/i)).toBeInTheDocument()
+    expect(screen.getByText(/Invite members and set roles on Platform/i)).toBeInTheDocument()
     expect(screen.getByTestId('users-invite-button')).toBeDisabled()
     expect(screen.queryByText('Invite User')).not.toBeInTheDocument()
   })
