@@ -1246,6 +1246,134 @@ describe('proxy policy enforcement', () => {
 })
 
 // ===========================================================================
+// Target path canonicalisation: the path the policy check matches is the path
+// the upstream request reaches. Uses the real scope matcher; sending mail is
+// blocked and everything else (unmatched paths included) is allowed.
+// ===========================================================================
+
+describe('proxy target path canonicalisation', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockInsertValues.mockResolvedValue(undefined)
+    mockGetConnection.mockResolvedValue({ id: 'mock-conn', status: 'ACTIVE' })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockIsHostAllowed.mockReturnValue(true)
+
+    const actual = await vi.importActual<typeof import('@shared/lib/proxy/scope-matcher')>(
+      '@shared/lib/proxy/scope-matcher',
+    )
+    mockMatchScopes.mockImplementation(actual.matchScopes)
+    mockResolveApiPolicy.mockImplementation(async (_accountId: string, match: { matched: boolean; scopes: string[] }) => ({
+      decision: match.scopes.includes('gmail.send') ? 'block' : 'allow',
+      matchedScopes: match.scopes,
+      scopeDescriptions: {},
+      resolvedFrom: match.matched ? 'scope_policy' : 'account_default',
+    }))
+    useAccount('gmail')
+  })
+
+  function useAccount(toolkitSlug: string) {
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        account: {
+          id: 'acc-123',
+          toolkitSlug,
+          providerConnectionId: 'comp-123',
+          providerName: 'composio',
+          status: 'active',
+          userId: 'user-1',
+        },
+      },
+    ])
+  }
+
+  function send(tail: string, method = 'POST') {
+    return app.request(`http://localhost/api/proxy/my-agent/acc-123/${tail}`, {
+      method,
+      headers: { Authorization: 'Bearer synth_valid' },
+    })
+  }
+
+  it('baseline: sending mail is blocked', async () => {
+    const res = await send('gmail.googleapis.com/gmail/v1/users/me/messages/send')
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'gmail/v1/users/me/drafts/../messages/send',
+    'gmail/v1/users/me/drafts/%2e%2E/messages/send',
+    'gmail/v1/users/me/drafts\\..\\messages/send',
+    'gmail/v1/users/me/messages%2Fsend',
+    'gmail/v1/users/me/messages/sen%64',
+  ])('an equivalent spelling of the blocked endpoint is still blocked: %s', async (path) => {
+    const res = await send(`gmail.googleapis.com/${path}`)
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', '/gmail/v1/users/me/messages/send', 'gmail.googleapis.com')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'gmail/v1/users/me/drafts/%252e%252e/messages/send',
+    'gmail/v1/users/me/drafts/%252E./messages/send',
+    'gmail/v1/users/me/drafts%2F..%2Fmessages/send',
+    'gmail/v1/users/me/drafts%5C..%5Cmessages%5Csend',
+    'gmail/v1/users/me/messages/send%3F',
+    'gmail/v1/users/me/messages/send%23',
+    'gmail/v1/users/me/messages/send%09',
+    'gmail/v1/users/me/messages/se%00nd',
+    'gmail/v1/users/me/messages/send%20',
+    'gmail/v1/users/me/messages//send',
+  ])('an ambiguous spelling is rejected before policy and never forwarded: %s', async (path) => {
+    const res = await send(`gmail.googleapis.com/${path}`)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe('invalid_target_path')
+    expect(body.message).toMatch(/^Invalid target path: /)
+    expect(mockMatchScopes).not.toHaveBeenCalled()
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+
+    expect(mockInsertValues).toHaveBeenCalledOnce()
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.targetHost).toBe('gmail.googleapis.com')
+    expect(entry.targetPath).toBe(path)
+    expect(entry.errorMessage).toBe(body.message)
+  })
+
+  it('forwards encoded characters as sent and matches them decoded', async () => {
+    useAccount('googlecalendar')
+    const res = await send('www.googleapis.com/calendar/v3/calendars/me%40example.com/events?maxResults=5', 'GET')
+    expect(res.status).toBe(200)
+    expect(mockMatchScopes).toHaveBeenCalledWith(
+      'googlecalendar', 'GET', '/calendar/v3/calendars/me@example.com/events', 'www.googleapis.com',
+    )
+    const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+    expect(targetUrl).toBe('https://www.googleapis.com/calendar/v3/calendars/me%40example.com/events?maxResults=5')
+
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.targetPath).toBe('calendar/v3/calendars/me@example.com/events')
+  })
+
+  it('keeps a GitLab namespaced project id as one encoded segment', async () => {
+    useAccount('gitlab')
+    const res = await send('gitlab.com/api/v4/projects/group%2Fproject/issues', 'GET')
+    expect(res.status).toBe(200)
+    expect(mockMatchScopes).toHaveBeenCalledWith('gitlab', 'GET', '/api/v4/projects/group%2Fproject/issues', 'gitlab.com')
+    const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+    expect(targetUrl).toBe('https://gitlab.com/api/v4/projects/group%2Fproject/issues')
+  })
+})
+
+// ===========================================================================
 // Token caching and Composio proxy fallback tests have moved to
 // composio-account-provider.test.ts — they test provider internals, not the
 // proxy route. The proxy route now delegates to provider.makeApiCall().
