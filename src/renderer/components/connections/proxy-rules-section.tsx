@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Check, ChevronRight, Loader2, Trash2, X } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
@@ -43,6 +43,71 @@ interface DraftReport {
 type AuthorResponse =
   | { type: 'question'; question: string }
   | { type: 'draft'; draft: Draft; name: string; restatement: string; report: DraftReport; coverage: string[] }
+
+/** A draft, with the author job it came from (saving takes the job's copy). */
+type DraftResult = Extract<AuthorResponse, { type: 'draft' }> & { jobId: string }
+
+/** A response body; a proxy's error page (not JSON) becomes a readable error. */
+async function readJson(res: Response): Promise<Record<string, unknown>> {
+  try {
+    return await res.json() as Record<string, unknown>
+  } catch {
+    throw new Error(`The server answered with HTTP ${res.status}. Try again.`)
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Writing a rule takes over a minute at times, longer than proxies let one
+ * request run, so the server writes it as a job and this polls for it. Each
+ * poll is held open up to 15 s. Network errors and 5xx answers (proxies send
+ * those, JSON or not) are retried; the job reports its own failure as a result.
+ */
+export async function authorRuleJob(
+  kind: RuleKind,
+  targetId: string,
+  body: { description: string; clarifications: Array<{ question: string; answer: string }> },
+  signal: AbortSignal,
+): Promise<AuthorResponse & { jobId: string }> {
+  const started = await apiFetch(`/api/proxy-rules/${kind}/${targetId}/author`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  const job = await readJson(started)
+  if (started.status !== 202 || typeof job.jobId !== 'string') {
+    throw new Error(typeof job.error === 'string' ? job.error : 'Could not write the rule')
+  }
+  const jobId = job.jobId
+  for (let failures = 0; ;) {
+    let res: Response
+    let result: Record<string, unknown>
+    try {
+      res = await apiFetch(`/api/proxy-rules/${kind}/${targetId}/author/${jobId}`, { signal })
+      result = await readJson(res)
+    } catch (error) {
+      if (signal.aborted || ++failures > 3) throw error
+      await sleep(1000 * failures)
+      continue
+    }
+    if (res.status >= 500 && ++failures <= 3) {
+      await sleep(1000 * failures)
+      continue
+    }
+    if (res.status === 202) {
+      failures = 0
+      await sleep(250)
+      continue
+    }
+    if (!res.ok || result.type === 'failed') {
+      const message = [result.message, result.error].find((m): m is string => typeof m === 'string')
+      throw new Error(message ?? 'Could not write the rule')
+    }
+    return { ...(result as AuthorResponse), jobId }
+  }
+}
 
 interface ProxyRulesSectionProps {
   kind: RuleKind
@@ -220,19 +285,17 @@ function RuleComposer({ kind, targetId, onDone }: { kind: RuleKind; targetId: st
   const [question, setQuestion] = useState<string | null>(null)
   const [answer, setAnswer] = useState('')
   const [name, setName] = useState('')
-  const [result, setResult] = useState<Extract<AuthorResponse, { type: 'draft' }> | null>(null)
+  const [result, setResult] = useState<DraftResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Stops polling for a rule being written once the composer closes.
+  const polling = useRef<AbortController | null>(null)
+  useEffect(() => () => polling.current?.abort(), [])
 
   const author = useMutation({
-    mutationFn: async (answers: Array<{ question: string; answer: string }>) => {
-      const res = await apiFetch(`/api/proxy-rules/${kind}/${targetId}/author`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description, clarifications: answers }),
-      })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body.error || 'Could not write the rule')
-      return body as AuthorResponse
+    mutationFn: (answers: Array<{ question: string; answer: string }>) => {
+      polling.current?.abort()
+      polling.current = new AbortController()
+      return authorRuleJob(kind, targetId, { description, clarifications: answers }, polling.current.signal)
     },
     onSuccess: (response) => {
       setError(null)
@@ -249,14 +312,14 @@ function RuleComposer({ kind, targetId, onDone }: { kind: RuleKind; targetId: st
   })
 
   const save = useMutation({
-    mutationFn: async (draft: Draft) => {
+    mutationFn: async (jobId: string) => {
       const res = await apiFetch(`/api/proxy-rules/${kind}/${targetId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ draft, ...(name.trim() ? { name: name.trim() } : {}) }),
+        body: JSON.stringify({ jobId, ...(name.trim() ? { name: name.trim() } : {}) }),
       })
-      const body = await res.json()
-      if (!res.ok) throw new Error((body.errors ?? [body.error]).join(' ') || 'Could not save the rule')
+      const body = await readJson(res)
+      if (!res.ok) throw new Error((Array.isArray(body.errors) ? body.errors : [body.error]).join(' ') || 'Could not save the rule')
     },
     onSuccess: onDone,
     onError: (err) => setError(err instanceof Error ? err.message : 'Could not save the rule'),
@@ -375,7 +438,7 @@ function RuleComposer({ kind, targetId, onDone }: { kind: RuleKind; targetId: st
             <Button size="sm" variant="outline" onClick={() => { setResult(null); setClarifications([]) }} disabled={busy}>
               Start over
             </Button>
-            <Button size="sm" onClick={() => save.mutate(result.draft)} disabled={busy || !report?.ok} data-testid="proxy-rule-save">
+            <Button size="sm" onClick={() => save.mutate(result.jobId)} disabled={busy || !report?.ok} data-testid="proxy-rule-save">
               {save.isPending ? 'Saving…' : 'Save rule'}
             </Button>
           </>
