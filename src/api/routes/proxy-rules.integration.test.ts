@@ -48,13 +48,12 @@ const restated = {
 vi.mock('@shared/lib/proxy/rules/author', () => ({
   catalogFor: () => '',
   restateRule: vi.fn(async () => restated),
-  authorRule: vi.fn(),
 }))
 
 import proxy from './proxy'
 import xAgentRules, { _setProposalTimingForTest } from './x-agent-rules'
 import proxyRules from './proxy-rules'
-import { authorRule, restateRule } from '@shared/lib/proxy/rules/author'
+import { restateRule } from '@shared/lib/proxy/rules/author'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { addRuleVersion, createRule, invalidateRuleCache, listRules } from '@shared/lib/proxy/rules/store'
@@ -546,83 +545,22 @@ describe('agent rule tools', () => {
   })
 })
 
-describe('writing a rule in the app', () => {
+describe('rules in the app', () => {
   const base = '/api/proxy-rules/api/acct-gmail'
-  const json = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 
-  beforeEach(() => {
-    vi.mocked(authorRule).mockReset()
-    vi.mocked(authorRule).mockResolvedValue({
-      type: 'draft',
-      draft: { kind: 'api', effect: 'allow', description: 'Send only to @acme.com', patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests },
-      report: { ok: true, errors: [], warnings: [], testResults: [], coverage: [], toolSchemaHash: null },
-      attempts: 1,
-    } as Awaited<ReturnType<typeof authorRule>>)
+  it('lists every rule on the connection and deletes one', async () => {
+    const shared = await userRule()
+    await userRule('agent-a')
+    const listed = await (await app.request(base)).json() as { rules: Array<{ id: string; agentSlug: string | null }> }
+    expect(listed.rules.map((r) => r.agentSlug).sort()).toEqual(['agent-a', null].sort())
+
+    expect((await app.request(`${base}/${shared.rule.id}`, { method: 'DELETE' })).status).toBe(200)
+    expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.agentSlug)).toEqual(['agent-a'])
   })
 
-  async function author() {
-    const started = await app.request(`${base}/author`, json({ description: 'Send only to @acme.com' }))
-    expect(started.status).toBe(202)
-    const { jobId } = await started.json() as { jobId: string }
-    let res = await app.request(`${base}/author/${jobId}`)
-    while (res.status === 202) res = await app.request(`${base}/author/${jobId}`)
-    return { jobId, res }
-  }
-
-  it('writes the rule as a job, and saves the draft that job validated and restated', async () => {
-    const { jobId, res } = await author()
-    expect(res.status).toBe(200)
-    const body = await res.json() as { type: string; name: string; restatement: string; report: { ok: boolean } }
-    expect(body).toMatchObject({ type: 'draft', name: restated.name, restatement: restated.restatement, report: { ok: true } })
-    const calls = vi.mocked(restateRule).mock.calls.length
-
-    const saved = await app.request(base, json({ jobId, name: 'Internal sends' }))
-    expect(saved.status).toBe(200)
-    // Saving reuses the job's restatement instead of asking the model again.
-    expect(vi.mocked(restateRule).mock.calls.length).toBe(calls)
-    const [rule] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
-    expect(rule.version).toMatchObject({ name: 'Internal sends', restatement: restated.restatement, code: INTERNAL_ONLY })
-    expect(rule.rule.createdBy).toBe('user')
-
-    // A draft saves once.
-    expect((await app.request(base, json({ jobId }))).status).toBe(410)
+  it('deletes only rules on the connection in the path', async () => {
+    const rule = await userRule()
+    expect((await app.request(`/api/proxy-rules/mcp/acct-gmail/${rule.rule.id}`, { method: 'DELETE' })).status).toBe(404)
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(1)
-  })
-
-  it('returns a clarifying question from the job', async () => {
-    vi.mocked(authorRule).mockResolvedValueOnce({ type: 'question', question: 'Which domain?' })
-    const { jobId, res } = await author()
-    expect(await res.json()).toEqual({ type: 'question', question: 'Which domain?' })
-    expect((await app.request(base, json({ jobId }))).status).toBe(410)
-  })
-
-  it('returns a failed authoring run as the job\'s result, not an HTTP error', async () => {
-    vi.mocked(authorRule).mockRejectedValueOnce(new Error('The model returned malformed JSON'))
-    const { res } = await author()
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ type: 'failed', error: 'The model returned malformed JSON' })
-  })
-
-  it('keeps a draft that hit the rule cap, so it can be saved after deleting a rule', async () => {
-    for (let i = 0; i < 19; i++) await userRule()
-    const first = await author()
-    const second = await author()
-    // Both pass the early count check; the atomic insert lets only one in.
-    const [a, b] = await Promise.all([
-      app.request(base, json({ jobId: first.jobId })),
-      app.request(base, json({ jobId: second.jobId })),
-    ])
-    expect([a.status, b.status].sort()).toEqual([200, 422])
-    const rejected = a.status === 422 ? first.jobId : second.jobId
-
-    const [oldest] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
-    expect((await app.request(`${base}/${oldest.rule.id}`, { method: 'DELETE' })).status).toBe(200)
-    expect((await app.request(base, json({ jobId: rejected }))).status).toBe(200)
-    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(20)
-  })
-
-  it('refuses a job id it did not hand out', async () => {
-    expect((await app.request(`${base}/author/nope`)).status).toBe(410)
-    expect((await app.request(base, json({ jobId: 'nope' }))).status).toBe(410)
   })
 })

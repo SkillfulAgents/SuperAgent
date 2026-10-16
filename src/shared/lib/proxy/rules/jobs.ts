@@ -1,7 +1,7 @@
 /**
- * In-process jobs for rule work that takes longer than one request may:
- * writing a rule from plain English (several model calls), and an agent's
- * proposal (validation, an independent restatement, then a person's decision).
+ * In-process jobs for rule work that takes longer than one request may: an
+ * agent's proposal (validation, an independent restatement, then a person's
+ * decision).
  *
  * Proxies in front of the app cut requests off at 30–60 s and pass the cut-off
  * on as a bare 502, while the work behind it carries on. So callers start a
@@ -24,8 +24,6 @@ interface Job<T> {
   outcome: JobState<T>
   finished: Promise<void>
   lease?: NodeJS.Timeout
-  /** Taken by a use in progress (see claim). */
-  claimed?: boolean
 }
 
 export interface RuleJobsOptions {
@@ -99,23 +97,6 @@ export class RuleJobs<T> {
       this.renewLease(job)
     }
     return job.outcome
-  }
-
-  /**
-   * Claims a finished value for one use. Until the claim is settled, further
-   * claims get nothing. `consume()` drops the job (the use succeeded);
-   * `release()` hands it back (the use failed and may be tried again).
-   * Undefined while the job runs, or when it is gone or already claimed.
-   */
-  claim(id: string, owner: string): { value: T; consume(): void; release(): void } | undefined {
-    const job = this.jobs.get(id)
-    if (!job || job.owner !== owner || job.outcome.state !== 'done' || job.claimed) return undefined
-    job.claimed = true
-    return {
-      value: job.outcome.value,
-      consume: () => { this.jobs.delete(id) },
-      release: () => { job.claimed = false },
-    }
   }
 
   /** Aborts a running job. False when there is no such job for this owner. */

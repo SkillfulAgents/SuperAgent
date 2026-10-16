@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
-describe('rule authoring model', () => {
+describe('restatement model', () => {
   it('uses the default model when the provider can be called directly', async () => {
     llm.create.mockResolvedValue({ content: [{ type: 'text', text: answer }] })
     expect(await restateRule(draft)).toMatchObject({ name: 'Reads of x' })
