@@ -3401,6 +3401,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return { id: newId }
   }
 
+  /**
+   * Pre-resume in mock mode: there is no CLI to resume, so this only records
+   * the call (E2E specs read the recorder to prove a start carried a session
+   * through to the container client) and reports whether the session exists.
+   */
+  async warmSession(sessionId: string): Promise<boolean> {
+    this.writeMockRecord({
+      type: 'warmSession',
+      agentSlug: this.config.agentId,
+      sessionId,
+      timestamp: new Date().toISOString(),
+    })
+    return this.sessions.has(sessionId)
+  }
+
   // Message operations
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {

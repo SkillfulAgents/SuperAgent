@@ -216,6 +216,7 @@ const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
+const mockClientWarmSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 // The actor reaches the client through getClient after start(), so the
 // create-session fake lives here rather than on ensureRunning's resolved value.
@@ -232,6 +233,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       stopTask: (...args: unknown[]) => mockStopTask(...args),
       forkSession: (...args: unknown[]) => mockForkSession(...args),
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
+      warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -1531,6 +1533,126 @@ describe('agent startup — POST /:id/start', () => {
 
     expect(response.status).toBe(500)
     expect(await response.json()).toEqual({ error: 'Container failed to become healthy' })
+  })
+
+  // Clients send `{ sessionId }` from a composer bound to an existing session,
+  // so the host can pre-resume that session's CLI while the person types.
+  describe('optional { sessionId } body (pre-resume)', () => {
+    const startRequest = (init: RequestInit = {}) =>
+      Promise.resolve(createApp().request('http://localhost/api/agents/test-agent/start', { method: 'POST', ...init }))
+    const jsonBody = (body: unknown): RequestInit => ({
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    // Lets the fire-and-forget pre-resume run (or provably not run).
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+    beforeEach(() => {
+      mockClientWarmSession.mockReset()
+      mockClientWarmSession.mockResolvedValue(true)
+      vi.mocked(sessionIsKnown).mockResolvedValue(true)
+    })
+
+    it.each<[string, RequestInit]>([
+      ['no body (older clients)', {}],
+      ['an empty JSON body', { headers: { 'Content-Type': 'application/json' }, body: '' }],
+      ['a non-JSON content type', { headers: { 'Content-Type': 'text/plain' }, body: 'hello' }],
+      ['malformed JSON', { headers: { 'Content-Type': 'application/json' }, body: '{"sessionId":' }],
+      ['a session id of the wrong type', jsonBody({ sessionId: 42 })],
+      ['an empty session id', jsonBody({ sessionId: '' })],
+      ['a body without a session id', jsonBody({ unrelated: true })],
+    ])('a start with %s is a plain start, exactly as before', async (_label, init) => {
+      const response = await startRequest(init)
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ slug: 'test-agent', status: 'running', containerPort: 3456 })
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      await settle()
+      expect(sessionIsKnown).not.toHaveBeenCalled()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('pre-resumes one of this agent\'s sessions once the container is up, with the response unchanged', async () => {
+      const plain = await (await startRequest()).json()
+      let resolveStart!: (value: unknown) => void
+      mockEnsureRunning.mockReturnValue(new Promise((resolve) => { resolveStart = resolve }) as never)
+
+      const pending = startRequest(jsonBody({ sessionId: 'session-1' }))
+      await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledTimes(2))
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled() // never ahead of the container start
+
+      resolveStart({})
+      const response = await pending
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(plain)
+      await vi.waitFor(() => expect(mockClientWarmSession).toHaveBeenCalledWith('session-1'))
+      expect(mockClientWarmSession).toHaveBeenCalledOnce()
+      expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-1')
+    })
+
+    it('answers without waiting for the pre-resume', async () => {
+      mockClientWarmSession.mockReturnValue(new Promise(() => {})) // a container that never answers
+
+      const response = await startRequest(jsonBody({ sessionId: 'session-1' }))
+
+      expect(response.status).toBe(200)
+      await vi.waitFor(() => expect(mockClientWarmSession).toHaveBeenCalledWith('session-1'))
+    })
+
+    it.each<[string, () => void]>([
+      ['the container predates the warm endpoint', () => mockClientWarmSession.mockResolvedValue(false)],
+      ['the pre-resume throws', () => mockClientWarmSession.mockRejectedValue(new Error('socket hang up'))],
+      ['the session check throws', () => vi.mocked(sessionIsKnown).mockRejectedValue(new Error('EIO'))],
+    ])('still starts when %s', async (_label, arrange) => {
+      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+      arrange()
+
+      const response = await startRequest(jsonBody({ sessionId: 'session-1' }))
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ slug: 'test-agent', status: 'running' })
+      await settle()
+      debug.mockRestore()
+    })
+
+    it('ignores a session that is not this agent\'s, without a trace in the response', async () => {
+      const plain = await (await startRequest()).json()
+      vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+      const response = await startRequest(jsonBody({ sessionId: 'another-agents-session' }))
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(plain)
+      await vi.waitFor(() =>
+        expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'another-agents-session'),
+      )
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('does not pre-resume when the container fails to start', async () => {
+      mockEnsureRunning.mockRejectedValue(new Error('Container failed to become healthy'))
+
+      const response = await startRequest(jsonBody({ sessionId: 'session-1' }))
+
+      expect(response.status).toBe(500)
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('leaves a body too large to be a session hint unread', async () => {
+      const body = JSON.stringify({ sessionId: 'session-1', padding: 'x'.repeat(20_000) })
+
+      const response = await startRequest({
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(body.length) },
+        body,
+      })
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
   })
 })
 

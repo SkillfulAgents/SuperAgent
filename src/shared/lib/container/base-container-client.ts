@@ -270,6 +270,9 @@ const BASE_PORT = (() => {
 // Max time for a single /health probe (isHealthy). Kept short because it gates
 // the request hot path via ensureRunning's stale-cache liveness check.
 const HEALTH_PROBE_TIMEOUT_MS = 2000
+// Max wait for the container to accept a pre-resume (warmSession). It answers
+// before resuming anything, so only a struggling container takes this long.
+const WARM_SESSION_TIMEOUT_MS = 5000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
@@ -1667,6 +1670,31 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       throw new Error(`Failed to fork session: ${response.status} ${text}`)
     }
     return (await response.json()) as { id: string }
+  }
+
+  async warmSession(sessionId: string): Promise<boolean> {
+    let response: Response
+    try {
+      response = await this.fetch(`/sessions/${encodeURIComponent(sessionId)}/warm`, {
+        method: 'POST',
+        // The container answers before it resumes anything; a slow answer is
+        // not worth holding a socket for — the next send resumes as before.
+        signal: AbortSignal.timeout(WARM_SESSION_TIMEOUT_MS),
+      })
+    } catch (error) {
+      console.debug(`[ContainerClient] warmSession: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+    if (response.ok) return true
+    const text = await response.text().catch(() => '')
+    // A plain 404 is the router's: an agent container from before this
+    // endpoint. Nothing to do — its next send pays the cold resume, as before.
+    console.debug(
+      response.status === 404 && !text.trim().startsWith('{')
+        ? '[ContainerClient] warmSession: the agent container predates the warm endpoint'
+        : `[ContainerClient] warmSession: container returned ${response.status}`
+    )
+    return false
   }
 
   // Drop listeners before close so a deliberate teardown cannot fire

@@ -144,6 +144,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /sessions/{sessionId}/warm:
+    post:
+      tags:
+        - Sessions
+      summary: Pre-resume a session's CLI
+      description: |
+        Brings the session's Claude Code process back up ahead of its next
+        message, so that message does not wait for the CLI spawn and
+        `--resume`. The host calls this when a person starts typing into the
+        session. Answers at once; the resume runs in the background. A session
+        that is not in memory is resumed from persistence, and a cold process
+        (idle-evicted, or a resume whose start waits for the first message) is
+        restarted with no message queued. A live process only has its idle
+        clock reset, and a session with a turn in flight is left alone. The
+        session is never marked busy, so idle eviction can reclaim it again if
+        no message follows. A message that arrives during the resume waits for
+        it instead of restarting the process a second time.
+      operationId: warmSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '202':
+          description: Accepted; the pre-resume (if any is needed) runs in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: boolean
+                    example: true
+        '404':
+          description: Session not found (JSON body). Container images that predate this endpoint answer a plain-text 404.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /sessions/{sessionId}/messages:
     get:
       tags:

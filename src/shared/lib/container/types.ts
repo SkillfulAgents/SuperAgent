@@ -267,6 +267,11 @@ export interface ContainerClient {
   // ContainerNotFoundError when the session is gone (JSON 404),
   // ContainerConflictError when the source is mid-turn.
   forkSession(sessionId: string): Promise<{ id: string } | null>
+  // Ask the container to resume this session's CLI ahead of its next message
+  // (it may have been evicted while idle). Best-effort and never throws:
+  // false when the container predates the endpoint (plain 404), does not know
+  // the session, or does not answer within a short timeout.
+  warmSession(sessionId: string): Promise<boolean>
 
   // Message operations
   sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>

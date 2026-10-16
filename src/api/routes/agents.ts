@@ -53,6 +53,7 @@ import {
   decodeMediaRef,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
+  type AgentActor,
   type FileStat,
   type SessionSortBy,
 } from '@shared/lib/agent-actor'
@@ -1731,12 +1732,53 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/start - Start an agent's container
+// POST /api/agents/:id/start - Start an agent's container.
+// Optional JSON body `{ sessionId }`: the session the caller is typing into.
+// Once the container is up, that session's CLI — evicted after a few idle
+// minutes — is resumed in the background, so the next send skips the CLI
+// spawn and `--resume`. Clients call this on the first keystroke. Older ones
+// send no body, and any body this route cannot use is a plain start.
+const startAgentBodySchema = z.object({
+  sessionId: z.string().min(1).max(256).optional(),
+})
+// A `{ sessionId }` body is tiny. One declaring more is not that, and is left
+// unread, as every body was before the field existed.
+const START_AGENT_BODY_MAX_BYTES = 16 * 1024
+
+async function sessionToPreResume(c: Context): Promise<string | null> {
+  if (Number(c.req.header('content-length')) > START_AGENT_BODY_MAX_BYTES) return null
+  const raw = await c.req.text().catch(() => '')
+  if (!raw.trim()) return null
+  let json: unknown
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const parsed = startAgentBodySchema.safeParse(json)
+  return parsed.success ? parsed.data.sessionId ?? null : null
+}
+
+// Never delays or fails the start. The id is the caller's, so it is acted on
+// only when it names one of this agent's sessions — the containment check
+// every session route makes. Any other id is dropped without a trace.
+async function preResumeSession(actor: AgentActor, sessionId: string): Promise<void> {
+  try {
+    if (!(await actor.sessions.isKnown(sessionId))) return
+    await actor.sessions.warm(sessionId)
+  } catch (error) {
+    console.debug(`[Agents] Pre-resume of session ${sessionId} skipped:`, error)
+  }
+}
+
 agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const sessionId = await sessionToPreResume(c)
+    const actor = agentRegistry.get(slug)
 
-    await agentRegistry.get(slug).container.start()
+    await actor.container.start()
+    if (sessionId) void preResumeSession(actor, sessionId)
 
     // Skip the session-summary enrichment: it stats every transcript, and every
     // caller of this command discards the body and refetches agent data anyway.

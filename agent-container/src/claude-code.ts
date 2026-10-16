@@ -556,6 +556,16 @@ export interface ClaudeCodeProcessOptions {
   globalInstructions?: string;
 }
 
+type SendOptions = {
+  llmRuntime?: ConnectionRuntime;
+  effort?: EffortLevel;
+  speed?: SpeedLevel;
+  model?: string;
+  shouldQuery?: boolean;
+  capabilityPolicies?: AgentCapabilityPolicies;
+  globalInstructions?: string;
+};
+
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
   private messageQueue: MessageQueue | null = null;
@@ -633,6 +643,17 @@ export class ClaudeCodeProcess extends EventEmitter {
   private currentStop: Promise<void> | null = null;
   // Terminal: the session was deleted. No path may revive this process.
   private disposed = false;
+  // The restart a pre-resume (warm()) is running right now. A send waits for
+  // it and then judges its options against the query it built, exactly as on
+  // a live process — joining it blind could deliver the message into a query
+  // built without the send's runtime options.
+  private warmRestart: Promise<void> | null = null;
+  // A pre-resume is under way (any phase); a second one is a no-op.
+  private preResuming = false;
+  // Sends inside sendMessage(). A pre-resume yields to them: a send into a
+  // cold process restarts it itself, with the runtime the host resolved for
+  // that send, so a pre-resume must never start a second restart beside it.
+  private sendsInFlight = 0;
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
   // Late-join replay state. A turn can complete before the host's WebSocket
@@ -1729,7 +1750,21 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
+    // Counted before any await, so a pre-resume that has not started its
+    // restart yet sees this send and stands down (see warm()).
+    this.sendsInFlight++;
+    try {
+      // A pre-resume already restarting the process: let it land, then judge
+      // this send against the query it built, as if the process had been live.
+      if (this.warmRestart) await this.warmRestart.catch(() => undefined);
+      await this.sendMessageNow(content, uuid, options);
+    } finally {
+      this.sendsInFlight--;
+    }
+  }
+
+  private async sendMessageNow(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
     const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
       ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
@@ -1743,14 +1778,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
     );
     if (nextRuntime) {
-      this.llmRuntime = nextRuntime;
       if (!connectionChanged && nextRuntime.proxy) this.llmProxy?.updateCredential(nextRuntime.proxy.credential);
-      this.browserModel = nextRuntime.browserModel;
-      this.dashboardBuilderModel = nextRuntime.dashboardBuilderModel;
-      this.subagentModels = nextRuntime.subagentModels;
-      this.modelContextWindows = nextRuntime.modelContextWindows;
-      this.modelPromptHints = nextRuntime.modelPromptHints;
-      this.refreshSystemPrompt();
+      this.adoptRuntime(nextRuntime);
     }
     const effort = options?.effort;
     const speed = options?.speed;
@@ -2017,6 +2046,90 @@ export class ClaudeCodeProcess extends EventEmitter {
     await this.queryInstance?.return(undefined);
     await this.initializeQuery();
     this.processingDone = this.processMessages();
+  }
+
+  /** Whether a send would have to restart the query before queueing (see sendMessageNow). */
+  private isCold(): boolean {
+    return this.stopping || !this.messageQueue || !this.isReady;
+  }
+
+  /** A pre-resume may still start its restart: nothing else has taken the process over. */
+  private mayPreResume(): boolean {
+    return !this.disposed && this.sendsInFlight === 0 && this.isCold();
+  }
+
+  /**
+   * Take a connection runtime's execution facts for the next query. The model
+   * is left to the caller: sendMessageNow decides between setModel and a
+   * re-query by comparing the new model with the current one.
+   */
+  private adoptRuntime(runtime: ConnectionRuntime): void {
+    this.llmRuntime = runtime;
+    this.browserModel = runtime.browserModel;
+    this.dashboardBuilderModel = runtime.dashboardBuilderModel;
+    this.subagentModels = runtime.subagentModels;
+    this.modelContextWindows = runtime.modelContextWindows;
+    this.modelPromptHints = runtime.modelPromptHints;
+    this.refreshSystemPrompt();
+  }
+
+  /**
+   * Pre-resume: bring a cold process back up WITHOUT queueing a message, so
+   * the next send finds a live query instead of paying the CLI spawn and
+   * `--resume` on its critical path. Cold means idle-evicted (a stop may still
+   * be closing it) or resumed with its start deferred to the first send. It
+   * runs the restart a cold send runs, with the runtime the session last ran
+   * on — or, for a deferred start, the one the host resolves for the session,
+   * as for an internal send.
+   *
+   * Resolves true when this call restarted the query. False when there was
+   * nothing to do: already live, disposed, another pre-resume under way, or a
+   * send in flight — that send restarts the process itself with the runtime
+   * the host resolved for it, and a send arriving before the restart begins
+   * makes this stand down. Rejects only when the restart fails; the next send
+   * then cold-restarts as it would have without this.
+   *
+   * Turn and settlement state are untouched: the process idles like any live
+   * one, and the session manager's idle eviction reclaims it if no send comes.
+   */
+  async warm(): Promise<boolean> {
+    if (this.preResuming || !this.mayPreResume()) return false;
+    this.preResuming = true;
+    try {
+      if (this.currentStop) await this.currentStop.catch(() => undefined);
+      if (this.requiresConnectionRuntime && !this.llmRuntime && this.mayPreResume()) {
+        const runtime = await resolveSessionRuntime(this.sessionId);
+        if (!this.mayPreResume()) return false;
+        this.adoptRuntime(runtime);
+        this.model = runtime.model;
+      }
+      // Re-checked after every await: a send or a delete that arrived meanwhile owns the process.
+      if (!this.mayPreResume()) return false;
+      console.log(`[Session ${this.sessionId}] Pre-resuming cold session`);
+      // As in sendMessageNow: a rebuilt query whose remote-MCP set changed
+      // waits for the new servers before the first message may land.
+      const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
+      const restart = (async () => {
+        await this.restart();
+        if (remoteMcpsChanged) await this.waitForRemoteMcpsReady();
+      })();
+      // Published synchronously with the restart's start, so a send can never
+      // slip between the check above and the restart without seeing it.
+      this.warmRestart = restart;
+      try {
+        await restart;
+      } finally {
+        this.warmRestart = null;
+      }
+      // A delete that raced the restart wins: no live query outlives a disposed process.
+      if (this.disposed) {
+        await this.stop();
+        return false;
+      }
+      return true;
+    } finally {
+      this.preResuming = false;
+    }
   }
 
   /**

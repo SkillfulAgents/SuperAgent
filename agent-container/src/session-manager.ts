@@ -1004,6 +1004,49 @@ export class SessionManager extends EventEmitter {
     await sessionData.process.sendMessage(content, uuid, options);
   }
 
+  /** Whether this container knows the session: live in memory, or persisted and resumable. */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId) || this.persistence.getSession(sessionId) !== null;
+  }
+
+  /**
+   * Pre-resume a session's CLI ahead of its next message: the host asks for
+   * this when a person starts typing into the session. A session that is not
+   * in memory is resumed from persistence; a cold process (idle-evicted, or a
+   * resume whose start waits for the first send) is restarted the way a cold
+   * send restarts it, but with no message queued, so that send skips the CLI
+   * spawn and `--resume`.
+   *
+   * Never marks the session busy. It restarts the idle clock instead, so the
+   * reaper does not evict the process between this call and the message; if
+   * no message comes, the normal idle eviction reclaims it again.
+   *
+   * - 'unknown': no such session
+   * - 'busy': a turn (or background work) is in flight; left alone
+   * - 'running': the process was already live (only the idle clock moved)
+   * - 'resumed': the process was cold and has been restarted
+   * - 'skipped': deleted or shutting down meanwhile, or a send took over
+   */
+  async warmSession(sessionId: string): Promise<'unknown' | 'busy' | 'running' | 'resumed' | 'skipped'> {
+    if (this.shuttingDown) return 'skipped';
+    let data = this.sessions.get(sessionId);
+    // Shared with a racing send through the resume dedup, like every resume.
+    const fromDisk = !data;
+    data ??= await this.resumeSession(sessionId);
+    if (!data) return 'unknown';
+    // A racing idle eviction may be closing the process: let it finish, then
+    // resume — the order a send into the same session takes.
+    if (data.eviction) await data.eviction;
+    if (this.shuttingDown || this.sessions.get(sessionId) !== data) return 'skipped';
+    if (!data.settlement.isSettled()) return 'busy';
+    // In memory only: the reaper reads this clock. The persisted timestamp is
+    // conversation activity, and a keystroke is not that.
+    data.session.lastActivity = new Date();
+    // A resume that needs no host credentials starts its process right away.
+    if (data.process.isRunning()) return fromDisk ? 'resumed' : 'running';
+    return (await data.process.warm()) ? 'resumed' : 'skipped';
+  }
+
   /**
    * Cancel a queued (not yet picked up) message. Returns false when the
    * session isn't live or the message was already dequeued for execution —
