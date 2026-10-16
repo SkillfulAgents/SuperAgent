@@ -1,0 +1,156 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e525] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e175]:
+            - link "Discover New Agents New" [ref=e176] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e177]
+              - generic [ref=e180]: Discover New Agents
+              - generic [ref=e181]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - img [ref=e45]
+            - button "New agent in Your Agents" [ref=e47] [cursor=pointer]:
+              - img [ref=e48]
+            - list [ref=e50]:
+              - button "QA-20261016-014543-nr6k Last run less than a minute ago Open QA-20261016-014543-nr6k New session with QA-20261016-014543-nr6k Collapse Browser Page Title Check" [ref=e576] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20261016-014543-nr6k Last run less than a minute ago" [ref=e421]:
+                    - /url: /agents/qa-20261016-014543-nr6k-lbgemneoli
+                    - generic [ref=e54]: QA-20261016-014543-nr6k
+                    - generic [ref=e55]: Last run less than a minute ago
+                  - generic [ref=e56]:
+                    - link "Open QA-20261016-014543-nr6k" [ref=e57]:
+                      - /url: /agents/qa-20261016-014543-nr6k-lbgemneoli
+                      - img "idle" [ref=e577]:
+                        - img [ref=e578]
+                    - link "New session with QA-20261016-014543-nr6k" [ref=e68]:
+                      - /url: /agents/qa-20261016-014543-nr6k-lbgemneoli/sessions/new
+                      - img [ref=e69]
+                  - button "Collapse" [expanded] [ref=e427]:
+                    - img [ref=e434]
+                - list [ref=e437]:
+                  - listitem [ref=e438]:
+                    - link "Browser Page Title Check" [ref=e587]:
+                      - /url: /agents/lbgemneoli/sessions/b6f3d2e1-f3d4-4109-9fa5-8c59cf7e1b55
+                      - generic [ref=e441]: Browser Page Title Check
+              - button "QA-20261016-014542-ay29 Last run less than a minute ago Open QA-20261016-014542-ay29 New session with QA-20261016-014542-ay29 Expand" [ref=e395] [cursor=pointer]:
+                - generic [ref=e73]:
+                  - link "QA-20261016-014542-ay29 Last run less than a minute ago" [ref=e396]:
+                    - /url: /agents/qa-20261016-014542-ay29-rqlotyj4lp
+                    - generic [ref=e75]: QA-20261016-014542-ay29
+                    - generic [ref=e76]: Last run less than a minute ago
+                  - generic [ref=e77]:
+                    - link "Open QA-20261016-014542-ay29" [ref=e78]:
+                      - /url: /agents/qa-20261016-014542-ay29-rqlotyj4lp
+                      - img "idle" [ref=e447]:
+                        - img [ref=e448]
+                    - link "New session with QA-20261016-014542-ay29" [ref=e89]:
+                      - /url: /agents/qa-20261016-014542-ay29-rqlotyj4lp/sessions/new
+                      - img [ref=e90]
+                  - button "Expand" [ref=e402]:
+                    - img [ref=e416]
+          - status [ref=e93]
+          - listitem [ref=e94]:
+            - button "Add section" [ref=e95] [cursor=pointer]:
+              - img [ref=e97]
+              - generic [ref=e98]: Add section
+      - generic [ref=e100]:
+        - button "Settings" [ref=e101] [cursor=pointer]:
+          - img [ref=e102]
+          - generic [ref=e105]: Settings
+        - button "0.5.42" [ref=e106] [cursor=pointer]:
+          - generic [ref=e107]: 0.5.42
+      - button "Toggle Sidebar" [ref=e108]
+    - main [ref=e109]:
+      - generic [ref=e186]:
+        - generic [ref=e187]:
+          - button "Toggle Sidebar" [ref=e188] [cursor=pointer]:
+            - img
+            - generic [ref=e189]: Toggle Sidebar
+          - generic [ref=e192]:
+            - link "QA-20261016-014543-nr6k" [ref=e467]:
+              - /url: /agents/qa-20261016-014543-nr6k-lbgemneoli
+            - text: /Browser Page Title Check
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - img [ref=e588]
+              - generic [ref=e204]: idle
+            - button "Stop Agent" [ref=e206] [cursor=pointer]:
+              - img
+        - generic [ref=e474]:
+          - region "Messages" [ref=e476]:
+            - log [ref=e478]:
+              - time [ref=e480]: Today at 1:46 AM
+              - paragraph [ref=e485]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e486] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - button "Expand completed turn work" [ref=e598] [cursor=pointer]:
+                - generic [ref=e599]:
+                  - generic [ref=e600]: Worked for 7s
+                  - generic [ref=e601]: ·
+                - generic [ref=e602]:
+                  - generic [ref=e603]: 3 tool calls
+                  - generic [ref=e604]: ·
+                - generic [ref=e605]:
+                  - generic [ref=e606]: 153,082 tokens
+                  - img [ref=e607]
+              - paragraph [ref=e613]:
+                - text: The page title is
+                - strong [ref=e614]: "\"Example Domain\""
+                - text: . The page loaded normally, and I've closed the browser.
+          - generic [ref=e498]:
+            - generic [ref=e502]:
+              - textbox "Type a message..." [ref=e615]:
+                - text: Type a message...
+                - paragraph [ref=e506]
+              - generic [ref=e507]:
+                - generic [ref=e508]:
+                  - button "Add files" [ref=e509] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e510] [cursor=pointer]':
+                    - generic [ref=e511]:
+                      - text: Opus 5.5
+                      - generic [ref=e512]: · Medium
+                    - img
+                - generic [ref=e513]:
+                  - button "Set up voice input" [ref=e514] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e518]:
+              - generic [ref=e570]:
+                - generic [ref=e571]: Context Usage
+                - img [ref=e573]
+              - generic [ref=e519]:
+                - generic [ref=e520]: ↵
+                - generic [ref=e521]: Send
+                - generic [ref=e522]: ·
+                - generic [ref=e523]: ⇧↵
+                - generic [ref=e524]: New line
+  - region "Notifications alt+T"
