@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ChevronLeft, Globe, Lock, Trash2 } from 'lucide-react'
+import { ChevronLeft, Globe, Lock, X } from 'lucide-react'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { useHideSettingsHeader, useFullWidthSettingsContent } from '@renderer/components/settings/settings-page'
 import { AgentAssignmentList } from '@renderer/components/agents/agent-assignment-list'
@@ -69,9 +69,9 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
       </VolumeDetailsFields>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={onDelete}
-          disabled={save.isPending || volume.attachmentCount > 0} title={volume.attachmentCount > 0 ? 'Remove from all agents before deleting' : undefined}>
-          <Trash2 className="h-3.5 w-3.5" />Delete drive
+        <Button type="button" variant="ghost" size="sm" className="-ml-2 text-destructive" onClick={onDelete}
+          disabled={save.isPending || volume.attachmentCount > 0} title={volume.attachmentCount > 0 ? 'Remove from all agents first' : undefined}>
+          <X className="h-3.5 w-3.5" />Remove drive
         </Button>
         <span className="flex-1 text-xs text-muted-foreground" role="status">{saved ? 'Saved' : ''}</span>
         {isAuthMode && isAdmin && volume.attachmentCount === 0 && <Button type="submit" size="sm" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save changes'}</Button>}

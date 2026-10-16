@@ -43,7 +43,7 @@ describe('volume settings', () => {
     state.definitions[0].attachmentCount = 2
     state.selectedId = 'v1'
     render(<VolumesTab />)
-    expect(screen.getByRole('button', { name: 'Delete drive' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Remove drive' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/notes')
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
@@ -129,7 +129,7 @@ describe('volume settings', () => {
     render(<VolumesTab />)
     expect(screen.getByText('Public')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Delete Notes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove Notes' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add drive' })).toBeInTheDocument()
   })
   it('keeps inline edits with the server error when a volume cannot be saved', async () => {
@@ -144,10 +144,10 @@ describe('volume settings', () => {
   })
   it('confirms deletion of an unused definition', async () => {
     render(<VolumesTab />)
-    await userEvent.click(screen.getByRole('button', { name: 'Delete Notes' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Notes' }))
     expect(screen.getByRole('alertdialog')).toHaveTextContent('The source folder and its files will remain unchanged')
     expect(state.remove).not.toHaveBeenCalled()
-    await userEvent.click(screen.getByRole('button', { name: 'Delete drive' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Remove drive' }))
     expect(state.remove).toHaveBeenCalledWith('v1')
   })
 })

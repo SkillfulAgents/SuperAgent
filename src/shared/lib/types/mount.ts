@@ -1,5 +1,5 @@
 /** Every source a volume can come from. A new source adds its id here. */
-export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive', 's3'] as const
+export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive', 's3', 'platform'] as const
 export type VolumeType = (typeof VOLUME_TYPES)[number]
 
 /** A volume as stored: `type` picks its implementation, and only that type's schema reads `config`. */
