@@ -1754,6 +1754,17 @@ describe('agent startup — POST /:id/start', () => {
       expect(mockClientWarmSession).not.toHaveBeenCalled()
     })
 
+    it('still starts when the adapter cannot initialize the request body', async () => {
+      const request = new Request('http://localhost/api/agents/test-agent/start', { method: 'POST' })
+      Object.defineProperty(request, 'body', { get() { throw new Error('body unavailable') } })
+
+      const response = await createApp().request(request)
+
+      expect(response.status).toBe(200)
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
     it('does not pull a stream whose declared size is already too large', async () => {
       const pull = vi.fn()
       const body = new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 })
