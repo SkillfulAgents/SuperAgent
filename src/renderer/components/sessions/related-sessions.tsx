@@ -1,9 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
-import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar } from 'lucide-react'
+import { MessageSquare, ChevronLeft, ChevronRight, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
-import { Button } from '@renderer/components/ui/button'
+import { Button, buttonVariants } from '@renderer/components/ui/button'
+import { SessionMenuButton } from '@renderer/components/sessions/session-menu-button'
+import { cn } from '@shared/lib/utils/cn'
 import {
   Select,
   SelectContent,
@@ -145,9 +147,15 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
       void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })
     }
   }
+  // The row is the SessionContextMenu's trigger; its 3-dot replays a click as
+  // a contextmenu on it (see SessionMenuButton). menuOpen keeps the
+  // hover-revealed button on screen while the menu it opened is up.
+  const rowRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const row = (
     <div
+      ref={rowRef}
       role="button"
       tabIndex={0}
       className="group relative w-full flex items-center gap-3 py-3 px-1 hover:bg-muted/50 transition-colors text-left cursor-pointer"
@@ -199,33 +207,23 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
         )}
       </div>
       {agentSlug && (
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity">
+        <div
+          className={cn(
+            'absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity',
+            menuOpen && 'opacity-100'
+          )}
+        >
           {/* Three-dot = the same session menu a right-click on this row (or
-              the sidebar row) opens, so the two never drift apart. A click
-              replays as a contextmenu event that bubbles to the row's trigger,
-              anchored under this button. */}
-          <Button
-            type="button"
-            size="icon"
-            variant="outline"
-            className="h-6 w-6"
-            aria-label={`Actions for ${session.name}`}
+              the sidebar row) opens, so the two never drift apart. */}
+          <SessionMenuButton
+            triggerRef={rowRef}
+            sessionName={session.name}
+            menuOpen={menuOpen}
+            title="Session options"
             data-testid={`session-row-menu-${session.id}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              const rect = e.currentTarget.getBoundingClientRect()
-              e.currentTarget.dispatchEvent(
-                new MouseEvent('contextmenu', {
-                  bubbles: true,
-                  cancelable: true,
-                  clientX: rect.left,
-                  clientY: rect.bottom + 4,
-                })
-              )
-            }}
-          >
-            <MoreVertical className="h-3.5 w-3.5" />
-          </Button>
+            iconClassName="h-3.5 w-3.5"
+            className={cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'h-6 w-6')}
+          />
         </div>
       )}
     </div>
@@ -245,6 +243,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
         // The list has no stream handle; a session mid-stream is also isActive.
         isStreaming: false,
       }}
+      onOpenChange={setMenuOpen}
     >
       {row}
     </SessionContextMenu>
