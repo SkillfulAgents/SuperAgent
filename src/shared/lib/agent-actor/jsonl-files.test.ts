@@ -8,7 +8,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { LocalFileOps } from './local-file-ops'
-import { iterateLinesBackward, readTailLines, streamLines } from './jsonl-files'
+import { iterateLinesBackward, readChunkFor, readTailLines, READ_CHUNK_MAX, READ_CHUNK_MIN, streamLines } from './jsonl-files'
 
 let testDir: string
 let files: LocalFileOps
@@ -409,3 +409,158 @@ describe('streamLines with a byte range', () => {
   })
 })
 
+
+/**
+ * The read sizes. Backward walks start at READ_CHUNK_MIN and double up to
+ * READ_CHUNK_MAX, so a short tail costs one small read and a long walk costs
+ * O(log) + bytes / 1 MiB reads; a ranged forward read takes the chunk size
+ * its caller asks for. Each `read` here is a round trip on a network volume.
+ */
+describe('read sizes', () => {
+  const MiB = 1024 * 1024
+
+  /** Length of every FileHandle read issued while `fn` runs. */
+  async function readLengths<T>(fn: () => Promise<T>): Promise<{ result: T; lengths: number[] }> {
+    const lengths: number[] = []
+    const realOpen = fs.promises.open.bind(fs.promises)
+    const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof realOpen>))
+      const realRead = handle.read.bind(handle) as (...a: unknown[]) => Promise<{ bytesRead: number }>
+      handle.read = (async (...readArgs: unknown[]) => {
+        const result = await realRead(...readArgs)
+        // Every read the readers issue asks to fill a buffer at an offset:
+        // (buffer, offset, length, position).
+        lengths.push(readArgs[2] as number)
+        return result
+      }) as typeof handle.read
+      return handle
+    })
+    try {
+      return { result: await fn(), lengths }
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  /** Deterministic rows of mixed sizes, a few larger than the largest read. */
+  function mixedRows(count: number, seed: number): string[] {
+    let state = seed
+    const random = () => {
+      state = (state * 1664525 + 1013904223) >>> 0
+      return state / 0x100000000
+    }
+    return Array.from({ length: count }, (_, i) => {
+      const roll = random()
+      const pad = roll < 0.02 ? 1.2 * MiB : roll < 0.2 ? 40_000 + Math.floor(random() * 90_000) : Math.floor(random() * 3000)
+      return JSON.stringify({ i, pad: 'x'.repeat(pad) })
+    })
+  }
+
+  async function writeRows(name: string, rows: string[], trailingNewline = true): Promise<{ filePath: string; content: string }> {
+    const filePath = path.join(testDir, name)
+    const content = rows.join('\n') + (trailingNewline ? '\n' : '')
+    await fs.promises.writeFile(filePath, content)
+    return { filePath, content }
+  }
+
+  it('clamps a requested chunk into [64 KiB, 1 MiB]', () => {
+    expect(READ_CHUNK_MIN).toBe(64 * 1024)
+    expect(READ_CHUNK_MAX).toBe(MiB)
+    expect(readChunkFor(undefined)).toBe(READ_CHUNK_MIN)
+    expect(readChunkFor(0)).toBe(READ_CHUNK_MIN)
+    expect(readChunkFor(300_000)).toBe(300_000)
+    expect(readChunkFor(10 * MiB)).toBe(READ_CHUNK_MAX)
+    expect(readChunkFor(Number.POSITIVE_INFINITY)).toBe(READ_CHUNK_MIN)
+  })
+
+  it('walks backward in reads that double from 64 KiB to 1 MiB', async () => {
+    const { filePath } = await writeRows('grow.jsonl', Array.from({ length: 5000 }, (_, i) => JSON.stringify({ i, pad: 'y'.repeat(900) })))
+    const size = fs.statSync(filePath).size
+    expect(size).toBeGreaterThan(4 * MiB)
+
+    const { lengths } = await readLengths(async () => {
+      for await (const item of iterateLinesBackward(files, rel(filePath))) void item
+    })
+
+    const expected: number[] = []
+    let remaining = size
+    for (let chunk = READ_CHUNK_MIN; remaining > 0; chunk = Math.min(chunk * 2, READ_CHUNK_MAX)) {
+      expected.push(Math.min(chunk, remaining))
+      remaining -= Math.min(chunk, remaining)
+    }
+    expect(lengths).toEqual(expected)
+    // A 4 MB walk: a handful of reads, where fixed 64 KiB reads took ~70.
+    expect(lengths.length).toBeLessThan(12)
+  })
+
+  it('reads a short tail in one 64 KiB read, as before', async () => {
+    const { filePath } = await writeRows('short-tail.jsonl', Array.from({ length: 5000 }, (_, i) => JSON.stringify({ i, pad: 'p'.repeat(40) })))
+    expect(fs.statSync(filePath).size).toBeGreaterThan(3 * READ_CHUNK_MIN)
+    const { result, lengths } = await readLengths(() => readTailLines(files, rel(filePath), 20))
+    expect(result.lines).toHaveLength(20)
+    expect(lengths).toEqual([READ_CHUNK_MIN])
+  })
+
+  it('grows readTailLines the same way', async () => {
+    const { filePath } = await writeRows('grow-tail.jsonl', Array.from({ length: 3000 }, (_, i) => JSON.stringify({ i, pad: 'z'.repeat(900) })))
+    const { result, lengths } = await readLengths(() => readTailLines(files, rel(filePath), 2000))
+    expect(result.lines).toHaveLength(2000)
+    expect(lengths.slice(0, 5)).toEqual([READ_CHUNK_MIN, 2 * READ_CHUNK_MIN, 4 * READ_CHUNK_MIN, 8 * READ_CHUNK_MIN, READ_CHUNK_MAX])
+  })
+
+  it('matches the forward split across every growth boundary, rows larger than a read included', async () => {
+    for (const [round, trailingNewline] of [[1, true], [2, false], [3, true]] as const) {
+      const rows = mixedRows(260, round)
+      const { filePath, content } = await writeRows(`oracle-${round}.jsonl`, rows, trailingNewline)
+      const bytes = Buffer.from(content)
+      expect(bytes.length).toBeGreaterThan(3 * MiB)
+
+      // Backward walk: every row, newest first, each addressed at its own start.
+      const walked: Array<{ text: string; offset: number }> = []
+      for await (const { line, offset } of iterateLinesBackward(files, rel(filePath))) {
+        walked.push({ text: line.toString('utf-8'), offset })
+      }
+      expect(walked.map((l) => l.text)).toEqual(rows.slice().reverse())
+      for (const { text, offset } of walked) {
+        expect(bytes.subarray(offset, offset + text.length).toString('utf-8')).toBe(text)
+        expect(offset === 0 || bytes[offset - 1] === 0x0a).toBe(true)
+      }
+
+      // Tail reads of several depths: a suffix of the rows, offsets in lockstep.
+      for (const maxLines of [1, 7, 60, 150, 1000]) {
+        const tail = await readTailLines(files, rel(filePath), maxLines)
+        const got = tail.lines.map((l) => l.toString('utf-8'))
+        expect(got).toEqual(rows.slice(rows.length - got.length))
+        expect(tail.reachedStart).toBe(got.length === rows.length)
+        tail.offsets.forEach((offset, k) => {
+          expect(bytes.subarray(offset, offset + got[k]!.length).toString('utf-8')).toBe(got[k])
+        })
+      }
+    }
+  })
+
+  it('reads a range in the chunk size its caller asks for', async () => {
+    const { filePath, content } = await writeRows('ranged.jsonl', Array.from({ length: 3000 }, (_, i) => JSON.stringify({ i, pad: 'r'.repeat(900) })))
+    const start = content.indexOf('\n') + 1
+    const end = content.length - 1000
+
+    const collectRange = async (chunkBytes?: number) =>
+      readLengths(async () => {
+        const out: string[] = []
+        for await (const line of streamLines(files, rel(filePath), { start, end }, undefined, chunkBytes)) {
+          out.push(line.toString('utf-8'))
+        }
+        return out
+      })
+
+    const sized = await collectRange(MiB)
+    const unsized = await collectRange()
+    // The same lines either way…
+    expect(sized.result).toEqual(unsized.result)
+    // …in 1 MiB reads when asked (the last is what is left of the range), the
+    // stream's 64 KiB default otherwise.
+    expect(sized.lengths.slice(0, -1).every((n) => n === MiB)).toBe(true)
+    expect(sized.lengths.length).toBe(Math.ceil((end - start) / MiB))
+    expect(Math.max(...unsized.lengths)).toBe(64 * 1024)
+  })
+})
