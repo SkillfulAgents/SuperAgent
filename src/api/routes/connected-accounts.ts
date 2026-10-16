@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, type ConnectedAccount } from '@shared/lib/db/schema'
 import { desc, eq } from 'drizzle-orm'
@@ -623,7 +624,9 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
     } catch (error) {
       console.warn(`Failed to resolve agents assigned account ${id} before delete:`, error)
     }
+    const removedRules = await rulesAboutToBeRemoved({ kind: 'api', targetId: id })
     await db.delete(connectedAccounts).where(eq(connectedAccounts.id, id))
+    for (const rule of removedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'account_deleted' }, getCurrentUserId(c))
     const liveRefresh = assignedAgentSlugs
       ? await syncConnectedAccountAgents(assignedAgentSlugs)
       : false

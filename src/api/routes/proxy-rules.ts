@@ -11,7 +11,7 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { Authenticated, OwnsAccountByParam, OwnsMcpByParam } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { auditRuleChange } from '@shared/lib/proxy/rules/audit-events'
 import { authorRule } from '@shared/lib/proxy/rules/author'
 import { catalogPolicies, coverageLabels, fallbackRuleName, loadTargetContext, prepareDraft } from '@shared/lib/proxy/rules/service'
 import { createRule, deleteRule, getRule, listRules, toRuleView, type RuleTarget } from '@shared/lib/proxy/rules/store'
@@ -118,14 +118,9 @@ function mount(kind: RuleKind, param: 'accountId' | 'mcpId', owns: (param: strin
       maxRules: MAX_RULES_PER_TARGET,
     })
     if (!saved) return c.json({ error: `This connection already has ${MAX_RULES_PER_TARGET} rules. Delete one first.` }, 422)
-    await logAuditEvent({
-      userId: getCurrentUserId(c),
-      object: 'policy',
-      objectId: saved.rule.id,
-      action: 'updated',
-      details: { type: 'proxy_rule', op: 'created', by: 'user' },
-    })
-    return c.json({ rule: toRuleView(saved) })
+    const view = toRuleView(saved)
+    await auditRuleChange('created', view, { by: 'user' }, getCurrentUserId(c))
+    return c.json({ rule: view })
   })
 
   proxyRules.delete(`${base}/:ruleId`, owns(param), async (c) => {
@@ -134,14 +129,9 @@ function mount(kind: RuleKind, param: 'accountId' | 'mcpId', owns: (param: strin
     if (!existing || existing.rule.kind !== kind || existingTarget !== c.req.param(param)) {
       return c.json({ error: 'Rule not found' }, 404)
     }
-    await deleteRule(existing.rule.id)
-    await logAuditEvent({
-      userId: getCurrentUserId(c),
-      object: 'policy',
-      objectId: existing.rule.id,
-      action: 'updated',
-      details: { type: 'proxy_rule', op: 'deleted', by: 'user' },
-    })
+    if (await deleteRule(existing.rule.id)) {
+      await auditRuleChange('deleted', toRuleView(existing), { by: 'user' }, getCurrentUserId(c))
+    }
     return c.json({ ok: true })
   })
 }

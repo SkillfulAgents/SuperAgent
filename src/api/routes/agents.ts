@@ -120,6 +120,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
+import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -7583,6 +7584,9 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const success = agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
+  }
+  if (proposal) {
+    await auditRuleDecision({ proposal, approved: body.decision === 'allow', agentSlug: slug, via: 'app', userId: getCurrentUserId(c) })
   }
 
   return c.json({ ok: true })

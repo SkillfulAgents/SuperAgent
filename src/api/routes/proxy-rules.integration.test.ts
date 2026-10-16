@@ -53,6 +53,7 @@ import xAgentRules from './x-agent-rules'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { addRuleVersion, createRule, invalidateRuleCache, listRules } from '@shared/lib/proxy/rules/store'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
 import { normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 
@@ -120,6 +121,7 @@ beforeEach(() => {
   migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
   defaultPolicy = 'review'
   invalidateRuleCache()
+  vi.mocked(logAuditEvent).mockClear()
   upstreamCalls.length = 0
   userInputRequestManager.reset()
   const now = new Date()
@@ -340,6 +342,16 @@ describe('agent rule tools', () => {
     expect(saved.rule.createdBy).toBe('agent')
     expect(saved.version.restatement).toMatch(/@acme.com/)
     expect(saved.version.name).toBe('Sends to @acme.com only')
+    expect(logAuditEvent).toHaveBeenCalledWith({
+      userId: null,
+      object: 'proxy_rule',
+      objectId: 'acct-gmail',
+      action: 'created',
+      details: expect.objectContaining({
+        ruleId: saved.rule.id, name: 'Sends to @acme.com only', effect: 'allow', version: 1,
+        appliesTo: 'agent', by: 'agent', agentSlug: 'agent-a',
+      }),
+    })
 
     // The new rule now lets the agent's internal sends through.
     expect((await proxySend('agent-a', 'To: a@acme.com\r\n\r\n')).status).toBe(200)
@@ -407,6 +419,9 @@ describe('agent rule tools', () => {
     agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await deleted).status).toBe(200)
     expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.id)).toEqual([others.rule.id])
+    expect(vi.mocked(logAuditEvent).mock.calls.map(([event]) => [event.action, (event.details as { ruleId?: string }).ruleId])).toEqual([
+      ['deleted', shared.rule.id],
+    ])
   })
 
   it('deletes only the version the user was shown', async () => {

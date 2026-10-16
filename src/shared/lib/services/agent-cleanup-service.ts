@@ -18,11 +18,13 @@ import { eq, and, inArray } from 'drizzle-orm'
 import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-trigger-service'
 import { unlinkAgentStatements } from '@shared/lib/services/todo-service'
 import { invalidateRuleCache } from '@shared/lib/proxy/rules/store'
+import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
   const { cleanupIntegrationResources } = await import('../agent-integrations/cleanup')
   await cleanupIntegrationResources(agentSlug)
+  const scopedRules = await rulesAboutToBeRemoved({ agentSlug })
 
   // Delete all peripheral rows in one batch so the cleanup is atomic: either
   // every row referencing this agent is removed or none is, never a
@@ -45,6 +47,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     ...unlinkAgentStatements(agentSlug),
   ])
   invalidateRuleCache()
+  for (const rule of scopedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'agent_deleted' })
 }
 
 // Delegates per-trigger cancel + upstream teardown to the shared path so the

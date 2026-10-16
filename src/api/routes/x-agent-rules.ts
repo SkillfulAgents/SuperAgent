@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { auditRuleChange, auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { createRule, addRuleVersion, deleteRule, getRule, listRules, toRuleView, type RuleTarget } from '@shared/lib/proxy/rules/store'
 import { agentCanUseTarget, coverageLabels, loadTargetContext, prepareDraft } from '@shared/lib/proxy/rules/service'
 import { MAX_RULES_PER_TARGET } from '@shared/lib/proxy/rules/engine'
@@ -128,6 +128,7 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
       ruleProposal: proposal,
     }, c.req.raw.signal)
   } catch {
+    await auditRuleDecision({ proposal, approved: false, agentSlug: callerSlug, via: 'timeout' })
     return c.json({ error: 'review_timeout', message: 'Deleting the rule needed approval but the request timed out. It was not deleted.' }, 408)
   }
   if (decision === 'deny') {
@@ -137,13 +138,7 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
   if (!await deleteRule(existing.rule.id, existing.version.id)) {
     return c.json({ error: 'rule_changed', message: 'The rule changed or was deleted while waiting for approval. It was not deleted.' }, 409)
   }
-  await logAuditEvent({
-    userId: null,
-    object: 'policy',
-    objectId: existing.rule.id,
-    action: 'updated',
-    details: { type: 'proxy_rule', op: 'deleted', by: 'agent', agentSlug: callerSlug, approved: true },
-  })
+  await auditRuleChange('deleted', rule, { by: 'agent', agentSlug: callerSlug })
   return c.json({ ok: true, deleted: existing.rule.id })
 })
 
@@ -228,6 +223,7 @@ xAgentRules.post('/create', zValidator('json', createSchema), async (c) => {
       ruleProposal: proposal,
     }, c.req.raw.signal)
   } catch {
+    await auditRuleDecision({ proposal, approved: false, agentSlug: callerSlug, via: 'timeout' })
     return c.json({ error: 'review_timeout', message: 'The rule needed approval but the request timed out. It was not saved.' }, 408)
   }
   if (decision === 'deny') {
@@ -260,14 +256,9 @@ xAgentRules.post('/create', zValidator('json', createSchema), async (c) => {
       ? c.json({ error: 'rule_changed', message: 'The rule changed or was deleted while awaiting approval. It was not saved.' }, 409)
       : c.json({ error: 'too_many_rules', message: `This connection reached ${MAX_RULES_PER_TARGET} rules while awaiting approval. It was not saved.` }, 409)
   }
-  await logAuditEvent({
-    userId: null,
-    object: 'policy',
-    objectId: saved.rule.id,
-    action: 'updated',
-    details: { type: 'proxy_rule', op: replaces ? 'versioned' : 'created', by: 'agent', agentSlug: callerSlug, version: saved.version.version },
-  })
-  return c.json({ ok: true, rule: toRuleView(saved) })
+  const view = toRuleView(saved)
+  await auditRuleChange(replaces ? 'updated' : 'created', view, { by: 'agent', agentSlug: callerSlug })
+  return c.json({ ok: true, rule: view })
 })
 
 function ruleTarget(rule: { kind: 'api' | 'mcp'; accountId: string | null; mcpId: string | null }): RuleTarget | null {

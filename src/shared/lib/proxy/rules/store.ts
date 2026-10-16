@@ -140,6 +140,16 @@ export async function listRules(target: RuleTarget, agentSlug?: string): Promise
     .all()
 }
 
+/** Live rules scoped to one agent, across every target. */
+export async function listAgentScopedRules(agentSlug: string): Promise<RuleWithVersion[]> {
+  return db
+    .select({ rule: proxyRules, version: proxyRuleVersions })
+    .from(proxyRules)
+    .innerJoin(proxyRuleVersions, eq(proxyRuleVersions.id, proxyRules.currentVersionId))
+    .where(and(eq(proxyRules.agentSlug, agentSlug), isNull(proxyRules.deletedAt)))
+    .all()
+}
+
 export function toActiveRule({ rule, version }: RuleWithVersion): ActiveRule {
   return {
     ruleId: rule.id,

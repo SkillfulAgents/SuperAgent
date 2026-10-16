@@ -1,4 +1,5 @@
 import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { IntegrationDeliveryQueue, DeliveryCancelled, PermanentDeliveryError, type DeliveryAttempt } from './delivery-queue'
 import { parseDeliveryEnvelope } from './delivery-schema'
 import type { DeliveryRecord } from './delivery-store'
@@ -1576,8 +1577,15 @@ export class AgentIntegrationManager {
         // Bound to this integration's agent: the id rides in from a chat
         // client, and submit returns false for a review that is
         // settled, of another kind, or another agent's.
-        const settled = agentRegistry.get(integration.agentSlug).inputs.reviews.submit(reviewId, decision as 'allow' | 'deny')
+        const reviews = agentRegistry.get(integration.agentSlug).inputs.reviews
+        const proposal = reviews.pending().find((review) => review.id === reviewId)?.ruleProposal
+        const settled = reviews.submit(reviewId, decision as 'allow' | 'deny')
         if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
+        else if (proposal) {
+          await auditRuleDecision({
+            proposal, approved: decision === 'allow', agentSlug: integration.agentSlug, via: 'chat', extra: { integrationId },
+          })
+        }
       } catch (err) {
         console.error(`[AgentIntegrationManager] Failed to submit review decision:`, err)
         reportError(err, 'review-decision', { integrationId, reviewId, decision })
