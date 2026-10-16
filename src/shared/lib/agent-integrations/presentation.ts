@@ -2,6 +2,7 @@ import type { IntegrationStatus } from './types'
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   imessage: 'iMessage',
+  github: 'GitHub',
 }
 
 /**

@@ -8,6 +8,8 @@ import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-ru
  * Mounted at /api/agent-integrations with /api/chat-integrations as a legacy alias.
  */
 
+import { html } from 'hono/html'
+import { randomUUID } from 'node:crypto'
 import { Hono, type MiddlewareHandler, type Context } from 'hono'
 import { z } from 'zod'
 import {
@@ -56,7 +58,8 @@ async function completeAuthorization(c: Context) {
     const callback = getIntegrationSetup(c.req.param('provider') ?? '').callback
     const state = c.req.query('state')
     if (!callback || !state) return c.html('<h1>Authorization unavailable</h1><p>Return to Gamut to try again.</p>', 400)
-    const result = await callback({ state, code: c.req.query('code'), error: c.req.query('error') })
+    const result = await callback({ state, code: c.req.query('code'), error: c.req.query('error'), parameters: c.req.query() })
+    if (result.redirectUrl) return c.redirect(result.redirectUrl)
     if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
     const installed = await getAgentIntegration(result.integrationId)
     if (installed?.provider !== c.req.param('provider')) throw new Error('Authorization belongs to another provider')
@@ -71,6 +74,26 @@ async function completeAuthorization(c: Context) {
     return c.html('<h1>Could not authorize account</h1><p>Return to Gamut and check the app credentials, workspace and permissions.</p>', 400)
   }
 }
+agentIntegrationsRouter.get('/providers/:provider/launch', async c => {
+  c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
+  try {
+    await assertIntegrationAvailable(c.req.param('provider'))
+    const launch = getIntegrationSetup(c.req.param('provider')).launch
+    const state = c.req.query('state')
+    if (!launch || !state) return c.html('<p>Return to Gamut to start setup.</p>', 400)
+    const form = await launch(state)
+    const target = new URL(form.url)
+    if (target.protocol !== 'https:') throw new Error('Provider setup requires HTTPS')
+    const nonce = randomUUID()
+    c.header('Content-Security-Policy', `default-src 'none'; form-action ${target.origin}; script-src 'nonce-${nonce}'; frame-ancestors 'none'; base-uri 'none'`)
+    return c.html(html`<!doctype html><html><head><title>Connect integration</title></head><body>
+      <form method="post" action="${form.url}">${Object.entries(form.fields).map(([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`)}<button type="submit">Continue to provider</button></form>
+      <script nonce="${nonce}">document.forms[0].submit()</script></body></html>`)
+  } catch (error) {
+    if (!setupError(error)) captureException(error, { tags: { component: 'agent-integration', operation: 'setup-launch' } })
+    return c.html('<p>Setup expired or is unavailable. Return to Gamut to try again.</p>', 400)
+  }
+})
 agentIntegrationsRouter.get('/providers/:provider/callback', completeAuthorization)
 // Existing installed apps may retain this shorter callback URL.
 agentIntegrationsRouter.get('/:provider/callback', async (c, next) => {

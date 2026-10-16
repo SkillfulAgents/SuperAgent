@@ -226,3 +226,33 @@ it('hides unavailable providers and rejects setup without side effects, but keep
   const refreshed = await app.request('/api/agent-integrations/providers', { headers })
   expect((await refreshed.json()).some((entry: { provider: string }) => entry.provider === 'test-oauth')).toBe(true)
 })
+
+it('launches provider POST forms using validated state, escaped fields and a nonce CSP', async () => {
+  const provider = agentIntegrationRegistry.getProvider('test-oauth')
+  provider.setup!.launch = vi.fn(async state => {
+    if (state !== 'valid') throw new IntegrationSetupError('Expired')
+    return { url: 'https://provider.invalid/new?state=valid', fields: { manifest: '"><script>unsafe()</script>' } }
+  })
+  const response = await app.request('/api/agent-integrations/providers/test-oauth/launch?state=valid')
+  expect(response.status).toBe(200)
+  expect(response.headers.get('Cache-Control')).toBe('no-store')
+  expect(response.headers.get('Content-Security-Policy')).toContain("form-action https://provider.invalid; script-src 'nonce-")
+  const text = await response.text()
+  expect(text).toContain('method="post"')
+  expect(text).toContain('&lt;script&gt;unsafe()&lt;/script&gt;')
+  expect(text).not.toContain('<script>unsafe()')
+  expect((await app.request('/api/agent-integrations/providers/test-oauth/launch?state=expired')).status).toBe(400)
+  available = false
+  expect((await app.request('/api/agent-integrations/providers/test-oauth/launch?state=valid')).status).toBe(400)
+  expect(captureException).not.toHaveBeenCalled()
+  delete provider.setup!.launch
+})
+it('lets provider callbacks continue multi-step setup without resuming prematurely', async () => {
+  const callback = vi.spyOn(agentIntegrationRegistry.getProvider('test-oauth').setup!, 'callback')
+    .mockResolvedValueOnce({ redirectUrl: 'https://provider.invalid/install?state=next' })
+  const response = await app.request('/api/agent-integrations/providers/test-oauth/callback?state=valid&installation_id=123&setup_action=install')
+  expect(response.status).toBe(302)
+  expect(response.headers.get('Location')).toBe('https://provider.invalid/install?state=next')
+  expect(callback).toHaveBeenCalledWith(expect.objectContaining({ state: 'valid', parameters: { state: 'valid', installation_id: '123', setup_action: 'install' } }))
+  expect(runtime.resume).not.toHaveBeenCalled()
+})
