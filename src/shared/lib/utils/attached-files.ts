@@ -1,5 +1,7 @@
 const MARKER = '[Attached files:]'
-const MOUNT_MARKER = '[Mounted folders (read-write):]'
+const MOUNT_MARKER = '[Attached drives (read-write):]'
+// Messages sent before the drive wording carry this tag.
+const OLD_MOUNT_MARKER = '[Mounted folders (read-write):]'
 
 /**
  * Append an attached files block to a message.
@@ -51,17 +53,18 @@ export function appendMountedFolders(
 }
 
 /**
- * Parse a "[Mounted folders (read-write):]" section from message text.
+ * Parse an "[Attached drives (read-write):]" section from message text.
  */
 export function parseMountedFolders(text: string): {
   cleanText: string
   mountedFolders: { containerPath: string; hostPath: string }[]
 } {
-  const markerIndex = text.indexOf(MOUNT_MARKER)
+  const marker = text.includes(MOUNT_MARKER) ? MOUNT_MARKER : OLD_MOUNT_MARKER
+  const markerIndex = text.indexOf(marker)
   if (markerIndex === -1) return { cleanText: text, mountedFolders: [] }
 
   const before = text.slice(0, markerIndex).trimEnd()
-  const after = text.slice(markerIndex + MOUNT_MARKER.length)
+  const after = text.slice(markerIndex + marker.length)
 
   const mounts: { containerPath: string; hostPath: string }[] = []
   const lines = after.split('\n')

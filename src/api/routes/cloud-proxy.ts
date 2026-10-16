@@ -74,6 +74,9 @@ const FORWARDED_REQUEST_HEADERS = [
   'range',
 ]
 
+/** The workspace's credentials. Kept from page code wherever its responses reach a renderer. */
+export const CREDENTIAL_RESPONSE_HEADERS: ReadonlySet<string> = new Set(['set-cookie', 'set-auth-token'])
+
 /**
  * Response headers dropped on the way back.
  *
@@ -91,8 +94,7 @@ const FORWARDED_REQUEST_HEADERS = [
  * `buildClientHeaders`.
  */
 const STRIPPED_RESPONSE_HEADERS = new Set([
-  'set-cookie',
-  'set-auth-token',
+  ...CREDENTIAL_RESPONSE_HEADERS,
   'content-encoding',
   'transfer-encoding',
   'connection',

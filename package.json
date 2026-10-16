@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.5.33",
+  "version": "0.5.42",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -22,7 +22,8 @@
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
-    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:electron && electron-builder --mac --publish never",
+    "build:mediaremote-adapter": "bash scripts/build-mediaremote-adapter.sh",
+    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:mediaremote-adapter && npm run build:electron && electron-builder --mac --publish never",
     "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src e2e perf --ext .ts,.tsx",
@@ -34,6 +35,7 @@
     "test:e2e": "E2E_MOCK=true playwright test --project=web-chromium",
     "test:e2e:web": "E2E_MOCK=true playwright test --project=web-chromium",
     "test:e2e:wizard": "E2E_MOCK=true playwright test --config=playwright.wizard.config.ts",
+    "test:e2e:sidebar": "E2E_MOCK=true playwright test --project=web-sidebar",
     "test:e2e:graph": "E2E_MOCK=true playwright test --project=web-graph",
     "test:e2e:pwa": "E2E_MOCK=true playwright test --config=playwright.pwa.config.ts",
     "test:e2e:a11y": "E2E_MOCK=true E2E_INCLUDE_A11Y=true playwright test e2e/specs/a11y-audit.spec.ts --project=web-chromium",
@@ -59,14 +61,16 @@
     "test:libsql": "node scripts/run-libsql-tests.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.33.8",
-    "@anthropic-ai/sdk": "^0.128.0",
+    "@anthropic-ai/bedrock-sdk": "^0.35.0",
+    "@anthropic-ai/sdk": "^0.134.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
+    "@aws-sdk/client-s3": "^3.1149.0",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-validator": "^0.8.0",
     "@sentry/node": "^10.48.0",
     "@skillful-agents/agent-computer": "^0.0.15",
     "@slack/bolt": "^4.7.0",
+    "@smithy/node-http-handler": "^4.12.1",
     "archiver": "^7.0.1",
     "better-sqlite3": "^12.8.0",
     "chrono-node": "^2.9.0",
@@ -79,7 +83,7 @@
     "hono": "^4.6.14",
     "jose": "^6.1.3",
     "js-yaml": "^4.1.1",
-    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.3/llm-endpoint-translation-0.1.3.tgz",
+    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.4/llm-endpoint-translation-0.1.4.tgz",
     "marked": "^18.0.0",
     "pngjs": "^7.0.0",
     "semver": "~7.7.3",
@@ -126,6 +130,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@sentry/browser": "^10.48.0",
     "@sentry/electron": "^7.11.0",
+    "@smithy/types": "^4.19.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.56.0",
     "@tanstack/react-router": "1.170.15",
@@ -155,6 +160,7 @@
     "@xyflow/react": "^12.11.1",
     "analytics": "^0.8.19",
     "autoprefixer": "^10.4.0",
+    "beautiful-mermaid": "^1.1.3",
     "better-auth": "^1.6.23",
     "ccusage": "^15.2.0",
     "class-variance-authority": "^0.7.1",
@@ -175,6 +181,7 @@
     "eslint-plugin-react-hooks": "^5.1.0",
     "fflate": "^0.8.2",
     "jsdom": "^28.1.0",
+    "katex": "^0.18.9",
     "lucide-react": "^1.40.0",
     "markdown-it": "^14.3.0",
     "p-limit": "^3.1.0",
@@ -274,6 +281,12 @@
       "target": [
         "dmg",
         "zip"
+      ],
+      "extraResources": [
+        {
+          "from": "build/mediaremote-adapter",
+          "to": "mediaremote-adapter"
+        }
       ],
       "artifactName": "Gamut-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools",

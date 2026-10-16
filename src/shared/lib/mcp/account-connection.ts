@@ -49,7 +49,7 @@ class AccountMcpConnection implements McpConnection {
     if (policy.decision !== 'review') return { ok: true, policyDecision: policy.decision }
     try {
       const decision = await agentRegistry.get(this.agentSlug).inputs.reviews.request({
-        accountId: this.row.id, toolkit: this.row.name, method: call.method,
+        accountId: this.row.id, reviewType: 'mcp', toolkit: this.row.name, method: call.method,
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
       }, call.signal)

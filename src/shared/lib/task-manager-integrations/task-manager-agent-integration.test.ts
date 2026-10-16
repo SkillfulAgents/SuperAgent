@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentIntegrationRecord, IntegrationEvent, IntegrationInputContext, IntegrationInputEvent, IntegrationSessionContext } from '../agent-integrations/types'
-import { pendingUserInputRequestSchema } from '../user-input/request-schema'
+import { pendingUserInputRequestSchema } from '@shared/lib/tools/requests/request-schema'
 import type { TaskEvent, TaskSnapshot } from './types'
 import { TaskManagerAgentIntegration } from './task-manager-agent-integration'
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))

@@ -17,6 +17,10 @@ Coverage spans Google Workspace, Microsoft, communication tools, developer tools
 
 Talk to the agent from **Slack**, **Telegram**, or **iMessage**. The agent can also send messages on those platforms on its own initiative — including from a scheduled task or a webhook-triggered session, with no chat conversation in progress.
 
+## Meetings
+
+The agent can attend **Zoom**, **Google Meet** and **Microsoft Teams** calls as a participant: speaking when addressed, answering in the call chat, or just listening and taking notes. Ask it to join with the invite link, or send it in from its Meetings integration page. This needs a deployment the internet can reach and a Platform connection (or a Recall.ai key); when neither is there the agent says meetings are unavailable on this host.
+
 ## Remote MCP servers
 
 Any service exposing a remote MCP (Model Context Protocol) endpoint can be connected, adding its tools to the agent. This is the extension point for services with no managed OAuth toolkit.

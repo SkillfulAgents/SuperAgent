@@ -1,4 +1,5 @@
-import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Scheduled Tasks API Routes
@@ -268,7 +269,8 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to update scheduled task runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }

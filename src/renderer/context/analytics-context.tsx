@@ -11,7 +11,7 @@ interface AnalyticsContextValue {
   identify: () => void
 }
 
-const AnalyticsContext = createContext<AnalyticsContextValue | null>(null)
+export const AnalyticsContext = createContext<AnalyticsContextValue | null>(null)
 
 // Singleton reference so the analytics instance persists across re-renders
 // but can be replaced when settings change

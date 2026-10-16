@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
-import { ProxyReviewRequestItem } from '@renderer/components/messages/proxy-review-request-item'
-import { XAgentReviewRequestItem } from '@renderer/components/messages/x-agent-review-request-item'
-import { AccountReauthRequestItem } from '@renderer/components/messages/account-reauth-request-item'
-import { McpReauthRequestItem } from '@renderer/components/messages/mcp-reauth-request-item'
+import { ProxyReviewRequestItem } from '@shared/lib/tools/proxy-review/request'
+import { XAgentReviewRequestItem } from '@shared/lib/tools/x-agent-review/request'
+import { AccountReauthRequestItem } from '@shared/lib/tools/account-reauth/request'
+import { McpReauthRequestItem } from '@shared/lib/tools/mcp-reauth/request'
 import {
   accountReauthFromEnvelope,
   mcpReauthFromEnvelope,
@@ -10,8 +10,8 @@ import {
   type PendingAccountReauth,
   type PendingMcpReauth,
   type PendingReview,
-} from '@renderer/components/messages/use-pending-requests'
-import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
+} from '@shared/lib/tools/requests/use-pending-requests'
+import { usePendingUserRequests } from '@shared/lib/tools/requests/use-pending-user-requests'
 
 interface PendingAgentReviewsProps {
   agentSlug: string
@@ -108,6 +108,7 @@ export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: P
             key={review.id}
             reviewId={review.id}
             accountId={review.accountId}
+            reviewType={review.reviewType}
             toolkit={review.toolkit}
             method={review.method}
             targetPath={review.targetPath}

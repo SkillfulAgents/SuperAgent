@@ -8,7 +8,7 @@ import { getDataDir } from '../../config/data-dir'
 import { captureException } from '../../error-reporting'
 import { randomUUID } from 'node:crypto'
 import { deleteAgentIntegration, listAgentIntegrations } from '../../services/agent-integration-service'
-import { linearCredentialsSchema, linearAuthorizationInputSchema } from './config'
+import { linearCredentialsSchema, linearAuthorizationInputSchema, linearSetupInputSchema } from './config'
 import { getLinearConfig, updateLinearConfig, setLinearStatusForConfig } from './store'
 import { hashOAuthState, linearAuthorization, linearAppCreationUrl } from './oauth'
 import { exchangeLinearToken, LinearAuthorizationError, LinearClient, revokeLinearToken } from './client'
@@ -18,8 +18,11 @@ export const linearSetup: IntegrationProviderSetup = {
   describe(context, name) {
     return { redirectUri: context.callbackUrl, creationUrl: linearAppCreationUrl(name ?? context.agentSlug, { redirectUri: context.callbackUrl }) }
   },
-  async prepare(_input, context) {
-    return { config: linearConfigSchema.parse({ redirectUri: context.callbackUrl, runOnStatusChange: false }), status: 'disconnected' }
+  async prepare(input, context) {
+    // The host mints the relay endpoint for `webhooks: true`, before the
+    // app exists, so the creation link can carry the webhook URL.
+    const { webhooks } = linearSetupInputSchema.parse(input ?? {})
+    return { config: linearConfigSchema.parse({ redirectUri: context.callbackUrl, runOnStatusChange: false }), status: 'disconnected', relay: webhooks === true }
   },
   authorize: {
     inputSchema: linearAuthorizationInputSchema,
@@ -35,11 +38,11 @@ export const linearSetup: IntegrationProviderSetup = {
 }
 
 export async function authorizeLinearSetup(id: string, input: unknown): Promise<string> {
-  const supplied = linearAuthorizationInputSchema.parse(input)
+  const { webhookSecret: suppliedSecret, ...supplied } = linearAuthorizationInputSchema.parse(input)
   const config = await getLinearConfig(id)
   const credentials = linearCredentialsSchema.parse(supplied.clientId ? supplied : { clientId: config.clientId, clientSecret: config.clientSecret })
   const authorization = linearAuthorization({ ...config, ...credentials })
-  await updateLinearConfig(id, latest => ({ ...latest, ...credentials, oauth: authorization.oauth, authorizationError: undefined, authorizationPending: true, authorizationVersion: randomUUID() }))
+  await updateLinearConfig(id, latest => ({ ...latest, ...credentials, ...(suppliedSecret ? { webhookSecret: suppliedSecret, webhookSecretStatus: undefined } : {}), oauth: authorization.oauth, authorizationError: undefined, authorizationPending: true, authorizationVersion: randomUUID() }))
   return authorization.url
 }
 /** Only the matching attempt can change its failure state; stale callbacks are inert. */

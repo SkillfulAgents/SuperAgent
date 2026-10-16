@@ -227,8 +227,9 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     }
   }
 
-  public buildVolumeFlag(_hostPath: string, _containerPath: string): string {
-    return ''
+  /** The agent pod drops every capability, so it cannot mount FUSE. */
+  public volumeRunFlags(): string | null {
+    return null
   }
 
   protected getBaseUrl(port: number): string {

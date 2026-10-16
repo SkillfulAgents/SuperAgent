@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { integrationRelayConfigShape } from '../agent-integrations/transport'
 
 export const EMAIL_PROVIDER = 'platform-email' as const
 export const EMAIL_GATEWAY_URL = 'https://email-gateway.datawizz.workers.dev'
@@ -20,10 +21,16 @@ export const emailIntegrationConfigSchema = emailSetupSchema.safeExtend({
   mailboxId: z.string().uuid(),
   address: z.string().email(),
 })
+/** A Standard Webhooks secret the gateway accepts: `whsec_` and 24–64 base64-encoded bytes. */
+export const emailWebhookSecretSchema = z.string().regex(/^whsec_[A-Za-z0-9+/]{32,88}={0,2}$/)
 export const emailConfigSchema = emailIntegrationConfigSchema.safeExtend({
   eventCursor: z.number().int().nonnegative().default(0),
   platformOrgId: z.string().min(1),
   platformMemberId: z.string().min(1),
+  /** The relay endpoint the gateway posts this mailbox's events to; shared by every mailbox in its scope, set on the first connect with a relay. */
+  ...integrationRelayConfigShape,
+  /** Signs those posts. Generated with the endpoint, shared with it, and never shown. */
+  webhookSecret: emailWebhookSecretSchema.optional(),
 })
 export type EmailIntegrationConfig = z.infer<typeof emailIntegrationConfigSchema>
 export type EmailConfig = z.infer<typeof emailConfigSchema>

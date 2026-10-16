@@ -53,3 +53,16 @@ it('does not refresh for quota errors', async () => {
   await expect(provider(resolve).createClient().withOptions({ maxRetries: 0 }).messages.create(prompt)).rejects.toThrow('Quota exhausted')
   expect(resolve).toHaveBeenCalledTimes(1)
 })
+it('adopts the minimum client version a 426 names, for this call and new sessions', async () => {
+  const versions: unknown[] = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const version = new Headers(init?.headers).get('x-grok-client-version')
+    versions.push(version)
+    return version === '9.9.9' ? Response.json(reply)
+      : Response.json({ error: `Your Grok CLI version (${version}) is outdated. Please update to version 9.9.9 or later via \`grok update\`.` }, { status: 426 })
+  })
+  const result = await provider().createClient().messages.create(prompt)
+  expect(result.content).toContainEqual({ type: 'text', text: 'OK' })
+  expect(versions).toEqual([GROK_CLIENT_HEADERS['x-grok-client-version'], '9.9.9'])
+  expect((await provider().getContainerProxyConfig()).headers).toMatchObject({ 'x-grok-client-version': '9.9.9' })
+})

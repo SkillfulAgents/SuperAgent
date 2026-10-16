@@ -19,7 +19,6 @@ export interface AutomationSessionInfo {
   name: string
   createdAt: string
   lastActivityAt?: string
-  messageCount?: number
   isActive?: boolean
 }
 

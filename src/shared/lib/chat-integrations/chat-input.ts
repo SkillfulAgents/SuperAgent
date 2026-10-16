@@ -88,7 +88,7 @@ export class ChatInputBuilder {
       )
       if (!config) return null
 
-      if (integration.provider === 'slack' && 'botToken' in config) {
+      if (integration.provider === 'slack' && 'botToken' in config && config.botToken) {
         return await this.downloadSlackFile(config.botToken, fileUrl)
       }
 

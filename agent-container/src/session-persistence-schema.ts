@@ -1,6 +1,7 @@
 import { withoutProviderCredentials } from './connection-runtime';
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
 export const sessionMetadataSchema = z
@@ -21,6 +22,7 @@ export const sessionMetadataSchema = z
     modelContextWindows: modelContextWindowsSchema,
     webSearchProvider: z.string().optional(),
     webFetchProvider: z.string().optional(),
+    availableIntegrationFamilies: z.array(z.string()).optional(),
     maxOutputTokens: z.number().optional(),
     maxThinkingTokens: z.number().optional(),
     maxTurns: z.number().optional(),
@@ -29,6 +31,7 @@ export const sessionMetadataSchema = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     speed: speedLevelSchema,
     capabilityPolicies: agentCapabilityPoliciesSchema,
+    globalInstructions: globalInstructionsSchema,
     sessionCapabilityGrants: z.array(z.enum(['subagents', 'workflows'])).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })

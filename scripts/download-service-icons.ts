@@ -20,7 +20,7 @@ const ALL_SLUGS = [
   'slack', 'discord', 'github', 'gitlab', 'bitbucket', 'sentry', 'datadog',
   'pagerduty', 'notion', 'linear', 'jira', 'confluence', 'asana', 'monday',
   'clickup', 'trello', 'hubspot', 'salesforce', 'pipedrive', 'zendesk',
-  'intercom', 'airtable', 'dropbox', 'box', 'docusign', 'twitter',
+  'intercom', 'highlevel', 'airtable', 'dropbox', 'box', 'docusign', 'twitter',
   'linkedin', 'instagram', 'shopify', 'stripe', 'quickbooks', 'xero',
   'mailchimp', 'figma', 'calendly', 'typeform', 'zoom', 'gong',
   // MCP servers (unique ones not already above)
@@ -47,10 +47,10 @@ const SHARED_ICON_SLUGS: Record<string, string> = {
   'cloudflare-radar': 'cloudflare',
 }
 
-// Slugs that don't match the Composio API name directly
+// Slugs that don't match the Composio API name directly. (The Teams mark is served
+// under 'microsoft_teams' as-is; 'microsoft-teams' returns the grey placeholder.)
 const SLUG_TO_API_NAME: Record<string, string> = {
   'atlassian': 'jira',
-  'microsoft_teams': 'microsoft-teams',
   'googlecalendar': 'google-calendar',
   'googledrive': 'google-drive',
   'googlesheets': 'google-sheets',

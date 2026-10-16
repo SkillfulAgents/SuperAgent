@@ -2,6 +2,7 @@ import { startCodexLogin, pollCodexLogin } from './codex-oauth'
 import { randomUUID } from 'node:crypto'
 import { startGrokLogin, pollGrokLogin } from './grok-oauth'
 import { startKimiLogin, pollKimiLogin, kimiRegion } from './kimi-oauth'
+import { startMinimaxLogin, pollMinimaxLogin, minimaxRegion } from './minimax-oauth'
 import type { OAuthCredential } from './oauth-schema'
 import type { ConnectionViewer } from './connections'
 import type { OAuthProvider } from './provider-types'
@@ -26,6 +27,11 @@ const flows: Record<OAuthProvider, (options: OAuthLoginOptions) => Promise<Devic
     const region = kimiRegion(options.region)
     const { device } = await startKimiLogin(region)
     return { device, poll: () => pollKimiLogin(device.device_code, region) }
+  },
+  'minimax-subscription': async options => {
+    const region = minimaxRegion(options.region)
+    const login = await startMinimaxLogin(region)
+    return { device: login.device, poll: () => pollMinimaxLogin(login, region) }
   },
 }
 

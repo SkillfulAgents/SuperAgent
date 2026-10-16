@@ -20,6 +20,32 @@ function node(over: Partial<WorkflowAgentNode>): WorkflowAgentNode {
 }
 
 describe('overlayLiveStatus', () => {
+  it('renders live agents before any disk tree is available', () => {
+    const out = overlayLiveStatus([], {
+      a: { status: 'running', result: null, label: 'search:reddit', phase: 'Research', tokens: 500, toolCount: 3, lastTool: 'WebSearch', model: 'claude-sonnet-5', prompt: 'Find B2B results' },
+      b: { status: 'done', result: 'Evidence found' },
+    })
+    expect(out).toMatchObject([
+      { agentId: 'a', label: 'search:reddit', phase: 'Research', status: 'running', tokens: 500, toolCount: 3, lastTool: 'WebSearch', model: 'claude-sonnet-5', prompt: 'Find B2B results' },
+      { agentId: 'b', label: 'agent 2', status: 'done', result: 'Evidence found' },
+    ])
+  })
+
+  it('keeps newly started live agents when the disk snapshot is behind', () => {
+    const base = [node({ agentId: 'a', prompt: 'Full prompt from disk', phase: null })]
+    const live = {
+      a: { status: 'done' as const, result: 'Done', phase: 'Research', prompt: 'Full prompt…' },
+      b: { status: 'running' as const, result: null, label: 'synthesis' },
+    }
+    expect(overlayLiveStatus(base, live)).toMatchObject([
+      { agentId: 'a', phase: 'Research', prompt: 'Full prompt from disk', status: 'done' },
+      { agentId: 'b', label: 'synthesis', status: 'running' },
+    ])
+    // Once disk catches up the same agent is enriched, never duplicated.
+    expect(overlayLiveStatus([...base, node({ agentId: 'b', model: 'claude-sonnet-5' })], live))
+      .toHaveLength(2)
+  })
+
   it('returns the base tree unchanged when there is no live data', () => {
     const base = [node({ agentId: 'a', status: 'done', result: 'x' })]
     expect(overlayLiveStatus(base, undefined)).toBe(base)
@@ -77,6 +103,23 @@ describe('overlayLiveStatus', () => {
 })
 
 describe('overlayLiveStatus — labels', () => {
+  it('prefers the runtime phase when disk inference puts the agent in a different phase', () => {
+    const out = overlayLiveStatus([
+      node({ agentId: 'scope', label: 'search:', phase: 'Search' }),
+      node({ agentId: 'search1', label: 'fetch:', phase: 'Fetch' }),
+      node({ agentId: 'search2', label: 'v', phase: 'Verify' }),
+    ], {
+      scope: { status: 'done', result: null, label: 'scope', phase: 'Scope' },
+      search1: { status: 'done', result: null, label: 'search:one', phase: 'Search' },
+      search2: { status: 'running', result: null, label: 'search:two', phase: 'Search' },
+    })
+    expect(out.map(({ label, phase }) => ({ label, phase }))).toEqual([
+      { label: 'scope', phase: 'Scope' },
+      { label: 'search:one', phase: 'Search' },
+      { label: 'search:two', phase: 'Search' },
+    ])
+  })
+
   it('prefers the wire label over the disk re-join (which can degrade to "agent N")', () => {
     const out = overlayLiveStatus([node({ label: 'agent 1' })], {
       a: { status: 'running', result: null, label: 'qualify:closera' },

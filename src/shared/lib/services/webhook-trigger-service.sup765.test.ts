@@ -44,6 +44,7 @@ vi.mock('@shared/lib/composio/triggers', async (importOriginal) => {
 const mockDisableEndpoint = vi.fn()
 vi.mock('@shared/lib/webhook-relay', () => ({
   getWebhookRelay: () => ({
+    snapshot: () => ({ available: true, unavailableReason: null }),
     disableEndpoint: (...args: unknown[]) => mockDisableEndpoint(...args),
   }),
 }))

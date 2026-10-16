@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { CreateSessionRequest } from './types';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
@@ -30,6 +31,7 @@ export const warmProfileSchema = z.object({
   modelContextWindows: modelContextWindowsSchema,
   webSearchProvider: z.string().optional(),
   webFetchProvider: z.string().optional(),
+  availableIntegrationFamilies: z.array(z.string()).optional(),
   maxOutputTokens: z.number().optional(),
   maxThinkingTokens: z.number().optional(),
   maxTurns: z.number().optional(),
@@ -38,6 +40,7 @@ export const warmProfileSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
   capabilityPolicies: agentCapabilityPoliciesSchema,
+  globalInstructions: globalInstructionsSchema,
 });
 
 export type WarmProfile = z.infer<typeof warmProfileSchema>;
@@ -82,6 +85,7 @@ function buildProfile(
     modelContextWindows: runtime?.modelContextWindows ?? request.modelContextWindows,
     webSearchProvider: request.webSearchProvider,
     webFetchProvider: request.webFetchProvider,
+    availableIntegrationFamilies: request.availableIntegrationFamilies,
     maxOutputTokens: request.maxOutputTokens,
     maxThinkingTokens: request.maxThinkingTokens,
     maxTurns: request.maxTurns,
@@ -90,6 +94,7 @@ function buildProfile(
     effort: defaults ? defaults.effort : request.effort,
     speed: defaults ? defaults.speed : request.speed,
     capabilityPolicies: request.capabilityPolicies,
+    globalInstructions: request.globalInstructions,
   });
 }
 

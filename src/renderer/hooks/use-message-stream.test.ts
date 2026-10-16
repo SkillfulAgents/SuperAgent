@@ -81,6 +81,52 @@ function createWrapper() {
 }
 
 describe('useMessageStream', () => {
+  it.each(['connected', 'ping'])('recovers a missed completion and final text through %s', async (type) => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('recovery', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    send({ type: 'connected', isActive: true, backgroundTasks: [{ taskId: 'task', startedAt: 1 }], isWaitingBackground: true })
+    expect(result.current.isWaitingBackground).toBe(true)
+    // The turn finishes while the renderer is disconnected; no session_idle.
+    const turnOutcome = { id: 'done', status: 'completed', responseText: 'Invoice 42 was sent.', error: null }
+    send({ type, isActive: false, turnOutcome, backgroundTasks: [] })
+    expect(result.current.turnOutcome).toEqual(turnOutcome)
+    expect(result.current.streamingMessage).toBe('Invoice 42 was sent.')
+    expect(result.current.isActive).toBe(false)
+    expect(result.current.isWaitingBackground).toBe(false)
+    expect(result.current.backgroundTasks).toEqual([])
+    unmount()
+  })
+
+  it('keeps background work visible after a cancelled foreground turn, including reconnect', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('cancel-background', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    const backgroundTasks = [{ taskId: 'task', startedAt: 1 }]
+    const turnOutcome = { id: 'stopped', status: 'cancelled', responseText: 'Partial work.', error: null }
+    send({ type: 'connected', isActive: true, backgroundTasks })
+    send({ type: 'session_waiting_background', interrupted: true, backgroundTasks, turnOutcome })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    send({ type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks, turnOutcome })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.backgroundTasks).toEqual(backgroundTasks)
+    unmount()
+  })
+
+  it('does not overwrite fresh output with an older outcome on a heartbeat', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result, unmount } = renderHook(() => useMessageStream('running', 'agent-1'), { wrapper: createWrapper() })
+    const send = (data: Record<string, unknown>) => act(() => MockEventSource.instances[0].simulateMessage(data))
+    send({ type: 'session_active' })
+    send({ type: 'stream_delta', text: 'New work.' })
+    send({ type: 'ping', isActive: true, turnOutcome: { id: 'old', status: 'completed', responseText: 'Old result.', error: null } })
+    expect(result.current.streamingMessage).toBe('New work.')
+    expect(result.current.isActive).toBe(true)
+    unmount()
+  })
+
   it('returns default state initially', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -671,7 +717,7 @@ describe('useMessageStream', () => {
     // isActive should be preserved, streaming should be reset
     expect(result.current.isActive).toBe(true)
     expect(result.current.isStreaming).toBe(false)
-    expect(result.current.streamingMessage).toBeNull()
+    expect(result.current.streamingMessage).toBe('Hello')
   })
 
   it('handles subagent streaming events', async () => {
@@ -987,6 +1033,79 @@ describe('useMessageStream', () => {
 
     // Leading edge: the reconnect catch-up refetch fires immediately.
     expect(countMessageInvalidations(spy)).toBe(1)
+  })
+
+  const completedOutcome = { id: 't1', status: 'completed', responseText: 'Final answer', error: null }
+
+  it('a late join to a just-completed turn reconciles until the transcript has the reply', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      // The connect-time refetch read the transcript before the turn's lines landed.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], { messages: [], nextCursor: null })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false, turnOutcome: completedOutcome })
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // No session_idle will follow, so the reconcile loop is the only retry:
+      // 250 / 750 / 1500, then it stops.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a late join does not reconcile when the reply is already persisted, or the turn is still running', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [
+          { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+          { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
+        ],
+        nextCursor: null,
+      })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false, turnOutcome: completedOutcome })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // A running turn's live events drive its own refetches.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], { messages: [], nextCursor: null })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, turnOutcome: completedOutcome })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a burst of SSE events collapses into one leading + one trailing messages refetch', async () => {
@@ -1640,6 +1759,8 @@ describe('useMessageStream', () => {
     })
     expect(result.current.activeSubagents).toHaveLength(1)
     spy.mockClear()
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-1'], [])
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-2'], [])
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-1' })
@@ -1650,8 +1771,9 @@ describe('useMessageStream', () => {
     const sub = result.current.activeSubagents[0]
     expect(sub?.streamingMessage).toBe('summary text')
     expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
-    // subagent-messages is not throttled; the messages refetch is.
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
+    // subagent-messages is not throttled; the messages refetch is. Only the completed subagent refetches.
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-1'])?.isInvalidated).toBe(true)
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-2'])?.isInvalidated).toBe(false)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
     })
@@ -1659,6 +1781,67 @@ describe('useMessageStream', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a subagent_started after completion reopens the run until it completes again', async () => {
+    // CLI 2.1.296+ re-runs a subagent under its launching call when its own
+    // background work finishes: same parentToolId, a second lifecycle.
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const send = (m: Record<string, unknown>) => act(() => { MockEventSource.instances[0].simulateMessage(m) })
+
+    send({ type: 'connected', isActive: true })
+    send({ type: 'subagent_started', parentToolId: 'pt-1', agentId: 'sub-1', subagentType: 'general-purpose' })
+    send({ type: 'subagent_completed', parentToolId: 'pt-1', agentId: 'sub-1' })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+
+    send({ type: 'subagent_started', parentToolId: 'pt-1', agentId: 'sub-1', subagentType: 'general-purpose' })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(false)
+    expect(result.current.activeSubagents).toHaveLength(1)
+
+    send({ type: 'subagent_completed', parentToolId: 'pt-1', agentId: 'sub-1' })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+  })
+
+  it('refetches subagent messages again once updates go quiet (the CLI writes the transcript after relaying)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream, SUBAGENT_TRAILING_REFETCH_MS } = await getHookModule()
+      const wrapper = createWrapper()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      const invalidate = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true }) })
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-1', agentId: 'sub-1' }) })
+      const subagentInvalidations = () => invalidate.mock.calls.filter(([f]) => (f as { queryKey?: unknown[] })?.queryKey?.[0] === 'subagent-messages').length
+      expect(subagentInvalidations()).toBe(1)
+
+      // A second update inside the window pushes the trailing refetch out.
+      await act(async () => { await vi.advanceTimersByTimeAsync(SUBAGENT_TRAILING_REFETCH_MS - 100) })
+      act(() => { MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-1', agentId: 'sub-1' }) })
+      expect(subagentInvalidations()).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(SUBAGENT_TRAILING_REFETCH_MS - 100) })
+      expect(subagentInvalidations()).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(subagentInvalidations()).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('subagent_progress carries the agentId onto a run first seen through it', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => { MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_progress', parentToolId: 'pt-9', agentId: 'sub-9', summary: 'Reading files',
+      })
+    })
+    expect(result.current.activeSubagents.find((s) => s.parentToolId === 'pt-9')?.agentId).toBe('sub-9')
   })
 
   it('handles subagent_updated — clears streaming state and invalidates subagent messages', async () => {
@@ -1689,6 +1872,8 @@ describe('useMessageStream', () => {
       })
     })
     spy.mockClear()
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-1'], [])
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-2'], [])
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({
@@ -1703,7 +1888,27 @@ describe('useMessageStream', () => {
     expect(sub?.streamingMessage).toBe('working...')
     expect(sub?.streamingToolUse).toBeNull()
     expect(sub?.parentToolId).toBe('pt-1')
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-1'])?.isInvalidated).toBe(true)
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-2'])?.isInvalidated).toBe(false)
+  })
+
+  it('subagent_updated without a known agentId refetches every subagent in the session', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-1'], [])
+    wrapper.queryClient.setQueryData(['subagent-messages', 'session-1', 'agent-1', 'sub-2'], [])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_updated', parentToolId: 'pt-9' })
+    })
+
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-1'])?.isInvalidated).toBe(true)
+    expect(wrapper.queryClient.getQueryState(['subagent-messages', 'session-1', 'agent-1', 'sub-2'])?.isInvalidated).toBe(true)
   })
 
   it('handles subagent_tool_use_start and subagent_tool_use_streaming', async () => {
@@ -2854,6 +3059,33 @@ describe('useMessageStream', () => {
     expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
   })
 
+  it('merges background_task_updated into the task in place', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-2', startedAt: 2000 })
+      // The runtime's task list names the first task after it started.
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_updated',
+        taskId: 'bg-1',
+        startedAt: 1000,
+        taskType: 'local_bash',
+        description: 'Run the dev server',
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([
+      { taskId: 'bg-1', startedAt: 1000, taskType: 'local_bash', description: 'Run the dev server' },
+      { taskId: 'bg-2', startedAt: 2000 },
+    ])
+  })
+
   it('restores background tasks from connected event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -2870,6 +3102,77 @@ describe('useMessageStream', () => {
     })
 
     expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-restore', startedAt: 500 }])
+  })
+
+  it('a reconnect with an empty list drops tasks that ended while the client was away', async () => {
+    // Seen in prod (2026-09-29): two finished subagents stayed in the Stop
+    // dialog because their completion frames were missed and the reconnect
+    // snapshot omitted the (empty) list.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'agent-1', startedAt: 1000, isSubagent: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'agent-2', startedAt: 2000, isSubagent: true })
+    })
+    expect(result.current.backgroundTasks).toHaveLength(2)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, backgroundTasks: [] })
+    })
+    expect(result.current.backgroundTasks).toEqual([])
+  })
+
+  it('replaces its list with the one each task frame carries', async () => {
+    // A missed background_task_completed for bg-1 is healed by the next frame
+    // that touches the list, whichever task it is about.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+        backgroundTasks: [{ taskId: 'bg-1', startedAt: 1000 }],
+      })
+      // bg-1 ends; its frame never reaches this client. bg-2 starts.
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-2',
+        startedAt: 2000,
+        backgroundTasks: [{ taskId: 'bg-2', startedAt: 2000 }],
+      })
+    })
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        backgroundTaskCount: 1,
+        backgroundTasks: [{ taskId: 'bg-3', startedAt: 3000 }],
+      })
+    })
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-3', startedAt: 3000 }])
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_completed',
+        taskId: 'bg-3',
+        backgroundTasks: [],
+      })
+    })
+    expect(result.current.backgroundTasks).toEqual([])
+    expect(result.current.isWaitingBackground).toBe(false)
   })
 
   it('clears background tasks on session_idle', async () => {
@@ -3210,13 +3513,13 @@ describe('useMessageStream — workflow drawer reducers', () => {
       es().simulateMessage({
         type: 'workflow_progress',
         runId: 'wf_abc',
-        agents: [{ agentId: 'a1', label: 'boom', phase: 'Work', state: 'failed', tokens: 500, toolCalls: 3, lastTool: 'Bash throw' }],
+        agents: [{ agentId: 'a1', label: 'boom', phase: 'Work', model: 'claude-sonnet-5', prompt: 'Research Reddit ads', state: 'failed', tokens: 500, toolCalls: 3, lastTool: 'Bash throw' }],
         usage: { totalTokens: 900, toolUses: 5, durationMs: 1200 },
       })
     })
 
     expect(result.current.workflows[0].agents.a1).toMatchObject({
-      status: 'failed', tokens: 500, toolCount: 3, lastTool: 'Bash throw', label: 'boom', phase: 'Work',
+      status: 'failed', tokens: 500, toolCount: 3, lastTool: 'Bash throw', label: 'boom', phase: 'Work', model: 'claude-sonnet-5', prompt: 'Research Reddit ads',
     })
     expect(result.current.workflows[0].usage).toEqual({ totalTokens: 900, toolUses: 5, durationMs: 1200 })
   })
@@ -3281,6 +3584,46 @@ describe('useMessageStream — extended thinking blocks', () => {
     expect(result.current.thinkingBlocks).toHaveLength(1)
     expect(result.current.thinkingBlocks[0].text).toBe('Let me reason.')
     expect(result.current.thinkingBlocks[0].endedAt).toBeNull()
+  })
+
+  it('permanently consumes completed handoffs while preserving an open block and other subscribers', async () => {
+    const { useMessageStream, consumeThinkingBlocks } = await getHookModule()
+    const wrapper = createWrapper()
+    const first = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const second = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const es = MockEventSource.instances[0]
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'thinking_start', thinkingId: 'old:0' })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'old:0', text: 'already persisted' })
+      es.simulateMessage({ type: 'thinking_stop' })
+      es.simulateMessage({ type: 'thinking_start', thinkingId: 'new:0' })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'new:0', text: 'still streaming' })
+    })
+    const ids = first.result.current.thinkingBlocks.map(block => block.id)
+    act(() => consumeThinkingBlocks('session-1', ids))
+    expect(first.result.current.thinkingBlocks).toHaveLength(1)
+    expect(second.result.current.thinkingBlocks).toHaveLength(1)
+    expect(first.result.current.isThinking).toBe(true)
+
+    act(() => {
+      es.simulateMessage({ type: 'session_active', queuedMidTurn: true })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'new:0', text: ' more' })
+      es.simulateMessage({ type: 'thinking_stop' })
+    })
+    expect(first.result.current.thinkingBlocks).toMatchObject([{ persistedId: 'new:0', text: 'still streaming more' }])
+    act(() => consumeThinkingBlocks('session-1', ids))
+    expect(first.result.current.thinkingBlocks).toEqual([])
+    expect(first.result.current.isThinking).toBe(false)
+
+    // Repeated cleanup cannot consume a later episode with the same text.
+    act(() => {
+      es.simulateMessage({ type: 'thinking_start', thinkingId: 'later:0' })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'later:0', text: 'already persisted' })
+      es.simulateMessage({ type: 'thinking_stop' })
+      consumeThinkingBlocks('session-1', ids)
+    })
+    expect(second.result.current.thinkingBlocks).toMatchObject([{ persistedId: 'later:0', text: 'already persisted' }])
   })
 
   it('thinking_stop closes the block but keeps it readable for the rest of the turn', async () => {

@@ -9,11 +9,11 @@ import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { DeclineButton } from '@renderer/components/messages/decline-button'
+import { DeclineButton } from '@shared/lib/tools/requests/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useBrowserInputActions, useCanSaveBrowserLogin, useOtherAgentMemberCount } from '@renderer/hooks/use-browser-input-actions'
-import { sharedLoginNotice } from '@renderer/components/messages/saved-login-picker'
+import { useBrowserInputActions, useCanSaveBrowserLogin, useOtherAgentMemberCount } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
+import { sharedLoginNotice } from '@shared/lib/tools/request-browser-input/saved-login-picker'
 import { useSavedLogins } from '@renderer/hooks/use-saved-logins'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -72,6 +72,7 @@ export function BrowserTrayContent({
 
   // Same decline/complete behavior as the in-chat request card, shared via the hook.
   const {
+    status,
     submittingAction,
     error: actionError,
     complete,
@@ -79,6 +80,7 @@ export function BrowserTrayContent({
   } = useBrowserInputActions({
     agentSlug,
     sessionId,
+    toolUseId: latestRequest?.toolUseId ?? null,
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
@@ -94,7 +96,7 @@ export function BrowserTrayContent({
   const otherAccount = otherAccountFor === latestRequest?.toolUseId
   // Same rule as the chat card: with a saved login, offer only that until the user picks another account.
   const showManualSignIn = !isLogin || otherAccount || savedLogins.logins?.length === 0
-  const busy = submittingAction !== null || savedLogins.applyingId !== null
+  const busy = status !== 'pending' || savedLogins.applyingId !== null
   // The saved login is in the browser but the request is still open; Done completes it without applying again.
   const completeAfterApply = savedLogins.applied && !savedLogins.settled
 
@@ -199,7 +201,7 @@ export function BrowserTrayContent({
                   </label>
                 )}
                 <DeclineButton
-                  onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
+                  onDecline={decline}
                   disabled={busy}
                   label="Decline"
                   showIcon={false}
@@ -212,11 +214,12 @@ export function BrowserTrayContent({
                 />
                 {showManualSignIn || completeAfterApply ? (
                   <Button
-                    onClick={() => complete(latestRequest.toolUseId, { saveLogin: !completeAfterApply && isLogin && canSaveLogin && saveLogin })}
+                    onClick={() => complete({ saveLogin: !completeAfterApply && isLogin && canSaveLogin && saveLogin })}
                     loading={submittingAction === 'completing'}
                     disabled={busy}
                     size="sm"
                     className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                    data-testid="browser-tray-complete-btn"
                   >
                     Done
                   </Button>

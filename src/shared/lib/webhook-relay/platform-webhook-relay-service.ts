@@ -9,9 +9,11 @@
  * and acknowledged by a separate worker once the consumer settles them
  * (anything but `retry`).
  *
- * Claims are final on the platform today: an event claimed but not settled
- * before the process exits is not redelivered (SUP-931). `retry` events stay
- * in memory and are offered again with backoff until they settle.
+ * A claim is a 5-minute lease on the platform (SUP-931): an event not acked
+ * in time is handed out again, up to 3 claims, so one claimed but not settled
+ * before the process exits comes back. A re-leased event that is still queued
+ * or already settled here is skipped. `retry` events stay in memory and are
+ * offered again with backoff until they settle.
  */
 
 import pLimit from 'p-limit'
@@ -24,7 +26,7 @@ import type {
   WebhookFilterTestResult,
 } from '@shared/lib/services/webhook-endpoint-schema'
 import { WebhookRelayUnavailableError } from './errors'
-import type { PlatformClaim } from './platform-relay-client'
+import { isPermanentRelayError, type PlatformClaim } from './platform-relay-client'
 import { platformRealtimeRecordSchema } from './platform-relay-schema'
 import {
   LOCAL_RELAY_SCOPE,
@@ -119,6 +121,9 @@ interface QueuedEvent {
   event: RelayEvent
   /** The scope that claimed it, which is the one that must acknowledge it. */
   scope: RelayScope
+  /** Times the consumer answered `retry`, and when it may be offered again. */
+  attempt: number
+  retryAt: number
 }
 
 interface ConsumerState {
@@ -129,8 +134,8 @@ interface ConsumerState {
   queue: QueuedEvent[]
   queuedIds: Set<string>
   offering: boolean
+  /** Wakes delivery when the earliest waiting retry is due. */
   retryTimer: NodeJS.Timeout | null
-  retryAttempt: number
   /** A claim skipped this consumer's endpoints because its queue was full. */
   heldBack: boolean
   /** Disposed, but still delivering events claimed before that. */
@@ -234,7 +239,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (!this.online) {
       return {
         available: false,
-        unavailableReason: 'platform_disconnected',
+        unavailableReason: this.started ? 'platform_disconnected' : 'stopped',
         transport: 'idle',
         lastClaimAt: this.lastClaimAt,
         lastError: null,
@@ -255,7 +260,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private transport(): WebhookRelayTransport {
-    if (!this.hasEndpoints()) return 'idle'
+    if (!this.hasClaimableEndpoints()) return 'idle'
     if (this.health === 'unknown') return 'connecting'
     if (this.health === 'failed') return 'unreachable'
     return this.realtime?.isActive() ? 'realtime' : 'polling'
@@ -279,8 +284,11 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Endpoints
   // ==========================================================================
 
+  // The same answer the snapshot gives, so nothing mints a URL whose events
+  // would never be claimed (before start(), after stop(), or offline).
   private requireAvailable(): void {
-    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
+    const { unavailableReason } = this.snapshot()
+    if (unavailableReason) throw new WebhookRelayUnavailableError(unavailableReason)
   }
 
   async createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint> {
@@ -301,8 +309,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
   }
 
+  // Only minting needs a running relay (a URL nobody claims from is the
+  // problem); taking one down just needs the platform.
   async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
-    this.requireAvailable()
+    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
     await this.deps.endpoints.disable(scope, endpointId)
   }
 
@@ -338,7 +348,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       queuedIds: new Set(),
       offering: false,
       retryTimer: null,
-      retryAttempt: 0,
       heldBack: false,
       draining: false,
       claimsInFlight: 0,
@@ -366,13 +375,21 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         this.wake()
         this.emit()
       },
+      retryNow: () => {
+        if (state.disposed) return
+        for (const queued of state.queue) {
+          queued.attempt = 0
+          queued.retryAt = 0
+        }
+        this.pump(state)
+      },
       dispose: () => {
         if (state.disposed || state.draining) return
         this.releaseOwnership(state)
         this.consumers.delete(state.id)
         // Nothing more is claimed for it, but what was already claimed,
-        // queued or still in flight, is delivered first: those events exist
-        // nowhere else (SUP-931).
+        // queued or still in flight, is delivered first: until their lease
+        // expires (SUP-931) those events exist nowhere else.
         state.draining = true
         this.drainingConsumers.add(state)
         this.finishIfDrained(state)
@@ -433,6 +450,15 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
 
   private hasEndpoints(): boolean {
     for (const state of this.consumers.values()) if (state.endpointIds.size > 0) return true
+    return false
+  }
+
+  /** Registered endpoints in a scope this token can claim. */
+  private hasClaimableEndpoints(): boolean {
+    const orgToken = this.deps.requiresMemberScope()
+    for (const state of this.consumers.values()) {
+      if (state.endpointIds.size > 0 && !(orgToken && state.scope === LOCAL_RELAY_SCOPE)) return true
+    }
     return false
   }
 
@@ -545,8 +571,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
    * With `late`, the deadline only stops the waiting: the request keeps
    * going, rejects with RequestDeadlineError, and its eventual outcome goes
    * to `late`. A claim needs that, because the platform may already have
-   * claimed the rows (claims are final until SUP-931), and cancelling would
-   * lose them. Anything else is cancelled at the deadline.
+   * claimed the rows, and cancelling would leave them unreachable until their
+   * lease expires (SUP-931). Anything else is cancelled at the deadline.
    */
   private request<T>(
     fn: (signal: AbortSignal) => Promise<T>,
@@ -742,21 +768,33 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         continue
       }
       if (owner.queuedIds.has(event.id)) continue
-      owner.queue.push({ event, scope })
+      // Settled here, but the platform re-leased it because the ack is late.
+      if (this.pendingAcks.get(scope)?.has(event.id)) continue
+      owner.queue.push({ event, scope, attempt: 0, retryAt: 0 })
       owner.queuedIds.add(event.id)
       touched.add(owner)
     }
     if (unowned > 0) {
       // Only for an endpoint the claim didn't ask for. Nothing delivered it,
-      // so it isn't acknowledged: once claims lease (SUP-931) it returns to
-      // the queue.
+      // so it isn't acknowledged: its lease expires and it returns to the
+      // queue (SUP-931).
       console.warn(`[WebhookRelay] Leaving ${unowned} claimed event(s) unacknowledged: no consumer asked for them in scope ${scope}`)
     }
     for (const state of touched) this.pump(state)
   }
 
   private pump(state: ConsumerState): void {
-    if (!this.started || state.offering || state.retryTimer || state.disposed || state.queue.length === 0) return
+    if (!this.started || state.offering || state.disposed || state.queue.length === 0) return
+    // Retries wait out their own backoff; everything else goes now, so one
+    // event that keeps retrying never holds up the rest.
+    const dueAt = Math.min(...state.queue.map((queued) => queued.retryAt))
+    const now = Date.now()
+    if (dueAt > now) {
+      this.scheduleRetry(state, dueAt - now)
+      return
+    }
+    if (state.retryTimer) clearTimeout(state.retryTimer)
+    state.retryTimer = null
     state.offering = true
     this.deps.detach(() => {
       void this.limit(() => this.offer(state))
@@ -774,7 +812,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private async offer(state: ConsumerState): Promise<void> {
     // stop() may have landed while this offer waited for a concurrency slot.
     if (!this.started || state.disposed) return
-    const batch = state.queue.slice(0, CLAIM_BATCH_SIZE)
+    const now = Date.now()
+    const batch = state.queue.filter((queued) => queued.retryAt <= now).slice(0, CLAIM_BATCH_SIZE)
+    if (batch.length === 0) return
 
     let outcome: RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>
     try {
@@ -786,11 +826,14 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
 
     const settled: QueuedEvent[] = []
-    let retrying = false
     for (const queued of batch) {
       const result = typeof outcome === 'string' ? outcome : (outcome.get(queued.event.id) ?? 'retry')
-      if (result === 'retry') retrying = true
-      else settled.push(queued)
+      if (result !== 'retry') {
+        settled.push(queued)
+        continue
+      }
+      queued.retryAt = Date.now() + this.retryDelaysMs[Math.min(queued.attempt, this.retryDelaysMs.length - 1)]
+      queued.attempt++
     }
     // Settled work is done even if the consumer let go meanwhile.
     for (const queued of settled) this.queueAck(queued.scope, queued.event.id)
@@ -803,9 +846,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       for (const id of settledIds) state.queuedIds.delete(id)
     }
 
-    if (retrying) this.scheduleRetry(state)
-    else state.retryAttempt = 0
-
     if (state.draining) return
     // A round skipped this consumer's endpoints while it was full.
     if (state.heldBack && state.queue.length < this.maxConsumerBacklog) {
@@ -814,11 +854,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
   }
 
-  private scheduleRetry(state: ConsumerState): void {
+  private scheduleRetry(state: ConsumerState, delay: number): void {
     // After stop(), start() resumes delivery instead.
     if (!this.started || state.disposed) return
-    const delay = this.retryDelaysMs[Math.min(state.retryAttempt, this.retryDelaysMs.length - 1)]
-    state.retryAttempt++
+    if (state.retryTimer) clearTimeout(state.retryTimer)
     this.deps.detach(() => {
       state.retryTimer = setTimeout(() => {
         state.retryTimer = null
@@ -832,9 +871,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Acknowledgement
   // ==========================================================================
 
-  // Never dropped: a scope whose acks pile up stops being claimed instead
-  // (isClaimable), which bounds this by maxPendingAcks plus what consumers
-  // already hold.
+  // Dropped only when the platform rejects them for good: a scope whose acks
+  // pile up stops being claimed instead (isClaimable), which bounds this by
+  // maxPendingAcks plus what consumers already hold.
   private queueAck(scope: RelayScope, eventId: string): void {
     const pending = this.pendingAcks.get(scope) ?? new Set<string>()
     pending.add(eventId)
@@ -867,8 +906,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         // Rotate to the back, so one busy scope can't keep the others waiting.
         this.pendingAcks.delete(ackScope)
         this.pendingAcks.set(ackScope, pending)
-        try {
-          await this.request((signal) => this.deps.acknowledge(ackScope, ids, signal))
+        const release = () => {
           for (const id of ids) pending.delete(id)
           if (pending.size === 0) this.pendingAcks.delete(ackScope)
           this.ackBackoff.delete(ackScope)
@@ -876,7 +914,16 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
             this.ackHeldBack.delete(ackScope)
             this.wake()
           }
+        }
+        try {
+          await this.request((signal) => this.deps.acknowledge(ackScope, ids, signal))
+          release()
         } catch (error) {
+          if (isPermanentRelayError(error)) {
+            console.warn(`[WebhookRelay] Dropping ${ids.length} ack(s) for scope ${ackScope}; the platform rejected them: ${errorMessage(error)}`)
+            release()
+            continue
+          }
           const attempt = this.ackBackoff.get(ackScope)?.attempt ?? 0
           const delay = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)]
           this.ackBackoff.set(ackScope, { attempt: attempt + 1, retryAt: Date.now() + delay })

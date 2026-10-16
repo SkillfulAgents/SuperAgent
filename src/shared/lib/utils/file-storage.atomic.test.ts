@@ -55,6 +55,23 @@ describe('writeFileAtomic / writeFileAtomicSync', () => {
     expect(leftoverTmpFiles(tmpDir)).toEqual([])
   })
 
+  // The rename replaces a link without following it, so the target lends nothing (sync and async).
+  it.each([
+    ['async', (p: string) => writeFileAtomic(p, 'new')],
+    ['sync', async (p: string) => writeFileAtomicSync(p, 'new')],
+  ])('replaces a link at its target with a default-mode file, and leaves the link target alone (%s)', async (_kind, write) => {
+    const target = path.join(tmpDir, 'target.txt')
+    fs.writeFileSync(target, 'old')
+    fs.chmodSync(target, 0o444)
+    const link = path.join(tmpDir, 'link.txt')
+    fs.symlinkSync(target, link)
+    await write(link)
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(false)
+    expect(fs.readFileSync(link, 'utf-8')).toBe('new')
+    expect(fs.statSync(link).mode & 0o222).not.toBe(0)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('old')
+  })
+
   it('overwrites an existing file atomically (replaces content)', async () => {
     const p = path.join(tmpDir, 'c.txt')
     fs.writeFileSync(p, 'old')

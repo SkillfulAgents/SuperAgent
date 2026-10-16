@@ -2,7 +2,7 @@ import { CredentialRefreshError } from './credential-refresh-error'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import Anthropic from '@anthropic-ai/sdk'
-import { startLlmProxy, type LlmProxyHandle } from './llm-proxy'
+import { llmProxyBinding, startLlmProxy, type LlmProxyHandle } from './llm-proxy'
 import { expandDeferredTools } from './llm-proxy-tools'
 import type { LlmProxyConfig } from './llm-proxy-schema'
 
@@ -222,6 +222,31 @@ describe('embedded provider proxy', () => {
     expect(seen).toEqual(['account-a', 'account-b'])
   })
 
+  it('pins each Codex session prompt to one cache id', async () => {
+    const seen: Array<{ header: unknown; key: unknown }> = []
+    const base = await upstream((body, req, res) => {
+      seen.push({ header: req.headers['session-id'], key: body.prompt_cache_key })
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'r', status: 'completed',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 3, output_tokens: 1 } } })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {},
+      credential: { accessToken: 'key', accountId: 'account', generation: 1 } } })
+    const session = { headers: { 'X-Claude-Code-Session-Id': 'session-a' } }
+    await client(handle).messages.create({ ...prompt, system: 'main' }, session)
+    await client(handle).messages.create({ ...prompt, system: 'main', messages: [...prompt.messages, { role: 'assistant', content: 'OK' }, { role: 'user', content: 'Again' }] }, session)
+    await client(handle).messages.create({ ...prompt, system: 'subagent' }, session)
+    await client(handle).messages.create({ ...prompt, system: 'main', metadata: { user_id: JSON.stringify({ session_id: 'session-a' }) } })
+    await client(handle).messages.create({ ...prompt, system: 'main' })
+    const [first, again, subagent, fromMetadata, anonymous] = seen
+    expect(first.header).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(first.key).toBe(first.header)
+    expect(again).toEqual(first)
+    expect(subagent.header).not.toBe(first.header)
+    expect(fromMetadata).toEqual(first)
+    expect(anonymous).toEqual({ header: undefined, key: undefined })
+  })
+
   it.each([
     [false, 'priority'], [true, 'priority'], [false, 'fast'], [true, 'fast'], [false, 'default'], [true, 'default'],
   ] as const)('switches Codex Normal/Fast and preserves the served tier (stream=%s, tier=%s)', async (stream, servedTier) => {
@@ -253,6 +278,52 @@ describe('embedded provider proxy', () => {
     const base = await upstream((_body, _req, res) => json(res, { detail: 'This model is not supported with a ChatGPT account' }, 400))
     const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
     await expect(client(handle).messages.create(prompt)).rejects.toThrow('not supported with a ChatGPT account')
+  })
+
+  it.each([
+    ['a string error field', (res: ServerResponse) => json(res, { error: 'Your Grok CLI version (1.0.4) is outdated.' }, 426)],
+    ['a plain-text body', (res: ServerResponse) => { res.writeHead(426, { 'content-type': 'text/plain' }); res.end('Your Grok CLI version (1.0.4) is outdated.') }],
+  ])('keeps the vendor message from %s', async (_name, send) => {
+    const base = await upstream((_body, _req, res) => send(res))
+    const handle = await proxy(base, 'responses', { config: { adapter: 'grok', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('Your Grok CLI version (1.0.4) is outdated.')
+  })
+
+  it('adopts the minimum Grok client version a 426 names, once per proxy', async () => {
+    const versions: unknown[] = []
+    const base = await upstream((_body, req, res) => {
+      versions.push(req.headers['x-grok-client-version'])
+      if (req.headers['x-grok-client-version'] !== '1.0.20') {
+        json(res, { error: `Your Grok CLI version (${req.headers['x-grok-client-version']}) is outdated. Please update to version 1.0.20 or later via \`grok update\`.` }, 426); return
+      }
+      json(res, { id: 'r', model: 'test', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 3, output_tokens: 1 } })
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'grok', baseUrl: base, format: 'responses',
+      headers: { 'x-grok-client-version': '1.0.13' }, credential: { accessToken: 'key', generation: 0 } } })
+    await client(handle).messages.create(prompt)
+    await client(handle).messages.create(prompt)
+    expect(versions).toEqual(['1.0.13', '1.0.20', '1.0.20'])
+  })
+
+  it('surfaces a Grok 426 that names no version without retrying', async () => {
+    let calls = 0
+    const base = await upstream((_body, _req, res) => { calls++; json(res, { error: 'Client blocked' }, 426) })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'grok', baseUrl: base, format: 'responses',
+      headers: { 'x-grok-client-version': '1.0.13' }, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('Client blocked')
+    expect(calls).toBe(1)
+  })
+
+  it('pins Grok turns to their conversation', async () => {
+    const seen: unknown[] = []
+    const base = await upstream((_body, req, res) => {
+      seen.push(req.headers['x-grok-conv-id'])
+      json(res, { id: 'r', model: 'test', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 3, output_tokens: 1 } })
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'grok', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await client(handle).messages.create(prompt, { headers: { 'X-Claude-Code-Session-Id': 'session-a' } })
+    await client(handle).messages.create(prompt)
+    expect(seen).toEqual(['session-a', undefined])
   })
 
   it('rejects truncated non-streaming Codex responses', async () => {
@@ -290,6 +361,24 @@ describe('embedded provider proxy', () => {
     })
     await expect(client(handle).messages.create(prompt)).rejects.toMatchObject({ status: 401, message: expect.stringContaining(message) })
     expect(attempts).toBe(1)
+  })
+
+  it('sends the current credential in the configured credential header', async () => {
+    const base = await upstream((_body, req, res) => {
+      expect(req.headers['x-api-key']).toBe('upstream-key')
+      expect(req.headers.authorization).toBe('Bearer upstream-key')
+      json(res, reply)
+    })
+    const handle = await proxy(base, 'messages', {
+      config: { baseUrl: base, format: 'messages', credentialHeader: 'x-api-key', headers: { 'x-api-key': 'stale' }, credential: { accessToken: 'upstream-key', generation: 1 } },
+    })
+    await expect(client(handle).messages.create(prompt)).resolves.toMatchObject({ content: [{ type: 'text', text: 'OK' }] })
+  })
+
+  it('keeps the proxy binding when only the credential header copy rotates', () => {
+    const config = (key: string, generation: number): LlmProxyConfig => ({ baseUrl: 'https://api.example.com', format: 'messages', credentialHeader: 'x-api-key', headers: { 'x-api-key': key, 'user-agent': 'SuperAgent' }, credential: { accessToken: key, generation } })
+    expect(llmProxyBinding('minimax-subscription', config('old', 1))).toBe(llmProxyBinding('minimax-subscription', config('new', 2)))
+    expect(llmProxyBinding('minimax-subscription', config('old', 1))).not.toBe(llmProxyBinding('minimax-subscription', { ...config('old', 1), headers: { 'x-api-key': 'old', 'user-agent': 'Other' } }))
   })
 
   it('refreshes near expiry before sending and does not forward client auth or routing headers', async () => {

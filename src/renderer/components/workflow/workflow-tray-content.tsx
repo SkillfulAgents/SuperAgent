@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Workflow as WorkflowIcon, PanelRightClose, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { useWorkflow } from '@renderer/context/workflow-context'
@@ -49,7 +49,8 @@ interface PhaseGroup {
 }
 
 /**
- * Overlay the live SSE per-agent status (from the journal tailer) onto the disk tree.
+ * Merge live agents with the disk tree. Live progress must be renderable before
+ * the disk reconstruction finishes (or if it fails).
  * `done` is terminal: a stale live `running` must NEVER override a tree `done` (the tailer
  * can miss the very last `result` line when completion races the poll), and vice versa.
  * Disk is the source of truth for the result string.
@@ -62,7 +63,8 @@ export function overlayLiveStatus(
   liveAgents: Record<string, WorkflowAgentLive> | undefined
 ): MergedAgentNode[] {
   if (!liveAgents) return base
-  return base.map((a) => {
+  const knownIds = new Set(base.map((a) => a.agentId))
+  const merged: MergedAgentNode[] = base.map((a) => {
     const live = liveAgents[a.agentId]
     if (!live) return a
     // `done` from either source wins (a result on disk or wire is definitive), then
@@ -83,12 +85,33 @@ export function overlayLiveStatus(
       // when a label variable can't be recovered from the prompt text. Prefer the
       // wire while it's flowing; disk covers reloads of finished runs.
       label: live.label ?? a.label,
-      // Live tokens/tools are fresher than the ~2s disk poll; fall back to disk on reload.
+      phase: live.phase ?? a.phase,
+      model: live.model ?? a.model,
+      prompt: a.prompt || live.prompt || '',
+      // Live tokens/tools are fresher than disk reconciliation; disk covers reloads.
       tokens: live.tokens ?? a.tokens,
       toolCount: live.toolCount ?? a.toolCount,
       lastTool: live.lastTool ?? null,
     }
   })
+  for (const [agentId, live] of Object.entries(liveAgents)) {
+    if (knownIds.has(agentId)) continue
+    merged.push({
+      agentId,
+      label: live.label ?? `agent ${merged.length + 1}`,
+      phase: live.phase ?? null,
+      status: live.status,
+      result: live.result,
+      resolved: 'unresolved',
+      prompt: live.prompt ?? '',
+      model: live.model ?? null,
+      tokens: live.tokens ?? 0,
+      toolCount: live.toolCount ?? 0,
+      durationMs: null,
+      lastTool: live.lastTool ?? null,
+    })
+  }
+  return merged
 }
 
 /**
@@ -174,28 +197,42 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
 
   const liveRun = workflows.find((w) => w.runId === selectedRunId)
   const isActive = !!liveRun && liveRun.completedAt === undefined
-  const treeQuery = useWorkflowTree(sessionId, agentSlug, selectedRunId, { active: isActive })
+  const hasLiveAgents = !!liveRun && Object.keys(liveRun.agents).length > 0
+  const treeQuery = useWorkflowTree(sessionId, agentSlug, selectedRunId, {
+    active: isActive,
+    hasLiveAgents,
+  })
 
-  // Disk tree is the source of truth (survives reload); overlay live SSE status.
+  // Disk enriches the live preview and covers reloads; it never gates live rows.
   const agents = useMemo<MergedAgentNode[]>(
     () => overlayLiveStatus(treeQuery.data?.agents ?? [], liveRun?.agents),
     [treeQuery.data, liveRun]
   )
 
-  // When a live transition arrives (new agent started / result / completion), refetch
-  // the disk tree to pick up freshly-resolved labels + final results.
-  const liveSignal = liveRun
-    ? `${Object.entries(liveRun.agents)
-        .map(([k, v]) => `${k}:${v.status}`)
-        .sort()
-        .join(',')}|${liveRun.completedAt ?? ''}`
-    : ''
+  // Per-agent transitions already carry what the preview needs. Reconstructing
+  // every transcript on each transition makes a wide fan-out flood the host.
+  // Reconcile periodically and once on completion for durable final results.
+  const completedAt = liveRun?.completedAt
   const refetchTree = treeQuery.refetch
+  const isFetchingTree = treeQuery.isFetching
+  const reconciledCompletion = useRef<string | null>(null)
+  const sawActiveRun = useRef<string | null>(null)
   useEffect(() => {
-    // Don't cancel a request already in flight: a wide fan-out transitions every
-    // few seconds, and restarting the fetch on each one could starve a slow host.
-    if (selectedRunId && liveSignal) refetchTree({ cancelRefetch: false })
-  }, [liveSignal, selectedRunId, refetchTree])
+    if (!selectedRunId) return
+    if (completedAt === undefined) {
+      if (liveRun) sawActiveRun.current = selectedRunId
+      return
+    }
+    if (isFetchingTree) return
+    const key = `${selectedRunId}:${completedAt}`
+    if (reconciledCompletion.current === key) return
+    reconciledCompletion.current = key
+    // Opened on an already-finished run: the mount fetch is already final.
+    if (sawActiveRun.current !== selectedRunId) return
+    // Wait out any pre-completion request, then fetch a fresh snapshot. Simply
+    // refetching during the initial load reuses that older in-flight request.
+    refetchTree({ cancelRefetch: false })
+  }, [completedAt, selectedRunId, refetchTree, isFetchingTree, liveRun])
 
   const groups = useMemo<PhaseGroup[]>(() => {
     const phaseOrder = treeQuery.data?.phases ?? []
@@ -268,11 +305,15 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
 
       {/* Body */}
       <div className="flex-1 min-h-0 overflow-auto px-3 py-3 space-y-4">
-        {treeQuery.isLoading && <div className="text-xs text-muted-foreground italic px-1">Loading workflow…</div>}
-        {/* Right after launch the on-disk dir doesn't exist yet → the route 404s. While the
-            run is active that's "starting", not a failure (the poll will pick it up). */}
+        {treeQuery.isLoading && agents.length === 0 && (
+          <div className="text-xs text-muted-foreground italic px-1">Loading workflow…</div>
+        )}
         {treeQuery.isError && isActive && (
-          <div className="text-xs text-muted-foreground italic px-1">Starting workflow…</div>
+          <div className="text-xs text-muted-foreground italic px-1">
+            {agents.length > 0
+              ? 'Some workflow details are unavailable. Retrying…'
+              : 'Workflow is running. Retrying details…'}
+          </div>
         )}
         {treeQuery.isError && !isActive && (
           <div className="text-xs text-destructive px-1">Couldn&apos;t load this workflow.</div>
@@ -290,7 +331,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
         )}
 
         {groups.map((group, gi) => (
-          <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5">
+          <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5" data-testid="workflow-phase-group" data-phase={group.title ?? undefined}>
             {group.title && (
               <div className="flex items-baseline gap-2 px-1">
                 <span className="text-xs font-medium text-foreground/80">{group.title}</span>

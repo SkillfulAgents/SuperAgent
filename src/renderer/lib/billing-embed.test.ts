@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildBillingEmbedUrl, platformOriginFromBaseUrl } from './billing-embed'
+import { buildBillingEmbedUrl, planNameFromId, platformOriginFromBaseUrl } from './billing-embed'
 
 describe('buildBillingEmbedUrl', () => {
   it('includes surface and cta when opening the launcher', () => {
@@ -32,8 +32,21 @@ describe('buildBillingEmbedUrl', () => {
     expect(url.searchParams.has('cta')).toBe(false)
   })
 
+  it('opens the full billing page (plan, usage, payment) without a view', () => {
+    const url = new URL(buildBillingEmbedUrl('https://platform.example.com', 'org_1', { parent: 'https://app.example.com' })!)
+    expect(url.pathname).toBe('/embed/billing/org_1')
+    expect(url.searchParams.has('view')).toBe(false)
+  })
+
   it('returns null when the platform origin cannot be parsed', () => {
     expect(platformOriginFromBaseUrl(null)).toBeNull()
     expect(buildBillingEmbedUrl('not-a-url', 'org_1', { parent: 'https://app.example.com' })).toBeNull()
+  })
+})
+
+describe('planNameFromId', () => {
+  it('names a plan the embed reports only by its slug', () => {
+    expect(planNameFromId('pro-200')).toBe('Pro 200')
+    expect(planNameFromId('pro-30')).toBe('Pro 30')
   })
 })

@@ -81,7 +81,7 @@ export const WorkflowPhaseSchema = z.object({
 export type WorkflowPhase = z.infer<typeof WorkflowPhaseSchema>
 
 export const ParsedAgentCallSchema = z.object({
-  /** The prompt arg converted to an anchored regex; each `${expr}` is a capture group. */
+  /** Known prompt text as a regex; unsupported prompts use a never-matching pattern. */
   promptRegexSource: z.string(),
   /** Source text of each `${expr}` in the prompt, positional (parallel to capture groups). */
   holeExprs: z.array(z.string()),
@@ -122,8 +122,11 @@ export const WorkflowAgentNodeSchema = z.object({
   /** Display string of the agent's return value (JSON-stringified if structured);
    *  for failed agents, the error details from the trailing error frame. */
   result: z.string().nullable(),
-  /** How the agentId→call join was made (for debuggability + tests). */
-  resolved: z.enum(['prompt-regex', 'ordinal-fallback']),
+  /** How the agentId→call join was made. ordinal-fallback is retained for older
+   *  snapshots. opaque-phase means no prompt matched, but every call the scanner
+   *  couldn't read shares one phase, so the phase is known. New trees leave any
+   *  other unmatched/ambiguous agent unresolved. */
+  resolved: z.enum(['prompt-regex', 'opaque-phase', 'ordinal-fallback', 'unresolved']),
   /** The prompt/task the agent started with (its first user message). */
   prompt: z.string(),
   /** Tool calls made so far (count of tool_use blocks in the transcript). */

@@ -9,6 +9,7 @@ import type {
   ContainerSettings,
 } from './settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from './capability-policy-schema'
+import { globalInstructionsSchema } from './global-instructions-schema'
 import { validateFaviconDataUrl } from './favicon'
 import { isValidAccelerator } from './shortcuts'
 import {
@@ -208,6 +209,7 @@ export const generalSettingsPatchSchema = z.object({
   shareErrorReports: z.boolean(),
   enableToolSearch: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
+  globalInstructions: globalInstructionsSchema,
 }).partial().strict()
 
 /** The complete, allowlisted patch accepted by PUT /api/settings. */
@@ -485,6 +487,10 @@ export const generalSettingsComponent = {
               ...patch.agentCapabilities,
             }
           : before.agentCapabilities,
+      globalInstructions:
+        patch.globalInstructions !== undefined
+          ? patch.globalInstructions
+          : before.globalInstructions,
     }
   },
 
@@ -517,6 +523,7 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     shareErrorReports: patch.shareErrorReports,
     enableToolSearch: patch.enableToolSearch,
     agentCapabilities: patch.agentCapabilities,
+    globalInstructions: patch.globalInstructions,
   }
 }
 

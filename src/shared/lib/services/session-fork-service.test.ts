@@ -110,7 +110,6 @@ const source = {
   name: 'Pricing',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   lastActivityAt: new Date('2026-01-01T00:00:00Z'),
-  messageCount: 2,
 }
 
 const sourceMeta = {
@@ -237,7 +236,7 @@ describe('forkSession', () => {
   it('throws 409 without reading or booting when the source is mid-turn', async () => {
     isSessionActive.mockReturnValue(true)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
+      name: 'SessionForkFailedError',
       status: 409,
     })
     expect(readSessionMetadata).not.toHaveBeenCalled()
@@ -247,7 +246,7 @@ describe('forkSession', () => {
   it('throws 404 without booting when the source is unknown', async () => {
     sessionIsKnown.mockResolvedValue(false)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
+      name: 'SessionForkFailedError',
       status: 404,
     })
     expect(ensureRunning).not.toHaveBeenCalled()

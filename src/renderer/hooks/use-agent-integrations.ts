@@ -4,6 +4,9 @@
  * React Query hooks for managing external agent integrations.
  */
 
+import { usePlatformAuthStatus } from './use-platform-auth'
+import { useWebhookRelay } from './use-webhook-relay'
+import type { AgentIntegrationDefinition } from '@shared/lib/agent-integrations/types'
 import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
@@ -43,6 +46,20 @@ export const agentIntegrationKeys = {
   status: (id: string | null) => ['chat-integration-status', id] as const,
   sessions: (integrationId: string | null) => ['chat-integration-sessions', integrationId] as const,
   access: (integrationId: string) => ['chat-integration-access', integrationId] as const,
+}
+
+/** Host owns the decision; capability changes only invalidate discovery. */
+export function useAvailableAgentIntegrationProviders() {
+  const { data: platform } = usePlatformAuthStatus()
+  const { data: relay } = useWebhookRelay()
+  return useQuery<AgentIntegrationDefinition[]>({
+    queryKey: ['agent-integration-providers', platform?.connected, relay?.available],
+    queryFn: async () => {
+      const response = await apiFetch('/api/agent-integrations/providers')
+      if (!response.ok) throw new Error('Failed to fetch available integrations')
+      return response.json()
+    },
+  })
 }
 
 // ── List hooks ──────────────────────────────────────────────────────────
@@ -93,6 +110,8 @@ export function useAgentIntegrationStatus(id: string | null) {
   return useQuery<{
     status: string
     connected: boolean
+    /** The path the running connection uses; null without one, or for providers that don't say. */
+    transport?: 'direct' | 'relay' | null
     provider: string
   }>({
     queryKey: agentIntegrationKeys.status(id),
@@ -229,7 +248,10 @@ export function useUpdateAgentIntegration() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      if (!res.ok) throw new Error('Failed to update agent integration')
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(payload?.error ?? 'Failed to update agent integration')
+      }
       return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {

@@ -86,7 +86,6 @@ describe('session notification tab title', () => {
       name: 'Launch Plan',
       createdAt: new Date(0),
       lastActivityAt: new Date(0),
-      messageCount: 1,
       hasUnreadNotifications: true,
     }
     const agent = { slug: 'agent-one', name: 'Agent One' }

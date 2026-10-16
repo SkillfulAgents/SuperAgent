@@ -42,6 +42,23 @@ describe.each([toPublicChatIntegration, toPublicAgentIntegration])('%s', (serial
     }
   })
 
+  it('shows how a Slack app reaches the installation, without its secrets', () => {
+    const relay = { endpointId: 'whep_1', url: 'https://relay.test/v1/hooks/whep_1', scope: 'sub_1' }
+    const socket = serialize(integration('slack', { botToken: 'xoxb-secret', appToken: 'xapp-secret' }))
+    expect(socket).toMatchObject({ slack: { botTokenSaved: true, appTokenSaved: true, signingSecretSaved: false, webhook: null } })
+    expect(socket).not.toHaveProperty('refreshIntervalMs')
+
+    // Set up with webhooks, the Slack app not created yet.
+    const waiting = serialize(integration('slack', { onlyMentioned: true, relay }))
+    expect(waiting).toMatchObject({ hasCredentials: false, refreshIntervalMs: 5000, slack: { botTokenSaved: false, webhook: { url: relay.url, status: 'pending' } } })
+
+    const verified = serialize(integration('slack', { botToken: 'xoxb-secret', signingSecret: 'signing-secret', relay, webhookStatus: 'verified' }))
+    expect(verified).toMatchObject({ hasCredentials: true, slack: { signingSecretSaved: true, webhook: { status: 'verified' } } })
+    expect(verified).not.toHaveProperty('refreshIntervalMs')
+    expect(JSON.stringify(verified)).not.toContain('signing-secret')
+    expect(JSON.stringify(verified)).not.toContain('sub_1')
+  })
+
   it('reports an invalid stored credential config without exposing it', () => {
     const result = serialize(integration('slack', { onlyMentioned: true }))
 

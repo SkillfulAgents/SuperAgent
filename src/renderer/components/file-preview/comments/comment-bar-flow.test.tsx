@@ -39,7 +39,7 @@ describe('CommentBar feedback submission', () => {
       filePath: '/workspace/report.md',
       agentSlug: 'test-agent',
       text: 'Clarify this conclusion',
-      selectedText: 'Results were mixed',
+      anchor: { kind: 'text', quote: 'Results were mixed' },
     }]
 
     renderWithProviders(

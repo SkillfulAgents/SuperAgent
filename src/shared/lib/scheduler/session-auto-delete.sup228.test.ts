@@ -127,7 +127,6 @@ function makeSession(
     name: `Session ${id}`,
     createdAt: new Date('2026-01-01'),
     lastActivityAt,
-    messageCount: 5,
   }
 }
 

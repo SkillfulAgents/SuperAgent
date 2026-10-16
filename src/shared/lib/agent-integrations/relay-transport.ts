@@ -1,0 +1,216 @@
+import { and, ne, sql } from 'drizzle-orm'
+import { db } from '../db'
+import { chatIntegrations } from '../db/schema'
+import { captureException } from '../error-reporting'
+import { getStoredPlatformMemberId } from '../services/platform-auth-service'
+import { resolvePlatformMemberForCandidates } from '../services/webhook-trigger-service'
+import {
+  LOCAL_RELAY_SCOPE,
+  WebhookRelayUnavailableError,
+  getWebhookRelay,
+  type RelayAcceptResult,
+  type RelayConsumerHandle,
+  type RelayEvent,
+  type WebhookRelayService,
+} from '../webhook-relay'
+import { WebhookEndpointsApiError } from '../webhook-relay/platform-endpoints-client'
+import type { VerificationProfile } from '../services/webhook-endpoint-schema'
+import { IntegrationSetupError } from './setup-types'
+import {
+  integrationRelayBindingSchema,
+  readIntegrationRelay,
+  supportedTransports,
+  type IntegrationRelayAccept,
+  type IntegrationRelayAttachment,
+  type IntegrationRelayBinding,
+  type IntegrationRelayHost,
+} from './transport'
+import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationInputResult } from './types'
+
+/**
+ * The scope an integration's endpoint is minted and claimed under: its
+ * creator's platform member, as for agent-minted webhook endpoints.
+ */
+export async function integrationRelayScope(userId?: string): Promise<string> {
+  const resolved = userId ? await resolvePlatformMemberForCandidates([userId]) : null
+  return resolved?.memberId ?? getStoredPlatformMemberId() ?? LOCAL_RELAY_SCOPE
+}
+
+/** The endpoint's name on the platform, which lists it alongside agent-minted ones. */
+export function integrationRelayName(providerName: string, agentSlug: string): string {
+  return `${providerName} integration for ${agentSlug}`
+}
+
+/**
+ * Mints the public URL an integration's webhooks will arrive at. With a
+ * verification profile, the relay rejects deliveries that don't match it.
+ */
+export async function provisionIntegrationRelay(name: string, userId?: string, verification?: VerificationProfile): Promise<IntegrationRelayBinding> {
+  const scope = await integrationRelayScope(userId)
+  try {
+    const endpoint = await getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200), ...(verification ? { verification } : {}) })
+    return integrationRelayBindingSchema.parse({ endpointId: endpoint.id, url: endpoint.url, scope })
+  } catch (error) {
+    if (error instanceof WebhookRelayUnavailableError) throw new IntegrationSetupError(error.message)
+    if (error instanceof WebhookEndpointsApiError && error.statusCode === 409) {
+      throw new IntegrationSetupError('This workspace has reached its limit of active webhook endpoints. Remove an unused integration or webhook trigger first.')
+    }
+    throw error
+  }
+}
+
+/** The URL stops accepting deliveries. */
+export async function disableIntegrationRelay(binding: IntegrationRelayBinding): Promise<void> {
+  await getWebhookRelay().disableEndpoint(binding.scope, binding.endpointId)
+}
+
+/** Another installation receives through this endpoint too (Email's mailboxes share one per scope). */
+async function endpointSharedWith(endpointId: string, integrationId: string): Promise<boolean> {
+  const other = await db.select({ id: chatIntegrations.id }).from(chatIntegrations)
+    .where(and(ne(chatIntegrations.id, integrationId), sql`json_extract(${chatIntegrations.config}, '$.relay.endpointId') = ${endpointId}`)).get()
+  return !!other
+}
+
+/**
+ * An integration is being deleted: nothing more is claimed for it, what was
+ * already claimed is discarded, and its URL is disabled unless another
+ * installation still uses it. Never throws: a relay that can't be reached
+ * must not block deletion.
+ */
+export async function releaseIntegrationTransport(record: AgentIntegrationRecord): Promise<void> {
+  integrationRelays.remove(record.id)
+  let relay: IntegrationRelayBinding | undefined
+  try {
+    relay = readIntegrationRelay(record.config)
+  } catch {
+    return
+  }
+  if (!relay) return
+  try {
+    if (await endpointSharedWith(relay.endpointId, record.id)) return
+    await disableIntegrationRelay(relay)
+  } catch (error) {
+    // The URL stays live but nothing claims its events; they expire on the platform.
+    captureException(error, {
+      tags: { component: 'agent-integration', operation: 'disable-relay-endpoint' },
+      extra: { integrationId: record.id, provider: record.provider, endpointId: relay.endpointId },
+    })
+  }
+}
+
+/**
+ * Sets up webhooks for an existing installation: mints its endpoint, then
+ * `write` stores it. The endpoint is disabled again if the write fails.
+ * Returns false if they are already set up.
+ */
+export async function setUpIntegrationWebhooks(
+  record: AgentIntegrationRecord,
+  definition: Pick<AgentIntegrationDefinition, 'name' | 'transports'>,
+  write: (relay: IntegrationRelayBinding) => Promise<void>,
+  verification?: VerificationProfile,
+): Promise<boolean> {
+  if (readIntegrationRelay(record.config)) return false
+  if (!supportedTransports(definition).includes('relay')) throw new IntegrationSetupError(`${definition.name} can't receive webhooks`)
+  const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined, verification)
+  try {
+    await write(relay)
+  } catch (error) {
+    await disableIntegrationRelay(relay).catch((cleanup: unknown) => {
+      captureException(cleanup, { tags: { component: 'agent-integration', operation: 'release-relay-endpoint' }, extra: { integrationId: record.id } })
+    })
+    throw error
+  }
+  return true
+}
+
+/**
+ * Removes an installation's webhooks: `write` forgets the endpoint, then it is
+ * disabled. Deliveries already claimed for it are dropped. Returns false if
+ * there were none.
+ */
+export async function removeIntegrationWebhooks(record: AgentIntegrationRecord, write: () => Promise<void>): Promise<boolean> {
+  if (!readIntegrationRelay(record.config)) return false
+  await write()
+  await releaseIntegrationTransport(record)
+  return true
+}
+
+/** Every result but `retry` acknowledges the event to the relay. */
+export function relayAcceptResult(result: IntegrationInputResult): RelayAcceptResult {
+  return result === 'rejected' ? 'discard' : result
+}
+
+interface Registration {
+  handle: RelayConsumerHandle
+  accept: IntegrationRelayAccept | null
+}
+
+/**
+ * One relay registration per integration, outliving any one connection. A
+ * reconnect attaches the new connection behind the same registration, so
+ * events claimed while the old one went away are offered to the new one.
+ */
+export class IntegrationRelays {
+  private readonly registrations = new Map<string, Registration>()
+
+  constructor(private readonly relay: () => WebhookRelayService = getWebhookRelay) {}
+
+  attach(integrationId: string, binding: IntegrationRelayBinding, accept: IntegrationRelayAccept): IntegrationRelayAttachment {
+    let registration = this.registrations.get(integrationId)
+    if (registration) {
+      registration.accept = accept
+      registration.handle.update({ scope: binding.scope, endpointIds: [binding.endpointId] })
+      // Events that waited out the gap go now, not after their backoff.
+      registration.handle.retryNow()
+    } else {
+      const created: Registration = { handle: null as unknown as RelayConsumerHandle, accept }
+      created.handle = this.relay().register({
+        id: `integration:${integrationId}`,
+        scope: binding.scope,
+        endpointIds: [binding.endpointId],
+        // Whichever connection is attached; none while it reconnects.
+        accept: async (events) => (created.accept ? created.accept(events) : 'retry'),
+      })
+      this.registrations.set(integrationId, created)
+      registration = created
+    }
+    const attached = registration
+    const current = () => this.registrations.get(integrationId) === attached && attached.accept === accept
+    return {
+      detach: () => {
+        if (!current()) return
+        attached.accept = null
+        attached.handle.update({ endpointIds: [] })
+      },
+      isAttached: current,
+    }
+  }
+
+  /**
+   * The relay to hand one connection of this integration: present while the
+   * host's relay is available as the connection starts, null otherwise.
+   */
+  hostFor(integrationId: string): IntegrationRelayHost | null {
+    if (!this.relay().snapshot().available) return null
+    return { attach: (binding, accept) => this.attach(integrationId, binding, accept) }
+  }
+
+  isAttached(integrationId: string): boolean {
+    return !!this.registrations.get(integrationId)?.accept
+  }
+
+  remove(integrationId: string): void {
+    const registration = this.registrations.get(integrationId)
+    if (!registration) return
+    this.registrations.delete(integrationId)
+    // Claimed events have no integration left to go to.
+    registration.accept = async () => 'discard'
+    registration.handle.dispose()
+  }
+}
+
+// Persists across hot reloads like the relay itself: a fresh copy would hold
+// no registrations and collide with the relay's on the next attach.
+const globalForIntegrationRelays = globalThis as unknown as { integrationRelays: IntegrationRelays | undefined }
+globalForIntegrationRelays.integrationRelays ??= new IntegrationRelays()
+export const integrationRelays = globalForIntegrationRelays.integrationRelays
