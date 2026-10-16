@@ -80,7 +80,7 @@ export class SessionPersistence {
   private saveChecked(): void {
     const data = Object.fromEntries(this.sessions.entries());
     // Atomic temp-file + rename: this map is rewritten on every
-    // message (updateLastActivity), and a container force-stop mid-write would
+    // message (updateSession), and a container force-stop mid-write would
     // otherwise tear the file — making the next load() swallow the parse error
     // and silently wipe ALL session metadata. The atomic write guarantees the
     // previous good file survives an interrupted write. /workspace is fully
