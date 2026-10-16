@@ -194,16 +194,13 @@ class LocalOpenFile implements OpenFile {
 
   stream(range?: { start: number; end?: number }, options?: { chunkBytes?: number }): ReadableStream<Uint8Array> {
     // The read stream's high-water mark is the size of each `read` it issues
-    // (or what is left of the range).
-    const highWaterMark = options?.chunkBytes
-    const source = this.handle.createReadStream(
-      range || highWaterMark !== undefined
-        ? {
-          ...(range ? { start: range.start, end: range.end } : {}),
-          ...(highWaterMark !== undefined ? { highWaterMark } : {}),
-        }
-        : undefined,
-    )
+    // (or what is left of the range). Node treats an undefined start, end or
+    // highWaterMark as absent, so the three optionals pass straight through.
+    const source = this.handle.createReadStream({
+      start: range?.start,
+      end: range?.end,
+      highWaterMark: options?.chunkBytes,
+    })
     return Readable.toWeb(source) as ReadableStream<Uint8Array>
   }
 

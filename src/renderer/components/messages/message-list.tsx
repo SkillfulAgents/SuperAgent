@@ -862,7 +862,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     scrollToBottom: handleScrollToBottom,
     windowedMessages,
     hiddenCount,
-    loadOlderMessages,
     handleScroll,
     handleWheelGesture,
     handlePointerDown,
@@ -1160,16 +1159,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           >
             <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
             Loading older messages…
-          </div>
-        ) : hasOlder ? (
-          <div className="flex items-center justify-center py-3">
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
-              onClick={loadOlderMessages}
-            >
-              Load earlier messages
-            </button>
           </div>
         ) : null}
         {windowedMessages.map((item, index) => {

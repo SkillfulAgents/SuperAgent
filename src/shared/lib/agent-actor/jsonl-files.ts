@@ -223,13 +223,25 @@ export async function readTailLines(
         truncated = true
         break
       }
+      // Scan backward so the read can be trimmed where the walk is satisfied.
+      // A doubled read can overshoot by most of a chunk; without the trim the
+      // tail would hold, concatenate and re-scan bytes it then discards. Keep
+      // maxLines + 1 complete lines (the trim below drops one trailing blank
+      // line, and the slice at the end takes the last maxLines), starting at
+      // the newline that ends the sacrificial first line: the bytes below it
+      // cannot change the result, so a trimmed read yields exactly what an
+      // untrimmed one would.
+      let keepFrom = 0
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] === NEWLINE_BYTE && ++newlineCount > maxLines + 1) {
+          keepFrom = i
+          break
+        }
+      }
       // Only once the chunk is in hand: `pos` is the file offset that `parts`
       // starts at, and every returned offset is derived from it.
-      pos = chunkStart
-      parts.unshift(buf)
-      for (let i = 0; i < buf.length; i++) {
-        if (buf[i] === NEWLINE_BYTE) newlineCount++
-      }
+      pos = chunkStart + keepFrom
+      parts.unshift(keepFrom === 0 ? buf : buf.subarray(keepFrom))
     }
 
     const combined = parts.length === 1 ? parts[0]! : Buffer.concat(parts)

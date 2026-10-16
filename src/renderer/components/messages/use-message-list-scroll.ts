@@ -23,9 +23,6 @@ import type { PendingMessage } from './pending-message'
 const BASE_WINDOW = MESSAGES_PAGE_LIMIT
 const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
 const TURN_ANCHOR_TOP = 100
-// Older-page fetches that add no rows before an underfilled list stops
-// filling (until the list changes) — see the fill effect.
-const FILL_MAX_MISSES = 3
 
 // ---------------------------------------------------------------------------
 // The follow engine.
@@ -631,23 +628,6 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     rememberPosition()
   })
 
-  // Shared by scroll-up paging and the explicit retry control. Capture at
-  // prepend time: the reader may have moved while the request was in flight.
-  const loadOlderMessages = useCallback(() => {
-    if (!hasOlder || isFetchingOlder || !fetchOlder || prevScrollHeightRef.current != null) return
-    void fetchOlder(() => {
-      const viewport = scrollRef.current
-      // At the live edge the trailing window stays put, so no capture is
-      // needed. A lingering capture would block the next scroll-up gesture.
-      if (
-        viewport &&
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
-      ) {
-        prevScrollHeightRef.current = viewport.scrollHeight
-      }
-    })
-  }, [hasOlder, isFetchingOlder, fetchOlder])
-
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
     const baseline = baselineRef.current
@@ -767,13 +747,26 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       if (hiddenCount > 0) {
         prevScrollHeightRef.current = el.scrollHeight
         setWindowSize((n) => n + LOAD_STEP)
-      } else loadOlderMessages()
+      } else if (hasOlder && !isFetchingOlder && fetchOlder) {
+        void fetchOlder(() => {
+          // Back at the bottom mid-fetch: the trailing window doesn't move on
+          // prepend, so skip the capture — a lingering guard would block the
+          // next scroll-up gesture. Derived from geometry at capture time.
+          const viewport = scrollRef.current
+          if (
+            viewport &&
+            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
+          ) {
+            prevScrollHeightRef.current = viewport.scrollHeight
+          }
+        })
+      }
     }
 
     // Re-read rather than reuse the entry sample: reserve eating above may
     // have changed the spacer (and with it scrollHeight) inside this handler.
     rememberPosition()
-  }, [hiddenCount, loadOlderMessages, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
+  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -789,38 +782,6 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       rememberPosition()
     }
   }, [windowSize, rememberPosition])
-
-  // Older pages load when the reader scrolls near the top, but a list that
-  // does not overflow cannot scroll: a trailing page shorter than the viewport
-  // (the server cuts the page at a byte budget, and a few heavy turns can
-  // render short on a tall window) would leave older history unreachable.
-  // Fetch older pages until the list overflows or history runs out. Nothing
-  // moves under the reader: a list this short is pinned at its live edge,
-  // which the resize observer keeps in view as rows land above. A fetch that
-  // adds no rows (failed, or overlapping rows already loaded) counts toward a
-  // small cap that resets only when rows change, so neither an offline client
-  // nor a server that keeps answering the same cursor can make it spin. The
-  // explicit load control remains available after the cap, including when a
-  // reconnect/refetch returns unchanged rows and scrolling is still impossible.
-  const fillRef = useRef<{ rows: string; misses: number }>({ rows: '', misses: 0 })
-  useEffect(() => {
-    const el = scrollRef.current
-    // clientHeight 0: not laid out (hidden, or no layout engine) — nothing to fill.
-    if (!el || el.clientHeight === 0) return
-    if (hiddenCount > 0 || !hasOlder || isFetchingOlder || !fetchOlder) return
-    if (el.scrollHeight > el.clientHeight + 1) return
-    const first = visibleMessages[0] as { id?: unknown } | undefined
-    const rows = `${visibleMessages.length}:${String(first?.id)}`
-    const fill = fillRef.current
-    if (fill.rows !== rows) {
-      fill.rows = rows
-      fill.misses = 0
-    }
-    if (fill.misses >= FILL_MAX_MISSES) return
-    void fetchOlder().then((grew) => {
-      if (!grew && fillRef.current.rows === rows) fillRef.current.misses++
-    })
-  }, [visibleMessages, hiddenCount, hasOlder, isFetchingOlder, fetchOlder])
 
   const scrollToBottom = useCallback(() => {
     // Drop the turn reserve first so the trip's target is the true live edge,
@@ -1158,7 +1119,6 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     scrollToBottom,
     windowedMessages,
     hiddenCount,
-    loadOlderMessages,
     handleScroll,
     handleWheelGesture,
     handlePointerDown,

@@ -15,15 +15,6 @@ export const MESSAGES_PAGE_OLDER_LIMIT = 200
 export const MESSAGES_PAGE_MIN_BYTES = 64 * 1024
 export const MESSAGES_PAGE_MAX_BYTES = 4 * 1024 * 1024
 
-/**
- * Renderer trailing-page budget (`max_bytes`). A quarter of the server
- * default: the trailing page is re-read on open and every minute while a
- * session is open, and a long session's newest MiB is usually several
- * screens — when it is not (a few heavy turns), the message list fills the
- * viewport from older pages.
- */
-export const MESSAGES_PAGE_BYTES = 1024 * 1024
-
 function envLimit(name: string, fallback: number): number {
   const n = Number(process.env[name])
   if (!Number.isInteger(n) || n < 1) return fallback

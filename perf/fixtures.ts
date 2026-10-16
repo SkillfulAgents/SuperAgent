@@ -8,6 +8,7 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
+import { prng } from '@shared/lib/agent-actor/testing/prng'
 
 export interface SeedProfile {
   name: string
@@ -91,18 +92,6 @@ export interface SeededData {
     bytes: number
     /** Display-item id of the newest item (the last turn's answer). */
     newestItemId: string
-  }
-}
-
-/** Small deterministic PRNG (mulberry32). */
-function prng(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
 
