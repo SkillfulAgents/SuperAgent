@@ -631,6 +631,23 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     rememberPosition()
   })
 
+  // Shared by scroll-up paging and the explicit retry control. Capture at
+  // prepend time: the reader may have moved while the request was in flight.
+  const loadOlderMessages = useCallback(() => {
+    if (!hasOlder || isFetchingOlder || !fetchOlder || prevScrollHeightRef.current != null) return
+    void fetchOlder(() => {
+      const viewport = scrollRef.current
+      // At the live edge the trailing window stays put, so no capture is
+      // needed. A lingering capture would block the next scroll-up gesture.
+      if (
+        viewport &&
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
+      ) {
+        prevScrollHeightRef.current = viewport.scrollHeight
+      }
+    })
+  }, [hasOlder, isFetchingOlder, fetchOlder])
+
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
     const baseline = baselineRef.current
@@ -750,26 +767,13 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       if (hiddenCount > 0) {
         prevScrollHeightRef.current = el.scrollHeight
         setWindowSize((n) => n + LOAD_STEP)
-      } else if (hasOlder && !isFetchingOlder && fetchOlder) {
-        void fetchOlder(() => {
-          // Back at the bottom mid-fetch: the trailing window doesn't move on
-          // prepend, so skip the capture — a lingering guard would block the
-          // next scroll-up gesture. Derived from geometry at capture time.
-          const viewport = scrollRef.current
-          if (
-            viewport &&
-            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
-          ) {
-            prevScrollHeightRef.current = viewport.scrollHeight
-          }
-        })
-      }
+      } else loadOlderMessages()
     }
 
     // Re-read rather than reuse the entry sample: reserve eating above may
     // have changed the spacer (and with it scrollHeight) inside this handler.
     rememberPosition()
-  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
+  }, [hiddenCount, loadOlderMessages, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -795,7 +799,9 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // which the resize observer keeps in view as rows land above. A fetch that
   // adds no rows (failed, or overlapping rows already loaded) counts toward a
   // small cap that resets only when rows change, so neither an offline client
-  // nor a server that keeps answering the same cursor can make it spin.
+  // nor a server that keeps answering the same cursor can make it spin. The
+  // explicit load control remains available after the cap, including when a
+  // reconnect/refetch returns unchanged rows and scrolling is still impossible.
   const fillRef = useRef<{ rows: string; misses: number }>({ rows: '', misses: 0 })
   useEffect(() => {
     const el = scrollRef.current
@@ -1152,6 +1158,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     scrollToBottom,
     windowedMessages,
     hiddenCount,
+    loadOlderMessages,
     handleScroll,
     handleWheelGesture,
     handlePointerDown,
