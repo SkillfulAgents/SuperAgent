@@ -103,7 +103,9 @@ function mount(kind: RuleKind, param: 'accountId' | 'mcpId', owns: (param: strin
           }
         } catch (error) {
           console.error('[proxy-rules] Authoring failed:', error)
-          return { status: 502, body: { error: error instanceof Error ? error.message : 'Rule authoring failed' } }
+          // A result, not an HTTP error: the composer retries 5xx answers,
+          // which proxies on the way also send.
+          return { status: 200, body: { type: 'failed', error: error instanceof Error ? error.message : 'Rule authoring failed' } }
         }
       })
     } catch (error) {
@@ -117,7 +119,7 @@ function mount(kind: RuleKind, param: 'accountId' | 'mcpId', owns: (param: strin
     const outcome = await authorJobs.wait(c.req.param('jobId'), jobOwner(c), AUTHOR_WAIT_MS, c.req.raw.signal)
     if (!outcome) return c.json({ error: 'This draft expired. Write the rule again.' }, 410)
     if (outcome.state === 'running') return c.json({ status: 'pending' }, 202)
-    if (outcome.state === 'failed') return c.json({ error: 'Rule authoring failed' }, 500)
+    if (outcome.state === 'failed') return c.json({ type: 'failed', error: 'Rule authoring failed' })
     return c.json(outcome.value.body, outcome.value.status)
   })
 
@@ -129,32 +131,48 @@ function mount(kind: RuleKind, param: 'accountId' | 'mcpId', owns: (param: strin
       return c.json({ error: `This connection already has ${MAX_RULES_PER_TARGET} rules. Delete one first.` }, 422)
     }
     // The draft the author job wrote, validated and restated there: what the
-    // person read is what gets saved. A draft saves once.
-    const prepared = authorJobs.take(body.jobId, jobOwner(c))?.prepared
-    if (!prepared) return c.json({ error: 'This draft expired. Write the rule again.' }, 410)
+    // person read is what gets saved. A draft saves once; one that fails to
+    // save (the cap) stays available to try again.
+    const claim = authorJobs.claim(body.jobId, jobOwner(c))
+    const prepared = claim?.value.prepared
+    if (!claim || !prepared) {
+      claim?.consume()
+      return c.json({ error: 'This draft expired or is already being saved. Write the rule again if it is not in the list.' }, 410)
+    }
     if (!prepared.report.ok) {
+      claim.release()
       return c.json({ error: 'invalid_rule', errors: prepared.report.errors, report: prepared.report }, 422)
     }
     const { draft } = prepared
-    const saved = await createRule({
-      target: target(c),
-      agentSlug: body.agentSlug ?? null,
-      createdBy: 'user',
-      createdByAgentSlug: null,
-      version: {
-        effect: draft.effect,
-        description: draft.description,
-        patterns: draft.patterns,
-        code: draft.code,
-        tests: draft.tests,
-        name: body.name ?? prepared.name,
-        restatement: prepared.restatement,
-        warnings: prepared.report.warnings,
-        toolSchemaHash: prepared.report.toolSchemaHash,
-      },
-      maxRules: MAX_RULES_PER_TARGET,
-    })
-    if (!saved) return c.json({ error: `This connection already has ${MAX_RULES_PER_TARGET} rules. Delete one first.` }, 422)
+    let saved: Awaited<ReturnType<typeof createRule>>
+    try {
+      saved = await createRule({
+        target: target(c),
+        agentSlug: body.agentSlug ?? null,
+        createdBy: 'user',
+        createdByAgentSlug: null,
+        version: {
+          effect: draft.effect,
+          description: draft.description,
+          patterns: draft.patterns,
+          code: draft.code,
+          tests: draft.tests,
+          name: body.name ?? prepared.name,
+          restatement: prepared.restatement,
+          warnings: prepared.report.warnings,
+          toolSchemaHash: prepared.report.toolSchemaHash,
+        },
+        maxRules: MAX_RULES_PER_TARGET,
+      })
+    } catch (error) {
+      claim.release()
+      throw error
+    }
+    if (!saved) {
+      claim.release()
+      return c.json({ error: `This connection already has ${MAX_RULES_PER_TARGET} rules. Delete one first.` }, 422)
+    }
+    claim.consume()
     const view = toRuleView(saved)
     await auditRuleChange('created', view, { by: 'user' }, getCurrentUserId(c))
     return c.json({ rule: view })

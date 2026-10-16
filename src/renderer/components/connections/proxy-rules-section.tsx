@@ -61,9 +61,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /**
  * Writing a rule takes over a minute at times, longer than proxies let one
  * request run, so the server writes it as a job and this polls for it. Each
- * poll is held open up to 15 s; brief failures in between are retried.
+ * poll is held open up to 15 s. Network errors and 5xx answers (proxies send
+ * those, JSON or not) are retried; the job reports its own failure as a result.
  */
-async function authorRuleJob(
+export async function authorRuleJob(
   kind: RuleKind,
   targetId: string,
   body: { description: string; clarifications: Array<{ question: string; answer: string }> },
@@ -91,7 +92,7 @@ async function authorRuleJob(
       await sleep(1000 * failures)
       continue
     }
-    if (res.status >= 500 && res.status !== 502 && ++failures <= 3) {
+    if (res.status >= 500 && ++failures <= 3) {
       await sleep(1000 * failures)
       continue
     }
@@ -100,7 +101,10 @@ async function authorRuleJob(
       await sleep(250)
       continue
     }
-    if (!res.ok) throw new Error(typeof result.error === 'string' ? result.error : 'Could not write the rule')
+    if (!res.ok || result.type === 'failed') {
+      const message = [result.message, result.error].find((m): m is string => typeof m === 'string')
+      throw new Error(message ?? 'Could not write the rule')
+    }
     return { ...(result as AuthorResponse), jobId }
   }
 }

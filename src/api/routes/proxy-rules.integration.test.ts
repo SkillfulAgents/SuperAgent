@@ -596,6 +596,31 @@ describe('writing a rule in the app', () => {
     expect((await app.request(base, json({ jobId }))).status).toBe(410)
   })
 
+  it('returns a failed authoring run as the job\'s result, not an HTTP error', async () => {
+    vi.mocked(authorRule).mockRejectedValueOnce(new Error('The model returned malformed JSON'))
+    const { res } = await author()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ type: 'failed', error: 'The model returned malformed JSON' })
+  })
+
+  it('keeps a draft that hit the rule cap, so it can be saved after deleting a rule', async () => {
+    for (let i = 0; i < 19; i++) await userRule()
+    const first = await author()
+    const second = await author()
+    // Both pass the early count check; the atomic insert lets only one in.
+    const [a, b] = await Promise.all([
+      app.request(base, json({ jobId: first.jobId })),
+      app.request(base, json({ jobId: second.jobId })),
+    ])
+    expect([a.status, b.status].sort()).toEqual([200, 422])
+    const rejected = a.status === 422 ? first.jobId : second.jobId
+
+    const [oldest] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
+    expect((await app.request(`${base}/${oldest.rule.id}`, { method: 'DELETE' })).status).toBe(200)
+    expect((await app.request(base, json({ jobId: rejected }))).status).toBe(200)
+    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(20)
+  })
+
   it('refuses a job id it did not hand out', async () => {
     expect((await app.request(`${base}/author/nope`)).status).toBe(410)
     expect((await app.request(base, json({ jobId: 'nope' }))).status).toBe(410)

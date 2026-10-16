@@ -24,6 +24,8 @@ interface Job<T> {
   outcome: JobState<T>
   finished: Promise<void>
   lease?: NodeJS.Timeout
+  /** Taken by a use in progress (see claim). */
+  claimed?: boolean
 }
 
 export interface RuleJobsOptions {
@@ -99,12 +101,21 @@ export class RuleJobs<T> {
     return job.outcome
   }
 
-  /** The finished value, once: the job is dropped. Undefined while it runs. */
-  take(id: string, owner: string): T | undefined {
+  /**
+   * Claims a finished value for one use. Until the claim is settled, further
+   * claims get nothing. `consume()` drops the job (the use succeeded);
+   * `release()` hands it back (the use failed and may be tried again).
+   * Undefined while the job runs, or when it is gone or already claimed.
+   */
+  claim(id: string, owner: string): { value: T; consume(): void; release(): void } | undefined {
     const job = this.jobs.get(id)
-    if (!job || job.owner !== owner || job.outcome.state !== 'done') return undefined
-    this.jobs.delete(id)
-    return job.outcome.value
+    if (!job || job.owner !== owner || job.outcome.state !== 'done' || job.claimed) return undefined
+    job.claimed = true
+    return {
+      value: job.outcome.value,
+      consume: () => { this.jobs.delete(id) },
+      release: () => { job.claimed = false },
+    }
   }
 
   /** Aborts a running job. False when there is no such job for this owner. */
