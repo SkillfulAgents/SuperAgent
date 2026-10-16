@@ -12,23 +12,25 @@
  *  - `encodedPath`: forwarded upstream. A URL parser leaves it unchanged:
  *    `new URL('https://<host>/' + encodedPath).pathname === '/' + encodedPath`.
  *  - `path`: what scope matching, review prompts and the audit log see. Each
- *    segment is percent-decoded once, then `%` and `/` are re-escaped, so a
- *    segment boundary is always a real separator.
+ *    segment is percent-decoded once, then `%`, `/`, `?`, `#` and boundary
+ *    whitespace are re-escaped to keep path data unambiguous.
  *
  * Rules:
  *  - Rejected: a `.` or `..` segment in any encoding (`%2e`, mixed case, behind
  *    an encoded slash, or double-encoded as `%252e`: a single decode makes that
  *    the literal text `%2e`, but some servers decode twice and no API needs
- *    it); backslashes (`\`, `%5C`); control characters; `?` or `#` (`%3F`,
- *    `%23`); whitespace at either end of a segment; empty segments (`a//b`, a
- *    leading `/`); malformed percent-encoding; anything a URL parser would
- *    rewrite.
+ *    it); backslashes (`\`, `%5C`); control characters; empty segments
+ *    (`a//b`, a leading `/`); malformed percent-encoding; anything a URL
+ *    parser would rewrite.
  *  - Encoded slashes (`%2F`) are separators, decoded to `/` before matching
  *    and forwarding (how the proxy has always treated them), except on hosts
  *    whose API takes them as data inside one segment (GitLab's
  *    `projects/group%2Fproject`), where they stay encoded in both views.
- *  - Everything else is forwarded exactly as the client encoded it: `%20`,
- *    `%40`, UTF-8, a trailing slash.
+ *  - Everything else is forwarded exactly as the client encoded it: `%23`,
+ *    `%3F`, `%20` (including boundary spaces), `%40`, UTF-8, a trailing slash.
+ *    Encoded data never becomes query/fragment syntax or trimmable whitespace
+ *    when `fetch` parses the URL. Additional upstream decoding or trimming is
+ *    outside this URL-parser guarantee.
  */
 
 export type TargetPath =
@@ -72,8 +74,6 @@ function hidesDotSegment(raw: string): boolean {
 function segmentError(raw: string, decoded: string): string | null {
   if (hasControlCharacter(decoded)) return 'control character in a path segment'
   if (decoded.includes('\\')) return 'backslash in a path segment'
-  if (decoded.includes('?') || decoded.includes('#')) return 'encoded "?" or "#" in a path segment'
-  if (/^\s|\s$/.test(decoded)) return 'whitespace at the start or end of a path segment'
   if (hidesDotSegment(raw)) return '"." or ".." path segment'
   return null
 }
@@ -129,7 +129,9 @@ export function canonicalizeTargetPath(rawTail: string, targetHost: string): Tar
   if (!isStableUrlPath(encodedPath)) return fail('the path is not in canonical URL form')
 
   const path = segments
-    .map((segment) => segment.replace(/%/g, '%25').replace(/\//g, '%2F'))
+    .map((segment) => segment
+      .replace(/[%/#?]/g, encodeURIComponent)
+      .replace(/^\s+|\s+$/g, encodeURIComponent))
     .join('/')
   return { ok: true, path, encodedPath }
 }

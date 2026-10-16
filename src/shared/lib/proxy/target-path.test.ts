@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { once } from 'node:events'
+import { createServer } from 'node:http'
 import { canonicalizeTargetPath, rawRouteTail, type TargetPath } from './target-path'
 
 const ROUTE = '/api/proxy/:agentSlug/:accountId/:rest{.+}'
@@ -28,6 +30,13 @@ describe('canonicalizeTargetPath', () => {
     ['www.googleapis.com/calendar/v3/calendars/me%40example.com/events', 'calendar/v3/calendars/me@example.com/events', 'calendar/v3/calendars/me%40example.com/events'],
     // Interior spaces (Airtable table names) stay encoded upstream.
     ['api.airtable.com/v0/appX/My%20Table', 'v0/appX/My Table', 'v0/appX/My%20Table'],
+    // Encoded URL delimiters are path data in both views.
+    ['api.github.com/repos/o/r/contents/C%23/Program.cs', 'repos/o/r/contents/C%23/Program.cs', 'repos/o/r/contents/C%23/Program.cs'],
+    ['api.example.com/files/question%3fmark.txt', 'files/question%3Fmark.txt', 'files/question%3fmark.txt'],
+    // Boundary whitespace stays visible and cannot be trimmed from the URL.
+    ['api.example.com/files/%20index.ts%20', 'files/%20index.ts%20', 'files/%20index.ts%20'],
+    ['api.example.com/files/%20%20', 'files/%20%20', 'files/%20%20'],
+    ['api.example.com/files/%C2%A0index.ts%E3%80%80', 'files/%C2%A0index.ts%E3%80%80', 'files/%C2%A0index.ts%E3%80%80'],
     // Non-ASCII is encoded by the URL parser and decoded for matching.
     ['api.notion.com/v1/search/été', 'v1/search/été', 'v1/search/%C3%A9t%C3%A9'],
     // A trailing slash is significant (Sentry) and is preserved.
@@ -41,6 +50,7 @@ describe('canonicalizeTargetPath', () => {
     ['api.example.com/discounts/100%25', 'discounts/100%25', 'discounts/100%25'],
     // Double encoding is literal text after the one decode servers perform.
     ['api.example.com/notes/%252F', 'notes/%252F', 'notes/%252F'],
+    ['api.example.com/files/C%2523%253F%2520', 'files/C%2523%253F%2520', 'files/C%2523%253F%2520'],
     // GitLab reads %2F as data inside one segment: kept encoded in both views.
     ['gitlab.com/api/v4/projects/group%2Fproject/issues', 'api/v4/projects/group%2Fproject/issues', 'api/v4/projects/group%2Fproject/issues'],
     ['gitlab.com/api/v4/projects/1/repository/files/src%2Findex%2Ets/raw', 'api/v4/projects/1/repository/files/src%2Findex.ts/raw', 'api/v4/projects/1/repository/files/src%2Findex%2Ets/raw'],
@@ -52,6 +62,12 @@ describe('canonicalizeTargetPath', () => {
     const result = accepted(tail)
     expect(result.path).toBe(path)
     expect(result.encodedPath).toBe(encodedPath)
+    const upstream = new URL(`https://${result.host}/${encodedPath}?q=%23`)
+    expect(upstream.pathname).toBe(`/${encodedPath}`)
+    expect(upstream.search).toBe('?q=%23')
+    expect(upstream.hash).toBe('')
+    expect(canonicalizeTargetPath(`${result.host}${upstream.pathname}`, result.host))
+      .toEqual({ ok: true, path, encodedPath })
   })
 
   it.each([
@@ -66,23 +82,17 @@ describe('canonicalizeTargetPath', () => {
     ['gmail.googleapis.com/gmail/v1/users/me/drafts/%252e%252e%252Fmessages/send', '"." or ".." path segment'],
     ['gitlab.com/api/v4/projects/group%2F..%2Fother/issues', '"." or ".." path segment'],
     ['gitlab.com/api/v4/projects/group%2F%2E%2E/issues', '"." or ".." path segment'],
+    ['api.example.com/files/C%23/%252e%252e/private', '"." or ".." path segment'],
     // Backslashes, which URL parsers and some servers read as "/".
     ['gmail.googleapis.com/gmail/v1/users/me/drafts%5C..%5Cmessages%5Csend', 'backslash in a path segment'],
     ['gmail.googleapis.com/gmail/v1/users/me/drafts%5Cmessages/send', 'backslash in a path segment'],
     ['gmail.googleapis.com/gmail/v1/users/me/drafts/%255C..%255Cmessages/send', '"." or ".." path segment'],
-    // Query and fragment delimiters smuggled into the path.
-    ['gmail.googleapis.com/gmail/v1/users/me/messages/send%3F', 'encoded "?" or "#" in a path segment'],
-    ['gmail.googleapis.com/gmail/v1/users/me/messages/send%3Fx=1', 'encoded "?" or "#" in a path segment'],
-    ['gmail.googleapis.com/gmail/v1/users/me/messages/send%23', 'encoded "?" or "#" in a path segment'],
     // Control characters, which URL parsers strip.
     ['gmail.googleapis.com/gmail/v1/users/me/messages/send%09', 'control character in a path segment'],
     ['gmail.googleapis.com/gmail/v1/users/me/messages/se%0And', 'control character in a path segment'],
     ['gmail.googleapis.com/gmail/v1/users/me/messages/send%0D', 'control character in a path segment'],
     ['gmail.googleapis.com/gmail/v1/users/me/messages/send%00', 'control character in a path segment'],
     ['gmail.googleapis.com/gmail/v1/users/me/messages/send%7F', 'control character in a path segment'],
-    // Whitespace that a server could trim.
-    ['gmail.googleapis.com/gmail/v1/users/me/messages/send%20', 'whitespace at the start or end of a path segment'],
-    ['gmail.googleapis.com/gmail/v1/users/me/messages/%20send', 'whitespace at the start or end of a path segment'],
     // Empty segments, which servers commonly collapse.
     ['gmail.googleapis.com/gmail/v1/users/me/messages//send', 'empty path segment ("//")'],
     ['gmail.googleapis.com//gmail/v1/users/me/messages/send', 'empty path segment ("//")'],
@@ -105,6 +115,9 @@ describe('canonicalizeTargetPath', () => {
     'gmail.googleapis.com/gmail/v1/users/me/messages/se\tnd',
     'gmail.googleapis.com/gmail/v1/users/me/messages/se nd',
     'gmail.googleapis.com/gmail/v1/users/me/messages/{send}',
+    'gmail.googleapis.com/gmail/v1/users/me/messages/send?x=1',
+    'gmail.googleapis.com/gmail/v1/users/me/messages/send#fragment',
+    'gmail.googleapis.com/gmail/v1/users/me/messages/send ',
   ])('fails closed on raw input a URL parser would rewrite: %s', (rawTail) => {
     // These never survive request parsing, but the canonicaliser does not
     // rely on that: anything a URL parser would change is rejected.
@@ -120,6 +133,36 @@ describe('canonicalizeTargetPath', () => {
   it('reports the raw path on rejection, for the audit log', () => {
     const result = canonicalize('gmail.googleapis.com/gmail/v1/users/me/drafts/%252e%252e/messages/send')
     expect(result).toMatchObject({ ok: false, rawPath: 'gmail/v1/users/me/drafts/%252e%252e/messages/send' })
+  })
+
+  it('preserves encoded path data when fetch sends a real HTTP request', async () => {
+    const server = createServer((req, res) => res.end(req.url))
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Missing test server port')
+      for (const path of [
+        'files/C%23/Program.cs',
+        'files/question%3fmark.txt',
+        'files/%20index.ts%20',
+        'files/C%2523%253F%2520',
+        'gmail/v1/users/me/messages/send%23',
+        'gmail/v1/users/me/messages/send%3Fx=1',
+        'gmail/v1/users/me/messages/send%20',
+      ]) {
+        const { encodedPath } = accepted(`api.example.com/${path}`)
+        const query = '?ref=main&q=%23'
+        const response = await fetch(`http://127.0.0.1:${address.port}/${encodedPath}${query}`)
+        // The receiver observes the original path and the separate query.
+        expect(await response.text()).toBe(`/${path}${query}`)
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+        server.closeAllConnections()
+      })
+    }
   })
 
   it.each([

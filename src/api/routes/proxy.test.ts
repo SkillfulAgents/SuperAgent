@@ -1327,11 +1327,8 @@ describe('proxy target path canonicalisation', () => {
     'gmail/v1/users/me/drafts/%252E./messages/send',
     'gmail/v1/users/me/drafts%2F..%2Fmessages/send',
     'gmail/v1/users/me/drafts%5C..%5Cmessages%5Csend',
-    'gmail/v1/users/me/messages/send%3F',
-    'gmail/v1/users/me/messages/send%23',
     'gmail/v1/users/me/messages/send%09',
     'gmail/v1/users/me/messages/se%00nd',
-    'gmail/v1/users/me/messages/send%20',
     'gmail/v1/users/me/messages//send',
   ])('an ambiguous spelling is rejected before policy and never forwarded: %s', async (path) => {
     const res = await send(`gmail.googleapis.com/${path}`)
@@ -1347,6 +1344,69 @@ describe('proxy target path canonicalisation', () => {
     expect(entry.targetHost).toBe('gmail.googleapis.com')
     expect(entry.targetPath).toBe(path)
     expect(entry.errorMessage).toBe(body.message)
+  })
+
+  it.each(['send%3F', 'send%3Fx=1', 'send%23', 'send%20', '%20send'])(
+    'preserves encoded path data instead of rewriting it into /send: %s', async (ending) => {
+      const path = `gmail/v1/users/me/messages/${ending}`
+      const res = await send(`gmail.googleapis.com/${path}?q=%23`)
+      expect(res.status).toBe(200)
+      expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', `/${path}`, 'gmail.googleapis.com')
+      expect(mockResolveApiPolicy).toHaveBeenCalledWith(
+        'acc-123', expect.objectContaining({ matched: false, scopes: [] }), 'user-1', 'gmail',
+      )
+      const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+      expect(targetUrl).toBe(`https://gmail.googleapis.com/${path}?q=%23`)
+      const forwarded = new URL(targetUrl)
+      expect(forwarded.pathname).toBe(`/${path}`)
+      expect(forwarded.search).toBe('?q=%23')
+      expect(forwarded.hash).toBe('')
+      expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(path)
+    },
+  )
+
+  it.each([
+    ['C%23/Program.cs', 'C%23/Program.cs'],
+    ['question%3fmark.txt', 'question%3Fmark.txt'],
+    ['%20index.ts%20', '%20index.ts%20'],
+    ['C%2523%253F%2520', 'C%2523%253F%2520'],
+  ])('forwards a filename containing encoded path data: %s', async (file, canonicalFile) => {
+    useAccount('github')
+    const path = `repos/o/r/contents/${file}`
+    const canonicalPath = `repos/o/r/contents/${canonicalFile}`
+    const res = await send(`api.github.com/${path}?ref=main`, 'GET')
+    expect(res.status).toBe(200)
+    expect(mockMatchScopes).toHaveBeenCalledWith('github', 'GET', `/${canonicalPath}`, 'api.github.com')
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://api.github.com/${path}?ref=main`)
+    expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(canonicalPath)
+  })
+
+  it('still applies a blocked scope to a filename containing encoded path data', async () => {
+    useAccount('github')
+    mockResolveApiPolicy.mockImplementation(async (_accountId: string, match: { scopes: string[] }) => ({
+      decision: match.scopes.includes('repo') ? 'block' : 'allow',
+      matchedScopes: match.scopes,
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    }))
+    const res = await send('api.github.com/repos/o/r/contents/%20C%23%20', 'GET')
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
+  it('keeps delimiters and boundary whitespace escaped in review prompts', async () => {
+    useAccount('github')
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review', matchedScopes: ['repo'], scopeDescriptions: {}, resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+    const path = 'repos/o/r/contents/%20C%23%3F%20'
+    const res = await send(`api.github.com/${path}`, 'GET')
+    expect(res.status).toBe(200)
+    expect(mockRequestReview.mock.calls[0][0].targetPath).toBe(path)
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://api.github.com/${path}`)
+    expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(path)
   })
 
   it('forwards encoded characters as sent and matches them decoded', async () => {
