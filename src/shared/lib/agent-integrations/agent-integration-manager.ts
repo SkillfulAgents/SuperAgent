@@ -1578,7 +1578,14 @@ export class AgentIntegrationManager {
         // client, and submit returns false for a review that is
         // settled, of another kind, or another agent's.
         const reviews = agentRegistry.get(integration.agentSlug).inputs.reviews
-        const proposal = reviews.pending().find((review) => review.id === reviewId)?.ruleProposal
+        // Read before submitting (the review is gone after), only to audit a
+        // rule decision — never in the way of the decision itself.
+        let proposal: ReturnType<typeof reviews.pending>[number]['ruleProposal']
+        try {
+          proposal = reviews.pending().find((review) => review.id === reviewId)?.ruleProposal
+        } catch {
+          proposal = undefined
+        }
         const settled = reviews.submit(reviewId, decision as 'allow' | 'deny')
         if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
         else if (proposal) {
