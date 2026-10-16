@@ -937,7 +937,7 @@ export async function validateSkillsetUrl(
 // Background refreshes (opening an agent) reuse a cache refreshed this recently.
 // Each public-skillset refresh spends one of GitHub's 60 unauthenticated API
 // calls per hour, shared by everyone behind the same IP.
-export const BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS = 5 * 60_000
+export const BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS = 15 * 60_000
 const lastSkillsetRefreshAt = new Map<string, number>()
 
 /**
