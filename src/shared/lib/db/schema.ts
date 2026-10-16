@@ -439,9 +439,11 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
   ruleVersionId: text('rule_version_id'), // proxy rule version that allowed the request
   ruleOutcomes: text('rule_outcomes'), // JSON RuleEvaluation[] for every rule that ran
+  toolUseId: text('tool_use_id'), // the Bash call that sent the request
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
+  toolUseIdIdx: index('proxy_audit_log_tool_use_id_idx').on(table.toolUseId),
   accountIdCreatedAtIdx: index('proxy_audit_log_account_id_created_at_idx').on(table.accountId, table.createdAt),
   // Covers the home-graph usage aggregation (GROUP BY agent×account, with an
   // owner join on account_id) — the table grows with every proxied call, so

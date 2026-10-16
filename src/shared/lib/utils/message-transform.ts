@@ -10,6 +10,7 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import type { ProxyCallOutcome } from '@shared/lib/proxy/call-outcome'
 
 export interface TransformedThinkingBlock {
   /** Stable live↔persisted identity when the SDK message id is available. */
@@ -37,6 +38,10 @@ export interface TransformedMessage {
     }
     /** The runtime's task id for a Bash call run in the background. */
     backgroundTaskId?: string
+    /** When the result entry was written. */
+    resultAt?: Date
+    /** What the connected-account proxy saw for this call, attached at serve time (see agents route). */
+    proxyOutcome?: ProxyCallOutcome
   }>
   createdAt: Date
   sender?: {
@@ -413,7 +418,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // First pass: build a map of tool_use_id -> result
   const toolResults = new Map<
     string,
-    { content: string; isError: boolean; toolUseResult?: JsonlMessageEntry['toolUseResult'] }
+    { content: string; isError: boolean; toolUseResult?: JsonlMessageEntry['toolUseResult']; at: Date }
   >()
 
   for (const entry of messageEntries) {
@@ -428,6 +433,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           content: block.content || '',
           isError: block.is_error || false,
           toolUseResult: entry.toolUseResult,
+          at: new Date(entry.timestamp),
         })
       }
     }
@@ -597,6 +603,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
             result: resultContent,
             isError: toolResult?.isError,
             subagent,
+            ...(toolResult && { resultAt: toolResult.at }),
             ...(typeof backgroundTaskId === 'string' && backgroundTaskId ? { backgroundTaskId } : {}),
           })
         }

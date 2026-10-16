@@ -95,6 +95,13 @@ describe('ToolCallItem', () => {
       expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
     })
 
+    it('marks a call the proxy failed as an error even when the shell succeeded', () => {
+      const tc = createToolCall({ result: 'null', proxyOutcome: { requests: 1, failed: 1, error: 'Not found' } })
+      const { container } = render(<ToolCallItem toolCall={tc} />)
+      expect(container.querySelector('.lucide-x')).not.toBeNull()
+      expect(container.querySelector('.lucide-check')).toBeNull()
+    })
+
     it('renders running status for tool with no result when session is active', () => {
       const tc = createToolCall({ result: undefined })
       render(

@@ -116,7 +116,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
+import { eq, and, inArray, isNotNull, desc, asc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -198,6 +198,7 @@ import {
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
+import { attachCallOutcomes, taggedCallIds } from '@shared/lib/proxy/call-outcome'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
@@ -2220,6 +2221,27 @@ async function annotateIntegrationMessagesBestEffort(
   }
 }
 
+async function attachProxyOutcomesBestEffort(transformed: TransformedItem[], agentSlug: string): Promise<void> {
+  try {
+    const toolUseIds = taggedCallIds(transformed)
+    if (toolUseIds.length === 0) return
+    const records = await db
+      .select({
+        toolUseId: proxyAuditLog.toolUseId,
+        statusCode: proxyAuditLog.statusCode,
+        errorMessage: proxyAuditLog.errorMessage,
+        policyDecision: proxyAuditLog.policyDecision,
+        createdAt: proxyAuditLog.createdAt,
+      })
+      .from(proxyAuditLog)
+      .where(and(eq(proxyAuditLog.agentSlug, agentSlug), inArray(proxyAuditLog.toolUseId, toolUseIds)))
+      .orderBy(asc(proxyAuditLog.createdAt))
+    attachCallOutcomes(transformed, records)
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'attach-proxy-outcomes' }, level: 'warning' })
+  }
+}
+
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
   agentSlug: string,
@@ -2227,6 +2249,7 @@ async function annotateAndRecoverMessages(
 ): Promise<void> {
   await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+  await attachProxyOutcomesBestEffort(transformed, agentSlug)
 
   const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
   if (settledRequests.size > 0) {
@@ -2398,6 +2421,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+    await attachProxyOutcomesBestEffort(transformed, agentSlug)
 
     // Parallel tool calls hold every sibling's transcript result until the
     // LAST one resolves, so a request the user already decided still looks

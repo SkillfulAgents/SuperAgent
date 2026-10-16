@@ -41,7 +41,7 @@ function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallSt
     // Otherwise it was interrupted/cancelled (or is from a historical interrupted turn).
     return isSessionActive ? 'running' : 'cancelled'
   }
-  if (toolCall.isError) return 'error'
+  if (toolCall.isError || toolCall.proxyOutcome?.error) return 'error'
   return 'success'
 }
 
@@ -326,6 +326,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
               result={resultStr}
               isError={toolCall.isError ?? false}
               agentSlug={agentSlug}
+              proxyOutcome={toolCall.proxyOutcome}
             />
           </>
         )}
