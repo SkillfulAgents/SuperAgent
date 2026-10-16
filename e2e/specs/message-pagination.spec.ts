@@ -158,6 +158,89 @@ async function seededSession(
 }
 
 test.describe('transcript pagination', () => {
+  for (const failure of ['network', 'server'] as const) {
+    test(`a short page can retry older history after ${failure} failures exhaust automatic loading`, async ({
+      page,
+      request,
+    }, testInfo) => {
+      test.setTimeout(90_000)
+      await page.setViewportSize({ width: 1280, height: 1200 })
+      const agent = await createAgent(request, uniqueName(testInfo, `Pagination Retry ${failure}`))
+      const session = await seededSession(request, agent)
+      let olderRequests = 0
+      let failOlder = true
+      let releaseOlder: (() => void) | undefined
+      const olderGate = new Promise<void>((resolve) => { releaseOlder = resolve })
+
+      await page.route(`**/sessions/${session.id}/messages?*`, async (route) => {
+        const { params } = splitUrl(route.request().url())
+        if (params.has('cursor')) {
+          olderRequests++
+          if (failOlder) {
+            // Let the loading state commit before answering. An immediate
+            // mock failure can batch true/false into one render in WebKit,
+            // stopping after one attempt instead of exercising the cap.
+            await expect(page.getByRole('status').filter({ hasText: 'Loading older messages' })).toBeVisible()
+            if (failure === 'network') await route.abort('connectionfailed')
+            else await route.fulfill({ status: 503, json: { error: 'Temporarily unavailable' } })
+          } else {
+            await olderGate
+            await route.continue()
+          }
+        } else if (!params.has('after')) {
+          // A byte budget can return just a couple of items. Ask the real
+          // reader for that shape without a multi-MB fixture; its cursor and
+          // every older page still come from the real server.
+          const response = await route.fetch({ url: route.request().url().replace(/limit=\d+/, 'limit=2') })
+          await route.fulfill({ response })
+        } else await route.continue()
+      })
+
+      await page.goto(`/agents/${agent.slug}/sessions/${session.id}`)
+      await expect.poll(() => olderRequests, { timeout: 30_000 }).toBe(3)
+      await expect(page.getByRole('status').filter({ hasText: 'Loading older messages' })).toHaveCount(0)
+      const metrics = await messageListMetrics(page)
+      expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.clientHeight + 1)
+      await expect(page.getByText(NEWEST, { exact: true })).toHaveCount(0)
+
+      // Exhaustion must stay bounded; a user retry is available even if it
+      // also fails, without restarting a burst of automatic attempts.
+      const loadEarlier = page.getByRole('button', { name: 'Load earlier messages' })
+      await expect(loadEarlier).toBeVisible()
+      await loadEarlier.click()
+      await expect.poll(() => olderRequests).toBe(4)
+      await expect(loadEarlier).toBeVisible()
+      await expect(page.waitForRequest((req) => isOlderPageRequest(req.url()), { timeout: 750 })).rejects.toThrow()
+
+      // The service recovers without changing any messages. Refreshing the
+      // current page is not enough to change the automatic fill counter.
+      failOlder = false
+      await Promise.all([
+        page.waitForResponse((response) => {
+          const { path, params } = splitUrl(response.url())
+          return path.endsWith(`/sessions/${session.id}/messages`) && !params.has('cursor') && response.ok()
+        }),
+        page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))),
+      ])
+      expect(olderRequests).toBe(4)
+      await expect(loadEarlier).toBeVisible()
+
+      // Keyboard activation must work too. While its request is held, the
+      // button is replaced by the loading status and cannot double-submit.
+      await loadEarlier.focus()
+      await page.keyboard.press('Enter')
+      await expect.poll(() => olderRequests).toBe(5)
+      await expect(loadEarlier).toHaveCount(0)
+      await expect(page.getByRole('status').filter({ hasText: 'Loading older messages' })).toBeVisible()
+      releaseOlder!()
+      await expect(page.getByText(NEWEST, { exact: true })).toHaveCount(1)
+      await expect(page.getByRole('status').filter({ hasText: 'Loading older messages' })).toHaveCount(0)
+      const filled = await messageListMetrics(page)
+      expect(filled.scrollHeight).toBeGreaterThan(filled.clientHeight)
+      expect(olderRequests).toBe(5)
+    })
+  }
+
   test('first load serves the trailing page, not the whole transcript', async ({
     page,
     request,

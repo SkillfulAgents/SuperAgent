@@ -2614,6 +2614,18 @@ describe('MessageList', () => {
       mockMessagesData.isFetchingOlder = true
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.getByRole('status')).toHaveTextContent('Loading older messages')
+      expect(screen.queryByRole('button', { name: 'Load earlier messages' })).not.toBeInTheDocument()
+    })
+
+    it('offers an explicit history load only when the server has older messages', () => {
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeInTheDocument()
+
+      mockMessagesData.hasOlder = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByRole('button', { name: 'Load earlier messages' })).not.toBeInTheDocument()
     })
 
     it('hides the loading indicator once the older page has landed', () => {
@@ -2640,7 +2652,7 @@ describe('MessageList', () => {
     // Geometry derives from the mounted row count, so the restore effect only
     // sees scrollHeight growth at the commit where the prepended rows mount.
     // Fixed-geometry mocks cannot catch a guard consumed one commit too early.
-    it('compensates scrollTop when an older page prepends above the viewport', () => {
+    it.each(['scroll', 'button'] as const)('compensates scrollTop when %s loads an older page above the viewport', (trigger) => {
       const base = Array.from({ length: 300 }, (_, i) =>
         createUserMessage({ content: { text: `row${i}` } })
       )
@@ -2666,7 +2678,8 @@ describe('MessageList', () => {
         set: (v: number) => { top = v },
       })
 
-      fireEvent.scroll(el)
+      if (trigger === 'scroll') fireEvent.scroll(el)
+      else fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
       expect(mockFetchOlder).toHaveBeenCalledOnce()
       expect(onBeforePrepend).toBeDefined()
 
@@ -2817,6 +2830,33 @@ describe('MessageList', () => {
         rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
         await flush()
         expect(mockFetchOlder).toHaveBeenCalledTimes(4)
+      })
+
+      it('allows explicit retries after automatic filling is exhausted without restarting the loop', async () => {
+        geometry = { scrollHeight: 300, clientHeight: 800 }
+        mockFetchOlder.mockResolvedValue(false)
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = true
+        const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        const finishFetch = async () => {
+          mockMessagesData.isFetchingOlder = true
+          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          mockMessagesData.isFetchingOlder = false
+          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          await flush()
+        }
+        await flush()
+        for (let i = 0; i < 4; i++) await finishFetch()
+        expect(mockFetchOlder).toHaveBeenCalledTimes(3)
+
+        // The transcript still cannot scroll. The reader can retry even if
+        // reconnecting/refetching leaves the same three visible messages.
+        for (let attempt = 4; attempt <= 5; attempt++) {
+          fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+          await flush()
+          await finishFetch()
+          expect(mockFetchOlder).toHaveBeenCalledTimes(attempt)
+        }
       })
     })
   })
