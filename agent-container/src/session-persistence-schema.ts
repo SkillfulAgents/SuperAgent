@@ -22,6 +22,7 @@ export const sessionMetadataSchema = z
     modelContextWindows: modelContextWindowsSchema,
     webSearchProvider: z.string().optional(),
     webFetchProvider: z.string().optional(),
+    availableIntegrationFamilies: z.array(z.string()).optional(),
     maxOutputTokens: z.number().optional(),
     maxThinkingTokens: z.number().optional(),
     maxTurns: z.number().optional(),

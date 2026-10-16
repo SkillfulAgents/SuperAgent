@@ -773,6 +773,30 @@ if (__RENDER_TRACKING__) {
   (AgentMenuItem as any).whyDidYouRender = true
 }
 
+/**
+ * `ids`, keeping the previous array's identity while the ids and their order
+ * are unchanged. dnd-kit's SortableContext keys its context value on the
+ * identity of `items`, and a new value re-renders every `useSortable` row
+ * beneath it — on each agents refetch, every row in the section, since the
+ * list is rebuilt whenever any agent changes.
+ */
+function useSortableIds(ids: string[]): string[] {
+  const key = ids.join('\n')
+  return useMemo(() => (key ? key.split('\n') : []), [key])
+}
+
+/** One section's sortable member list. */
+function SectionAgentList({ agents }: { agents: ApiAgent[] }) {
+  const items = useSortableIds(agents.map((a) => a.slug))
+  return (
+    <SortableContext items={items} strategy={verticalListSortingStrategy}>
+      {agents.map((agent) => (
+        <SortableAgentMenuItem key={agent.slug} agent={agent} />
+      ))}
+    </SortableContext>
+  )
+}
+
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const { data: platformCountData } = usePlatformUnreadCount()
@@ -1115,6 +1139,7 @@ export function AppSidebar() {
     () => buildFolderSections(orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder),
     [orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder]
   )
+  const sectionSortableIds = useSortableIds(sections.map((s) => sortableIdForFolder(s.folder.id)))
   const hasFolders = (effectiveFolders?.length ?? 0) > 0
 
   // Drag handlers fire between renders, so they read the sections through a
@@ -1774,7 +1799,7 @@ export function AppSidebar() {
                         list of their own.
                       */}
                       <SortableContext
-                        items={sections.map((s) => sortableIdForFolder(s.folder.id))}
+                        items={sectionSortableIds}
                         strategy={topLevelStrategy}
                       >
                         {sections.map((section) => (
@@ -1798,14 +1823,7 @@ export function AppSidebar() {
                             onDelete={() => handleDeleteFolder(section.folder.id)}
                             onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
                           >
-                            <SortableContext
-                              items={section.agents.map((a) => a.slug)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              {section.agents.map((agent) => (
-                                <SortableAgentMenuItem key={agent.slug} agent={agent} />
-                              ))}
-                            </SortableContext>
+                            <SectionAgentList agents={section.agents} />
                           </AgentFolderBlock>
                         ))}
                       </SortableContext>

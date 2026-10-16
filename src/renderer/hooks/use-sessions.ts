@@ -6,7 +6,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
-import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -21,12 +21,11 @@ export type { ApiSession }
 // (`{name}-{id}`) while the sidebar, mutations and SSE invalidations all key on
 // the bare id. Resolving every slug form through the loaded agents list before it
 // reaches a query key is what stops the same session list/entry from splitting in
-// two (one stale half that invalidations never reach). `useAgents` is shared
-// (deduped) so this adds no real fetch cost.
+// two (one stale half that invalidations never reach). The agents query is
+// shared (deduped) so this adds no real fetch cost, and the resolution is a
+// narrow subscription: every sidebar row calls `useSessions`, collapsed or not.
 function useResolvedAgentSlug(agentSlug: string | null): string | null {
-  const { data: agents } = useAgents()
-  if (!agentSlug) return null
-  return resolveRouteAgentId(agentSlug, agents) ?? agentSlug
+  return useResolvedAgentId(agentSlug ?? undefined) ?? null
 }
 
 /** One-shot resolution for mutation invalidations, reading the cached agents list. */

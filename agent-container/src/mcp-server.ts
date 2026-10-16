@@ -59,6 +59,7 @@ import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
+import { meetingTools } from './tools/meetings/meeting-tools'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -179,6 +180,21 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       addChatIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
+  })
+}
+
+/**
+ * Meetings (server name 'meetings' → mcp__meetings__join_meeting and friends).
+ * The tools call the host's /api/x-agent/meetings routes, which set the agent's
+ * meeting integration up on first use. Registered only when the host reports
+ * the meeting family as available (`availableIntegrationFamilies` on the
+ * session), so a tool whose route would refuse is never listed.
+ */
+export function createMeetingsMcpServer() {
+  return createSdkMcpServer({
+    name: 'meetings',
+    version: '1.0.0',
+    tools: meetingTools,
   })
 }
 

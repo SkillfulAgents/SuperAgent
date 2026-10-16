@@ -604,6 +604,21 @@ describe('generateSystemPrompt rendering', () => {
     if (fetch) expect(catalog).not.toContain('`WebFetch`')
   })
 
+  // The meeting tools exist only when the host can run meeting bots; the prompt
+  // must not advertise them otherwise (the catalog bullet and the whole section).
+  it.each([
+    { families: undefined, advertised: false },
+    { families: [], advertised: false },
+    { families: ['chat'], advertised: false },
+    { families: ['chat', 'meeting'], advertised: true },
+  ])('meetings section follows host availability: families=$families', ({ families, advertised }) => {
+    const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, families)
+    expect(out.includes('## Meetings')).toBe(advertised)
+    expect(out.includes('- **Meetings**')).toBe(advertised)
+    expect(out.includes('mcp__meetings__join_meeting')).toBe(advertised)
+    expect(buildSystemPromptVars(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, families).meetings).toBe(advertised)
+  })
+
   // Future-proofing the template <-> code seam: the template is edited often,
   // and these guard the drift that would otherwise fail silently. Tags inside a
   // list section resolve against the list's element, then outward through the

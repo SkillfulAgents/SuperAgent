@@ -131,6 +131,12 @@ connection/settings panels; shared pages do not import concrete provider panels.
 It lists every account owned by the caller, its capabilities, active external session
 IDs, and any integration-owned MCP identity/server/tools. Chat operations consume
 chat capabilities; MCP providers use their named server. Credentials are excluded.
+Each family with agent-side operations has its own x-agent routes behind the same
+proxy token: chat under `/api/x-agent/chat`, meetings under `/api/x-agent/meetings`
+(see [meeting-integrations.md](meeting-integrations.md)). A family route may set the
+caller's installation up on first use when the provider's setup opts in with
+`allowAgentCreation`; it runs the family's `IntegrationTool`s with `source: 'agent'`
+and must refuse tools exposed to management only.
 
 ## Provider setup
 

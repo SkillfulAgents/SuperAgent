@@ -1451,6 +1451,16 @@ function getOrCreateEventSource(
           ...next, turnOutcome: outcome,
           ...((!recovery || !next.isActive) && { streamingMessage: outcome.responseText, error: outcome.error }),
         })
+        // A stream that opens after the turn already ended — common for a new
+        // session whose first turn is quick — gets no session_idle, only the
+        // connected handler's single refetch. That refetch can beat the
+        // transcript write exactly as the idle one can, and nothing retries it:
+        // the turn's tool calls stay missing and the user's own message reads
+        // as undelivered until the safety-net poll. Reconcile against the
+        // outcome's text the same bounded way the idle handler does.
+        if (data.type === 'connected' && data.isActive !== true && outcome.status === 'completed') {
+          void reconcileMessagesAfterIdle(sessionId, queryClient, outcome.responseText)
+        }
       } else if (next && data.turnOutcome === null) {
         streamStates.set(sessionId, { ...next, turnOutcome: null })
       }
