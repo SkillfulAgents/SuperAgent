@@ -5,8 +5,19 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
 
+const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
+  useRouter: () => ({ state: { location: { pathname: '/agents/my-agent/sessions/s1', searchStr: '' } } }),
+}))
+
+let mockAccounts: unknown[] = []
+let mockMcps: unknown[] = []
+vi.mock('@renderer/hooks/use-connected-accounts', () => ({
+  useAgentConnectedAccounts: () => ({ data: { accounts: mockAccounts } }),
+}))
+vi.mock('@renderer/hooks/use-remote-mcps', () => ({
+  useAgentRemoteMcps: () => ({ data: { mcps: mockMcps } }),
 }))
 
 const mockApiFetch = vi.fn()
@@ -149,5 +160,75 @@ describe('ProxyReviewRequestItem request body', () => {
     unmount()
     renderCard({})
     expect(screen.queryByTestId('proxy-review-body-toggle')).toBeNull()
+  })
+})
+
+describe('ProxyReviewRequestItem connection link', () => {
+  beforeEach(() => {
+    mockNavigate.mockReset()
+    mockAccounts = []
+    mockMcps = []
+  })
+
+  it.each([
+    { reviewType: 'api' as const, detail: 'account-acct-or-mcp' },
+    { reviewType: 'mcp' as const, detail: 'mcp-acct-or-mcp' },
+  ])('opens the $reviewType connection page and returns to the card', async ({ reviewType, detail }) => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    mockMcps = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-connection-link'))
+
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'my-agent' },
+      search: { detail, source: 'home', from: '/agents/my-agent/sessions/s1' },
+    })
+  })
+
+  it('opens the connection page from the header gear and the Allow menu', async () => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-permissions-btn'))
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-edit-permissions'))
+
+    expect(mockNavigate).toHaveBeenCalledTimes(2)
+    for (const [arg] of mockNavigate.mock.calls) {
+      expect(arg).toMatchObject({ search: { detail: 'account-acct-or-mcp' } })
+    }
+  })
+
+  it('links the toolkit name on the answered card', async () => {
+    mockApiFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-allow-once-menu-btn'))
+    await screen.findByTestId('proxy-review-completed')
+    await user.click(screen.getByTestId('proxy-review-connection-link'))
+
+    expect(mockNavigate).toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ detail: 'account-acct-or-mcp' }) }))
+  })
+
+  it('links the toolkit name on a read-only card too', () => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api', readOnly: true })
+
+    expect(screen.getByTestId('proxy-review-connection-link')).toHaveTextContent('Railway')
+  })
+
+  it.each([
+    { case: 'another member owns', accounts: [{ kind: 'connected-account', toolkitSlug: 'railway', mappingId: 'm1' }] },
+    { case: 'is no longer on the agent', accounts: [{ id: 'other-account' }] },
+  ])('renders no link for a connection that $case', ({ accounts }) => {
+    mockAccounts = accounts
+    renderCard({ reviewType: 'api' })
+
+    expect(screen.queryByTestId('proxy-review-connection-link')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-permissions-btn')).not.toBeInTheDocument()
+    expect(screen.getByText('Railway')).toBeInTheDocument()
   })
 })
