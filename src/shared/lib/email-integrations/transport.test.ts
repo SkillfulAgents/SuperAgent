@@ -107,6 +107,11 @@ it('waits for domain readiness before consuming email', async () => {
   expect(connector.isConnected()).toBe(false)
   expect(transport.json.mock.calls.some(([path]) => path.startsWith('/events'))).toBe(false)
 })
+it('fails with the gateway error when domain setup has failed', async () => {
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : { status: 'active', domain: { status: 'failed', error: 'provider_http_403' } })
+  await expect(connector.connect()).rejects.toThrow('Email domain setup failed (provider_http_403). Contact support.')
+  expect(transport.watch).not.toHaveBeenCalled()
+})
 it('rejects a changed Platform identity before subscribing', async () => {
   transport.json.mockResolvedValue({ orgId: 'different', memberId: 'member' })
   await expect(connector.connect()).rejects.toThrow('owns this inbox')
