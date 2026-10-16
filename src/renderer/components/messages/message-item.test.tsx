@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
@@ -828,6 +828,12 @@ describe('MessageItem', () => {
     const fence = (source: string) => '```mermaid\n' + source + '\n```'
     const FLOW = fence('graph LR\n  Request --> Response')
 
+    // The diagram is a lazy chunk. Load it up front so the first test's
+    // findBy (1s) isn't racing a cold import on a busy CI worker.
+    beforeAll(async () => {
+      await import('./mermaid-diagram')
+    })
+
     it('renders a settled mermaid fence as a themed diagram', async () => {
       const msg = createAssistantMessage({ content: { text: `Here is the flow:\n\n${FLOW}` } })
       render(<MessageItem message={msg} />)
@@ -1011,6 +1017,11 @@ describe('MessageItem', () => {
   describe('math code fences', () => {
     const fence = (source: string) => '```math\n' + source + '\n```'
     const EULER = fence('e^{i\\pi} + 1 = 0')
+
+    // Same as the mermaid fences: preload the lazy chunk.
+    beforeAll(async () => {
+      await import('./math-block')
+    })
 
     it('renders a settled math fence as a display equation', async () => {
       const msg = createAssistantMessage({ content: { text: `Euler's identity:\n\n${EULER}` } })
