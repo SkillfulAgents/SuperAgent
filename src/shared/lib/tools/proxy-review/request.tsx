@@ -12,11 +12,22 @@ import { cn } from '@shared/lib/utils/cn'
 import { getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import type { Components } from 'react-markdown'
 import { Markdown } from '@renderer/components/ui/markdown'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
+
+// Endpoint descriptions come from API docs and carry inline Markdown
+// (`code`, [links](…)). The title renders them inline: no paragraph or block
+// wrappers inside a one-line heading.
+const Inline = ({ children }: { children?: React.ReactNode }) => <>{children}</>
+const TITLE_MARKDOWN: Components = {
+  p: Inline,
+  pre: Inline,
+  code: ({ children }) => <code className="rounded bg-muted px-1 py-px font-mono text-[0.9em]">{children}</code>,
+}
 
 // read is least privileged, destructive most — used to pick the minimal group
 // whose "allow all" still satisfies this request (resolver takes most-permissive).
@@ -216,7 +227,7 @@ function ScopeReviewRequestItem({
 
   return (
     <RequestItemShell
-      title={displayText || requestLabel}
+      title={displayText ? <Markdown components={TITLE_MARKDOWN}>{displayText}</Markdown> : requestLabel}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
