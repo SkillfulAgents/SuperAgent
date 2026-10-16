@@ -1,0 +1,27 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully navigated to example.com and retrieved the page title \"Example Domain\"\n  Bugs found:\n    - None - All features working as expected",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded Gamut homepage showing agent list with \"QA-20261016-183135-onqu\" agent visible in sidebar",
+    "Step 2: Clicked on \"QA-20261016-183135-onqu\" agent in sidebar — Successfully opened the agent configuration page with message input field",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered and visible in the input field",
+    "Step 4: Sent message using Cmd+Enter — Message sent successfully, new session created with ID 5152a7c1-6683-4997-ba8e-8ee540ed554a, agent began processing",
+    "Step 5: Waited for agent response (up to 3 minutes) — Agent completed work in 9 seconds, made 3 tool calls (ToolSearch, Open Browser, Close Browser), used 153,923 tokens",
+    "Step 6: Verified response mentions \"Example Domain\" — Response confirmed: \"The page title is 'Example Domain'. The page loaded normally, and I've closed the browser.\" Response successfully mentions the expected \"Example Domain\" text",
+    "Step 7: Examined tool call cards — Tool calls properly displayed showing:"
+  ],
+  "bugs": [
+    "None - All features working as expected"
+  ],
+  "durationMs": 84556,
+  "sessionId": "5b68280d-8928-4ac5-8d51-50219d66ff6a",
+  "cost": {
+    "inputTokens": 554,
+    "outputTokens": 12602,
+    "cacheCreationTokens": 100732,
+    "cacheReadTokens": 2033048,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.392784
+  }
+}
