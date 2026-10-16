@@ -131,7 +131,6 @@ export async function forkSession(
     name,
     createdAt: new Date(),
     lastActivityAt: new Date(),
-    messageCount: source.messageCount,
     isActive: false,
     forkedFromSessionId: sourceId,
     forkedFromSessionName: source.name,

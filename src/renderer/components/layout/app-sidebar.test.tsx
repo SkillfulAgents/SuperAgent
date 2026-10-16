@@ -394,7 +394,6 @@ function makeSession(overrides: Record<string, any> = {}) {
     id: 'session-1',
     agentSlug: 'test-agent',
     name: 'Session 1',
-    messageCount: 5,
     lastActivityAt: new Date(),
     createdAt: new Date(),
     isActive: false,

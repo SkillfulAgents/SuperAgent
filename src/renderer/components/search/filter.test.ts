@@ -28,7 +28,6 @@ function session(id: string, agentSlug: string, name: string, lastActivityAt?: D
     name,
     createdAt: new Date(0),
     lastActivityAt: lastActivityAt ?? new Date(0),
-    messageCount: 0,
     isActive: false,
     isAwaitingInput: false,
     hasUnreadNotifications: false,

@@ -282,7 +282,6 @@ describe('AgentHome', () => {
         name: 'Newer created session',
         createdAt: new Date('2026-08-25T12:00:00.000Z'),
         lastActivityAt: new Date('2026-08-25T12:00:00.000Z'),
-        messageCount: 1,
       },
       {
         id: 'recently-active',
@@ -290,7 +289,6 @@ describe('AgentHome', () => {
         name: 'Recently active session',
         createdAt: new Date('2026-08-24T12:00:00.000Z'),
         lastActivityAt: new Date('2026-08-26T12:00:00.000Z'),
-        messageCount: 2,
       },
     ]
 
@@ -319,7 +317,6 @@ describe('AgentHome', () => {
           name: 'Old but active session',
           createdAt: new Date('2026-08-17T12:00:00.000Z'),
           lastActivityAt: new Date('2026-08-27T11:00:00.000Z'),
-          messageCount: 2,
         },
       ]
 

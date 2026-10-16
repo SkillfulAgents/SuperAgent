@@ -372,7 +372,6 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
       name: s.name,
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
-      messageCount: s.messageCount,
       isRunning: actor.sessions.isActive(s.id),
     })),
     total: allSessions.length,

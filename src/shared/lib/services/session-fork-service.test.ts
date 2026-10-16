@@ -110,7 +110,6 @@ const source = {
   name: 'Pricing',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   lastActivityAt: new Date('2026-01-01T00:00:00Z'),
-  messageCount: 2,
 }
 
 const sourceMeta = {
