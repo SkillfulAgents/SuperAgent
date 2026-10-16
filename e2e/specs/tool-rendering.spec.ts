@@ -97,6 +97,19 @@ test.describe('Tool Call Rendering', () => {
     await expectToolCallExpanded(toolCall, 'Bash', true, terminal)
   })
 
+  test('turns a Bash row red when the proxy failed its request, though the shell succeeded', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Bash proxy outcome')
+
+    await sessionPage.sendMessage('look up a missing pull request through proxy')
+    await sessionPage.waitForInputEnabled(20000)
+
+    await sessionPage.expandLatestCompletedTurn(20000)
+    await sessionPage.expectToolCall('Bash', 20000)
+    const toggle = renderedToolCall(sessionPage, 'Bash').getByTestId('tool-call-toggle-Bash')
+    await expect(toggle).toContainText('GitHub')
+    await expect(toggle).toContainText('Not found')
+  })
+
   test('keeps a direct curl a Bash row and shows the site icon', async ({ page, request }, testInfo) => {
     const { sessionPage } = await setupToolTest(page, request, testInfo, 'Bash direct curl')
 

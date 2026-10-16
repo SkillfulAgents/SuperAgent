@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@renderer/components/ui/table'
-import type { RequestLogEntry } from '@shared/lib/types/request-log'
+import { POLICY_DECISION_LABELS, type RequestLogEntry } from '@shared/lib/types/request-log'
 
 export const REQUEST_LOG_PAGE_SIZE = 15
 
@@ -77,20 +77,12 @@ function PolicyBadge({ decision }: { decision: string | null }) {
     denied_by_user: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
     review_timeout: 'text-orange-700 bg-orange-100 dark:text-orange-300 dark:bg-orange-900/40',
   }
-  const labels: Record<string, string> = {
-    allow: 'auto-allowed',
-    approved_by_user: 'user-approved',
-    allowed_by_rule: 'rule-allowed',
-    block: 'auto-blocked',
-    denied_by_user: 'user-denied',
-    review_timeout: 'timeout',
-  }
   return (
     <span
       className={`inline-block rounded px-1.5 py-0.5 text-2xs font-medium leading-none ${styles[decision] ?? 'text-muted-foreground bg-muted'}`}
       title={`Policy: ${decision}`}
     >
-      {labels[decision] ?? decision}
+      {POLICY_DECISION_LABELS[decision] ?? decision}
     </span>
   )
 }

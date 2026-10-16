@@ -625,5 +625,14 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1792098812435,
     "hash": "e5fea3fe1d8a068040f3db42f3826bc027eef61e032a262fbdfe88b8f05c3c36"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `proxy_audit_log` ADD `tool_use_id` text;",
+      "\nCREATE INDEX `proxy_audit_log_tool_use_id_idx` ON `proxy_audit_log` (`tool_use_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792171529669,
+    "hash": "3623bc45c93b669654d4bfc5b800cf3df92caccd53d2e7f607f1d846588de3ea"
   }
 ]

@@ -30,16 +30,18 @@ import { eq, and } from 'drizzle-orm'
 
 const proxy = new Hono()
 
-proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
+// A Bash call's own proxy address names the call (agent-container/src/claude-code.ts).
+proxy.on('ALL', ['/:agentSlug/call/:toolUseId/:accountId/:rest{.+}', '/:agentSlug/:accountId/:rest{.+}'], async (c) => {
   const startTime = Date.now()
   const agentSlug = c.req.param('agentSlug')
   const accountId = c.req.param('accountId')
   const rest = c.req.param('rest') || ''
+  const toolUseId = c.req.param('toolUseId')
 
   // Stamp elapsed time (request entry → now) onto every audit entry. Every exit
   // path logs through this, so the API Logs Duration column is always populated.
   const logAuditEntry = (entry: ProxyAuditEntry) =>
-    writeProxyAuditEntry({ ...entry, durationMs: Date.now() - startTime })
+    writeProxyAuditEntry({ ...entry, toolUseId, durationMs: Date.now() - startTime })
 
   // Parse target host and path from rest: <host>/<path...>
   const firstSlash = rest.indexOf('/')

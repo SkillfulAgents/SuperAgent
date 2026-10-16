@@ -1065,7 +1065,7 @@ describe('transformMessages', () => {
       expect(toolCall.result).toBe('')
     })
 
-    it('omits the field for a foreground Bash call', () => {
+    it('omits the field for a foreground Bash call, and stamps when its result was written', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-1', [
           { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
@@ -1080,6 +1080,7 @@ describe('transformMessages', () => {
 
       const toolCall = asMessage(transformMessages(entries)[0]).toolCalls[0]
       expect(toolCall).not.toHaveProperty('backgroundTaskId')
+      expect(toolCall.resultAt).toEqual(new Date('2026-01-24T10:00:02.000Z'))
     })
   })
 

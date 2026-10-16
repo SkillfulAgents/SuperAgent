@@ -88,6 +88,19 @@ const BUILT_IN_ICONS: Record<BuiltInService, NonNullable<ToolRenderer['icon']>> 
   x: brandIcon('twitter'),
 }
 
+function ConnectedAccountDetail({ proxyOutcome }: CollapsedContentProps) {
+  if (proxyOutcome?.error) {
+    // Keeps up to half the row against a long description.
+    return (
+      <span title={proxyOutcome.error} className="max-w-[50%] shrink-0 truncate text-xs text-muted-foreground/50">
+        · <span className="text-red-600 dark:text-red-400">{proxyOutcome.error}</span>
+      </span>
+    )
+  }
+  if (!proxyOutcome?.failed) return null
+  return <span className="shrink-0 text-xs text-muted-foreground/50">· {proxyOutcome.failed} of {proxyOutcome.requests} failed</span>
+}
+
 // Cached so a row's icon component keeps its identity across renders.
 const serviceRenderers = new Map<string, ToolRenderer>()
 
@@ -98,11 +111,9 @@ function serviceCallVariant(command: string): ToolRenderer | undefined {
   const key = call.kind === 'built-in' ? `built-in:${call.service}` : `connected-account:${call.toolkit}`
   let renderer = serviceRenderers.get(key)
   if (!renderer) {
-    renderer = {
-      ...terminalRenderer,
-      displayName: call.name,
-      icon: call.kind === 'built-in' ? BUILT_IN_ICONS[call.service] : brandIcon(call.toolkit),
-    }
+    renderer = call.kind === 'built-in'
+      ? { ...terminalRenderer, displayName: call.name, icon: BUILT_IN_ICONS[call.service] }
+      : { ...terminalRenderer, displayName: call.name, icon: brandIcon(call.toolkit), CollapsedContent: ConnectedAccountDetail }
     serviceRenderers.set(key, renderer)
   }
   return renderer

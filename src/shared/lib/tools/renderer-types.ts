@@ -1,4 +1,5 @@
 import type { ToolDefinition } from './types'
+import type { ProxyCallOutcome } from '@shared/lib/proxy/call-outcome'
 
 /** Bind React views to shared metadata without duplicating names or summaries. */
 export function defineToolRenderer(
@@ -38,6 +39,8 @@ export interface CollapsedContentProps {
   result?: string | null
   isError?: boolean
   agentSlug?: string
+  /** What the connected-account proxy saw for this call, when it went through that proxy. */
+  proxyOutcome?: ProxyCallOutcome
 }
 
 /**

@@ -292,6 +292,29 @@ describe('proxy route', () => {
     expect(callArgs.method).toBe('GET')
   })
 
+  it('reads a Bash call id before the account and stamps it on the audit row', async () => {
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      { account: { id: 'acc-123', toolkitSlug: 'slack', providerConnectionId: 'comp-123', providerName: 'composio', status: 'active' } },
+    ])
+    mockIsHostAllowed.mockReturnValue(true)
+    const body = JSON.stringify({ ok: false, error: 'channel_not_found' })
+    mockMakeApiCall.mockResolvedValue(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/call/toolu_01AbC/acc-123/slack.com/api/chat.postMessage',
+      { method: 'POST', body: 'channel=C404', headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(await res.text()).toBe(body)
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe('https://slack.com/api/chat.postMessage')
+    const entry = mockInsertValues.mock.calls.at(-1)![0]
+    expect(entry).toMatchObject({ accountId: 'acc-123', toolUseId: 'toolu_01AbC', statusCode: 200 })
+  })
+
   it('forwards POST request via provider', async () => {
     mockValidateProxyToken.mockResolvedValue('my-agent')
     mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })

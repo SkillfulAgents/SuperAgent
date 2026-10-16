@@ -525,6 +525,33 @@ describe('ClaudeCodeProcess agent-browser Bash hook', () => {
       tool_input: { command: 'rg browser src' },
     })).resolves.toEqual({})
   })
+
+  it('tags the command with its call id and keeps the agent-browser warning', async () => {
+    vi.stubEnv('PROXY_BASE_URL', 'http://host/api/proxy/agent')
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-tagged-bash-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher: string
+        hooks: Array<(input: unknown, toolUseId?: string) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')!
+    await expect(bashHook.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'agent-browser open https://example.com' },
+    }, 'toolu_1')).resolves.toMatchObject({
+      hookSpecificOutput: {
+        updatedInput: { command: "export PROXY_BASE_URL='http://host/api/proxy/agent/call/toolu_1'\nagent-browser open https://example.com" },
+        additionalContext: expect.stringContaining('STRONG WARNING'),
+      },
+    })
+    vi.unstubAllEnvs()
+  })
 })
 
 describe('ClaudeCodeProcess static tool bans', () => {

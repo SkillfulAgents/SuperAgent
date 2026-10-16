@@ -99,6 +99,13 @@ export function startsWithAgentBrowserCommand(command: unknown): boolean {
   return /^(?:agent-browser|which\s+agent-browser)(?=$|[\s;&|])/.test(command.trimStart());
 }
 
+// Each Bash call reaches the connected-account proxy through its own address, so the host can tell which
+// call sent each request. The transcript keeps the command the agent wrote.
+function withProxyCallTag(command: string, proxyBaseUrl: string | undefined, toolUseId: string | undefined): string {
+  if (!proxyBaseUrl || !toolUseId) return command;
+  return `export PROXY_BASE_URL='${proxyBaseUrl}/call/${toolUseId}'\n${command}`;
+}
+
 // Default values for system-prompt template vars when the host env is unset.
 // Mirror values the host (base-container-client.ts) sets, so out-of-host runs
 // render sensibly.
@@ -1394,13 +1401,18 @@ export class ClaudeCodeProcess extends EventEmitter {
           {
             matcher: 'Bash',
             hooks: [
-              async (input) => {
+              async (input, toolUseId) => {
                 const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
-                if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
+                const command = toolInput?.command;
+                if (typeof command !== 'string') return {};
+                const tagged = withProxyCallTag(command, process.env.PROXY_BASE_URL, toolUseId);
+                const warn = startsWithAgentBrowserCommand(command);
+                if (tagged === command && !warn) return {};
                 return {
                   hookSpecificOutput: {
                     hookEventName: 'PreToolUse' as const,
-                    additionalContext: AGENT_BROWSER_BASH_WARNING,
+                    ...(tagged !== command && { updatedInput: { ...toolInput, command: tagged } }),
+                    ...(warn && { additionalContext: AGENT_BROWSER_BASH_WARNING }),
                   },
                 };
               },

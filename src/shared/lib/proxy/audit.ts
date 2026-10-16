@@ -18,6 +18,7 @@ export interface ProxyAuditEntry {
   ruleVersionId?: string
   /** JSON RuleEvaluation[] for every rule that ran. */
   ruleOutcomes?: string
+  toolUseId?: string
 }
 
 export async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: number }, options: { analytics?: boolean } = {}): Promise<void> {
@@ -32,6 +33,7 @@ export async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs
       matchedScopes: entry.matchedScopes ?? null,
       ruleVersionId: entry.ruleVersionId ?? null,
       ruleOutcomes: entry.ruleOutcomes ?? null,
+      toolUseId: entry.toolUseId ?? null,
       createdAt: new Date(),
     })
     if (options.analytics !== false) trackServerEvent('api_called', { slug: entry.toolkit })

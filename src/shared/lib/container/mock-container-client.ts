@@ -25,6 +25,7 @@ import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
+import { writeProxyAuditEntry, type ProxyAuditEntry } from '../proxy/audit'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 
@@ -784,12 +785,17 @@ export class ToolUseScenario implements MockScenario {
     private toolName: string,
     private toolInput: Record<string, unknown>,
     private toolResult: string,
-    private finalText: string
+    private finalText: string,
+    // What the connected-account proxy records for this call, as if the command's request went through it.
+    private proxyRecord?: Omit<ProxyAuditEntry, 'agentSlug' | 'toolUseId'>
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
     const toolId = `tool_${Date.now()}`
+    if (this.proxyRecord) {
+      void writeProxyAuditEntry({ ...this.proxyRecord, agentSlug: client.getAgentId(), toolUseId: toolId }, { analytics: false })
+    }
 
     // Start assistant message
     setTimeout(() => {
@@ -2079,6 +2085,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       { command: 'curl -sS "$PROXY_BASE_URL/acct/api.github.com/user" -H "Authorization: Bearer $PROXY_TOKEN"', description: 'Check the signed-in profile' },
       '{"login":"octocat"}',
       'You are signed in as octocat.'
+    )],
+    // The command pipes a 404 into jq and exits 0: the row turns red from the proxy's record
+    ['look up a missing pull request through proxy', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS "$PROXY_BASE_URL/acct/api.github.com/repos/o/r/pulls/99999" -H "Authorization: Bearer $PROXY_TOKEN" | jq .title', description: 'Fetch PR 99999 title' },
+      'null',
+      'That pull request does not exist.',
+      { accountId: 'acct', toolkit: 'github', targetHost: 'api.github.com', targetPath: 'repos/o/r/pulls/99999', method: 'GET', statusCode: 404, errorMessage: 'Upstream returned 404' },
     )],
     // A direct curl to a host Gamut ships an icon for: the row stays Bash and shows that icon
     ['query linear directly', new ToolUseScenario(

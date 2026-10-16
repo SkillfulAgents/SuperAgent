@@ -10,6 +10,7 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import type { ProxyCallOutcome } from '@shared/lib/proxy/call-outcome'
 import type { AgentAvatar } from './agent-avatar'
 
 export type { ApiAgentWidget }
@@ -189,6 +190,10 @@ export interface ApiToolCall {
   }
   /** The runtime's task id for a Bash call run in the background. */
   backgroundTaskId?: string
+  /** When the result arrived. ISO string after JSON transport. */
+  resultAt?: Date | string
+  /** What the connected-account proxy saw for this call. */
+  proxyOutcome?: ProxyCallOutcome
 }
 
 /**

@@ -21,6 +21,16 @@ export interface RequestLogEntry {
   createdAt: Date | string
 }
 
+/** How API Logs and the chat row name a proxy policy decision. */
+export const POLICY_DECISION_LABELS: Record<string, string> = {
+  allow: 'auto-allowed',
+  approved_by_user: 'user-approved',
+  allowed_by_rule: 'rule-allowed',
+  block: 'auto-blocked',
+  denied_by_user: 'user-denied',
+  review_timeout: 'timeout',
+}
+
 export interface RequestLogPage {
   entries: RequestLogEntry[]
   total: number
