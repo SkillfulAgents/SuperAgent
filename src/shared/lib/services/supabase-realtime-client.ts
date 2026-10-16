@@ -36,6 +36,20 @@ type RealtimeRecord = {
 // webhook-events flow (whose poll response omits it) is untouched.
 const DEFAULT_TABLE = 'webhook_events'
 
+// Join error codes Supabase documents as not worth retrying with the same JWT
+// and config; every other code (restarts, rate limits, DB connection trouble)
+// is retried with backoff. https://supabase.com/docs/guides/realtime/protocol#join-errors
+const FATAL_JOIN_ERRORS = new Set([
+  'InvalidJWTExpiration',
+  'MalformedJWT',
+  'JwtSignatureError',
+  'Unauthorized',
+  'TopicNameRequired',
+  'TenantNotFound',
+  'RealtimeDisabledForTenant',
+  'RealtimeDisabledForConfiguration',
+])
+
 export class SupabaseRealtimeClient {
   private ws: WebSocket | null = null
   private heartbeatInterval: NodeJS.Timeout | null = null
@@ -47,6 +61,9 @@ export class SupabaseRealtimeClient {
   private config: RealtimeConfig | null = null
   private isConnected = false
   private isJoined = false
+  // postgres_changes errors leave the channel open and Supabase retries the
+  // subscription itself, announcing recovery with a system `ok`.
+  private isSubscribed = false
   private joinRef: string | null = null
   private isStopped = false
   private ref = 0
@@ -57,8 +74,8 @@ export class SupabaseRealtimeClient {
 
   /**
    * Resolves once Supabase accepts the channel join and rejects if it refuses
-   * it; a refused join stops the client, since retrying with the same JWT
-   * would be refused again.
+   * it. Auth and config refusals stop the client, since retrying with the same
+   * JWT would be refused again; other refusals keep retrying with backoff.
    *
    * `onConnect` runs on every accepted join, including the client's own reconnects:
    * INSERTs made while the socket was down were never announced, so a caller
@@ -111,7 +128,6 @@ export class SupabaseRealtimeClient {
 
       this.ws.onopen = () => {
         this.isConnected = true
-        this.reconnectAttempts = 0
         console.log('[SupabaseRealtime] Connected')
 
         // Join the realtime channel for the configured table with RLS
@@ -164,13 +180,19 @@ export class SupabaseRealtimeClient {
             settled = true
             if (reply?.status === 'ok') {
               this.isJoined = true
+              this.isSubscribed = true
+              this.reconnectAttempts = 0
               console.log(`[SupabaseRealtime] Joined channel realtime:public:${table}`)
               this.onConnect?.()
               resolve()
             } else {
               const reason = describeReplyError(reply?.response)
               console.error(`[SupabaseRealtime] Channel join rejected: ${reason}`)
-              this.disconnect()
+              if (FATAL_JOIN_ERRORS.has(reason.split(':')[0].trim())) {
+                this.disconnect()
+              } else {
+                this.ws?.close()
+              }
               reject(new Error(`Realtime channel join rejected: ${reason}`))
             }
             return
@@ -183,8 +205,13 @@ export class SupabaseRealtimeClient {
           }
 
           if (msg.event === 'system') {
-            const system = msg.payload as { status?: string; message?: string } | undefined
-            if (system?.status === 'error') {
+            const system = msg.payload as { status?: string; message?: string; extension?: string } | undefined
+            if (system?.extension === 'postgres_changes') {
+              this.isSubscribed = system.status === 'ok'
+              if (!this.isSubscribed) {
+                console.error(`[SupabaseRealtime] Subscription error: ${system.message ?? 'unknown'}`)
+              }
+            } else if (system?.status === 'error') {
               this.isJoined = false
               console.error(`[SupabaseRealtime] System error: ${system.message ?? 'unknown'}`)
             }
@@ -281,9 +308,9 @@ export class SupabaseRealtimeClient {
     console.log('[SupabaseRealtime] Stopped')
   }
 
-  /** True only while the channel is joined, not merely while the socket is open. */
+  /** True only while the channel is joined and subscribed, not merely while the socket is open. */
   isActive(): boolean {
-    return this.isJoined && !this.isStopped
+    return this.isJoined && this.isSubscribed && !this.isStopped
   }
 
   /**

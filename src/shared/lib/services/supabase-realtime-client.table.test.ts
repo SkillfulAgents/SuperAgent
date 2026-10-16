@@ -238,14 +238,14 @@ describe('SupabaseRealtimeClient channel health', () => {
     client.disconnect()
   })
 
-  it('rejects connect() and stops when Supabase refuses the join', async () => {
+  it('rejects connect() and stops when Supabase refuses the join for auth', async () => {
     vi.useFakeTimers()
     try {
-      socketBehavior.joinReply = { status: 'error', response: { reason: 'Invalid JWT' } }
+      socketBehavior.joinReply = { status: 'error', response: { reason: 'Unauthorized: You do not have permissions to read from this Channel topic' } }
       const client = new SupabaseRealtimeClient()
 
       await expect(client.connect(BASE_CONFIG, () => {})).rejects.toThrow(
-        'Realtime channel join rejected: Invalid JWT',
+        'Realtime channel join rejected: Unauthorized',
       )
       expect(client.isActive()).toBe(false)
 
@@ -254,6 +254,60 @@ describe('SupabaseRealtimeClient channel health', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('keeps retrying when a rejoin is refused for a transient reason', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new SupabaseRealtimeClient()
+      await client.connect(BASE_CONFIG, () => {})
+
+      socketBehavior.joinReply = { status: 'error', response: { reason: 'RealtimeRestarting: Realtime is restarting' } }
+      sockets[0].onclose?.()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(sockets).toHaveLength(2)
+      expect(client.isActive()).toBe(false)
+
+      socketBehavior.joinReply = { status: 'ok', response: {} }
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(sockets).toHaveLength(3)
+      expect(client.isActive()).toBe(true)
+      client.disconnect()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('turns active again when Supabase recovers the Postgres subscription', async () => {
+    const client = new SupabaseRealtimeClient()
+    const received: unknown[] = []
+    await client.connect(BASE_CONFIG, (record) => received.push(record))
+    const send = (msg: Record<string, unknown>) =>
+      sockets[0].onmessage?.({ data: JSON.stringify({ topic: 'realtime:public:webhook_events', ...msg }) })
+
+    send({ event: 'system', payload: { status: 'error', message: 'Unable to connect to the project database', extension: 'postgres_changes' } })
+    expect(client.isActive()).toBe(false)
+
+    send({ event: 'system', payload: { status: 'ok', message: 'Subscribed to PostgreSQL', extension: 'postgres_changes' } })
+    send({ event: 'postgres_changes', payload: { data: { type: 'INSERT', record: { id: 'evt_1' } } } })
+
+    expect(received).toEqual([{ id: 'evt_1' }])
+    expect(client.isActive()).toBe(true)
+    client.disconnect()
+  })
+
+  it('stays inactive when a subscription ok arrives after the channel closed', async () => {
+    const client = new SupabaseRealtimeClient()
+    await client.connect(BASE_CONFIG, () => {})
+    const send = (msg: Record<string, unknown>) =>
+      sockets[0].onmessage?.({ data: JSON.stringify({ topic: 'realtime:public:webhook_events', ...msg }) })
+
+    send({ event: 'phx_close', payload: {} })
+    send({ event: 'system', payload: { status: 'ok', message: 'Subscribed to PostgreSQL', extension: 'postgres_changes' } })
+
+    expect(client.isActive()).toBe(false)
+    client.disconnect()
   })
 
   it('turns inactive when Supabase reports the token expired after joining', async () => {
