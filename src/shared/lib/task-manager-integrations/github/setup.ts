@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { IntegrationSetupError, type IntegrationProviderSetup } from '../../agent-integrations/setup-types'
-import { getWebhookRelay } from '../../webhook-relay'
 import { githubAuthorizationInputSchema, githubConfigSchema, githubSetupInputSchema, type GitHubConfig } from './config-schema'
 import { githubAccountSchema, githubInstallationSchema, githubInstallCallbackSchema, githubManifestResultSchema } from './api-schema'
 import { githubAppJwt, githubRequest } from './client'
@@ -92,6 +91,8 @@ export const githubSetup: IntegrationProviderSetup = {
       }
       const bot = await githubRequest(`/users/${encodeURIComponent(`${config.app.slug}[bot]`)}`, githubAccountSchema)
       if (bot.type !== 'Bot') throw new IntegrationSetupError('GitHub did not return the app bot identity')
+      // Provider registration must not initialize the relay and its runtime dependencies.
+      const { getWebhookRelay } = await import('../../webhook-relay')
       await getWebhookRelay().updateEndpoint(config.relay.scope, config.relay.endpointId, { verification: {
         algorithm: 'hmac-sha256', encoding: 'hex', header: 'x-hub-signature-256', prefix: 'sha256=', template: '{body}', secret: config.app.webhookSecret,
       } })
