@@ -22,6 +22,7 @@ import {
   resumeScheduledTaskTool,
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
+import { webhookRelayAvailable } from './webhook-relay-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -58,6 +59,7 @@ import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
+import { meetingTools } from './tools/meetings/meeting-tools'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -72,12 +74,12 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
 
-  // Composio-catalog trigger tools need platform Composio; custom webhook
-  // endpoints only need platform auth (they live on the platform proxy, so a
-  // personal Composio key must not hide them). list/cancel work on local
-  // trigger rows and are useful in either mode.
-  const includeComposioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true'
-  const includeWebhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true'
+  // Every webhook tool needs the host's webhook relay. Composio-catalog
+  // triggers also need platform Composio; custom webhook endpoints don't (they
+  // live on the relay, so a personal Composio key must not hide them).
+  // list/cancel work on local trigger rows and are useful in either mode.
+  const includeWebhookEndpoints = webhookRelayAvailable()
+  const includeComposioTriggers = includeWebhookEndpoints && process.env.COMPOSIO_PLATFORM_MODE === 'true'
 
   return createSdkMcpServer({
     name: 'user-input',
@@ -178,6 +180,21 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       addChatIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
+  })
+}
+
+/**
+ * Meetings (server name 'meetings' → mcp__meetings__join_meeting and friends).
+ * The tools call the host's /api/x-agent/meetings routes, which set the agent's
+ * meeting integration up on first use. Registered only when the host reports
+ * the meeting family as available (`availableIntegrationFamilies` on the
+ * session), so a tool whose route would refuse is never listed.
+ */
+export function createMeetingsMcpServer() {
+  return createSdkMcpServer({
+    name: 'meetings',
+    version: '1.0.0',
+    tools: meetingTools,
   })
 }
 

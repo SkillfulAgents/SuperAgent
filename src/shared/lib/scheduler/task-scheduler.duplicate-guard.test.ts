@@ -152,7 +152,6 @@ function existingScheduledSession(sessionId = 'container-session-1') {
     name: 'Daily report',
     createdAt: scheduledExecutionAt,
     lastActivityAt: scheduledExecutionAt,
-    messageCount: 0,
   }
 }
 

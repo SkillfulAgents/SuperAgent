@@ -47,6 +47,7 @@ const containerManager = vi.hoisted(() => ({
   ensureRunning: vi.fn(),
   // The actor reaches the client through getClient after start().
   getClient: () => mockContainerClient,
+  getCachedInfo: vi.fn(() => ({ status: 'running', port: null })),
 }))
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
@@ -124,7 +125,7 @@ import { createAgentIntegration, getAgentIntegration } from '@shared/lib/service
 import { listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { MockContainerClient, UserInputRequestScenario } from '@shared/lib/container/mock-container-client'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -764,6 +765,40 @@ describe('Chat integration E2E', () => {
         () => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')),
         3000,
       )
+      fetchSpy.mockRestore()
+    })
+
+    it('a press after a host restart is recovered from the container, not refused', async () => {
+      // A restarted host has forgotten what the container still waits on, and
+      // a relay delivers the presses it held through the restart.
+      const sent = await cardFor('ask question')
+      const toolUseId = (sent.event as { toolUseId: string }).toolUseId
+      userInputRequestManager.reset()
+
+      const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
+      mockConnector.sentMessages = []
+      mockConnector.simulateInteractiveResponse(toolUseId, { question: 'Pick one', answer: 'Blue' }, 'chat-1')
+      await waitForCondition(() => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')), 3000)
+
+      expect(userInputRequestManager.getRecentResolution(toolUseId)?.outcome).toBe('answered')
+      expect(mockConnector.sentMessages.map(m => m.message.text).join('\n')).not.toContain('already handled')
+      fetchSpy.mockRestore()
+    })
+
+    it('after a host restart, a press the container no longer waits on is still refused', async () => {
+      const sent = await cardFor('ask question')
+      const toolUseId = (sent.event as { toolUseId: string }).toolUseId
+      // Answered before the restart: the container moved on, the host forgot.
+      await mockContainerClient.fetch(`/inputs/${toolUseId}/resolve`, { method: 'POST', body: JSON.stringify({ value: {} }) })
+      userInputRequestManager.reset()
+
+      const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
+      mockConnector.sentMessages = []
+      mockConnector.simulateInteractiveResponse(toolUseId, { question: 'Pick one', answer: 'Blue' }, 'chat-1')
+      await waitForCondition(() => mockConnector.sentMessages.length > 0, 3000)
+
+      expect(mockConnector.sentMessages[0].message.text).toContain('already handled')
+      expect(fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))).toHaveLength(0)
       fetchSpy.mockRestore()
     })
 

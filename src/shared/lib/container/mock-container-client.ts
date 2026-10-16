@@ -375,7 +375,9 @@ export class MultiPassThinkingScenario implements MockScenario {
     private chunkDelayMs = 200,
     /** Gap between a pass ending and the next one starting. The real CLI can
      * emit thinking_stop and the next thinking_start nearly back-to-back. */
-    private interPassGapMs = 100
+    private interPassGapMs = 100,
+    /** Keep the session active after its foreground result, until stopped. */
+    private waitForBackground = false,
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -385,27 +387,28 @@ export class MultiPassThinkingScenario implements MockScenario {
         message: { content: userMessage },
         timestamp: new Date().toISOString(),
       })
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'message_start' } },
-      })
     }, 10)
 
     let offset = 20
     for (const passText of this.passes) {
+      const messageId = `thinking-pass-${randomUUID()}`
       const passStart = offset
       const chunks = passText.split(' ')
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
-          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking' } } },
+          content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } },
         })
       }, passStart)
       chunks.forEach((word, i) => {
         setTimeout(() => {
           client.emitStreamMessage(sessionId, {
             type: 'stream_event',
-            content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
+            content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
           })
         }, passStart + 10 + i * this.chunkDelayMs)
       })
@@ -413,41 +416,100 @@ export class MultiPassThinkingScenario implements MockScenario {
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
-          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+          content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
         })
         // Each pass persists as its own assistant entry, like the real CLI
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
           message: {
+            id: messageId,
             content: [{ type: 'thinking', thinking: passText, signature: 'mock-signature' }],
           },
           timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
         })
       }, passEnd)
       offset = passEnd + this.interPassGapMs
     }
 
     setTimeout(() => {
+      if (this.waitForBackground) {
+        const messageId = `thinking-background-${randomUUID()}`
+        const toolId = `thinking-background-tool-${randomUUID()}`
+        const taskId = `thinking-background-task-${randomUUID()}`
+        const input = { command: 'sleep 600', run_in_background: true }
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', index: 0,
+            content_block: { type: 'tool_use', id: toolId, name: 'Bash', input: {} } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0,
+            delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+        })
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { id: messageId, content: [{ type: 'tool_use', id: toolId, name: 'Bash', input }] },
+          timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
+        })
+        const result = {
+          backgroundTaskId: taskId, stdout: '', stderr: '', interrupted: false, isImage: false,
+        }
+        const content = [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${taskId}.` }]
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          toolUseResult: result,
+          message: { content },
+          timestamp: new Date().toISOString(),
+        })
+        client.registerBackgroundTask(sessionId, taskId)
+        client.emitStreamMessage(sessionId, {
+          type: 'user',
+          content: { type: 'user', tool_use_result: result, message: { content } },
+        })
+      }
+      // The final response follows the tool result in both SSE and JSONL.
+      const messageId = `thinking-response-${randomUUID()}`
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+        content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
       })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: this.responseText } } },
+        content: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } },
       })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: this.responseText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { id: messageId, content: [{ type: 'text', text: this.responseText }] },
+        timestamp: new Date().toISOString(),
       })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
-      })
-      client.writeJsonlEntry(sessionId, {
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: this.responseText }] },
-        timestamp: new Date().toISOString(),
       })
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -916,6 +978,8 @@ export class UserInputRequestScenario implements MockScenario {
     // resolve/reject calls from the API can find and decrement the count.
     client.registerPendingInputs(sessionId, tools.length, {
       holdResultsUntilAll: this.opts?.holdResultsUntilAll,
+      // AskUserQuestion parks as 'question'; the others keep their tool name here.
+      inputs: tools.map((tool, i) => ({ toolUseId: toolIds[i], inputType: tool.name === 'AskUserQuestion' ? 'question' : tool.name })),
     })
 
     // Write the user message entry immediately so the JSONL file exists on disk.
@@ -1429,6 +1493,7 @@ export class ProxyReviewScenario implements MockScenario {
       reviewManager.requestReview({
         agentSlug,
         accountId,
+        reviewType: 'api',
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
@@ -1506,6 +1571,7 @@ export class MixedPendingRequestsScenario implements MockScenario {
       reviewManager.requestReview({
         agentSlug,
         accountId,
+        reviewType: 'api',
         toolkit: 'slack',
         method: 'POST',
         targetPath: 'api/chat.postMessage',
@@ -1886,6 +1952,46 @@ export class BackgroundBashScenario implements MockScenario {
 }
 
 /**
+ * A background task only the runtime's level set names: a subagent started
+ * it, so no launch signal on the lead stream registers it (seen in prod as a
+ * dev server a subagent left running). The turn answers and ends; the task
+ * stays listed for holdMs, then the runtime drops it and the session settles.
+ */
+export class SnapshotOnlyBackgroundScenario implements MockScenario {
+  constructor(
+    private holdMs: number = 300_000,
+    private description: string = 'Serve the landing preview on :3100',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const taskId = `bnested_${Date.now().toString(36)}`
+    const runtime = client.unguarded
+    runtime.registerBackgroundTask(sessionId, taskId)
+    runtime.emitStreamMessage(sessionId, {
+      type: 'system',
+      content: {
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: taskId, task_type: 'local_bash', description: this.description }],
+      },
+    })
+    new SimpleTextResponseScenario('The preview server is up; it keeps running in the background.')
+      .execute(sessionId, client, userMessage)
+
+    setTimeout(() => {
+      // Stopped in the meantime: the runtime already reported its end.
+      if (!runtime.isBackgroundTaskRunning(sessionId, taskId)) return
+      runtime.completeBackgroundTask(sessionId, taskId)
+      runtime.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+      })
+      runtime.emitSessionState(sessionId, 'idle')
+    }, this.holdMs)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -1939,6 +2045,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       15,
       10
     )],
+    // Foreground completion with a pending task: a follow-up starts a new
+    // runtime turn while the host still reports the session as active.
+    ['think then wait for background', new MultiPassThinkingScenario(
+      ['Inspect the inputs.', 'Prepare the job.', 'Check its progress.'],
+      'Thinking finished; waiting for the background job.',
+      150,
+      100,
+      true,
+    )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(
       [
@@ -1957,6 +2072,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Persist while active with deliberately divergent live text — regression
     // for completed thinking cards stranding at the transcript tail.
     ['think with missing deltas', new ActiveDivergentThinkingScenario()],
+    // A Bash call through the connected-account proxy: the row names the service
+    ['check github through proxy', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS "$PROXY_BASE_URL/acct/api.github.com/user" -H "Authorization: Bearer $PROXY_TOKEN"', description: 'Check the signed-in profile' },
+      '{"login":"octocat"}',
+      'You are signed in as octocat.'
+    )],
+    // A direct curl to a host Gamut ships an icon for: the row stays Bash and shows that icon
+    ['query linear directly', new ToolUseScenario(
+      'Bash',
+      { command: 'curl -sS https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -d @query.json', description: 'Query open issues' },
+      '{"data":{"issues":{"nodes":[]}}}',
+      'No open issues.'
+    )],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
@@ -1972,6 +2101,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['run background slowly', new BackgroundBashScenario(6000, 'done sleeping')],
     // Register a background bash scenario for testing background task tracking
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
+    // A task only the runtime's task list names (a subagent started it)
+    ['leave a preview server', new SnapshotOnlyBackgroundScenario()],
     // A workspace hook blocking the prompt before the model sees it
     ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests
@@ -2416,6 +2547,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private sessionToApiSession: Map<string, string> = new Map()
   // Track pending user input requests per session for auto-completion
   private pendingInputCounts: Map<string, number> = new Map()
+  // The parked requests themselves, for GET /inputs/pending
+  private pendingInputs: Map<string, { sessionId: string; inputType: string }> = new Map()
   // Delay between the last input resolving and the turn-ending 'result', per
   // session (default 50ms). Scenarios that must expose the post-resolve window
   // (agent resumed, not yet settled) register a longer one.
@@ -2545,9 +2678,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   registerPendingInputs(
     sessionId: string,
     count: number,
-    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean },
+    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean; inputs?: Array<{ toolUseId: string; inputType: string }> },
   ): void {
     this.pendingInputCounts.set(sessionId, count)
+    for (const input of opts?.inputs ?? []) this.pendingInputs.set(input.toolUseId, { sessionId, inputType: input.inputType })
     if (opts?.completionDelayMs !== undefined) {
       this.inputCompletionDelays.set(sessionId, opts.completionDelayMs)
     }
@@ -2629,9 +2763,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     })
   }
 
-  // Volume flag builder (no-op in mock — mounts are not simulated)
-  buildVolumeFlag(hostPath: string, containerPath: string): string {
-    return `"${hostPath}:${containerPath}"`
+  /** The mock mounts nothing, but behaves as a runtime that can. */
+  volumeRunFlags(): string | null {
+    return ''
   }
 
   // No real host networking in mock mode — report loopback-direct (no proxy).
@@ -2648,6 +2782,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
     this.running = true
+    this.mountedVolumeIds = (options?.volumes ?? []).map((v) => v.volumeId)
     // Surface the container env that carries the proxy credentials so E2E
     // specs can call the API/MCP proxies the way a real container would
     // (there is deliberately no HTTP endpoint that returns the proxy token).
@@ -2942,6 +3077,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
+    if (fetchPath === '/inputs/pending') {
+      const pending = [...this.pendingInputs].map(([toolUseId, input]) => ({ toolUseId, ...input, createdAt: new Date() }))
+      return new Response(JSON.stringify(pending), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+
     // Handle input resolve/reject — decrement pending count and complete session when all done
     const resolveMatch = fetchPath.match(/^\/inputs\/([^/]+)\/(resolve|reject)$/)
     if (resolveMatch) {
@@ -2952,6 +3092,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // Malformed escape — keep the raw path segment (mock tool ids are alphanumeric anyway)
       }
       console.log(`[MockContainerClient] Input ${resolveMatch[2]}: ${fetchPath}`)
+      this.pendingInputs.delete(toolUseId)
       // Find the session with pending inputs (we only have one active at a time in tests)
       for (const [sessionId, count] of this.pendingInputCounts) {
         if (count > 0) {
@@ -3076,6 +3217,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
+  }
+
+  private mountedVolumeIds: string[] = []
+
+  /** The mock mounts nothing, but reports the volumes it was started with, as a runtime that can. */
+  async health(_knownPort?: number): Promise<unknown> {
+    return this.running ? { status: 'ok', volumes: this.mountedVolumeIds } : null
   }
 
   onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {

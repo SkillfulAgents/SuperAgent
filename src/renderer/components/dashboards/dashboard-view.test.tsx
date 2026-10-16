@@ -262,8 +262,10 @@ describe('DashboardView restart', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
 
     expect(screen.getByRole('button', { name: 'Refreshing dashboard' })).toBeDisabled()
+    const fresh = document.querySelector('iframe')!
+    expect(fresh).not.toBe(frame)
 
-    fireEvent.load(frame)
+    fireEvent.load(fresh)
     await act(async () => {})
 
     expect(screen.getByRole('button', { name: 'Refresh dashboard' })).not.toBeDisabled()

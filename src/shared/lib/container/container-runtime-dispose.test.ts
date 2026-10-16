@@ -22,7 +22,6 @@ vi.mock('./client-factory', () => ({
       getStats: vi.fn(),
       fetch: vi.fn(),
       getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
-      buildVolumeFlag: (hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`,
       createSession: vi.fn(),
       onFatalResult: () => 'settle',
       observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -119,7 +118,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
-  getMountsWithHealth: () => [],
+  listVolumes: async () => ({ volumes: [], notMounted: [] }),
 }))
 
 import { containerHost } from './container-host'

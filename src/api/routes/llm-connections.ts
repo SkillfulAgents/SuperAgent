@@ -20,6 +20,7 @@ import {
   getConnection,
   assertManageConnection,
   providerForConnection,
+  connectionCatalog,
   prepareConnection,
   type ConnectionViewer,
 } from '@shared/lib/llm-provider/connections'
@@ -119,6 +120,16 @@ routes.get('/:id/usage', async c => {
   // Being able to use another member's saved session does not expose their billing.
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
   return c.json(await runWithOptionalUser(actor.userId, () => readConnectionUsage(row)))
+})
+routes.get('/:id/model-availability', async c => {
+  c.header('Cache-Control', 'no-store')
+  const row = await getConnection(c.req.param('id'))
+  const actor = viewer(c)
+  if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
+  // `fresh=1` re-reads the provider's source (after an upgrade, or a refusal).
+  const fresh = c.req.query('fresh') === '1'
+  return c.json(await runWithOptionalUser(actor.userId,
+    () => providerForConnection(row).getModelAvailability(connectionCatalog(row), { fresh })))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))

@@ -17,7 +17,7 @@ beforeEach(() => {
 
 describe('getContainerModelPromptHints', () => {
   it('returns GPT tool-use hints for a resolved Platform GPT id', () => {
-    const hints = getContainerModelPromptHints('gpt-5.5', getEffectiveCatalog('platform'))
+    const hints = getContainerModelPromptHints('gpt-5.6-sol', getEffectiveCatalog('platform'))
     expect(hints.some((h) => h.includes('ToolSearch'))).toBe(true)
     expect(hints.some((h) => h.includes('pages as an empty string'))).toBe(true)
   })

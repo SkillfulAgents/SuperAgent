@@ -88,6 +88,7 @@ export interface CreateSessionRequest {
   modelContextWindows?: Record<string, number>; // Model id → catalog context window (feeds CLAUDE_CODE_MAX_CONTEXT_TOKENS)
   webSearchProvider?: string; // Active host-side web search vendor id (non-secret); activates mcp__web__search + disables native WebSearch
   webFetchProvider?: string; // Active host-side web fetch vendor id (non-secret); activates mcp__web__web_fetch + disables native WebFetch
+  availableIntegrationFamilies?: string[]; // Integration families the host can run ('meeting' registers mcp__meetings__*); absent → none
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number; // Max tokens for extended thinking
   maxTurns?: number; // Max conversation turns
@@ -97,6 +98,7 @@ export interface CreateSessionRequest {
   effort?: EffortLevel; // Initial thinking effort level
   speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
+  globalInstructions?: string; // Org-wide guidance set in host Settings, rendered into every agent's prompt
   // What the host expects the NEXT session to ask for (agent default model/
   // effort/speed with the global fallback applied), as opposed to this
   // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
@@ -123,4 +125,5 @@ export interface SendMessageRequest {
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
   isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
+  globalInstructions?: string; // Current org-wide guidance; a change triggers interrupt+restart (it lives in the prompt)
 }

@@ -4,7 +4,11 @@ import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
 import xAgentIntegrations from './routes/x-agent-integrations'
+import xAgentMeetings from './routes/x-agent-meetings'
 import webSearch from './routes/web-search'
+import volumes from './routes/volumes'
+import volumeDefinitions from './routes/volume-definitions'
+import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
@@ -12,6 +16,7 @@ import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
 import agentIntegrationsRouter from './routes/agent-integrations'
+import meetingParticipantRouter from './routes/meeting-participant'
 import notifications from './routes/notifications'
 import pushRouter from './routes/push'
 import platformNotifications from './routes/platform-notifications'
@@ -25,11 +30,13 @@ import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
+import todosRouter from './routes/todos'
 import profileRouter from './routes/profile'
 import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
+import webhookRelayRouter from './routes/webhook-relay'
 import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
@@ -233,6 +240,7 @@ app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
+app.route('/api/x-agent/meetings', xAgentMeetings)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
@@ -243,10 +251,15 @@ app.route('/api/webhook-triggers', webhookTriggers)
 // TODO(2026-12-01): Delete this legacy alias; use /api/agent-integrations.
 app.route('/api/chat-integrations', agentIntegrationsRouter)
 app.route('/api/agent-integrations', agentIntegrationsRouter)
+// Token-gated: loaded by the meeting bot's browser, which has no app session.
+app.route('/api/meeting-participant', meetingParticipantRouter)
 app.route('/api/notifications', notifications)
 app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
+app.route('/api/volumes', volumes)
+app.route('/api/volume-definitions', volumeDefinitions)
+app.route('/api/volume-types', volumeTypes)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
 app.route('/api/browser', browser)
@@ -256,11 +269,13 @@ app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
 app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/todos', todosRouter)
 app.route('/api/profile', profileRouter)
 app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
+app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)

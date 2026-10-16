@@ -25,6 +25,7 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
+import { WEBHOOK_RELAY_QUERY_KEY } from '@renderer/hooks/use-webhook-relay'
 import {
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
@@ -35,6 +36,7 @@ import {
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
+import { createInvalidationCoalescer } from '@renderer/lib/invalidation-coalescer'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
   NotificationActionContextSchema,
@@ -51,6 +53,7 @@ import {
   USER_ACTIONABLE_NOTIFICATION_TYPES,
 } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
@@ -82,6 +85,14 @@ const SESSION_LIFECYCLE_ECHO = {
   session_idle: { isActive: false, isAwaitingInput: false },
   session_error: { isActive: false, isAwaitingInput: false },
 } satisfies Record<string, SessionStatusPatch>
+
+// Session events arrive in bursts (active, awaiting, idle within one turn) and
+// from every agent in the workspace — on the shared e2e server, from every
+// parallel worker too. The echo above patches the caches at once, so the
+// list-wide refetches behind it only confirm: they run once per burst rather
+// than once per event, since each full agents-list refetch updates every
+// subscriber of that list in every open tab.
+const SESSION_CONFIRMATION_DELAY_MS = 500
 
 function isNotificationTypeEnabled(
   settings: UserSettingsData | undefined,
@@ -255,6 +266,7 @@ export function GlobalNotificationHandler() {
     const url = `${baseUrl}/api/notifications/stream`
     const es = new EventSource(url)
     streamRef.current = es
+    const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
 
     es.onmessage = (event) => {
       try {
@@ -471,17 +483,26 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['sessions'] })
             }
-            // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.)
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.).
+            // The event's own agent refetches now; the list (whose prefix also
+            // covers every cached agent detail) confirms with the batch.
             if (eventAgentSlug) {
               queryClient.invalidateQueries({ queryKey: ['agents', eventAgentSlug] })
             }
-            // Artifacts may have been created/modified during the session
-            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            confirmations.invalidate(['agents'])
+            // Todo board columns are live session state.
+            confirmations.invalidate(TODOS_QUERY_KEY)
+            // Artifacts may have been created/modified during the session —
+            // that agent's, not every agent's.
+            if (eventAgentSlug) {
+              invalidateAgentArtifacts(queryClient, eventAgentSlug)
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            }
 
             // Automation session lists show isActive status — refresh them
-            queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
-            queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
+            confirmations.invalidate(['webhook-trigger-sessions'])
+            confirmations.invalidate(['scheduled-task-sessions'])
 
             break
           }
@@ -582,6 +603,10 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
+          case 'agent_updated':
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+
           case 'agent_created':
             // Agent-created child creation lands outside the human create mutation,
             // so refresh both caches the direct-create path invalidates together.
@@ -615,6 +640,8 @@ export function GlobalNotificationHandler() {
             if (sessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
             }
+            // Todo cards show a pending wake as waiting.
+            confirmations.invalidate(TODOS_QUERY_KEY)
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
               queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })
@@ -634,11 +661,10 @@ export function GlobalNotificationHandler() {
           }
 
           case 'mount_health_warning': {
-            // Some mounted folders are missing or inaccessible — show banner in agent view
+            // An empty list clears the banner.
             setMountWarning(queryClient, {
               agentSlug: data.agentSlug,
-              missingMounts: data.missingMounts,
-              hint: data.hint,
+              notMounted: data.notMounted,
             })
             break
           }
@@ -647,6 +673,10 @@ export function GlobalNotificationHandler() {
             // Runtime readiness changed (e.g., image pull started/completed)
             queryClient.invalidateQueries({ queryKey: ['settings'] })
             queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
+            break
+
+          case 'webhook_relay_changed':
+            queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
             break
         }
       } catch {
@@ -694,6 +724,7 @@ export function GlobalNotificationHandler() {
 
     return () => {
       disposeLiveness()
+      confirmations.flush()
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
       if (streamRef.current === es) streamRef.current = null

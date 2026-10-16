@@ -28,6 +28,7 @@ describe('isContainerFacingPath', () => {
     expect(isContainerFacingPath('/api/proxy/agent-1/foo')).toBe(true)
     expect(isContainerFacingPath('/api/mcp-proxy/agent-1/call')).toBe(true)
     expect(isContainerFacingPath('/api/browser/agent-1/screenshot')).toBe(true)
+    expect(isContainerFacingPath('/api/volumes/v_1/notes.txt')).toBe(true)
   })
 
   // Regression: cross-agent calls (list/invoke/get-sessions and x-agent/chat)

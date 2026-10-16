@@ -8,6 +8,7 @@ import { changesOf } from '../db/batch'
 import { connectionConfigSchema, parseConnectionJson } from './connection-schema'
 import { refreshGrokCredential } from './grok-oauth'
 import { refreshKimiCredential } from './kimi-oauth'
+import { refreshMinimaxCredential } from './minimax-oauth'
 import type { OAuthCredential } from './oauth-schema'
 import { isOAuthProvider, type OAuthProvider } from './provider-types'
 
@@ -15,6 +16,7 @@ const refreshers: Record<OAuthProvider, (previous: OAuthCredential) => Promise<O
   'grok-subscription': refreshGrokCredential,
   'codex-subscription': refreshCodexCredential,
   'kimi-subscription': refreshKimiCredential,
+  'minimax-subscription': refreshMinimaxCredential,
 }
 
 /** The app owns refresh. A generation/config CAS prevents a late exchange from

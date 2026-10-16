@@ -21,7 +21,7 @@ const POPUP_PROTOCOLS = ['https:', 'http:', 'mailto:', 'sms:', 'tel:'] as const
 // dashboard/agent content cannot.
 const APP_ONLY_PROTOCOLS = ['x-apple.systempreferences:'] as const
 
-// Validate at the boundary (CLAUDE.md): the input must be a non-empty string that
+// Validate at the boundary (AGENTS.md): the input must be a non-empty string that
 // parses into a URL whose protocol is on the allowlist. `new URL()` throws on
 // malformed input, which the refine catches and turns into a parse failure.
 function makeAllowlistSchema(protocols: readonly string[]) {

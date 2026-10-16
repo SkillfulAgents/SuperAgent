@@ -154,3 +154,12 @@ describe('SessionView fork provenance', () => {
     expect(screen.queryByTestId('fork-session-banner')).toBeNull()
   })
 })
+
+it('does not clear unread state before a session exists', () => {
+  vi.clearAllMocks()
+  render(<SessionView agentSlug="target-agent" sessionId={null} />)
+  fireEvent(document, new Event('visibilitychange'))
+  expect(mocks.clearUnread).not.toHaveBeenCalled()
+  expect(mocks.markRead).not.toHaveBeenCalled()
+  expect(mocks.setMarkedUnread).not.toHaveBeenCalled()
+})

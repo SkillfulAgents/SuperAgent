@@ -4,6 +4,8 @@ import { cn } from '@shared/lib/utils/cn'
 
 interface DrawerTabStripProps {
   tabCount: number
+  /** Match the inset of the content card below the tabs. */
+  inset?: 'sm' | 'md'
   activeIndex: number
   onLeadingTabFlush?: (flush: boolean) => void
   trailing?: ReactNode
@@ -18,6 +20,7 @@ const EDGE_EPSILON_PX = 1
 
 export function DrawerTabStrip({
   tabCount,
+  inset = 'md',
   activeIndex,
   onLeadingTabFlush,
   trailing,
@@ -96,9 +99,11 @@ export function DrawerTabStrip({
 
   return (
     <div
-      // pl-4 matches the body card's 16px inset, so the first tab's left edge
-      // is flush with the card's (the card's top-left corner is square for this).
-      className="relative flex items-end bg-muted/60 pl-4 pr-2 pt-1.5 shrink-0"
+      // The first tab's left edge meets the content card's square corner.
+      className={cn(
+        'relative flex items-end bg-muted/60 pt-1.5 shrink-0',
+        inset === 'sm' ? 'pl-2 pr-0' : 'pl-4 pr-2',
+      )}
       data-testid={`${testId}-bar`}
       data-overflowing={overflowing || undefined}
     >
@@ -139,7 +144,7 @@ export function DrawerTabStrip({
         </div>
       )}
 
-      {/* ml-auto pins it right; pr-1.5 + the strip's pr-2 + the button's p-0.5 puts the icon's edge at 16px, flush with the body card. */}
+      {/* The strip's right padding plus the control's 8px inset aligns it with the content card. */}
       {trailing && (
         <div className="ml-auto flex h-8 shrink-0 items-center gap-1 pl-1 pr-1.5 text-muted-foreground">{trailing}</div>
       )}

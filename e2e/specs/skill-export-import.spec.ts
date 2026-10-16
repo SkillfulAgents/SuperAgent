@@ -144,11 +144,6 @@ test.describe('Skill Export & Import', () => {
     // Agent 2: import the exported skill
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-
-    await page.locator('[data-testid="home-message-input"]').fill('round trip test')
-    await page.locator('[data-testid="home-send-button"]').click()
-    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
-    await page.locator('[data-testid="agent-breadcrumb"]').click()
     await expect(page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
     const importButton = page.locator('[data-testid="import-skill-button"]')

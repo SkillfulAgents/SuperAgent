@@ -1,11 +1,11 @@
 import { z } from 'zod'
-import { isSafeInternalPath } from '@renderer/lib/api'
+import { isSafeInternalPath } from '@renderer/lib/safe-internal-path'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
- * path param). Per CLAUDE.md, every value decoded from the URL is validated here
+ * path param). Per AGENTS.md, every value decoded from the URL is validated here
  * before it reaches a route component.
  */
 
@@ -44,10 +44,10 @@ export const connectionsSearchSchema = z
   })
 
 // Open-redirect-safe internal path. ONE definition for the whole app: the same
-// `isSafeInternalPath` backstop applied on the actual stash/redirect path in
-// api.ts (rejects `//host`, `/\host`, and a leading encoded `/%2f`/`/%5c`), so
-// the schema gate and the sanitizer can't drift. Shared by the post-login
-// `redirect` and the settings `from` close-target.
+// `isSafeInternalPath` (safe-internal-path.ts, re-exported by api.ts) applied on
+// the stash/redirect path (rejects `//host`, `/\host`, and a leading encoded
+// `/%2f`/`/%5c`), so the schema gate and the sanitizer can't drift. Shared by
+// the post-login `redirect` and the settings `from` close-target.
 const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
 
 // Deep-link-through-login target.
@@ -86,20 +86,23 @@ const arrivalParams = Object.fromEntries(
 // `detail` is the open connection-detail overlay on the Connections tab,
 // URL-driven for parity with the agent connections route (deep-linkable +
 // reload-durable). Only the Connections tab reads it; `lenient()` drops it on
-// other tabs. No `source` here — settings detail always returns to its own list.
+// other tabs. Connection detail always returns to its own list. A drive
+// detail opened from an agent home carries `source: 'home'` so Back returns there.
 export const settingsSearchSchema = z
   .object({
     // The account a provider's install hands back, under its catalog `arrivalParam`.
     ...arrivalParams,
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
+    volume: z.string().min(1).max(255).optional(),
+    source: z.enum(['home', 'list']).optional(),
     connectionView: z.literal('logs').optional(),
   })
   .refine((s) => !s.connectionView || !!s.detail, {
     message: 'a connection subview requires detail',
   })
 
-// The 20 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
+// The GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
 // sections, flattened in display order). NOTE: `system-prompt` (agent-scoped
 // local dialog) and `secrets` (agent-scoped page, /agents/$slug/secrets) are
 // deliberately absent — they are not global settings routes.
@@ -108,13 +111,16 @@ export const SETTINGS_TABS = [
   'general',
   'notifications',
   'platform',
+  'experiments',
   'connections',
   'usage',
   'llm',
   'runtime',
   'browser',
   'web',
+  'volumes',
   'capabilities',
+  'global-guidance',
   'computer-use',
   'account-provider',
   'voice',

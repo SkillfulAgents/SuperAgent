@@ -32,7 +32,7 @@ export const DEFAULT_TARGET_DIR = path.join(os.homedir(), 'Downloads', 'slack-ch
  */
 export const VALIDATION_AGENT_SLUG = 'slack-validation-agent'
 
-const AGENT_CLAUDE_MD = `---
+const AGENT_INSTRUCTIONS = `---
 name: Slack Validation Agent
 createdAt: "2026-01-01T00:00:00.000Z"
 description: Drives the Slack chat-integration validation suite
@@ -117,8 +117,8 @@ export function seed({ source, target = DEFAULT_TARGET_DIR, log = () => {} } = {
   }
 
   writeFileSync(
-    path.join(target, 'agents', VALIDATION_AGENT_SLUG, 'workspace', 'CLAUDE.md'),
-    AGENT_CLAUDE_MD,
+    path.join(target, 'agents', VALIDATION_AGENT_SLUG, 'workspace', 'AGENTS.md'),
+    AGENT_INSTRUCTIONS,
   )
 
   copyFileSync(path.join(source, 'superagent.db'), path.join(target, 'superagent.db'))

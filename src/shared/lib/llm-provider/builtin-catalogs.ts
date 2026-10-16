@@ -22,7 +22,7 @@ const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 // Sonnet 4.6 / Opus 4.6: Anthropic accepts max but rejects xhigh (400).
 const CLAUDE_4_6_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
-// gpt-5.4/5.5, grok-4.6/4.7, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
+// grok-4.6/4.7, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
 const XHIGH_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh']
 // kimi-k3 on Fireworks' Anthropic wire: two real tiers, max ≈ 2.4× high (measured 2026-09-18).
 const KIMI_K3_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
@@ -109,7 +109,7 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     subdescription: 'A premium choice for the hardest agent work.',
   },
   {
-    model: 'gpt',
+    model: 'gpt-sol',
     label: 'GPT',
     resolveLabelFromCatalog: true,
     tag: 'OpenAI flagship',
@@ -131,12 +131,22 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-haiku-4-5',
     label: 'Haiku 4.5',
+    family: 'haiku',
+    icon: ICON,
+    supportedEfforts: STANDARD_EFFORTS,
+    pricing: pricingFor('claude-haiku-4-5'),
+  },
+  {
+    id: 'claude-haiku-5-5',
+    label: 'Haiku 5.5',
     blurb: 'Fastest and most affordable',
     family: 'haiku',
     isLatest: true,
     icon: ICON,
-    supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-haiku-4-5'),
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-haiku-5-5'),
+    // Anthropic bills the whole request at 5x once the prompt passes 100K tokens.
+    longContextPriceCliff: { thresholdTokens: 100_000, inputMultiplier: 5, outputMultiplier: 5 },
   },
   {
     id: 'claude-sonnet-4-6',
@@ -149,12 +159,20 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-sonnet-5',
     label: 'Sonnet 5',
+    family: 'sonnet',
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-sonnet-5'),
+  },
+  {
+    id: 'claude-sonnet-5-5',
+    label: 'Sonnet 5.5',
     blurb: 'Balanced speed and capability',
     family: 'sonnet',
     isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-sonnet-5'),
+    pricing: pricingFor('claude-sonnet-5-5'),
   },
   {
     id: 'claude-opus-4-6',
@@ -525,9 +543,8 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     id: 'muse-spark-1.3',
     pricing: pricingFor('muse-spark-1.3'),
     label: 'Muse Spark 1.3',
-    blurb: 'Meta flagship, served via Platform',
+    blurb: 'Meta, served via Platform',
     isLatest: true,
-    isDefault: true,
     supportedEfforts: ALL_EFFORTS,
   },
   // Labels carry the full family name so the picker's version chips strip to
@@ -549,43 +566,42 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
   },
 ]
 
+/**
+ * Meta's frontier tier, on the same api.meta.ai route and traits as Spark.
+ * Efforts and window are from Meta's model page (dev.meta.ai/models/muse-wonder);
+ * Meta has no contributor tier for it.
+ */
+const MUSE_WONDER_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    family: 'muse-wonder',
+    id: 'muse-wonder-1.0',
+    pricing: pricingFor('muse-wonder-1.0'),
+    label: 'Muse Wonder 1.0',
+    blurb: 'Meta flagship, served via Platform',
+    isLatest: true,
+    isDefault: true,
+    supportedEfforts: ALL_EFFORTS,
+    contextWindow: 1_048_576,
+  },
+]
+
+/**
+ * OpenAI names GPT models version-then-tier ("GPT-6.1 Sol"), so each tier is
+ * its own family: the bare `gpt-sol` alias rides Sol releases the way `opus`
+ * rides Opus. `gpt` predates the split and still resolves to Sol.
+ */
+const GPT_LUNA = { family: 'gpt-luna', icon: 'openai' }
+const GPT_TERRA = { family: 'gpt-terra', icon: 'openai' }
+const GPT_SOL = { family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai' }
+const GPT_ASTRA = { family: 'gpt-astra', icon: 'openai' }
+
 const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
-  {
-    id: 'gpt-5.4',
-    label: 'GPT-5.4',
-    blurb: 'OpenAI, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
-    supportedEfforts: XHIGH_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-5.4'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
-  {
-    id: 'gpt-5.5',
-    label: 'GPT-5.5',
-    blurb: 'OpenAI, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
-    supportedEfforts: XHIGH_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-5.5'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
   {
     id: 'gpt-5.6-luna',
     label: 'GPT-5.6 Luna',
     blurb: 'OpenAI fastest tier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
+    ...GPT_LUNA,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -596,44 +612,11 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
-    id: 'gpt-5.6-terra',
-    label: 'GPT-5.6 Terra',
-    blurb: 'OpenAI balanced tier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
-    supportedEfforts: ALL_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-5.6-terra'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
-  {
-    // OpenAI's `gpt-5.6` alias routes here; the bare `gpt` family alias follows suit.
-    id: 'gpt-5.6-sol',
-    label: 'GPT-5.6 Sol',
-    blurb: 'OpenAI flagship, served via Platform',
-    family: 'gpt',
-    isLatest: true,
-    isDefault: true,
-    icon: 'openai',
-    supportedEfforts: ALL_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-5.6-sol'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
-  {
     id: 'gpt-6-luna',
     label: 'GPT-6 Luna',
     blurb: 'OpenAI efficient tier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
+    ...GPT_LUNA,
+    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -644,11 +627,39 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    blurb: 'OpenAI balanced tier, served via Platform',
+    ...GPT_TERRA,
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-5.6-terra'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
+    blurb: 'OpenAI flagship, served via Platform',
+    ...GPT_SOL,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-5.6-sol'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
     id: 'gpt-6-sol',
     label: 'GPT-6 Sol',
     blurb: 'OpenAI coding tier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
+    ...GPT_SOL,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -659,12 +670,27 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
-    // Not isLatest: the bare `gpt` alias stays on Sol so alias users don't jump 2x in price.
+    id: 'gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    blurb: 'OpenAI coding tier, served via Platform',
+    ...GPT_SOL,
+    isLatest: true,
+    isDefault: true,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.1-sol'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.1-sol).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
     id: 'gpt-6-astra',
     label: 'GPT-6 Astra',
     blurb: 'OpenAI frontier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
+    ...GPT_ASTRA,
+    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -721,6 +747,28 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
+    // Bare id matches the platform proxy's gemini-* → gemini route (Gemini API
+    // OpenAI-compatible chat). Measured against gemini-4-argon on 2026-10-14:
+    // efforts are low/medium/high only (xhigh/max 400, so the proxy caps them);
+    // no speed tier is offered; the proxy drops server tools, so search and
+    // fetch need a Settings → Web vendor; images and PDFs are read.
+    id: 'gemini-4-argon',
+    label: 'Gemini 4 Argon',
+    blurb: 'Google flagship, served via Platform',
+    family: 'gemini-argon',
+    isLatest: true,
+    isDefault: true,
+    icon: 'gemini',
+    supportedEfforts: STANDARD_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
+    pricing: pricingFor('gemini-4-argon'),
+    // Unified input + output limit (ai.google.dev/gemini-api/docs/models/gemini-4-argon).
+    contextWindow: 1_048_576,
+  },
+  {
     // Bare id matches the platform proxy's kimi-* → fireworks route.
     id: 'kimi-k3',
     label: 'Kimi K3',
@@ -743,6 +791,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
     supportsImageInput: true,
   },
+  ...MUSE_WONDER_MODELS,
   ...MUSE_SPARK_MODELS,
   {
     // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
@@ -763,6 +812,19 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     // Cloudflare Workers AI list rates (2026-08-26). Cache write is unpublished,
     // so cacheCreation mirrors input — same convention as Fireworks/Meta.
     pricing: pricingFor('glm-5.3-flash'),
+  },
+  {
+    id: 'glm-5.3',
+    label: 'GLM-5.3 Standard',
+    blurb: 'Z.AI GLM, served via Platform',
+    family: 'glm',
+    icon: 'zai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: false,
+    contextWindow: 1_048_576,
+    pricing: pricingFor('glm-5.3'),
   },
   {
     // Bare id matches the platform proxy's deepseek-* → fireworks route.

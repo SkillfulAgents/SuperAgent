@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { ComposerOptionsState } from './composer-options'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { connectionInfoSchema, type ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -19,6 +20,12 @@ const CATALOG: ModelDefinition[] = [
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, supportedSpeeds: ['normal', 'fast'] },
 ]
 
+const MAX = connectionInfoSchema.parse({
+  id: 'max', name: 'Claude Max', provider: 'claude-subscription', userId: 'u1', ownerName: 'Jeremy',
+  managed: false, isConfigured: true, catalog: CATALOG, modelOverrides: [], defaultModel: 'opus',
+  browserModel: null, dashboardModel: null, canManage: true, canDelete: true,
+})
+
 interface HarnessProps {
   initialEffort?: EffortLevel
   initialSpeed?: SpeedLevel
@@ -28,6 +35,8 @@ interface HarnessProps {
   onState?: (state: ComposerOptionsState) => void
   disabled?: boolean
   footer?: ReactNode
+  connections?: ConnectionInfo[]
+  llmProviderId?: string
 }
 
 // Minimal real-state harness — the popover's auto-reset effect and any state
@@ -41,6 +50,8 @@ function Harness({
   onState,
   disabled,
   footer,
+  connections,
+  llmProviderId,
 }: HarnessProps) {
   const [effort, setEffort] = useState<EffortLevel>(initialEffort)
   const [speed, setSpeed] = useState<SpeedLevel>(initialSpeed)
@@ -54,6 +65,8 @@ function Harness({
     setModel,
     catalog,
     defaultModel,
+    connections,
+    llmProviderId,
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
@@ -183,9 +196,34 @@ describe('ComposerOptionsPopover', () => {
     expect(await screen.findByText('Effort')).toBeInTheDocument()
   })
 
-  it('respects the disabled prop on the trigger', () => {
-    render(<Harness disabled initialModel="claude-opus-4-8" />)
-    expect(screen.getByTestId('composer-options-trigger')).toBeDisabled()
+  it('names the model and the connection on hover, even with a single connection', async () => {
+    render(<Harness initialModel="claude-opus-4-8" connections={[MAX]} llmProviderId="max" />)
+    await userEvent.hover(screen.getByTestId('composer-options-trigger'))
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip).toHaveTextContent('Opus 4.8 · High')
+    expect(tooltip).toHaveTextContent('Claude Max · Jeremy')
+  })
+
+  it('keeps the tooltip while disabled, but does not open the popover', async () => {
+    render(<Harness disabled initialModel="claude-opus-4-8" connections={[MAX]} llmProviderId="max" />)
+    const trigger = screen.getByTestId('composer-options-trigger')
+    expect(trigger).toHaveAttribute('aria-disabled', 'true')
+    await userEvent.hover(trigger)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Opus 4.8 · High')
+    await userEvent.click(trigger)
+    expect(screen.queryByText('Effort')).not.toBeInTheDocument()
+  })
+
+  it('does not show the tooltip over the open popover when the pointer comes back to the trigger', async () => {
+    render(<Harness initialModel="claude-opus-4-8" connections={[MAX]} llmProviderId="max" />)
+    const trigger = screen.getByTestId('composer-options-trigger')
+    await userEvent.click(trigger)
+    expect(await screen.findByText('Effort')).toBeInTheDocument()
+    await userEvent.unhover(trigger)
+    await userEvent.hover(trigger)
+    // Outlast the tooltip's open delay before asserting it stayed closed.
+    await new Promise(resolve => setTimeout(resolve, 900))
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 
   it('orders the sections Model → Effort → Speed', async () => {

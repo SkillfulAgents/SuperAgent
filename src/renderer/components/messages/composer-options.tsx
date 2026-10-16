@@ -5,7 +5,14 @@ import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
+import { useModelLock } from '@renderer/hooks/use-model-lock'
+import { useModelAvailabilities } from '@renderer/hooks/use-provider-model-availability'
+import { useModelAvailabilityAction } from '@renderer/context/model-availability-action-context'
+import { announceModelFallback } from '@renderer/lib/model-fallback-notice'
+import type { ModelLock } from './model-family-list'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -40,6 +47,8 @@ export interface ComposerOptionsState {
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
+  /** Models the selected connection's provider says cannot run (e.g. a plan excludes them). */
+  modelLock?: ModelLock
   /**
    * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
    * explicit user pick, no session-seeded value) are OMITTED, not serialized:
@@ -74,7 +83,7 @@ export function findCatalogModel(
   if (!selection) return undefined
   return (
     catalog.find((m) => m.id === selection) ??
-    catalog.find((m) => m.family === selection && m.isLatest)
+    catalog.find((m) => m.isLatest && isFamilyAlias(m, selection))
   )
 }
 
@@ -150,7 +159,32 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const localSelection = resolveSelection(llmProviderId && model ? { llmProviderId, model } : null, connections)
   // Validate the pair before falling back. Never combine a removed account's
   // model with another account merely because both happen to expose that ID.
-  const effectiveSelection = localSelection ?? inheritedSelection
+  const savedSelection = localSelection ?? inheritedSelection
+
+  // ---- Availability ----
+  // A model the provider says cannot run now (e.g. the plan excludes it) counts
+  // as unset, exactly as on the server: the list goes on to the chat's model,
+  // the agent default, the global default, then the global connection's own
+  // default and any model it can run. Derived, not stored: saved choices come
+  // back as soon as they can run. The pickers never offer a locked model, so
+  // only an inherited or saved one is ever substituted.
+  const availabilities = useModelAvailabilities(connections)
+  const globalSelection = resolveSelection(connectionData?.defaultSelection, connections)
+  const lockedReason = availabilities.reasonFor(savedSelection?.llmProviderId, savedSelection?.wireModel)
+  const runnable = (selection: typeof savedSelection): selection is NonNullable<typeof savedSelection> =>
+    !!selection && !availabilities.reasonFor(selection.llmProviderId, selection.wireModel)
+  const connectionDefault = (selection: typeof savedSelection) => {
+    const connection = selection && connections.find(c => c.id === selection.llmProviderId)
+    if (!connection) return null
+    const preferred = resolveSelection(connection.defaultModel ? { llmProviderId: connection.id, model: connection.defaultModel } : null, connections)
+    if (runnable(preferred)) return preferred
+    const best = bestAllowedModel(connection.catalog, m => !!availabilities.reasonFor(connection.id, m.id))
+    return best ? { llmProviderId: connection.id, model: best.id, wireModel: best.id } : null
+  }
+  const substituteSelection = lockedReason
+    ? [currentSelection, agentSelection, globalSelection].find(runnable) ?? connectionDefault(globalSelection ?? savedSelection)
+    : null
+  const effectiveSelection = substituteSelection ?? savedSelection
   const effectiveLlmProviderId = effectiveSelection?.llmProviderId
   const selectedConnection = connections.find(c => c.id === effectiveLlmProviderId)
   useEffect(() => {
@@ -343,10 +377,41 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
+
+  // The selected connection's restrictions, for the picker's lock badges.
+  const modelLock = useModelLock(selectedConnection)
+  // Say once, in the provider's words, that a saved choice was passed over.
+  const openAvailabilityAction = useModelAvailabilityAction()
+  const lockedConnection = connections.find(c => c.id === savedSelection?.llmProviderId)
+  const lockedModel = lockedReason ? lockedConnection?.catalog.find(m => m.id === savedSelection?.wireModel) : undefined
+  const substituteModel = substituteSelection
+    ? connections.find(c => c.id === substituteSelection.llmProviderId)?.catalog.find(m => m.id === substituteSelection.wireModel)
+    : undefined
+  const lockedAction = lockedConnection ? availabilities.availabilityOf(lockedConnection.id)?.action ?? null : null
+  useEffect(() => {
+    if (!lockedModel || !substituteModel || !lockedReason) return
+    announceModelFallback({
+      locked: lockedModel,
+      fallback: substituteModel,
+      reason: lockedReason,
+      ...(lockedAction && {
+        action: {
+          label: lockedAction.label,
+          run: () => openAvailabilityAction({
+            action: lockedAction,
+            model: { id: lockedModel.id, label: lockedModel.label },
+            connectionId: lockedConnection?.id,
+          }),
+        },
+      }),
+    })
+  }, [lockedModel, substituteModel, lockedReason, lockedAction, lockedConnection?.id, openAvailabilityAction])
+
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
+      // An untouched new chat sends nothing: the server walks the same list.
       ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
     }),
     [effort, speed, displayedModel, effectiveLlmProviderId],
@@ -366,10 +431,11 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       catalog,
       defaultModel: fallbackModel,
       webProvider: settings?.webProvider,
+      modelLock,
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
   )
 }
 

@@ -4,10 +4,12 @@ import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager, SessionBusyError, isSdkSessionNotFound } from './session-manager';
+import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
+import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -60,6 +62,8 @@ import {
 import { finishHostLoginSync, startHostLoginSync } from './browser-login-sync';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
+import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { installVolumeStop } from './volume-stop';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -87,6 +91,19 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 const app = new Hono();
 const sessionManager = new SessionManager();
+
+sessionManager.on('undelivered-turn', (report: UndeliveredTurnReport) => {
+  console.error(
+    `[Session ${report.sessionId}] Turn ended (${report.resultSubtype ?? 'unknown'}) with no stream subscriber; ` +
+    `the last one closed at ${report.closedAt}, ${report.msSinceClose}ms earlier (code=${report.closeCode}, ` +
+    `reason=${report.closeReason || 'none'}, age=${report.socketAgeMs}ms, idle=${report.idleMsBeforeClose}ms, ` +
+    `error=${report.socketError ?? 'none'})`,
+  );
+  void notifyUndeliveredTurn(report).catch((error) => {
+    console.warn(`[Session ${report.sessionId}] Failed to report undelivered turn:`, error);
+  });
+});
+
 const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
 
 // The agent's own Bash can reach this API (shared network namespace), so every
@@ -100,12 +117,26 @@ app.use('*', async (c, next) => {
   return next();
 });
 
+// Volumes mount at boot. Until they settle, /health holds the host's start check.
+let volumesSettled = false;
+const volumesMounted = mountVolumes(parseVolumes(process.env.SUPERAGENT_VOLUMES)).then(() => {
+  volumesSettled = true;
+});
+
 // Health check endpoint
 app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  if (!volumesSettled) return c.json({ status: 'starting' }, 503);
+  return c.json({ status: 'ok', timestamp: new Date().toISOString(), volumes: mountedVolumeIds() });
 });
 
 // Session endpoints
+installVolumeStop(app, {
+  hasVolumes: () => mountedVolumeIds().length > 0,
+  stopWriters: async () => { await Promise.all([dashboardManager.stopAll(), sessionManager.stopAll()]); },
+  drain: drainVolumeUploads,
+  finish: finishVolumeStop,
+});
+
 app.post('/sessions', async (c) => {
   try {
     const body = await c.req.json<CreateSessionRequest>();
@@ -258,6 +289,7 @@ app.post('/sessions/:id/messages', async (c) => {
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
+      globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
     });
 
     return c.json({ success: true }, 201);
@@ -765,6 +797,7 @@ import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIME
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
+import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
 import {
   observeUrl, resetUrlTracking,
@@ -862,11 +895,29 @@ async function execBrowser(
   }
 }
 
+/**
+ * The URL the agent is shown: the page's own, except on Chrome's error page,
+ * where it is the address that failed to load (error-page-url.ts).
+ */
+function addressBarUrl(url: string): Promise<string> {
+  return resolveErrorPageUrl(url, async () => activeTabAddress(
+    await tabManager.queryTabs(),
+    getAllPageTargets,
+    (left, right) => tabManager.urlsMatch(left, right),
+  ));
+}
+
+/** An observation whose URL is the address bar's (see addressBarUrl). */
+async function withAddressBarUrl(obs: PageObservation): Promise<PageObservation> {
+  const url = await addressBarUrl(obs.url);
+  return url === obs.url ? obs : { ...obs, url };
+}
+
 /** Read the current URL after an action and build the navigation digest. */
 async function observeUrlDigest(): Promise<UrlDigest | null> {
   const r = await execBrowser(['get', 'url'], browserState.cdpUrl || undefined);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
-  return observeUrl(r.stdout.trim());
+  return observeUrl(await addressBarUrl(r.stdout.trim()));
 }
 
 /** Run a page-observer script in the active page; null when the page cannot be read. */
@@ -878,7 +929,8 @@ async function observePage(script: string): Promise<string | null> {
 /** One observation of the current page. */
 async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
   const out = await observePage(observerScript(opts));
-  return (out === null ? null : parseObservation(out)) ?? EMPTY_OBSERVATION;
+  const obs = out === null ? null : parseObservation(out);
+  return obs ? withAddressBarUrl(obs) : EMPTY_OBSERVATION;
 }
 
 /**
@@ -899,7 +951,7 @@ async function runWithEffect(
     policy,
   });
   if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0 };
-  const digest = settled.after?.url ? observeUrl(settled.after.url) : await observeUrlDigest();
+  const digest = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
   const effect = digest?.navigated ? null : settled.effect;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs };
 }
@@ -1251,8 +1303,12 @@ app.post('/browser/open', async (c) => {
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
-    // Clean up any leftover daemon state before starting
-    cleanupAgentBrowserDaemon();
+    // Clear leftover daemon state only before a net-new launch. While a browser
+    // is active the daemon owns the container's Chrome, so this cleanup (which
+    // pkills agent-browser and headless Chrome) relaunched Chrome on every
+    // navigation and dropped the live-view screencast. Failed opens still clean
+    // up in the retry below.
+    if (launched) cleanupAgentBrowserDaemon();
 
     let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
@@ -1298,7 +1354,7 @@ app.post('/browser/open', async (c) => {
       observeUrl(page.url);
     } else {
       const fallback = await execBrowser(['get', 'url'], cdpUrl);
-      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
+      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(await addressBarUrl(fallback.stdout.trim()));
     }
     // Before responding, so any restore and reload land before the agent starts using the page.
     const loginSync = startHostLoginSync();
@@ -1476,7 +1532,7 @@ app.post('/browser/snapshot', async (c) => {
       const out = await observePage(observerScript({ previewChars: THIN_TREE_PREVIEW_CHARS }));
       return out === null ? null : parseObservation(out);
     });
-    const probe = observed ?? EMPTY_OBSERVATION;
+    const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
@@ -1673,7 +1729,8 @@ app.post('/browser/wait', async (c) => {
     // answer in time simply yields no page line.
     const probePage = async (): Promise<{ url: string; readyState: string } | null> => {
       const probe = await execBrowser(['eval', WAIT_PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined, { timeoutMs: WAIT_PAGE_PROBE_TIMEOUT_MS });
-      return probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+      const page = probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+      return page ? { ...page, url: await addressBarUrl(page.url) } : null;
     };
 
     if (result.exitCode !== 0) {
@@ -2077,8 +2134,14 @@ app.post('/browser/run', async (c) => {
       tabInfo = await tabManager.detectNewTab();
     }
 
+    // `get url` on Chrome's error page reads chrome-error://; report the
+    // address that failed instead, as every other URL the agent sees does.
+    const output = verb === 'get' && commandArgs[1]?.toLowerCase() === 'url' && commandArgs.length === 2
+      ? await addressBarUrl(result.stdout)
+      : result.stdout;
+
     notifyBrowserAction();
-    return c.json({ success: true, output: result.stdout, ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, output, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
     return c.json({ error: error.message || 'Failed to run browser command' }, 500);
@@ -2315,10 +2378,15 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     timestamp: new Date(),
   }));
 
+  const connectedAt = Date.now();
+  let lastSentAt = connectedAt;
+  let socketError: string | undefined;
+
   // Subscribe to session events (SDK messages)
   const unsubscribe = sessionManager.subscribe(sessionId, (message) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
+      lastSentAt = Date.now();
     }
   });
 
@@ -2346,6 +2414,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
+        globalInstructions: globalInstructionsSchema.parse(payload.globalInstructions),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
@@ -2357,14 +2426,28 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   });
 
   // Handle connection close
-  ws.on('close', () => {
-    console.log(`WebSocket connection closed for session ${sessionId}`);
+  ws.on('close', (code: number, reason: Buffer) => {
     unsubscribe();
+    const now = Date.now();
+    const close = {
+      code,
+      reason: reason.toString(),
+      socketAgeMs: now - connectedAt,
+      idleMsBeforeClose: now - lastSentAt,
+      socketError,
+    };
+    console.log(
+      `WebSocket connection closed for session ${sessionId} (code=${close.code}, reason=${close.reason || 'none'}, ` +
+      `turnInFlight=${sessionManager.isTurnInFlight(sessionId)}, age=${close.socketAgeMs}ms, ` +
+      `idle=${close.idleMsBeforeClose}ms, error=${socketError ?? 'none'})`,
+    );
+    sessionManager.noteStreamClosed(sessionId, close);
   });
 
   // Handle errors
-  ws.on('error', (error: Error) => {
+  ws.on('error', (error: Error & { code?: string }) => {
     console.error(`WebSocket error for session ${sessionId}:`, error);
+    socketError = error.code ?? error.message;
     unsubscribe();
   });
 
@@ -3303,11 +3386,15 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 // until a session has been created here at least once. Kicked off before the
 // dashboard scan below: on a cold container the two compete for the same two
 // CPUs, and only this one is in front of a waiting user.
-sessionManager.prewarmFromLastProfile();
+// Both wait for volumes to mount: the warm CLI keeps the prompt it starts with, which lists them.
+volumesMounted.then(() => {
+  if (isShuttingDown) return;
+  sessionManager.prewarmFromLastProfile();
 
-// Start dashboard processes asynchronously (don't block server startup)
-dashboardManager.scanAndStartAll().catch((error) => {
-  console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  // Start dashboard processes asynchronously (don't block server startup)
+  dashboardManager.scanAndStartAll().catch((error) => {
+    console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  });
 });
 
 // Sweep abandoned input requests. Entries the host never answers (session
@@ -3363,6 +3450,8 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true;
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
+  // The host stops containers with a 5s grace, then kills them.
+  const uploadDeadline = Date.now() + 4_000;
 
   // Close the browser even if an automated session released its ownership lock.
   if (browserState.location) {
@@ -3388,6 +3477,9 @@ async function gracefulShutdown(signal: string) {
   } catch (error) {
     console.error('Error stopping sessions:', error);
   }
+
+  // After sessions stop, so nothing is still writing to a volume.
+  await unmountVolumes(uploadDeadline);
 
   // Close WebSocket servers
   browserWss.close(() => {

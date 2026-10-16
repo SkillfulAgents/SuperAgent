@@ -113,6 +113,8 @@ class ReadAloudController {
     const owner = Symbol()
     this.outputOwners.add(owner)
     this.stop()
+    // Live brings its own output: an unlocked one would sit open, unused.
+    this.releaseUnlockedAudio()
     for (const listener of this.listeners) listener()
     return () => {
       if (!this.outputOwners.delete(owner)) return
@@ -236,7 +238,10 @@ class ReadAloudController {
     }
     const current = this.current
     const player = this.player
-    if (!current || !player) return
+    if (!current || !player) {
+      this.releaseUnlockedAudio()
+      return
+    }
     const fromWord = Math.max(0, Math.floor(player.getWordCursor()))
     void this.speak(current.id, current.markdown, fromWord, { paused: player.status === 'paused' })
   }
@@ -289,6 +294,17 @@ class ReadAloudController {
   unlockAudio(): void {
     if (this.unlockedContext && this.unlockedContext.state !== 'closed') return
     this.unlockedContext = createUnlockedAudioContext()
+  }
+
+  /**
+   * Close an unlocked output nothing adopted. A running context (and, in
+   * Safari, the media element behind it) keeps the tab marked as playing
+   * audio for as long as it is open.
+   */
+  releaseUnlockedAudio(): void {
+    const ctx = this.unlockedContext
+    this.unlockedContext = null
+    if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
   }
 
   /**

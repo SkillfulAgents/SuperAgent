@@ -79,12 +79,12 @@ describe('parseAttachedFiles', () => {
 describe('appendMountedFolders', () => {
   it('appends mounts to a message with content', () => {
     const result = appendMountedFolders('Hello', [{ containerPath: '/mounts/project', hostPath: '/Users/joe/project' }])
-    expect(result).toBe('Hello\n\n[Mounted folders (read-write):]\n- /mounts/project (from /Users/joe/project)')
+    expect(result).toBe('Hello\n\n[Attached drives (read-write):]\n- /mounts/project (from /Users/joe/project)')
   })
 
   it('creates a mount-only message when content is empty', () => {
     const result = appendMountedFolders('', [{ containerPath: '/mounts/src', hostPath: '/tmp/src' }])
-    expect(result).toBe('[Mounted folders (read-write):]\n- /mounts/src (from /tmp/src)')
+    expect(result).toBe('[Attached drives (read-write):]\n- /mounts/src (from /tmp/src)')
   })
 
   it('handles multiple mounts', () => {
@@ -92,7 +92,7 @@ describe('appendMountedFolders', () => {
       { containerPath: '/mounts/a', hostPath: '/host/a' },
       { containerPath: '/mounts/b', hostPath: '/host/b' },
     ])
-    expect(result).toBe('Hi\n\n[Mounted folders (read-write):]\n- /mounts/a (from /host/a)\n- /mounts/b (from /host/b)')
+    expect(result).toBe('Hi\n\n[Attached drives (read-write):]\n- /mounts/a (from /host/a)\n- /mounts/b (from /host/b)')
   })
 
   it('returns message unchanged when mounts array is empty', () => {
@@ -101,7 +101,7 @@ describe('appendMountedFolders', () => {
 })
 
 describe('parseMountedFolders', () => {
-  it('parses mounts from a message with content', () => {
+  it('still parses the tag on messages sent before drives', () => {
     const text = 'Hello\n\n[Mounted folders (read-write):]\n- /mounts/project (from /Users/joe/project)'
     const result = parseMountedFolders(text)
     expect(result.cleanText).toBe('Hello')
@@ -109,7 +109,7 @@ describe('parseMountedFolders', () => {
   })
 
   it('parses mount-only message', () => {
-    const text = '[Mounted folders (read-write):]\n- /mounts/src (from /tmp/src)'
+    const text = '[Attached drives (read-write):]\n- /mounts/src (from /tmp/src)'
     const result = parseMountedFolders(text)
     expect(result.cleanText).toBe('')
     expect(result.mountedFolders).toEqual([{ containerPath: '/mounts/src', hostPath: '/tmp/src' }])

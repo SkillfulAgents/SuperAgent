@@ -140,7 +140,11 @@ export function AgentContextMenu({
   // else. It is also the only way to file an agent on touch, where dragging a
   // row between folders is not a realistic gesture.
   const { data: userSettings } = useUserSettings()
-  const { data: allAgents } = useAgents()
+  // Filing needs every agent, but only when it runs. This menu wraps every
+  // sidebar row, so it keeps the list fetched without re-rendering on its
+  // changes (each status refetch would otherwise re-render every row), and the
+  // write reads the current list from the cache.
+  useAgents({ notifyOnChangeProps: [], poll: false })
   const updateSettings = useUpdateUserSettings()
   const folders = useMemo(() => sanitizeFolders(userSettings?.agentFolders), [userSettings?.agentFolders])
   const assignedFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
@@ -169,12 +173,12 @@ export function AgentContextMenu({
   const buildSections = useCallback(
     (current: UserSettingsData) =>
       buildFolderSections(
-        applyAgentOrder(allAgents ?? [], current.agentOrder),
+        applyAgentOrder(queryClient.getQueryData<ApiAgent[]>(['agents']) ?? [], current.agentOrder),
         current.agentFolders,
         current.agentFolderAssignments,
         current.agentListOrder
       ),
-    [allAgents]
+    [queryClient]
   )
 
   const handleMoveToFolder = useCallback((folderId: string) => {
@@ -339,7 +343,7 @@ export function AgentContextMenu({
           <ContextMenuSub>
             <ContextMenuSubTrigger data-testid="move-agent-to-folder-trigger">
               <FolderInput className="h-4 w-4 mr-2" />
-              Move to Folder
+              Move to Section
             </ContextMenuSubTrigger>
             <ContextMenuSubContent className="rounded-xl p-2" data-testid="move-agent-to-folder-menu">
               {destinations.map((folder) => (
@@ -356,7 +360,7 @@ export function AgentContextMenu({
                 </ContextMenuItem>
               ))}
               {/* With nowhere to go (no folders, agent already in the default
-                  one) the list is empty, so no rule sits above New Folder. */}
+                  one) the list is empty, so no rule sits above New Section. */}
               {destinations.length > 0 && <ContextMenuSeparator className="mx-1" />}
               <ContextMenuItem
                 // Secondary to the destinations above: muted until focused.
@@ -368,7 +372,7 @@ export function AgentContextMenu({
                 data-testid="move-agent-to-new-folder-item"
               >
                 <Plus className="h-4 w-4 mr-2" />
-                New Folder
+                New Section
               </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
@@ -478,9 +482,9 @@ export function AgentContextMenu({
       <AlertDialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
         <AlertDialogContent data-testid="new-agent-folder-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>New Folder</AlertDialogTitle>
+            <AlertDialogTitle>New Section</AlertDialogTitle>
             <AlertDialogDescription>
-              Folders organise your left nav only. Shared agents keep their own
+              Sections organise your left nav only. Shared agents keep their own
               place for everybody else.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -493,8 +497,8 @@ export function AgentContextMenu({
                 handleCreateFolderWithAgent()
               }
             }}
-            placeholder="Folder name"
-            aria-label="Folder name"
+            placeholder="Section name"
+            aria-label="Section name"
             autoFocus
             maxLength={120}
             data-testid="new-agent-folder-name-input"

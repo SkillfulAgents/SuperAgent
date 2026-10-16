@@ -21,11 +21,21 @@ describe('formatMediaTime', () => {
 
   it('floors fractional seconds', () => {
     expect(formatMediaTime(12.9)).toBe('0:12')
+    expect(formatMediaTime(12.999999999)).toBe('0:12')
   })
 
-  it('collapses negative or non-finite input to 0:00', () => {
+  it('adds floored hundredths for comments', () => {
+    expect(formatMediaTime(201.4, { hundredths: true })).toBe('3:21.40')
+    expect(formatMediaTime(0.29, { hundredths: true })).toBe('0:00.29')
+    expect(formatMediaTime(12.999999999, { hundredths: true })).toBe('0:12.99')
+    expect(formatMediaTime(131072.02, { hundredths: true })).toBe('36:24:32.02')
+    expect(formatMediaTime(3723.05, { hundredths: true })).toBe('1:02:03.05')
+  })
+
+  it('collapses negative or non-finite input to zero', () => {
     expect(formatMediaTime(-4)).toBe('0:00')
     expect(formatMediaTime(NaN)).toBe('0:00')
     expect(formatMediaTime(Infinity)).toBe('0:00')
+    expect(formatMediaTime(NaN, { hundredths: true })).toBe('0:00.00')
   })
 })

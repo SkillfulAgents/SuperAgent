@@ -46,7 +46,7 @@ export function isDatabaseOpen(): boolean {
  * migrations table, run the pending ones in one transaction, record each.
  * Works for a synchronous or an asynchronous driver.
  */
-export async function migrateFromBundle(db: AppDatabase): Promise<void> {
+export async function migrateFromBundle(db: AppDatabase, migrations: readonly MigrationMeta[] = migrationBundle): Promise<void> {
   // `dialect` and `session` are what drizzle's own `migrate()` reaches for;
   // they are marked internal in its types, so the cast is the same reach.
   const internals = db as unknown as {
@@ -59,7 +59,7 @@ export async function migrateFromBundle(db: AppDatabase): Promise<void> {
     }
     session: unknown
   }
-  await internals.dialect.migrate([...migrationBundle], internals.session, {
+  await internals.dialect.migrate([...migrations], internals.session, {
     migrationsTable: MIGRATIONS_TABLE,
   })
 }

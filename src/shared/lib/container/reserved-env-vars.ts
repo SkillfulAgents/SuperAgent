@@ -35,7 +35,8 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
   'REMOTE_MCPS',
-  'SUPERAGENT_MOUNTS',
+  // The agent's volumes, mounted by the image
+  'SUPERAGENT_VOLUMES',
   // Host browser
   'AGENT_BROWSER_USE_HOST',
   'HOST_APP_URL',
@@ -45,6 +46,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'HOST_PLATFORM',
   'COMPOSIO_PLATFORM_MODE',
   'PLATFORM_AUTH_ACTIVE',
+  'WEBHOOK_RELAY_AVAILABLE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
 ])
 
@@ -89,7 +91,7 @@ export function findReservedEnvVarKeys(
 
 /**
  * Zod schema for the `customEnvVars` map at the settings write boundary.
- * Defense-in-depth (per CLAUDE.md's validate-at-boundary rule): rejects any
+ * Defense-in-depth (per AGENTS.md's validate-at-boundary rule): rejects any
  * payload that tries to set a reserved runtime key so it never even reaches
  * persisted settings. The container merge (mergeCustomEnvVars) is the primary
  * guard; this stops the bad config at the door.

@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 const agent: ApiAgent = {
+  avatar: { color: 'tonal-blue', shape: 'circle' } as const,
   slug: 'test-agent',
   displaySlug: 'test-agent',
   name: 'Test Agent',
@@ -87,6 +88,12 @@ vi.mock('@renderer/components/ui/app-link', () => ({
     className?: string
     'data-testid'?: string
   }) => <a href="/agents/test-agent" className={className} data-testid={testId}>{children}</a>,
+}))
+
+// The Todo board's header chrome has its own tests (todo-session-chrome.test.tsx).
+vi.mock('@renderer/components/todo/todo-session-chrome', () => ({
+  TodoSessionBack: () => null,
+  TodoSessionControls: () => null,
 }))
 
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
@@ -178,6 +185,27 @@ describe('AgentHeader breadcrumbs', () => {
     expect(sessionMenu).toHaveAttribute('data-agent-slug', 'test-agent')
     expect(sessionMenu).toHaveAttribute('data-is-active', 'true')
     expect(sessionMenu).toContainElement(screen.getByTestId('session-breadcrumb'))
+  })
+
+  it('gives each session a fresh session menu, so a running menu action stays with its session', () => {
+    const mutation = { mutate: vi.fn(), isPending: false }
+    const header = () => (
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />
+    )
+    const { rerender } = render(header())
+    const first = screen.getByTestId('session-breadcrumb-context-menu')
+
+    mocks.routeView = { kind: 'session', id: 'session-2' }
+    rerender(header())
+
+    const second = screen.getByTestId('session-breadcrumb-context-menu')
+    expect(second).toHaveAttribute('data-session-id', 'session-2')
+    expect(second).not.toBe(first)
   })
 
   it('leaves Fork enabled when the session is idle', () => {
