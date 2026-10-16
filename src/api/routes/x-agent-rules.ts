@@ -133,7 +133,10 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
   if (decision === 'deny') {
     return c.json({ error: 'denied_by_user', message: 'The user kept this rule.' }, 403)
   }
-  if (!await deleteRule(existing.rule.id)) return c.json({ error: 'The rule was already deleted.' }, 409)
+  // Delete only the version the user was shown.
+  if (!await deleteRule(existing.rule.id, existing.version.id)) {
+    return c.json({ error: 'rule_changed', message: 'The rule changed or was deleted while waiting for approval. It was not deleted.' }, 409)
+  }
   await logAuditEvent({
     userId: null,
     object: 'policy',
@@ -243,15 +246,20 @@ xAgentRules.post('/create', zValidator('json', createSchema), async (c) => {
     toolSchemaHash: prepared.report.toolSchemaHash,
   }
   const saved = replaces
-    ? await addRuleVersion(replaces.rule.id, version)
+    ? await addRuleVersion(replaces.rule.id, version, replaces.version.id)
     : await createRule({
       target,
       agentSlug: appliesTo === 'agent' ? callerSlug : null,
       createdBy: 'agent',
       createdByAgentSlug: callerSlug,
       version,
+      maxRules: MAX_RULES_PER_TARGET,
     })
-  if (!saved) return c.json({ error: 'The rule changed or was deleted while awaiting approval. It was not saved.' }, 409)
+  if (!saved) {
+    return replaces
+      ? c.json({ error: 'rule_changed', message: 'The rule changed or was deleted while awaiting approval. It was not saved.' }, 409)
+      : c.json({ error: 'too_many_rules', message: `This connection reached ${MAX_RULES_PER_TARGET} rules while awaiting approval. It was not saved.` }, 409)
+  }
   await logAuditEvent({
     userId: null,
     object: 'policy',

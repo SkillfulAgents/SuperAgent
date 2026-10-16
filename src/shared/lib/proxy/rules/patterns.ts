@@ -12,9 +12,15 @@
  *
  * Patterns are matched against the path exactly as the proxy forwards it; the
  * proxy rejects dot segments before rules run, so the two cannot diverge.
+ *
+ * Matching runs on the app's thread, outside the rule sandbox, on paths and
+ * tool names the agent chooses — so it never uses regular expressions (whose
+ * backtracking a pattern like `*a*a*a*b` can make exponential): globs match
+ * with a greedy left-to-right scan, and `**` with a pattern × path table.
  */
 
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+const MAX_PATTERN_LENGTH = 512
 
 export interface ParsedApiPattern {
   method: string
@@ -26,6 +32,7 @@ export type PatternParseResult =
   | { ok: false; error: string }
 
 export function parseApiPattern(raw: string): PatternParseResult {
+  if (raw.length > MAX_PATTERN_LENGTH) return { ok: false, error: `Patterns must be at most ${MAX_PATTERN_LENGTH} characters` }
   const trimmed = raw.trim()
   const match = /^(\S+)\s+(\/\S*)$/.exec(trimmed)
   if (!match) return { ok: false, error: `"${raw}" is not "METHOD /path"` }
@@ -54,27 +61,50 @@ function splitPath(path: string): string[] {
   return stripped === '' ? [] : stripped.split('/')
 }
 
-function segmentMatches(pattern: string, segment: string): boolean {
-  if (!pattern.includes('*')) return pattern === segment
-  if (segment === '') return false
-  const expression = pattern
-    .split('*')
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.+')
-  return new RegExp(`^${expression}$`).test(segment)
+/**
+ * Glob match where each `*` stands for at least `starMin` characters. The
+ * literal parts between stars are placed left to right at their earliest
+ * position, which is optimal for globs without other wildcards, so the cost
+ * is one `indexOf` per part — no backtracking.
+ */
+export function globMatches(pattern: string, text: string, starMin: 0 | 1): boolean {
+  const parts = pattern.split('*')
+  if (parts.length === 1) return pattern === text
+  const first = parts[0]
+  const last = parts[parts.length - 1]
+  if (!text.startsWith(first)) return false
+  let cursor = first.length
+  for (let i = 1; i < parts.length - 1; i++) {
+    const at = text.indexOf(parts[i], cursor + starMin)
+    if (at === -1) return false
+    cursor = at + parts[i].length
+  }
+  return text.length - last.length >= cursor + starMin && text.endsWith(last)
 }
 
+function segmentMatches(pattern: string, segment: string): boolean {
+  return globMatches(pattern, segment, 1)
+}
+
+/**
+ * Pattern segments against path segments; `**` spans zero or more. Filled
+ * bottom-up (no recursion, so no stack depth to exhaust): `next[q]` says
+ * whether pattern[p + 1..] matches path[q..]. Cost is pattern × path segment
+ * comparisons.
+ */
 function segmentsMatch(pattern: string[], path: string[]): boolean {
-  if (pattern.length === 0) return path.length === 0
-  const [head, ...rest] = pattern
-  if (head === '**') {
-    for (let skip = 0; skip <= path.length; skip++) {
-      if (segmentsMatch(rest, path.slice(skip))) return true
+  const n = path.length
+  let next: boolean[] = Array.from({ length: n + 1 }, (_, q) => q === n)
+  for (let p = pattern.length - 1; p >= 0; p--) {
+    const current: boolean[] = new Array(n + 1).fill(false)
+    for (let q = n; q >= 0; q--) {
+      current[q] = pattern[p] === '**'
+        ? next[q] || (q < n && current[q + 1])
+        : q < n && next[q + 1] && segmentMatches(pattern[p], path[q])
     }
-    return false
+    next = current
   }
-  if (path.length === 0) return false
-  return segmentMatches(head, path[0]) && segmentsMatch(rest, path.slice(1))
+  return next[0]
 }
 
 export function matchesApiPattern(pattern: ParsedApiPattern, method: string, path: string): boolean {
@@ -90,6 +120,7 @@ export function matchesAnyApiPattern(patterns: string[], method: string, path: s
 }
 
 export function validateToolPattern(raw: string): string | null {
+  if (raw.length > MAX_PATTERN_LENGTH) return `Tool patterns must be at most ${MAX_PATTERN_LENGTH} characters`
   const trimmed = raw.trim()
   if (trimmed === '') return 'Tool pattern must not be empty'
   if (/\s/.test(trimmed)) return `Tool pattern "${raw}" must not contain whitespace`
@@ -97,12 +128,7 @@ export function validateToolPattern(raw: string): string | null {
 }
 
 export function matchesToolPattern(pattern: string, toolName: string): boolean {
-  const expression = pattern
-    .trim()
-    .split('*')
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*')
-  return new RegExp(`^${expression}$`).test(toolName)
+  return globMatches(pattern.trim(), toolName, 0)
 }
 
 export function matchesAnyToolPattern(patterns: string[], toolName: string): boolean {

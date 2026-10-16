@@ -375,6 +375,11 @@ export async function validateRuleDraft(
     const deadline = performance.now() + VALIDATION_BUDGET_MS
     let stopped: string | null = null
     for (const test of draft.tests) {
+      const oversized = testInputTooLarge(test.input ?? {})
+      if (oversized) {
+        errors.push(`Test "${test.name}": ${oversized}`)
+        continue
+      }
       if (performance.now() >= deadline) {
         stopped = `Validation stopped after ${testResults.length} of ${draft.tests.length} test cases: the rule is too slow.`
         break
@@ -419,6 +424,17 @@ export async function validateRuleDraft(
   }
 
   return { ok: errors.length === 0, errors, warnings, testResults, coverage, toolSchemaHash: schemaHash }
+}
+
+// Test inputs arrive in a JSON body, not a request line, so nothing else
+// bounds them; real requests can't be longer than this either.
+const MAX_TEST_PATH_LENGTH = 16_384
+const MAX_TEST_TOOL_LENGTH = 1_024
+
+function testInputTooLarge(raw: Record<string, unknown>): string | null {
+  if (typeof raw.path === 'string' && raw.path.length > MAX_TEST_PATH_LENGTH) return `path is longer than ${MAX_TEST_PATH_LENGTH} characters.`
+  if (typeof raw.tool === 'string' && raw.tool.length > MAX_TEST_TOOL_LENGTH) return `tool name is longer than ${MAX_TEST_TOOL_LENGTH} characters.`
+  return null
 }
 
 function emptyProbes(draft: RuleDraft): Array<{ label: string; input: RuleInput }> {

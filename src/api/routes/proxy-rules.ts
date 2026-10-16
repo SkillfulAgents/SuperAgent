@@ -115,7 +115,9 @@ function mount(kind: RuleKind, param: 'accountId' | 'mcpId', owns: (param: strin
         warnings: prepared.report.warnings,
         toolSchemaHash: prepared.report.toolSchemaHash,
       },
+      maxRules: MAX_RULES_PER_TARGET,
     })
+    if (!saved) return c.json({ error: `This connection already has ${MAX_RULES_PER_TARGET} rules. Delete one first.` }, 422)
     await logAuditEvent({
       userId: getCurrentUserId(c),
       object: 'policy',

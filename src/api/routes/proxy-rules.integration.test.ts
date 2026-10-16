@@ -52,7 +52,7 @@ import proxy from './proxy'
 import xAgentRules from './x-agent-rules'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import { createRule, invalidateRuleCache, listRules } from '@shared/lib/proxy/rules/store'
+import { addRuleVersion, createRule, invalidateRuleCache, listRules } from '@shared/lib/proxy/rules/store'
 import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
 import { normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 
@@ -100,7 +100,7 @@ function auditRows() {
 }
 
 async function userRule(agentSlug: string | null = null, code = INTERNAL_ONLY, effect: 'allow' | 'require' = 'allow') {
-  return createRule({
+  const saved = await createRule({
     target: { kind: 'api', targetId: 'acct-gmail' },
     agentSlug,
     createdBy: 'user',
@@ -110,6 +110,8 @@ async function userRule(agentSlug: string | null = null, code = INTERNAL_ONLY, e
       code, tests: gmailTests, warnings: [], toolSchemaHash: null,
     },
   })
+  if (!saved) throw new Error('rule was not saved')
+  return saved
 }
 
 beforeEach(() => {
@@ -405,6 +407,60 @@ describe('agent rule tools', () => {
     agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await deleted).status).toBe(200)
     expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.id)).toEqual([others.rule.id])
+  })
+
+  it('deletes only the version the user was shown', async () => {
+    const rule = await userRule()
+    const pending = call('agent-a', 'delete', { ruleId: rule.rule.id })
+    const review = await waitForReview('agent-a')
+    // The rule becomes a require rule while the deletion card is open.
+    const replaced = await addRuleVersion(rule.rule.id, {
+      effect: 'require', name: 'Review external sends', description: 'review external', restatement: 'review external',
+      patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests, warnings: [], toolSchemaHash: null,
+    })
+    expect(replaced?.version.version).toBe(2)
+    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
+    const res = await pending
+    expect(res.status).toBe(409)
+    expect((await res.json() as { error: string }).error).toBe('rule_changed')
+    const [still] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
+    expect(still.version.effect).toBe('require')
+  })
+
+  it('replaces only the version the user was shown', async () => {
+    const created = call('agent-a', 'create', draft)
+    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
+    expect((await created).status).toBe(200)
+    const [rule] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
+
+    const pending = call('agent-a', 'create', { ...draft, replacesRuleId: rule.rule.id })
+    const review = await waitForReview('agent-a')
+    await addRuleVersion(rule.rule.id, {
+      effect: 'require', name: 'Changed meanwhile', description: 'x', restatement: 'x',
+      patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests, warnings: [], toolSchemaHash: null,
+    })
+    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
+    expect((await pending).status).toBe(409)
+    const [after] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
+    expect(after.version.version).toBe(2)
+    expect(after.version.name).toBe('Changed meanwhile')
+  })
+
+  it('holds the cap when proposals are approved concurrently', async () => {
+    for (let i = 0; i < 19; i++) await userRule()
+    const first = call('agent-a', 'create', draft)
+    const firstReview = await waitForReview('agent-a')
+    const second = call('agent-a', 'create', draft)
+    let secondReview = pendingReviews('agent-a').find((r) => r.id !== firstReview.id)
+    for (let i = 0; !secondReview && i < 100; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      secondReview = pendingReviews('agent-a').find((r) => r.id !== firstReview.id)
+    }
+    agentRegistry.get('agent-a').inputs.reviews.submit(firstReview.id, 'allow')
+    agentRegistry.get('agent-a').inputs.reviews.submit(secondReview!.id, 'allow')
+    const statuses = [(await first).status, (await second).status].sort()
+    expect(statuses).toEqual([200, 409])
+    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(20)
   })
 
   it('caps rules per connection', async () => {

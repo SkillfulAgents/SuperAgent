@@ -4,9 +4,9 @@
  * version keep resolving.
  */
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { batch } from '@shared/lib/db/batch'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { proxyRules, proxyRuleVersions, type ProxyRule, type ProxyRuleVersion } from '@shared/lib/db/schema'
 import type { ActiveRule, RuleEffect, RuleKind, RuleTestCase } from './engine'
 
@@ -188,18 +188,28 @@ function versionValues(ruleId: string, version: number, input: SavedRuleVersionI
   }
 }
 
+/**
+ * Create a rule and its first version. With `maxRules`, the rule is only
+ * inserted while the target has fewer live rules than that — checked by the
+ * insert itself, so concurrent saves cannot overshoot. Returns null when the
+ * cap held the rule back.
+ */
 export async function createRule(options: {
   target: RuleTarget
   agentSlug: string | null
   createdBy: 'user' | 'agent'
   createdByAgentSlug: string | null
   version: SavedRuleVersionInput
-}): Promise<RuleWithVersion> {
+  maxRules?: number
+}): Promise<RuleWithVersion | null> {
   const now = new Date()
   const ruleId = randomUUID()
   const version = versionValues(ruleId, 1, options.version, now)
-  await batch([
-    db.insert(proxyRules).values({
+  const underCap = options.maxRules === undefined
+    ? undefined
+    : sql`(select count(*) from ${proxyRules} where ${targetCondition(options.target)} and ${proxyRules.deletedAt} is null) < ${options.maxRules}`
+  const [inserted] = await batch([
+    insertWhere(proxyRules, {
       id: ruleId,
       kind: options.target.kind,
       accountId: options.target.kind === 'api' ? options.target.targetId : null,
@@ -210,35 +220,55 @@ export async function createRule(options: {
       currentVersionId: version.id,
       createdAt: now,
       updatedAt: now,
-    }),
-    db.insert(proxyRuleVersions).values(version),
+      deletedAt: null,
+    }, underCap),
+    insertWhere(proxyRuleVersions, version, sql`exists (select 1 from ${proxyRules} where ${proxyRules.id} = ${ruleId})`),
   ])
+  if (changesOf(inserted) === 0) return null
   invalidateRuleCache(options.target)
   const saved = await getRule(ruleId)
   if (!saved) throw new Error('Rule disappeared after insert')
   return saved
 }
 
-/** Append a version and make it current. Returns null if the rule is gone. */
-export async function addRuleVersion(ruleId: string, input: SavedRuleVersionInput): Promise<RuleWithVersion | null> {
+/**
+ * Append a version and make it current. With `expectedVersionId`, only while
+ * that version is still current (what the approver was shown). Returns null
+ * when the rule is gone or has moved on.
+ */
+export async function addRuleVersion(
+  ruleId: string,
+  input: SavedRuleVersionInput,
+  expectedVersionId?: string,
+): Promise<RuleWithVersion | null> {
   const current = await getRule(ruleId)
   if (!current) return null
+  const expected = expectedVersionId ?? current.version.id
+  if (current.version.id !== expected) return null
   const now = new Date()
   const version = versionValues(ruleId, current.version.version + 1, input, now)
-  await batch([
-    db.insert(proxyRuleVersions).values(version),
-    db.update(proxyRules)
-      .set({ currentVersionId: version.id, updatedAt: now })
-      .where(and(eq(proxyRules.id, ruleId), eq(proxyRules.currentVersionId, current.version.id))),
+  const stillCurrent = and(eq(proxyRules.id, ruleId), eq(proxyRules.currentVersionId, expected), isNull(proxyRules.deletedAt))
+  const [, updated] = await batch([
+    insertWhere(proxyRuleVersions, version, sql`exists (select 1 from ${proxyRules} where ${stillCurrent})`),
+    db.update(proxyRules).set({ currentVersionId: version.id, updatedAt: now }).where(stillCurrent),
   ])
   invalidateRuleCache()
+  if (changesOf(updated) === 0) return null
   return getRule(ruleId)
 }
 
-export async function deleteRule(ruleId: string): Promise<boolean> {
+/**
+ * Soft-delete a rule. With `expectedVersionId`, only while that version is
+ * still current, so an approval given for one version never deletes another.
+ */
+export async function deleteRule(ruleId: string, expectedVersionId?: string): Promise<boolean> {
   const result = await db.update(proxyRules)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(proxyRules.id, ruleId), isNull(proxyRules.deletedAt)))
+    .where(and(
+      eq(proxyRules.id, ruleId),
+      isNull(proxyRules.deletedAt),
+      expectedVersionId ? eq(proxyRules.currentVersionId, expectedVersionId) : undefined,
+    ))
     .returning({ id: proxyRules.id })
     .all()
   invalidateRuleCache()

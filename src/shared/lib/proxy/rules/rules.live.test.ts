@@ -164,13 +164,15 @@ async function authorWithAnswers(request: AuthorRuleRequest, answers: string[]) 
 
 async function saveDraft(accountId: string, draft: { description: string; patterns: string[]; code: string; tests: unknown[] }) {
   const { name, restatement } = await restateRule({ kind: 'api', effect: 'allow', patterns: draft.patterns, code: draft.code })
-  return createRule({
+  const saved = await createRule({
     target: { kind: 'api', targetId: accountId },
     agentSlug: null,
     createdBy: 'user',
     createdByAgentSlug: null,
     version: { ...draft, tests: draft.tests as never, effect: 'allow', name, restatement, warnings: [], toolSchemaHash: null },
   })
+  if (!saved) throw new Error('rule was not saved')
+  return saved
 }
 
 async function clearRules(accountId: string) {

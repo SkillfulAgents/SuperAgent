@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasDotSegment, matchesAnyApiPattern, matchesToolPattern, parseApiPattern } from './patterns'
+import { globMatches, hasDotSegment, matchesAnyApiPattern, matchesToolPattern, parseApiPattern } from './patterns'
 import { evaluateRules, toolSchemaHash, validateRuleDraft, type ActiveRule, type RuleDraft } from './engine'
 import { buildApiRuleInput, buildMcpRuleInput } from './input'
 
@@ -34,6 +34,34 @@ describe('API patterns', () => {
     expect(hasDotSegment('/gmail/v1/users/me/drafts/../messages/send')).toBe(true)
     expect(hasDotSegment('/a/./b')).toBe(true)
     expect(hasDotSegment('/a/..b/c')).toBe(false)
+  })
+})
+
+describe('matching cost', () => {
+  // The regex implementation these replace took ~2.9 s on 80 characters.
+  it('matches adversarial globs in linear time', async () => {
+    const started = performance.now()
+    expect(matchesToolPattern('*a*a*a*a*a*a*b', 'a'.repeat(100_000))).toBe(false)
+    expect(matchesAnyApiPattern(['POST /x/*a*a*a*a*a*a*b'], 'POST', `/x/${'a'.repeat(10_000)}`)).toBe(false)
+    expect(matchesAnyApiPattern(['POST /**/a/**/a/**/a/**/b'], 'POST', '/a'.repeat(4_000))).toBe(false)
+    expect(performance.now() - started).toBeLessThan(500)
+  })
+
+  it('matches ** over very long paths without recursion', async () => {
+    expect(matchesAnyApiPattern(['GET /**/end'], 'GET', '/x'.repeat(20_000) + '/end')).toBe(true)
+  })
+
+  it('agrees with regular-expression globs', async () => {
+    const toRegex = (pattern: string, star: string) => new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(star)}$`)
+    const alphabet = ['a', 'b', '*']
+    let seed = 7
+    const random = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n }
+    for (let i = 0; i < 3_000; i++) {
+      const pattern = Array.from({ length: 1 + random(6) }, () => alphabet[random(3)]).join('')
+      const text = Array.from({ length: random(8) }, () => alphabet[random(2)]).join('')
+      expect(globMatches(pattern, text, 0), `${pattern} ~ ${text}`).toBe(toRegex(pattern, '.*').test(text))
+      expect(globMatches(pattern, text, 1), `${pattern} ~+ ${text}`).toBe(toRegex(pattern, '.+').test(text))
+    }
   })
 })
 
