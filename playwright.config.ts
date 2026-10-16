@@ -36,6 +36,9 @@ const webTestIgnore = [
   // the suite's top flake. Runs under the web-graph project on its own server
   // and data dir (see test:e2e:graph).
   '**/home-graph.spec.ts',
+  // Section drags also need a stable list; sibling specs create/delete agents
+  // mid-gesture. Run on a fresh server through test:e2e:sidebar.
+  '**/agent-folders.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {
@@ -102,8 +105,15 @@ export default defineConfig({
     // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
     {
       name: 'web-webkit',
-      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts'],
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts'],
       use: { ...devices['Desktop Safari'] },
+    },
+    // Section drag-and-drop and persistence, on their own server/data dir.
+    {
+      name: 'web-sidebar',
+      testMatch: ['**/agent-folders.spec.ts'],
+      fullyParallel: false,
+      use: { ...devices['Desktop Chrome'] },
     },
     // Home connections graph — canvas mouse gestures (hover-fade, edge draw,
     // node drag) against react-flow. Run with `npm run test:e2e:graph` and a

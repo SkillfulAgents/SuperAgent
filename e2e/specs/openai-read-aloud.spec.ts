@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { createAgent, createSession, gotoAgentSession, waitForSessionIdle } from '../helpers/agents'
+import { installLiveVoiceMocks } from '../helpers/live-voice'
 
 // Exercise the real HTTP adapter and PCM player; only synthesis is mocked.
 async function mockReadAloud(page: Page) {
@@ -67,31 +68,6 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
     handle: 'test-live-session', transport: { type: 'webrtc', sdp: 'mock-answer' }, expiresAt: Date.now() + 3600000,
   } }))
   await page.route('**/api/voice/live/session/*', route => route.fulfill({ json: { closed: true } }))
-  const installLiveMocks = () => {
-    // WebKit can lose an instance override before Live acquires the microphone.
-    // Patch the prototype so startup always uses the fake stream.
-    MediaDevices.prototype.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream
-    class Channel {
-      readyState = 'open'
-      onmessage?: (event: { data: string }) => void
-      send() {}
-      close() {}
-    }
-    window.RTCPeerConnection = class {
-      channel = new Channel()
-      connectionState = 'connected'
-      iceGatheringState = 'complete'
-      localDescription = { type: 'offer', sdp: 'mock-offer' }
-      createDataChannel() { return this.channel }
-      async createOffer() { return this.localDescription }
-      async setLocalDescription() {}
-      async setRemoteDescription() {
-        setTimeout(() => this.channel.onmessage?.({ data: JSON.stringify({ type: 'session.started' }) }), 10)
-      }
-      addTrack() {}
-      close() {}
-    } as unknown as typeof RTCPeerConnection
-  }
   if (process.env.VOICE_REVIEW_SCREENSHOTS) {
     const configured = await request.put('/api/settings', { data: { apiKeys: { anthropicApiKey: 'sk-ant-e2e-mock-key' } } })
     expect(configured.ok()).toBe(true)
@@ -104,7 +80,7 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
   await reply.click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Read aloud' }).click()
   await expect(reply.getByTestId('read-aloud-controls')).toHaveAttribute('data-status', 'speaking')
-  await page.evaluate(installLiveMocks)
+  await page.evaluate(installLiveVoiceMocks)
   expect(await page.evaluate(() => navigator.mediaDevices.getUserMedia.toString())).toContain('createMediaStreamDestination')
   expect(await page.evaluate(() => RTCPeerConnection.toString())).toContain('mock-offer')
   const liveStartup = page.waitForResponse(response =>

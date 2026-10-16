@@ -1,15 +1,17 @@
 import { ArrowDownToLine } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 
 interface UnsupportedRendererProps {
   filePath: string
   agentSlug: string
+  downloadUrl?: string
 }
 
-export function UnsupportedRenderer({ filePath, agentSlug }: UnsupportedRendererProps) {
-  const file = describeWorkspaceFile(filePath, agentSlug)
+export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl }: UnsupportedRendererProps) {
+  const file = agentSlug ? describeWorkspaceFile(filePath, agentSlug) : { name: getPathName(filePath), downloadUrl }
 
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-16 px-8 text-center">

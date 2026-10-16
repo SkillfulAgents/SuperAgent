@@ -17,8 +17,9 @@ export class SettingsPage {
     ])
   }
 
-  /** Open settings via sidebar footer button */
+  /** Open settings via the sidebar footer's user menu */
   async open() {
+    await this.page.locator('[data-testid="user-menu-trigger"]').click()
     await this.page.locator('[data-testid="settings-button"]').click()
     await expect(this.page.locator('[data-testid="global-settings-page"]')).toBeVisible()
   }

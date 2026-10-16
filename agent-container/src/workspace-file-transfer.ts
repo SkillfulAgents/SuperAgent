@@ -275,16 +275,25 @@ export async function writeWorkspaceFile(
         if (existing) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
         await fs.promises.rename(tempPath, destination)
       } else {
-        // The atomic link is the collision check, including competing writers
-        // that do not use this helper. Never replace their destination.
+        // The exclusive create is the collision check, then the staged file
+        // replaces that empty claim. This needs no hard link, which S3 Files
+        // refuses. A competing writer that also creates exclusively is never
+        // replaced; one that writes the name between claim and rename is.
         try {
-          await fs.promises.link(tempPath, destination)
+          await fs.promises.writeFile(destination, '', { flag: 'wx' })
         } catch (error) {
           if (errorCode(error) !== 'EEXIST') throw error
           if (collisionSafe) continue
           throw new WorkspaceFileError('File already exists', 409)
         }
-        await fs.promises.unlink(tempPath)
+        try {
+          await fs.promises.rename(tempPath, destination)
+        } catch (error) {
+          // Remove the claim only while it is still empty.
+          const claim = await fs.promises.lstat(destination).catch(() => null)
+          if (claim?.size === 0) await fs.promises.unlink(destination).catch(() => {})
+          throw error
+        }
       }
       tempPath = undefined
       const stats = await fs.promises.stat(destination)

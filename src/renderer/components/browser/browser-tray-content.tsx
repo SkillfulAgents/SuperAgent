@@ -9,10 +9,10 @@ import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { DeclineButton } from '@renderer/components/messages/decline-button'
+import { DeclineButton } from '@shared/lib/tools/requests/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useBrowserInputActions, useCanSaveBrowserLogin } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions, useCanSaveBrowserLogin } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -70,6 +70,7 @@ export function BrowserTrayContent({
 
   // Same decline/complete behavior as the in-chat request card, shared via the hook.
   const {
+    status,
     submittingAction,
     error: actionError,
     complete,
@@ -77,6 +78,7 @@ export function BrowserTrayContent({
   } = useBrowserInputActions({
     agentSlug,
     sessionId,
+    toolUseId: latestRequest?.toolUseId ?? null,
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
@@ -166,15 +168,15 @@ export function BrowserTrayContent({
                     <Checkbox
                       checked={saveLogin}
                       onCheckedChange={(checked) => setSaveLoginOffFor(checked === true ? null : latestRequest.toolUseId)}
-                      disabled={submittingAction !== null}
+                      disabled={status !== 'pending'}
                       data-testid="browser-tray-save-login"
                     />
                     Save login
                   </label>
                 )}
                 <DeclineButton
-                  onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
-                  disabled={submittingAction !== null}
+                  onDecline={decline}
+                  disabled={status !== 'pending'}
                   label="Decline"
                   showIcon={false}
                   size="sm"
@@ -185,11 +187,12 @@ export function BrowserTrayContent({
                   data-testid="browser-tray-decline-btn"
                 />
                 <Button
-                  onClick={() => complete(latestRequest.toolUseId, { saveLogin: latestRequest.login === true && canSaveLogin && saveLogin })}
+                  onClick={() => complete({ saveLogin: latestRequest.login === true && canSaveLogin && saveLogin })}
                   loading={submittingAction === 'completing'}
-                  disabled={submittingAction !== null}
+                  disabled={status !== 'pending'}
                   size="sm"
                   className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                  data-testid="browser-tray-complete-btn"
                 >
                   Done
                 </Button>

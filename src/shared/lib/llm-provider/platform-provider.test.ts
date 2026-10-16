@@ -8,6 +8,7 @@ const requiresActingMember = vi.fn(() => false)
 const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
 const platformAccessToken = vi.fn((): string | null => 'platform-token')
+const fetchActingAccount = vi.fn()
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: {
     current: () => currentAttribution(),
@@ -21,6 +22,8 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => platformAccessToken(),
   getPlatformAuthStatus: () => platformAuthStatus(),
+  getStoredPlatformMemberId: () => null,
+  fetchActingPlatformAccount: () => fetchActingAccount(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
@@ -32,6 +35,7 @@ vi.mock('../config/settings', () => ({
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
+import { platformPlanCache } from './platform-plan-cache'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
@@ -43,6 +47,87 @@ beforeEach(() => {
   captureMessage.mockReset()
   platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
+  fetchActingAccount.mockReset()
+  platformPlanCache.clear()
+})
+
+describe('getModelAvailability', () => {
+  const catalog = provider.getBuiltinCatalog()
+  const fable = catalog.find(model => model.id === 'claude-fable-5-1')!
+
+  it('scopes the public cache revision without exposing the account identity', () => {
+    expect(provider.getModelAvailabilityRevision()).toMatch(/^[a-f0-9]{64}$/)
+    expect(provider.getModelAvailabilityRevision()).not.toContain('org_123')
+    platformAuthStatus.mockReturnValue({ connected: false })
+    expect(provider.getModelAvailabilityRevision()).toBeNull()
+  })
+
+  const account = (memberId: string, policy: { plan?: { id: string; name: string } | null; deniedModels?: string[] | null }) => ({
+    memberId, orgId: 'org_123', userId: `user_${memberId}`, orgName: null, orgIconUrl: null, role: null, email: null,
+    plan: policy.plan ?? null, deniedModels: policy.deniedModels ?? null,
+  })
+  const PRO_30 = { plan: { id: 'pro-30', name: 'Pro 30' }, deniedModels: ['claude-fable-'] }
+  const actAs = (memberId: string) => currentAttribution.mockReturnValue({ actingMemberId: () => memberId })
+
+  it('reads the acting account\'s policy with its identity once, and words it', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValue(account('member_a', PRO_30))
+    expect(await provider.getModelAvailability(catalog)).toMatchObject({
+      unavailable: expect.arrayContaining([{ modelId: fable.id, reason: "Fable 5.1 isn't included in your Pro 30 plan." }]),
+      summary: 'Pro 30 excludes Claude Fable.',
+      action: { component: 'platform-plan-upgrade', label: 'Upgrade', href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing' },
+    })
+    // Cached: the next selection does not wait on the platform.
+    await provider.getModelAvailability(catalog)
+    expect(fetchActingAccount).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps one policy per account, so seats in one workspace can differ', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValueOnce(account('member_a', PRO_30))
+    expect(await provider.getModelAvailability(catalog)).not.toBeNull()
+    actAs('member_b')
+    fetchActingAccount.mockResolvedValueOnce(account('member_b', { plan: { id: 'pro-200', name: 'Pro 200' }, deniedModels: [] }))
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+    actAs('member_a')
+    expect(await provider.getModelAvailability(catalog)).not.toBeNull()
+    expect(fetchActingAccount).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves an account unrestricted when the proxy does not say (an older proxy, or billing unreachable)', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValue(account('member_a', {}))
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+    fetchActingAccount.mockRejectedValue(new Error('offline'))
+    platformPlanCache.clear()
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+  })
+
+  it('re-reads the account when asked for a fresh answer (after an upgrade)', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValueOnce(account('member_a', PRO_30))
+    expect(await provider.getModelAvailability(catalog)).not.toBeNull()
+    fetchActingAccount.mockResolvedValueOnce(account('member_a', { plan: { id: 'pro-200', name: 'Pro 200' }, deniedModels: [] }))
+    expect(await provider.getModelAvailability(catalog, { fresh: true })).toBeNull()
+  })
+
+  it('forgets every policy when a turn is refused for the plan, and only then', async () => {
+    actAs('member_a')
+    fetchActingAccount.mockResolvedValue(account('member_a', PRO_30))
+    await provider.getModelAvailability(catalog)
+    provider.noteTurnError(429, 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}')
+    await provider.getModelAvailability(catalog)
+    expect(fetchActingAccount).toHaveBeenCalledTimes(1)
+    provider.noteTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"no","model":"claude-fable-5-1"}}')
+    await provider.getModelAvailability(catalog)
+    expect(fetchActingAccount).toHaveBeenCalledTimes(2)
+  })
+
+  it('drops restrictions on disconnect', async () => {
+    platformAuthStatus.mockReturnValue({ connected: false })
+    expect(await provider.getModelAvailability(catalog)).toBeNull()
+    expect(fetchActingAccount).not.toHaveBeenCalled()
+  })
 })
 
 describe('getContainerEnvVars auth token (cold start)', () => {
@@ -176,6 +261,41 @@ describe('presentationForTurnError', () => {
   it('does not let a recognized class claim a turn that failed without an API error', async () => {
     expect(provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
     expect(provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
+  })
+
+  describe('403 model_not_in_plan (SUP-1143)', () => {
+    const NOT_IN_PLAN = 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"claude-fable-5-1 is not included in your workspace\'s plan. Upgrade your plan to use it.","model":"claude-fable-5-1"}} · Please run /login'
+
+    it('names the model and routes to the upgrade card, not a credential or generic error', async () => {
+      // The CLI may tag a 403 as an auth failure; the plan refusal still wins.
+      const parsed = provider.presentationForTurnError(403, NOT_IN_PLAN, 'authentication_failed')
+      expect(parsed).toEqual({
+        severity: 'warning',
+        icon: 'lock',
+        message: "**Fable 5.1 isn't included in your plan** Upgrade your workspace's plan to use it, or continue with a model your plan includes.",
+        chatText: "⚠️ Fable 5.1 isn't included in your workspace's plan. Upgrade the plan, or pick another model for this integration.",
+        component: 'platform-model-not-in-plan',
+        placement: 'composer',
+        model: { id: 'claude-fable-5-1', label: 'Fable 5.1' },
+        href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+      })
+    })
+
+    it('recognizes a history row, which carries no status', async () => {
+      expect(provider.presentationForTurnError(undefined, NOT_IN_PLAN, 'unknown')?.component).toBe('platform-model-not-in-plan')
+    })
+
+    it('still names no model when the body omits it', async () => {
+      const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"Not in plan."}}', 'unknown')
+      expect(parsed?.message).toMatch(/^\*\*This model isn't included in your plan\*\*/)
+      expect(parsed?.model).toBeUndefined()
+    })
+
+    it('leaves other 403s to the generic banner', async () => {
+      const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Forbidden"}}', 'authentication_failed')
+      expect(parsed?.component).toBeUndefined()
+      expect(parsed?.message).toContain('**LLM Provider Error:**')
+    })
   })
 })
 

@@ -165,6 +165,10 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
       await fs.promises.writeFile(fullPath, file.content, 'utf-8')
     }
 
+    for (const filePath of input.deletePaths ?? []) {
+      await fs.promises.rm(path.join(input.repoDir, filePath), { force: true })
+    }
+
     const addPaths = input.gitAddPaths ?? ['.']
     await execFileAsync('git', ['add', ...addPaths], {
       cwd: input.repoDir, timeout: 10000, env: gitEnvironment,

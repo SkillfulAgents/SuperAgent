@@ -6,7 +6,7 @@
  * 0o666 → 0o600 flip observed in the agent .env wipe).
  *
  * Lives in its own file with a module-level fs mock: Node's builtin module
- * properties are non-configurable, so vi.spyOn cannot patch fs.statSync.
+ * properties are non-configurable, so vi.spyOn cannot patch fs.lstatSync.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as path from 'path'
@@ -20,16 +20,16 @@ vi.mock('fs', async (importOriginal) => {
     Object.assign(new Error('ESTALE: stale file handle'), { code: 'ESTALE' })
   return {
     ...actual,
-    statSync: ((...args: Parameters<typeof actual.statSync>) => {
+    lstatSync: ((...args: Parameters<typeof actual.lstatSync>) => {
       if (statFailure.active) throw estale()
-      return actual.statSync(...args)
-    }) as typeof actual.statSync,
+      return actual.lstatSync(...args)
+    }) as typeof actual.lstatSync,
     promises: {
       ...actual.promises,
-      stat: (async (...args: Parameters<typeof actual.promises.stat>) => {
+      lstat: (async (...args: Parameters<typeof actual.promises.lstat>) => {
         if (statFailure.active) throw estale()
-        return actual.promises.stat(...args)
-      }) as typeof actual.promises.stat,
+        return actual.promises.lstat(...args)
+      }) as typeof actual.promises.lstat,
     },
   }
 })

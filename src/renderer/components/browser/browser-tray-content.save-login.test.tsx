@@ -41,8 +41,8 @@ vi.mock('@renderer/hooks/use-browser-stream', () => ({ useBrowserStream: () => s
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ browserActive: true, isActive: true, streamingToolUses: [], activeSubagents: [] }),
 }))
-vi.mock('@renderer/hooks/use-browser-input-actions', () => ({
-  useBrowserInputActions: () => ({ status: 'idle', submittingAction: null, error: null, complete, decline: vi.fn() }),
+vi.mock('@shared/lib/tools/request-browser-input/use-browser-input-actions', () => ({
+  useBrowserInputActions: () => ({ status: 'pending', submittingAction: null, error: null, complete, decline: vi.fn() }),
   useCanSaveBrowserLogin: () => canSaveLogin,
 }))
 vi.mock('@renderer/lib/api', () => ({
@@ -72,11 +72,11 @@ describe('browser tray save login', () => {
 
     expect(screen.getByTestId('browser-tray-save-login')).toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Done' }))
-    expect(complete).toHaveBeenLastCalledWith('tu-1', { saveLogin: true })
+    expect(complete).toHaveBeenLastCalledWith({ saveLogin: true })
 
     await user.click(screen.getByTestId('browser-tray-save-login'))
     await user.click(screen.getByRole('button', { name: 'Done' }))
-    expect(complete).toHaveBeenLastCalledWith('tu-1', { saveLogin: false })
+    expect(complete).toHaveBeenLastCalledWith({ saveLogin: false })
   })
 
   it('offers no save option for other requests', async () => {
@@ -86,7 +86,7 @@ describe('browser tray save login', () => {
 
     expect(screen.queryByTestId('browser-tray-save-login')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Done' }))
-    expect(complete).toHaveBeenLastCalledWith('tu-1', { saveLogin: false })
+    expect(complete).toHaveBeenLastCalledWith({ saveLogin: false })
   })
 
   it('offers no save option on a shared agent', async () => {
@@ -97,7 +97,7 @@ describe('browser tray save login', () => {
 
     expect(screen.queryByTestId('browser-tray-save-login')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Done' }))
-    expect(complete).toHaveBeenLastCalledWith('tu-1', { saveLogin: false })
+    expect(complete).toHaveBeenLastCalledWith({ saveLogin: false })
   })
 
   it('starts the next sign-in request checked after opting out of one', async () => {

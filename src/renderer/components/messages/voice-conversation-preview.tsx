@@ -49,9 +49,11 @@ export function VoiceConversationPreview({ transcript, agentName = 'Agent' }: { 
       aria-relevant="additions text"
     >
       <div className="pb-6 pt-6">
-        {/* Your words sit left, the agent's right, so the two voices read apart at a glance. */}
+        {/* Both voices sit left: right-aligned text streams in right to left, pushing
+            the line back as each word lands. The speaker label and a clear gap
+            between turns tell them apart. */}
         {transcript.map(({ role, text }, index) => (
-          <div key={index} data-speaker={role} className={cn(index > 0 && 'mt-1.5', role === 'assistant' && 'text-right')}>
+          <div key={index} data-speaker={role} className={cn(index > 0 && (transcript[index - 1].role === role ? 'mt-1.5' : 'mt-4'))}>
             {/* The speaker on its own line, lightly: the words carry the weight. */}
             <span className="block text-xs text-muted-foreground/60">{role === 'user' ? 'You' : agentName}</span>
             <span className="block">{text}</span>

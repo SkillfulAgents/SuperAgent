@@ -343,6 +343,29 @@ describe('AgentIntegration host contract', () => {
     expect(state.create).toHaveBeenCalledTimes(2)
   })
 
+  it('asks for a retry when the connection is replaced while its input is on the way', async () => {
+    await manager.start()
+    const input = adapter.input('racing')
+    const paused = manager.pauseIntegration('installation-a')
+    expect(await input).toBe('retry')
+    await paused
+    expect(state.create).not.toHaveBeenCalled()
+  })
+
+  it('combines several handlers into one result: taken if any handler took it', async () => {
+    const connector = new ObjectIntegration()
+    expect(await connector.input('nobody-listens')).toBe('retry')
+    connector.onEvent(() => 'rejected')
+    expect(await connector.input('rejected')).toBe('rejected')
+    connector.onEvent(() => 'retry')
+    expect(await connector.input('retry')).toBe('retry')
+    connector.onEvent(() => 'duplicate')
+    expect(await connector.input('duplicate')).toBe('duplicate')
+    // A handler that returns nothing took the input.
+    connector.onEvent(() => {})
+    expect(await connector.input('accepted')).toBe('accepted')
+  })
+
   it('reports a rejected response handler without marking the connection unhealthy', async () => {
     await manager.start()
     await vi.dynamicImportSettled()
@@ -419,6 +442,23 @@ describe('AgentIntegration host contract', () => {
 
     adapter.allowed = false
     await expect(manager.ensureSession('installation-a', 'object-7')).rejects.toThrow('not allowed')
+  })
+
+  it('evaluates availability without constructing connections and isolates failed checks', async () => {
+    let available = false
+    const create = vi.fn()
+    const registry = new AgentIntegrationRegistry([
+      { definition: adapter.definition, policy: adapter, create, isAvailable: async () => available },
+      { definition: { ...adapter.definition, provider: 'broken' }, policy: adapter, create, isAvailable: () => { throw new Error('unavailable') } },
+      { definition: { ...adapter.definition, provider: 'default' }, policy: adapter, create },
+    ])
+    expect(AgentIntegration.isAvailable()).toBe(true)
+    expect(await registry.isAvailable('unknown')).toBe(false)
+    expect((await registry.listAvailableDefinitions()).map(item => item.provider)).toEqual(['default'])
+    available = true
+    expect((await registry.listAvailableDefinitions()).map(item => item.provider)).toEqual(['test-objects', 'default'])
+    expect(create).not.toHaveBeenCalled()
+    expect(registry.getDefinition('broken')).toBeDefined()
   })
 
   it('exposes provider metadata without creating a connection and rejects duplicate registration', async () => {

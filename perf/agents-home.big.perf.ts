@@ -15,7 +15,7 @@ defineHomeScenarios('big', {
   // replace cost: an existence probe is a stat where it used to be an access
   // call, and nothing is added. The agent listing itself reads no workspace:
   // which agents exist and what they are called comes from the `agents`
-  // table. The CLAUDE.md read, the agents-directory listing and its
+  // table. The AGENTS.md read, the agents-directory listing and its
   // existence probe the listing used to pay are gone (3 ops here), and
   // resolving the `:id` of a session route no longer stats the agent's
   // directory (1 op). These counts were re-pinned when that landed; a

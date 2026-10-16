@@ -19,7 +19,7 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ isAdmin: true, isAuthMode: false }),
 }))
 vi.mock('./settings-model-select', () => ({
-  ModelPickerPopover: () => null,
+  ProviderModelPickerPopover: () => null,
   SettingsModelSelect: ({ directApiOnly, model, llmProviderId, appDefault }: {
     directApiOnly?: boolean; model?: string; llmProviderId?: string
     appDefault?: { isOverride: boolean; onUseAppDefault: () => void; label?: string }

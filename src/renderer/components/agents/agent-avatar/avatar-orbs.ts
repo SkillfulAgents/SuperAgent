@@ -1,0 +1,112 @@
+/**
+ * Agent orb colourways. Each is usable on any orb shape (see orb-shapes.ts):
+ * the rim colours the body, the core its glow, and the two face colours the
+ * face's gradient.
+ *
+ * Colourway rule from the design: face A is the core mixed 10% toward the
+ * rim, face B the rim mixed 5% toward the core; lighter cores get a larger
+ * solid centre (`hold`, % of radius).
+ */
+
+import type { AgentAvatarColor } from '@shared/lib/types/agent-avatar'
+
+export interface OrbAppearance {
+  /** Identifies a rendered colourway, including decorative placeholders. */
+  name: string
+  /** Shown in the picker. */
+  label: string
+  core: string
+  rim: string
+  faceA: string
+  faceB: string
+  hold: number
+}
+
+export interface AvatarOrb extends OrbAppearance {
+  /** Stable persisted key; renames require a data migration. */
+  name: AgentAvatarColor
+}
+
+function hexMix(from: string, to: string, t: number): string {
+  const channels = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
+  const a = channels(from)
+  const b = channels(to)
+  return `#${a.map((value, i) => Math.round(value + (b[i] - value) * t).toString(16).padStart(2, '0')).join('').toUpperCase()}`
+}
+
+/** A colourway from just a core and a rim, by the design's face rule. */
+function colourway<Color extends string>(name: Color, label: string, core: string, rim: string, hold: number): OrbAppearance & { name: Color } {
+  return { name, label, core, rim, faceA: hexMix(core, rim, 0.1), faceB: hexMix(rim, core, 0.05), hold }
+}
+
+/**
+ * The palette: tonal colourways (one hue, a lighter core inside a deeper
+ * rim), in similarity order. An agent's own look is drawn from these.
+ *
+ * The design's tile palette with a saturation pass (it read dark in the app):
+ * rims a touch lighter and more saturated, cores lifted alongside so faces
+ * still read. Forest, Teal and Blush fill gaps the tiles left; Cobalt gives
+ * blue a dark partner; Rust is a burnt orange round a deep brown rim, clear
+ * of Amber and Orange, and Brown a true mid brown. The neutrals close it:
+ * White keeps a light grey rim so it holds its edge on the light sidebar and
+ * white cards (a pure white rim disappears there).
+ */
+export const DEFAULT_ORBS: readonly AvatarOrb[] = [
+  colourway('tonal-red', 'Red', '#FA8274', '#DE0223', 34),
+  colourway('tonal-orange', 'Orange', '#FCA864', '#EA490C', 34),
+  colourway('tonal-amber', 'Amber', '#FFD065', '#F28307', 34),
+  colourway('tonal-green', 'Green', '#98E844', '#0DA13B', 34),
+  colourway('tonal-forest', 'Forest', '#0B953D', '#005521', 34),
+  colourway('tonal-teal', 'Teal', '#3BE4D9', '#14868D', 34),
+  colourway('tonal-blue', 'Blue', '#9CCEFC', '#2B79FA', 34),
+  colourway('tonal-cobalt', 'Cobalt', '#4890FC', '#1834DE', 30),
+  colourway('tonal-purple', 'Purple', '#C39EFB', '#7A1FFD', 34),
+  colourway('tonal-blush', 'Blush', '#FDC4E5', '#FB67C5', 34),
+  colourway('tonal-pink', 'Pink', '#FDA0D1', '#F11898', 34),
+  // Labelled Brown until the true Brown joined; the persisted id stays.
+  colourway('tonal-brown', 'Rust', '#EC7622', '#7D3B0A', 34),
+  colourway('tonal-chocolate', 'Brown', '#C08A5A', '#4E2C14', 34),
+  colourway('tonal-white', 'White', '#FFFFFF', '#C2BEBA', 34),
+  colourway('tonal-grey', 'Grey', '#C9C5C2', '#5F5D5C', 34),
+  colourway('tonal-black', 'Black', '#5C5050', '#151212', 34),
+]
+
+/** One palette colour's rim round another's core. */
+function pair(name: AgentAvatarColor, rimName: AgentAvatarColor, coreName: AgentAvatarColor): AvatarOrb {
+  const find = (name: string) => DEFAULT_ORBS.find(orb => orb.name === name)!
+  const rim = find(rimName)
+  const core = find(coreName)
+  return colourway(
+    name,
+    `${rim.label} / ${core.label}`,
+    core.core,
+    rim.rim,
+    28,
+  )
+}
+
+/**
+ * Duos: the eight strongest pairings of the palette, with faces that read
+ * (core/rim ΔE ≥ 0.31) and the clearest of their rim colour's tonal. At
+ * sidebar size a duo still reads as a variant of its rim, so they're picker
+ * options only, never an agent's own look.
+ */
+export const PAIRED_DUOS: readonly AvatarOrb[] = [
+  pair('duo-red-amber', 'tonal-red', 'tonal-amber'),
+  pair('duo-green-amber', 'tonal-green', 'tonal-amber'),
+  pair('duo-forest-teal', 'tonal-forest', 'tonal-teal'),
+  pair('duo-teal-blush', 'tonal-teal', 'tonal-blush'),
+  pair('duo-blue-amber', 'tonal-blue', 'tonal-amber'),
+  pair('duo-cobalt-teal', 'tonal-cobalt', 'tonal-teal'),
+  pair('duo-pink-blue', 'tonal-pink', 'tonal-blue'),
+  pair('duo-brown-amber', 'tonal-brown', 'tonal-amber'),
+]
+
+/**
+ * A neutral grey orb for placeholders — the ghost of an agent in an empty
+ * left-nav section. Not on offer in the picker and never an agent's own look.
+ */
+export const GHOST_ORB = colourway('ghost', 'Ghost', '#E4E4E7', '#A1A1AA', 34)
+
+/** Every colour on offer, as the picker shows them: the palette, then the duos as the last two rows. */
+export const OFFERED_ORBS: readonly AvatarOrb[] = [...DEFAULT_ORBS, ...PAIRED_DUOS]

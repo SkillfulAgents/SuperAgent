@@ -1,4 +1,7 @@
-import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -14,6 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
@@ -35,6 +39,7 @@ import {
   getAgent,
   getAgentRecord,
   updateAgent,
+  updateAgentAvatar,
   deleteAgent,
   agentExists,
   AgentContainerStopError,
@@ -58,11 +63,11 @@ import {
   type SessionDashboardDispatch,
 } from '@shared/lib/dashboard-dispatch-schema'
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
-import { parseByteRange } from '@shared/lib/utils/http-range'
+import { servedRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
@@ -71,8 +76,8 @@ import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
-} from '@shared/lib/user-input/request-schema'
-import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
+} from '@shared/lib/tools/requests/request-schema'
+import { forkSession, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -81,7 +86,10 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
+import { VolumeError } from '@shared/lib/services/volume-service'
+import { volumeViewer } from '../lib/volume-access'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -148,6 +156,7 @@ import { widgetRefreshService } from '@shared/lib/services/widget-refresh-servic
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
@@ -1206,7 +1215,7 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
 
 // Insert the owner ACL for a just-created agent, rolling back the on-disk
 // workspace if the ACL write fails. Agent creation writes the workspace
-// (directory + CLAUDE.md) before the ACL row exists; without this, a transient
+// (directory + AGENTS.md) before the ACL row exists; without this, a transient
 // ACL insert failure would return 500 but leave an orphaned agent directory
 // with no owner ACL (SUP-207). The cleanup is best-effort and guarded so a
 // failed rollback never masks the original error. In non-auth mode
@@ -1438,6 +1447,16 @@ agents.put('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   }
 })
 
+// Appearance is shared agent metadata, with the same permission as renaming.
+agents.put('/:id/avatar', ResolveAgent(), AgentAdmin(), zValidator('json', agentAvatarSchema), async (c) => {
+  const slug = getAgentId(c)
+  const avatar = await updateAgentAvatar(slug, c.req.valid('json'))
+  if (!avatar) return c.json({ error: 'Agent not found' }, 404)
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: ['avatar'] } })
+  messagePersister.broadcastGlobal({ type: 'agent_updated', agentSlug: slug })
+  return c.json(avatar)
+})
+
 // DELETE /api/agents/:id - Delete an agent
 agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   try {
@@ -1550,7 +1569,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
     const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    if (error instanceof LlmProviderNotFoundError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
     return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
@@ -2124,7 +2143,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         name: 'New Session',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 0,
         isActive: true,
         model: resolved.model,
         llmProviderId: resolved.llmProviderId,
@@ -2135,7 +2153,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       201
     )
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to create session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
   }
@@ -2789,7 +2808,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // mid-turn is queued by the agent loop rather than starting a new turn.
       const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-      agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      // A rejected fresh turn is undone so the retry starts a new turn, unless a
+      // concurrent send, turn, or output has taken the session over meanwhile.
+      let undoFreshTurn: (() => void) | undefined
+      if (wasQueued) agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      else undoFreshTurn = agentRegistry.get(agentSlug).sessions.markProvisionalActive(sessionId)
 
       // A mid-turn send must not carry model/effort/speed: the container treats a
       // parameter change as interrupt/restart of the in-flight query. The
@@ -2811,7 +2834,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      try {
+        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      } catch (error) {
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
+        throw error
+      }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
@@ -2865,7 +2893,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
     })
   } catch (error) {
-    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
@@ -2927,14 +2956,18 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const actor = agentRegistry.get(agentSlug)
 
-    const session = await actor.sessions.get(sessionId)
+    // One metadata read serves the session, its fork source's name, and the
+    // fields below.
+    const metadataMap = await actor.sessions.readMetadata()
+    const metadataOf = (id: string) => (Object.hasOwn(metadataMap, id) ? metadataMap[id] : null)
+    const metadata = metadataOf(sessionId)
+    const session = await actor.sessions.get(sessionId, { metadata })
 
     if (!session) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
-    const metadata = await actor.sessions.metadata(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
     if (getSettings().llmDefault) {
       try {
@@ -2956,7 +2989,6 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       name: session.name,
       createdAt: session.createdAt,
       lastActivityAt: session.lastActivityAt,
-      messageCount: session.messageCount,
       isActive,
       // Carried so single-session consumers can gate on the same live/idle
       // condition the session lists use (the breadcrumb context menu hides
@@ -2976,7 +3008,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       widgetRepairSlug: metadata?.widgetRepairSlug,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
-        ? (await actor.sessions.metadata(metadata.forkedFromSessionId))?.name
+        ? metadataOf(metadata.forkedFromSessionId)?.name
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
@@ -3015,9 +3047,9 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       await actor.sessions.rename(sessionId, name.trim())
     }
 
-    // Read the transcript once, after the rename, rather than on both sides of
-    // it: renaming touches metadata only, so the pre-rename read differed from
-    // this one by exactly the name.
+    // Read once, after the rename, rather than on both sides of it: renaming
+    // touches metadata only, so the pre-rename read differed from this one by
+    // exactly the name.
     const updated = await actor.sessions.get(sessionId)
 
     if (!updated) {
@@ -3030,7 +3062,6 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       name: updated.name,
       createdAt: updated.createdAt,
       lastActivityAt: updated.lastActivityAt,
-      messageCount: updated.messageCount,
     })
   } catch (error) {
     console.error('Failed to update session:', error)
@@ -3095,9 +3126,8 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
     }
     return c.json(await forkSession(slug, sourceId, opts), 201)
   } catch (error) {
-    if (error instanceof ForkSessionError) {
-      return c.json({ error: error.message }, error.status)
-    }
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to fork session:', error)
     return c.json({ error: 'Failed to fork session' }, 500)
   }
@@ -3154,6 +3184,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // A mark left behind would be an unreachable row: nothing lists the
     // session any more, so nothing could ever clear it.
     await deleteSessionUnreadMarks(agentSlug, [sessionId])
+    // A Todo board item started in it goes back to Drafts (or, if finished, keeps its place).
+    await unlinkTodosFromSessions(agentSlug, [sessionId])
 
     return c.body(null, 204)
   } catch (error) {
@@ -3189,7 +3221,6 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
       let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
@@ -3211,10 +3242,14 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
-          isActive,
+          isActive: actor.sessions.isActive(sessionId),
+          turnOutcome: actor.sessions.turnOutcome(sessionId),
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
-          backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
+          // Always the array, even empty: an absent list reads as "unchanged" to
+          // a reconnecting client, which would keep tasks that ended while it
+          // was away.
+          backgroundTasks,
           activeSubagents,
         }),
         event: 'message',
@@ -3237,7 +3272,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         try {
           const currentIsActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
           await stream.writeSSE({
-            data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
+            data: JSON.stringify({
+              type: 'ping', isActive: currentIsActive,
+              turnOutcome: actor.sessions.turnOutcome(sessionId),
+            }),
             event: 'message',
           })
         } catch {
@@ -6311,7 +6349,7 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
-    return c.json({ error: 'Failed to list mounts' }, 500)
+    return c.json({ error: 'Failed to list drives' }, 500)
   }
 })
 
@@ -6319,15 +6357,20 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { hostPath, restart } = await c.req.json<{ hostPath: string; restart?: boolean }>()
-    if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
-
     let mount
+    let restart: boolean | undefined
     try {
-      mount = await addMount(agentSlug, hostPath)
-    } catch (err: any) {
-      return c.json({ error: err.message || 'Invalid path' }, 400)
+      const input = addMountSchema.parse(await c.req.json())
+      restart = input.restart
+      mount = 'volumeId' in input
+        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
+        : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
+    } catch (err) {
+      if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
+      if (err instanceof z.ZodError || err instanceof SyntaxError) return c.json({ error: 'Invalid drive configuration' }, 400)
+      throw err
     }
+    const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName }
 
     if (restart) {
       const cachedInfo = agentRegistry.get(agentSlug).container.status()
@@ -6336,11 +6379,30 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       }
     }
 
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { hostPath } })
-    return c.json(mount, 201)
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
+    return c.json(summary, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)
-    return c.json({ error: 'Failed to add mount' }, 500)
+    return c.json({ error: 'Failed to add drive' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/mounts/:mountId - Set read only
+agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const mountId = c.req.param('mountId')
+    const parsed = updateMountSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid drive update' }, 400)
+    if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
+      return c.json({ error: 'Drive not found' }, 404)
+    }
+
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'updated', details: { readOnly: parsed.data.readOnly } })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to update mount:', error)
+    return c.json({ error: 'Failed to update drive' }, 500)
   }
 })
 
@@ -6364,7 +6426,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to remove mount:', error)
-    return c.json({ error: 'Failed to remove mount' }, 500)
+    return c.json({ error: 'Failed to remove drive' }, 500)
   }
 })
 
@@ -6666,13 +6728,7 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
 
-    // Advertise range support so media players (e.g. <video>) can seek. When the
-    // client requests a byte range, serve just that slice as 206 Partial
-    // Content; otherwise stream the whole file.
-    c.header('Accept-Ranges', 'bytes')
-    const size = stat.size
-    const rangeHeader = c.req.header('range')
-    const parsedRange = rangeHeader ? parseByteRange(rangeHeader, size) : null
+    const served = servedRange(c.req.header('range'), stat.size)
 
     // Hono has no HEAD routing: its dispatcher answers a HEAD by running the
     // GET handler and dropping the body (`new Response(null, await dispatch(…,
@@ -6683,27 +6739,8 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // the entire answer to a HEAD anyway; return before opening anything.
     // (`c.req.method` is the real method — the dispatcher overrides its routing
     // key, not the request.)
-    const bodyless = c.req.method === 'HEAD'
-
-    if (rangeHeader && !parsedRange) {
-      // Unsatisfiable range → 416 with the valid extent so the client can retry.
-      c.header('Content-Range', `bytes */${size}`)
-      return c.body(null, 416)
-    }
-
-    if (parsedRange) {
-      const { start, end } = parsedRange
-      c.header('Content-Range', `bytes ${start}-${end}/${size}`)
-      c.header('Content-Length', (end - start + 1).toString())
-      if (bodyless) return c.body(null, 206)
-      const chunk = await actor.files.read(resolved, { start, end })
-      return c.body(chunk, 206)
-    }
-
-    c.header('Content-Length', size.toString())
-    if (bodyless) return c.body(null)
-    const webStream = await actor.files.read(resolved)
-    return c.body(webStream)
+    if (served.status === 416 || c.req.method === 'HEAD') return c.body(null, served.status, served.headers)
+    return c.body(await actor.files.read(resolved, served.range ?? undefined), served.status, served.headers)
   } catch (error) {
     if (error instanceof WorkspaceFileError) {
       return c.json({ error: error.status === 400 ? 'Invalid path' : error.message }, error.status)
@@ -7586,33 +7623,55 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
 
+  // Which policy table this decision belongs to. The pending review is
+  // authoritative: the proxy that raised it stamped `reviewType` at creation.
+  // The client's claim is only a fallback for envelopes written before the
+  // stamp existed — the card used to infer "mcp" from a `tools/call` path
+  // prefix, so an MCP call whose JSON-RPC method was anything else (e.g.
+  // Railway's `subscriptions/listen`) was sent as an API-scope policy with
+  // the MCP server's id, and failed apiScopePolicies' FOREIGN KEY against
+  // connected_accounts.
+  const reviewType: 'api' | 'mcp' | 'xagent' =
+    body.reviewType === 'xagent' && body.xAgent
+      ? 'xagent'
+      : pendingReview?.reviewType ?? (body.reviewType === 'mcp' ? 'mcp' : 'api')
+
   // Persist the policy FIRST. The review is only resolved after the write commits,
   // so any concurrent /invoke (or other gated call) that runs after this point
   // will see the new policy on its eval and not create a duplicate review.
   // If the write fails, surface the error instead of silently degrading to "Allow Once" —
   // the user thinks they enabled "always" and would otherwise have no idea it didn't stick.
   try {
-    if (body.reviewType === 'xagent' && body.xAgent) {
+    if (reviewType === 'xagent' && body.xAgent) {
       // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
       // review is attached to (slug), not the target.
       const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
       await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
-    } else if (body.reviewType === 'mcp') {
+    } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.
+      // Both policy tables carry a FOREIGN KEY to their owner row, so confirm
+      // the row exists up front and answer with a message the card can show,
+      // rather than letting SQLite's bare "FOREIGN KEY constraint failed"
+      // surface. A 4xx other than 404 on purpose: the card reads 404 as
+      // "already resolved elsewhere" and would dismiss itself as allowed.
+      if (!body.accountId) {
+        return c.json({ error: 'Missing MCP server id' }, 400)
+      }
+      const [mcpServer] = await db
+        .select({ userId: remoteMcpServers.userId })
+        .from(remoteMcpServers)
+        .where(eq(remoteMcpServers.id, body.accountId))
+        .limit(1)
+      if (!mcpServer) {
+        return c.json({ error: 'MCP server no longer exists; the policy was not saved' }, 400)
+      }
       // Verify MCP-server ownership before persisting, mirroring the API-scope
       // branch below: AgentUser() only proves a role on the URL agent, so
       // without this an authenticated user could write a policy onto an MCP
       // server owned by someone else by passing its mcpId here.
-      if (body.accountId && isAuthMode()) {
-        const [mcpServer] = await db
-          .select({ userId: remoteMcpServers.userId })
-          .from(remoteMcpServers)
-          .where(eq(remoteMcpServers.id, body.accountId))
-          .limit(1)
-        if (mcpServer && mcpServer.userId !== getCurrentUserId(c)) {
-          return c.json({ error: 'Forbidden: you do not own this MCP server' }, 403)
-        }
+      if (isAuthMode() && mcpServer.userId !== getCurrentUserId(c)) {
+        return c.json({ error: 'Forbidden: you do not own this MCP server' }, 403)
       }
 
       await db.insert(mcpToolPolicies).values({
@@ -7630,18 +7689,23 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // API scope review — save to apiScopePolicies.
       // Look up the account once: we need its owner (to enforce the auth-mode
       // ownership check) and its toolkit (to validate the scope below).
-      let toolkitSlug: string | undefined
-      if (body.accountId) {
-        const [acct] = await db
-          .select({ userId: connectedAccounts.userId, toolkitSlug: connectedAccounts.toolkitSlug })
-          .from(connectedAccounts)
-          .where(eq(connectedAccounts.id, body.accountId))
-          .limit(1)
-        if (isAuthMode() && acct && acct.userId !== getCurrentUserId(c)) {
-          return c.json({ error: 'Forbidden: you do not own this account' }, 403)
-        }
-        toolkitSlug = acct?.toolkitSlug
+      if (!body.accountId) {
+        return c.json({ error: 'Missing connected account id' }, 400)
       }
+      const [acct] = await db
+        .select({ userId: connectedAccounts.userId, toolkitSlug: connectedAccounts.toolkitSlug })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, body.accountId))
+        .limit(1)
+      // Same FOREIGN KEY reasoning as the MCP branch: say what is missing
+      // instead of letting the insert fail.
+      if (!acct) {
+        return c.json({ error: 'Connected account no longer exists; the policy was not saved' }, 400)
+      }
+      if (isAuthMode() && acct.userId !== getCurrentUserId(c)) {
+        return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+      }
+      const toolkitSlug = acct.toolkitSlug
 
       // Validate the scope against the toolkit's known scope set ∪ sentinels.
       // The in-session "Allow all <label>" action legitimately sends the
@@ -7667,6 +7731,14 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     }
   } catch (err) {
     console.error('Failed to save policy on always-allow:', err)
+    // The user sees this as an inline card error and nothing else records it,
+    // so report it: a persistence failure here means "always" silently did
+    // not stick, which is exactly the class of bug support only hears about
+    // from screenshots.
+    captureException(err, {
+      tags: { component: 'proxy-review', operation: 'save-policy', reviewType },
+      extra: { agentSlug: slug, reviewId, scope: body.scope, accountId: body.accountId },
+    })
     return c.json(
       { error: `Failed to save policy: ${err instanceof Error ? err.message : 'unknown error'}` },
       500,

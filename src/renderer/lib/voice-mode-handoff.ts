@@ -37,9 +37,19 @@ export function setVoiceModeActive(sessionId: string, on: boolean): void {
   if (was !== on) for (const listener of listeners) listener()
 }
 
+/** Whether any session has voice mode on; Space interrupts the agent then. */
+export function isAnyVoiceModeActive(): boolean {
+  return active.size > 0
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
+}
+
+/** Whether any session has voice mode on, re-rendering when that changes. */
+export function useIsAnyVoiceModeActive(): boolean {
+  return useSyncExternalStore(subscribe, isAnyVoiceModeActive, () => false)
 }
 
 /** Whether `sessionId` currently has voice mode on. */

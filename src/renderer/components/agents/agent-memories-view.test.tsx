@@ -138,4 +138,16 @@ describe('Memories page', () => {
     expect(await screen.findByText('Memory saved.')).toBeVisible()
   })
 
+
+  it('opens memory links in place, other schemes as shared links, and draws diagrams', async () => {
+    doc = { ...initial, body: '[Self](style.md) [Site](https://example.com) [Mail](mailto:a@example.com) [Gone](gone.md)\n\n```mermaid\ngraph LR\n  A --> B\n```' }
+    const events = setup()
+    await events.click(await screen.findByRole('button', { name: /Writing style/ }))
+
+    expect(await screen.findByRole('button', { name: 'Self' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Site' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'Mail' })).toHaveAttribute('href', 'mailto:a@example.com')
+    expect(screen.getByText('Gone').tagName).toBe('SPAN')
+    expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
+  })
 })

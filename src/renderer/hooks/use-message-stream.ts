@@ -2,13 +2,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import {
   providerErrorPresentationSchema,
@@ -55,6 +57,7 @@ export interface PeerUserMessage {
 
 interface StreamState {
   isActive: boolean // True from user message until query result
+  turnOutcome: SessionTurnOutcome | null // Last backend outcome; delivery metadata only
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
@@ -74,7 +77,7 @@ interface StreamState {
   typingUser: { id: string; name?: string; image?: string | null } | null // User currently typing (auth mode shared agents)
   peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
-  backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
+  backgroundTasks: BackgroundTaskRef[] // Every live background task the runtime lists: Bash commands, dynamic workflows, background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
   // Uuids of queued user messages the runtime reported dead (command_lifecycle
   // state discarded/cancelled — e.g. killed by an interrupt). MessageList
@@ -84,6 +87,16 @@ interface StreamState {
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
+/**
+ * The server's whole live task list, which it sends with every frame that
+ * changes it. Replacing ours with it — rather than applying the one change —
+ * means a frame this client missed cannot leave a task behind. Null when the
+ * frame carries none.
+ */
+function serverTaskList(data: { backgroundTasks?: unknown }): BackgroundTaskRef[] | null {
+  return Array.isArray(data.backgroundTasks) ? (data.backgroundTasks as BackgroundTaskRef[]) : null
+}
+
 function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo[] {
   const idx = list.findIndex(s => s.parentToolId === entry.parentToolId)
   if (idx >= 0) {
@@ -97,6 +110,7 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 // Global state to track streaming per session
 const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
+  turnOutcome: null,
   isStreaming: false,
   streamingMessage: null,
   streamingToolUses: [],
@@ -158,8 +172,8 @@ function closeOpenThinkingBlocks(blocks: ThinkingBlock[]): ThinkingBlock[] {
 
 // Live state for dynamic-workflow (`Workflow` tool) runs in this session. Kept
 // outside StreamState (like thinking/slash commands) so the ~15 full state-rebuild
-// sites don't thread it through. A workflow's per-agent tree lives on disk (fetched
-// via the tree route); this holds only the wire-driven live signals: the
+// sites don't thread it through. Live agents render without waiting for the disk
+// tree (which enriches them and survives reload). This holds the wire signals: the
 // runId↔Workflow-tool link (for click-through), per-agent status patches (from the
 // journal tailer), and completion. Stored as immutable arrays so the hook's
 // reference-equality check skips re-render on non-workflow events.
@@ -174,6 +188,8 @@ export interface WorkflowAgentLive {
   lastTool?: string | null
   label?: string
   phase?: string | null
+  model?: string | null
+  prompt?: string
 }
 export interface WorkflowRunLive {
   toolUseId: string
@@ -312,6 +328,34 @@ function invalidateMessagesNow(
   return refetch
 }
 
+// Only the subagent that changed: a session-wide refresh re-downloads every subagent transcript on each event.
+function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  queryClient.invalidateQueries({
+    queryKey: ['subagent-messages', sessionId],
+    predicate: agentId ? (query) => query.queryKey[3] === agentId : undefined,
+  })
+}
+
+// subagent_updated fires when the container relays a subagent's frame; the CLI
+// writes that frame to the subagent transcript a few hundred ms later, so the
+// refetch it triggers can read the file just before the write. Measured live
+// (SDK 0.3.296): a resumed run's first tool call landed ~0.6s after its
+// update, and a foreground command then sends no frame for its whole run, so
+// the block showed the previous run's content until the run ended. One more
+// refetch after the updates go quiet picks the write up.
+export const SUBAGENT_TRAILING_REFETCH_MS = 1500
+const trailingSubagentRefetch = new Map<string, ReturnType<typeof setTimeout>>()
+
+function refreshSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  invalidateSubagentMessages(queryClient, sessionId, agentId)
+  const key = `${sessionId}\u0000${agentId ?? ''}`
+  clearTimeout(trailingSubagentRefetch.get(key))
+  trailingSubagentRefetch.set(key, setTimeout(() => {
+    trailingSubagentRefetch.delete(key)
+    invalidateSubagentMessages(queryClient, sessionId, agentId)
+  }, SUBAGENT_TRAILING_REFETCH_MS))
+}
+
 // Does the last persisted assistant message in the messages cache match the
 // just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
 // stop reconciling at exactly the point the UI considers the turn finalized.
@@ -429,9 +473,6 @@ function getOrCreateEventSource(
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
 
-      // Only session_active and session_idle events change isActive
-      // All other events preserve the current isActive value
-
       if (data.type === 'connected') {
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
@@ -450,6 +491,7 @@ function getOrCreateEventSource(
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUses: [],
@@ -567,6 +609,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -630,7 +673,11 @@ function getOrCreateEventSource(
             })
             invalidateMessagesThrottled(queryClient, sessionId)
           } else {
-            streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+            streamStates.set(sessionId, {
+              ...current,
+              backgroundTasks: serverTaskList(data) ?? current.backgroundTasks,
+              isWaitingBackground: true,
+            })
           }
         }
       }
@@ -640,6 +687,7 @@ function getOrCreateEventSource(
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: [],
@@ -696,18 +744,31 @@ function getOrCreateEventSource(
         }
       }
       // Background Bash task events
-      else if (data.type === 'background_task_started') {
+      else if (data.type === 'background_task_started' || data.type === 'background_task_updated') {
+        // Updated carries the same full entry once a later signal (the
+        // runtime's task list, a launch result) knows more about the task.
         if (current) {
-          const existing = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          const task: BackgroundTaskRef = {
+            taskId: data.taskId,
+            startedAt: data.startedAt,
+            isWorkflow: data.isWorkflow,
+            isSubagent: data.isSubagent,
+            taskType: data.taskType,
+            description: data.description,
+            subagentType: data.subagentType,
+          }
+          const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
             ...current,
-            backgroundTasks: [...existing, { taskId: data.taskId, startedAt: data.startedAt, isWorkflow: data.isWorkflow, isSubagent: data.isSubagent }],
+            backgroundTasks: serverTaskList(data) ?? (index === -1
+              ? [...current.backgroundTasks, task]
+              : current.backgroundTasks.map((t, i) => (i === index ? task : t))),
           })
         }
       }
       else if (data.type === 'background_task_completed') {
         if (current) {
-          const backgroundTasks = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          const backgroundTasks = serverTaskList(data) ?? current.backgroundTasks.filter(t => t.taskId !== data.taskId)
           streamStates.set(sessionId, {
             ...current,
             backgroundTasks,
@@ -764,7 +825,7 @@ function getOrCreateEventSource(
         const run = runs.find(r => r.runId === data.runId)
         if (run) {
           const agents = { ...run.agents }
-          for (const a of (data.agents ?? []) as Array<{ agentId: string; label?: string; phase?: string | null; state: string; tokens?: number; toolCalls?: number; lastTool?: string | null }>) {
+          for (const a of (data.agents ?? []) as Array<{ agentId: string; label?: string; phase?: string | null; model?: string | null; prompt?: string; state: string; tokens?: number; toolCalls?: number; lastTool?: string | null }>) {
             const prev = agents[a.agentId]
             agents[a.agentId] = {
               status: mergeAgentStatus(prev?.status, mapWorkflowAgentState(a.state)),
@@ -774,6 +835,8 @@ function getOrCreateEventSource(
               lastTool: a.lastTool ?? prev?.lastTool ?? null,
               label: a.label ?? prev?.label,
               phase: a.phase ?? prev?.phase ?? null,
+              model: a.model ?? prev?.model,
+              prompt: a.prompt ?? prev?.prompt,
             }
           }
           sessionWorkflows.set(sessionId, runs.map(r => r.runId === data.runId ? { ...r, agents, usage: data.usage ?? r.usage } : r))
@@ -804,6 +867,7 @@ function getOrCreateEventSource(
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUses: [],
@@ -829,6 +893,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -870,6 +935,7 @@ function getOrCreateEventSource(
           : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: updatedTools,
@@ -911,6 +977,7 @@ function getOrCreateEventSource(
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUses: current?.streamingToolUses ?? [],
@@ -1190,9 +1257,18 @@ function getOrCreateEventSource(
             usage: existing?.usage ?? null,
             lastToolName: existing?.lastToolName ?? null,
           }
+          // A new run under a call that already finished (CLI 2.1.296+ re-runs
+          // a subagent under its launching call to hand it the result of its
+          // own background work) is running again until its next completion.
+          let completedSubagents = current.completedSubagents
+          if (data.parentToolId && completedSubagents?.has(data.parentToolId)) {
+            completedSubagents = new Set(completedSubagents)
+            completedSubagents.delete(data.parentToolId)
+          }
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
+            completedSubagents,
           })
         }
       }
@@ -1217,7 +1293,7 @@ function getOrCreateEventSource(
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          refreshSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
@@ -1249,7 +1325,7 @@ function getOrCreateEventSource(
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          refreshSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
           invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
@@ -1323,7 +1399,7 @@ function getOrCreateEventSource(
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const updated: SubagentInfo = {
             parentToolId: data.parentToolId,
-            agentId: existing?.agentId ?? null,
+            agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: data.summary ?? existing?.progressSummary ?? null,
@@ -1349,8 +1425,10 @@ function getOrCreateEventSource(
             ...current,
             isActive: false,
             isStreaming: false,
-            streamingMessage: null,
+            streamingMessage: current.streamingMessage,
             streamingToolUses: [],
+            backgroundTasks: [],
+            isWaitingBackground: false,
             error: null,
             apiErrorCode: null,
             errorPresentation: null,
@@ -1361,6 +1439,31 @@ function getOrCreateEventSource(
         }
       }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
+
+      // Replay only the outcome and its text. Working indicators continue to
+      // use the existing session_active/session_idle/background-task handlers.
+      const next = streamStates.get(sessionId)
+      const parsedOutcome = sessionTurnOutcomeSchema.safeParse(data.turnOutcome)
+      if (next && parsedOutcome.success) {
+        const outcome = parsedOutcome.data
+        const recovery = data.type === 'connected' || data.type === 'ping'
+        streamStates.set(sessionId, {
+          ...next, turnOutcome: outcome,
+          ...((!recovery || !next.isActive) && { streamingMessage: outcome.responseText, error: outcome.error }),
+        })
+        // A stream that opens after the turn already ended — common for a new
+        // session whose first turn is quick — gets no session_idle, only the
+        // connected handler's single refetch. That refetch can beat the
+        // transcript write exactly as the idle one can, and nothing retries it:
+        // the turn's tool calls stay missing and the user's own message reads
+        // as undelivered until the safety-net poll. Reconcile against the
+        // outcome's text the same bounded way the idle handler does.
+        if (data.type === 'connected' && data.isActive !== true && outcome.status === 'completed') {
+          void reconcileMessagesAfterIdle(sessionId, queryClient, outcome.responseText)
+        }
+      } else if (next && data.turnOutcome === null) {
+        streamStates.set(sessionId, { ...next, turnOutcome: null })
+      }
 
       // Notify all listeners
       streamListeners.get(sessionId)?.forEach((listener) => listener())
@@ -1379,7 +1482,7 @@ function getOrCreateEventSource(
       streamStates.set(sessionId, {
         ...current,
         isStreaming: false,
-        streamingMessage: null,
+        streamingMessage: current.streamingMessage,
         streamingToolUses: [],
       })
     }
@@ -1437,6 +1540,20 @@ export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
     })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
+}
+
+// Once the transcript owns a completed thinking card, retire its live copy.
+// Otherwise a later turn boundary or page eviction can make it look unmatched
+// again. Keep open blocks until thinking_stop so later deltas still append to
+// the same episode; MessageList already hides live cards with persisted copies.
+export function consumeThinkingBlocks(sessionId: string, ids: readonly number[]): void {
+  const current = sessionThinking.get(sessionId)
+  if (!current || ids.length === 0) return
+  const consumed = new Set(ids)
+  const blocks = current.blocks.filter(block => block.endedAt === null || !consumed.has(block.id))
+  if (blocks.length === current.blocks.length) return
+  sessionThinking.set(sessionId, { ...current, blocks })
+  streamListeners.get(sessionId)?.forEach(listener => listener())
 }
 
 export function removePeerUserMessage(sessionId: string, uuid: string): void {

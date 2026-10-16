@@ -21,7 +21,7 @@ import {
   getAgentsDir,
   getAgentDir,
   getAgentWorkspaceDir,
-  getAgentClaudeMdPath,
+  getAgentInstructionsPath,
   writeFile,
   getAgentEnvPath,
   getAgentSessionMetadataPath,
@@ -736,8 +736,8 @@ describe('path helpers', () => {
     expect(getAgentWorkspaceDir('my-agent')).toMatch(/\/agents\/my-agent\/workspace$/)
   })
 
-  it('getAgentClaudeMdPath returns path ending with CLAUDE.md', () => {
-    expect(getAgentClaudeMdPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/CLAUDE\.md$/)
+  it('getAgentInstructionsPath returns path ending with AGENTS.md', () => {
+    expect(getAgentInstructionsPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/AGENTS\.md$/)
   })
 
   it('getAgentEnvPath returns path ending with .env', () => {

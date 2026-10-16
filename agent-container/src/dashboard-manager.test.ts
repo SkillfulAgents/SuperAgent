@@ -11,6 +11,9 @@ import {
   getDashboardBasePath,
   getDashboardValidationUrl,
   truncateOversizedLog,
+  nodeModulesUpToDate,
+  withInstallLock,
+  writeInstallStamp,
 } from './dashboard-manager'
 
 const spawnHolder = vi.hoisted(() => ({
@@ -190,6 +193,33 @@ describe('truncateOversizedLog', () => {
   })
 })
 
+describe('withInstallLock', () => {
+  it('runs installs for the same dir one after another', async () => {
+    const events: string[] = []
+    let releaseFirst!: () => void
+    const first = withInstallLock('/artifacts/a', async () => {
+      events.push('first start')
+      await new Promise<void>((resolve) => { releaseFirst = resolve })
+      events.push('first end')
+    })
+    const second = withInstallLock('/artifacts/a', async () => {
+      events.push('second start')
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(events).toEqual(['first start'])
+    releaseFirst()
+    await Promise.all([first, second])
+    expect(events).toEqual(['first start', 'first end', 'second start'])
+  })
+
+  it('still runs the next install after one fails', async () => {
+    const failed = withInstallLock('/artifacts/b', async () => { throw new Error('registry down') })
+    const next = withInstallLock('/artifacts/b', async () => 'ok')
+    await expect(failed).rejects.toThrow('registry down')
+    await expect(next).resolves.toBe('ok')
+  })
+})
+
 describe('DashboardManager log stream lifecycle', () => {
   let testDir: string
   let manager: {
@@ -253,9 +283,7 @@ describe('DashboardManager log stream lifecycle', () => {
       path.join(dir, 'package.json'),
       JSON.stringify({ name: slug, scripts: { start: 'true' }, ...packageFields })
     )
-    // node_modules must be at least as new as package.json to skip install
-    const future = new Date(Date.now() + 60_000)
-    await fs.promises.utimes(path.join(dir, 'node_modules'), future, future)
+    writeInstallStamp(dir)
     return slug
   }
 
@@ -386,6 +414,20 @@ describe('DashboardManager log stream lifecycle', () => {
     )
   })
 
+  it('stops waiting for the port as soon as the process exits', async () => {
+    const slug = await scaffoldDashboard()
+    vi.mocked(globalThis.fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const startedAt = Date.now()
+
+    const start = manager.startDashboard(slug, { forceInstall: false })
+    await vi.waitFor(() => expect(procs).toHaveLength(1))
+    procs[0].exit(1, null)
+    const info = await start
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    expect(info.status).not.toBe('running')
+  })
+
   describe('waitForStartupOutcome', () => {
     it('resolves immediately for an untracked dashboard', async () => {
       const start = Date.now()
@@ -451,6 +493,16 @@ describe('DashboardManager log stream lifecycle', () => {
 
   describe('build skip semantics', () => {
     const TEMPLATE_START = 'bun run build && bun run serve.js'
+    const PLUGIN_DIR = path.resolve(__dirname, '..', 'plugin')
+    const TEMPLATE_SERVE_JS = path.join(PLUGIN_DIR, 'skills', 'dashboards', 'templates', 'react-vite', 'serve.js')
+
+    beforeEach(() => {
+      process.env.GAMUT_PLUGIN_DIR = PLUGIN_DIR
+    })
+
+    afterEach(() => {
+      delete process.env.GAMUT_PLUGIN_DIR
+    })
 
     /** Record every spawn; auto-exit `bun install` procs. */
     function recordSpawns() {
@@ -470,10 +522,14 @@ describe('DashboardManager log stream lifecycle', () => {
       start?: string
       dist?: boolean
       distFresh?: boolean
+      serveJs?: string
     }): Promise<string> {
       const slug = await scaffoldDashboard({ scripts: { start: opts?.start ?? TEMPLATE_START } })
       const dir = path.join(testDir, slug)
-      await fs.promises.writeFile(path.join(dir, 'serve.js'), '// server')
+      await fs.promises.writeFile(
+        path.join(dir, 'serve.js'),
+        opts?.serveJs ?? (await fs.promises.readFile(TEMPLATE_SERVE_JS)),
+      )
       await fs.promises.mkdir(path.join(dir, 'src'), { recursive: true })
       await fs.promises.writeFile(path.join(dir, 'src', 'App.jsx'), '// app')
       if (opts?.dist !== false) {
@@ -504,6 +560,36 @@ describe('DashboardManager log stream lifecycle', () => {
       await manager.startDashboard(slug, { forceInstall: false })
 
       expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+    })
+
+    it('boot start serves the stock serve.js without installing into an empty node_modules', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      // A cloud VM wakes with an empty local node_modules.
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      await fs.promises.mkdir(path.join(testDir, slug, 'node_modules'))
+      const spawns = recordSpawns()
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+      expect(info.status).toBe('running')
+      expect(info.firstRun).toBe(false)
+    })
+
+    it('boot start installs before serving when serve.js was edited', async () => {
+      const slug = await scaffoldTemplateDashboard({ serveJs: "import express from 'express'\n" })
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      await fs.promises.mkdir(path.join(testDir, slug, 'node_modules'))
+      const spawns = recordSpawns()
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'serve.js'],
+      ])
+      expect(info.status).toBe('running')
+      expect(nodeModulesUpToDate(path.join(testDir, slug))).toBe(true)
     })
 
     it('boot start rebuilds when a source file is newer than dist', async () => {
@@ -648,10 +734,11 @@ describe('DashboardManager log stream lifecycle', () => {
       const slug = await scaffoldDashboard()
       const dir = path.join(testDir, slug)
       await fs.promises.writeFile(path.join(dir, 'bun.lock'), '{}')
-      // Make node_modules stale so the boot path needs an install
-      const past = new Date(Date.now() - 60_000)
-      await fs.promises.utimes(path.join(dir, 'node_modules'), past, past)
-      await fs.promises.utimes(path.join(dir, 'package.json'), new Date(), new Date())
+      // Edit package.json after the last install so the boot path needs one
+      await fs.promises.writeFile(
+        path.join(dir, 'package.json'),
+        JSON.stringify({ name: slug, scripts: { start: 'true' }, dependencies: { dayjs: '^1' } }),
+      )
       const spawns = recordSpawns([1, 0])
 
       const info = await manager.startDashboard(slug, { forceInstall: false })

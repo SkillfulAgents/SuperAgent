@@ -23,7 +23,14 @@ vi.mock('@tanstack/react-router', () => ({ useNavigate: () => mockNavigate }))
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({ pendingAgentHomeAction: null, setPendingAgentHomeAction: mockSetPendingAgentHomeAction }),
 }))
-vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: vi.fn() }) }))
+// Filing reads the agent list from the cache when it runs, not from its
+// (deliberately inert) useAgents subscription.
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+    getQueryData: (key: unknown[]) => (key[0] === 'agents' ? mockUseAgents().data : undefined),
+  }),
+}))
 const { mockUser } = vi.hoisted(() => ({ mockUser: vi.fn() }))
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUser(),
@@ -112,7 +119,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('moving an agent into a left-nav folder', () => {
+describe('moving an agent into a left-nav section', () => {
   const FOLDERS = [
     { id: 'f1', name: 'Work' },
     { id: 'f2', name: 'Personal' },
@@ -135,7 +142,7 @@ describe('moving an agent into a left-nav folder', () => {
     expect(screen.queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
     expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveTextContent('Work')
     expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveTextContent('Personal')
-    // The destinations are set off from New Folder below them.
+    // The destinations are set off from New Section below them.
     const submenu = screen.getByTestId('move-agent-to-folder-menu')
     expect(within(submenu).getByRole('separator')).toBeInTheDocument()
   })
@@ -271,9 +278,9 @@ describe('moving an agent into a left-nav folder', () => {
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
-  it('offers only New Folder when there is nowhere to move the agent yet', () => {
+  it('offers only New Section when there is nowhere to move the agent yet', () => {
     // No folders and the agent in the default one: the destination list is
-    // empty, so New Folder stands alone with no rule above it.
+    // empty, so New Section stands alone with no rule above it.
     mockUserSettings.mockReturnValue(undefined)
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 

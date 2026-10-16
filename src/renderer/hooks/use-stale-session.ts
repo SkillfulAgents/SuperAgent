@@ -12,7 +12,7 @@ import { shouldPromptForNewSession } from '@shared/lib/stale-session/stale-sessi
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 interface UseStaleSessionArgs {
-  sessionId: string
+  sessionId: string | null
   /** Canonical agent ID used by the destination composer's draft keys. */
   agentSlug: string
   /** Decorative route slug to preserve in the destination URL. */
@@ -78,7 +78,7 @@ export function useStaleSession({
   }, [])
 
   const startFresh = useCallback(() => {
-    if (forkInFlightRef.current) return
+    if (!sessionId || forkInFlightRef.current) return
     const { draftText, carryover } = splitComposerSnapshot(composerSnapshotRef.current?.())
     if (draftText !== undefined) draftsStore.set(`agent:${agentSlug}`, draftText)
     draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
@@ -90,7 +90,7 @@ export function useStaleSession({
   // copy's URL keeps it, as startFresh does.
   const continueCompacted = useCallback(() => {
     // Guard synchronously: a second selection can arrive before isPending renders.
-    if (forkInFlightRef.current) return
+    if (!sessionId || forkInFlightRef.current) return
     forkInFlightRef.current = true
     forkAndCompact(
       { sessionId, agentSlug: routeAgentSlug ?? agentSlug },
@@ -99,7 +99,7 @@ export function useStaleSession({
   }, [agentSlug, forkAndCompact, routeAgentSlug, sessionId])
 
   return {
-    showNotice: shouldPrompt && !isActive && !isViewOnly && !ignored,
+    showNotice: !!sessionId && shouldPrompt && !isActive && !isViewOnly && !ignored,
     isPending,
     ignore: useCallback(() => setIgnored(true), []),
     popoverOpen,

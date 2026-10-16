@@ -5,7 +5,7 @@ import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
-import { useCallback, useId, useState, type ReactNode } from 'react'
+import { useCallback, useId, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -25,7 +25,7 @@ import {
 import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
-import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
+import { ProviderModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalog-schema'
@@ -36,9 +36,10 @@ import type {
 } from '@shared/lib/llm-provider/connection-schema'
 import { isOAuthProvider, type LlmProviderId, type OAuthProvider } from '@shared/lib/llm-provider/provider-types'
 import { SIGN_IN, type SubscriptionSignInProvider } from './subscription-sign-in'
+import type { ConnectionSetupObserver } from './connection-setup-events'
 
 const SIGN_IN_PROVIDER: Record<OAuthProvider, SubscriptionSignInProvider> = {
-  'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi',
+  'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi', 'minimax-subscription': 'minimax',
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -53,6 +54,7 @@ const providers = {
   'grok-subscription': 'Grok Subscription',
   'codex-subscription': 'Codex Subscription',
   'kimi-subscription': 'Kimi Subscription',
+  'minimax-subscription': 'MiniMax Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -64,6 +66,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'grok-subscription': 'Personal Grok',
   'codex-subscription': 'Work ChatGPT Pro',
   'kimi-subscription': 'Personal Kimi Code',
+  'minimax-subscription': 'Personal MiniMax',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
   generic: 'Local vLLM server',
@@ -75,6 +78,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'grok-subscription': 'Sign in with your xAI account to use your Grok subscription.',
   'codex-subscription': 'Sign in with ChatGPT to use your Codex subscription.',
   'kimi-subscription': 'Sign in with your Kimi account to use your Kimi Code membership.',
+  'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
@@ -351,7 +355,7 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
     </>
   )
 }
-function ConnectionEditor({
+export function ConnectionEditor({
   existing,
   initialProvider,
   userId,
@@ -359,6 +363,9 @@ function ConnectionEditor({
   catalogFor,
   modelPricing,
   onClose,
+  onSaved,
+  saveLabel = 'Save',
+  onSetupEvent,
 }: {
   existing?: ConnectionInfo
   initialProvider?: LlmProviderId
@@ -367,15 +374,22 @@ function ConnectionEditor({
   modelPricing: GlobalModelPricing
   catalogFor: (provider: LlmProviderId) => ConnectionInfo['catalog']
   onClose: () => void
+  onSaved?: (id: string) => void
+  saveLabel?: string
+  onSetupEvent?: ConnectionSetupObserver
 }) {
   const formId = useId()
   const updateSettings = useUpdateSettings()
-  const mutation = useConnectionMutation()
+  const saveAttempt = useRef(0)
+  const mutation = useConnectionMutation({
+    onSaved: () => onSetupEvent?.({ step: 'saved', saveAttempt: saveAttempt.current }),
+  })
   // Fixed for the editor's lifetime: a new connection's provider is chosen on the picker step.
   const provider: LlmProviderId = existing?.provider ?? initialProvider ?? 'anthropic'
   const [name, setName] = useState(existing?.name ?? '')
   const [owner, setOwner] = useState<string | null>(existing?.userId ?? (admin ? null : userId))
   const [apiKey, setApiKey] = useState('')
+  const tokenEntered = useRef(false)
   const [oauthLoginId, setOAuthLoginId] = useState<string>()
   const [accountLabel, setAccountLabel] = useState(existing?.accountLabel)
   const connected = useCallback((id: string, label: string) => {
@@ -414,6 +428,10 @@ function ConnectionEditor({
   const [browserModel, setBrowserModel] = useState(existing?.browserModel ?? '')
   const [dashboardModel, setDashboardModel] = useState(existing?.dashboardModel ?? '')
   const save = async (validate = false) => {
+    if (!validate) {
+      saveAttempt.current += 1
+      onSetupEvent?.({ step: 'save_started', saveAttempt: saveAttempt.current })
+    }
     const apiKeys: ConnectionConfig['apiKeys'] = {}
     if (apiKey) {
       if (provider === 'anthropic') apiKeys.anthropicApiKey = apiKey
@@ -449,13 +467,15 @@ function ConnectionEditor({
         else toast.error(result.error ?? 'Validation failed')
         return
       }
-      await mutation.mutateAsync({
+      const saved = await mutation.mutateAsync({
         path: existing ? `/${existing.id}` : '',
         method: existing ? 'PUT' : 'POST',
         body: connection,
       })
-      onClose()
+      if (onSaved) onSaved(saved.id)
+      else onClose()
     } catch (error) {
+      if (!validate) onSetupEvent?.({ step: 'save_failed', saveAttempt: saveAttempt.current })
       toast.error(error instanceof Error ? error.message : 'Could not save connection')
     }
   }
@@ -506,7 +526,13 @@ function ConnectionEditor({
               type="password"
               autoComplete="new-password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={(e) => {
+                setApiKey(e.target.value)
+                if (provider === 'claude-subscription' && e.target.value.trim() && !tokenEntered.current) {
+                  tokenEntered.current = true
+                  onSetupEvent?.({ step: 'token_entered' })
+                }
+              }}
               placeholder={existing ? 'Leave blank to keep current credential' : provider === 'claude-subscription' ? 'Paste setup-token output' : 'API key'}
               required={provider === 'claude-subscription' && !existing}
             />
@@ -519,7 +545,7 @@ function ConnectionEditor({
         </div>
       )}
       {provider === 'claude-subscription' && <ClaudeSetupTokenSteps />}
-      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} region={existing?.region} onConnected={connected} />}
+      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} region={existing?.region} onConnected={connected} onSetupEvent={onSetupEvent} />}
       {provider === 'generic' && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiFormat`}>API format</label>
@@ -604,7 +630,8 @@ function ConnectionEditor({
                 <div className="text-xs font-medium">{label}</div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">{description}</div>
               </div>
-              <ModelPickerPopover
+              <ProviderModelPickerPopover
+                connection={existing}
                 catalog={catalog}
                 model={model}
                 onPick={onPick}
@@ -699,7 +726,7 @@ function ConnectionEditor({
           Cancel
         </Button>
         <Button type="submit" disabled={mutation.isPending || (isOAuthProvider(provider) && !oauthLoginId && !existing?.isConfigured)}>
-          Save
+          {mutation.isPending ? 'Saving…' : saveLabel}
         </Button>
       </DialogFooter>
     </form>

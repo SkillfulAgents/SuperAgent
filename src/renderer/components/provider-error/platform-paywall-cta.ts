@@ -27,6 +27,10 @@ const ACTIVE_SUBSCRIPTION = new Set(['active', 'trialing', 'cancellation_schedul
 // Payment problems: neither "needs a plan" nor "needs credit" until the admin fixes payment.
 const PAYMENT_NEEDS_ATTENTION = new Set(['past_due', 'blocked', 'payment_failed'])
 
+export function paymentNeedsAttention(paymentStatus: string | null | undefined): boolean {
+  return Boolean(paymentStatus) && PAYMENT_NEEDS_ATTENTION.has(paymentStatus as string)
+}
+
 // CLI 402s drop `subscription_required`; the billing snapshot still knows plan vs credit.
 export function subscriptionRequiredFromBilling(
   billing: { configured?: boolean; subscription?: { status?: string | null } } | null | undefined,
@@ -57,7 +61,7 @@ export function resolvePaywallCta(input: {
   paymentStatus?: string | null
   billingHref: string | null
 }): PaywallCta {
-  if (input.paymentStatus && PAYMENT_NEEDS_ATTENTION.has(input.paymentStatus)) {
+  if (paymentNeedsAttention(input.paymentStatus)) {
     return writeActionCta('manage_payment', input.role, input.billingHref)
   }
   // Proxy omitted the flag (legacy 402): no branching info, so offer billing.

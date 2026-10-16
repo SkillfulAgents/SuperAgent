@@ -267,6 +267,14 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     composioSlug: 'intercom',
     nangoSlug: 'intercom',
   },
+  {
+    slug: 'highlevel',
+    displayName: 'HighLevel',
+    icon: 'briefcase',
+    description: 'CRM: contacts, conversations, calendars',
+    composioSlug: 'highlevel',
+    platformOnly: true,
+  },
 
   // Cloud Storage & Documents
   {
@@ -328,7 +336,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Online store: products, orders, customers',
     composioSlug: 'shopify',
     platformOnly: true,
-    unlisted: true,
     // Shopify only allows installing Gamut's app from its App Store listing (rule 2.3.1).
     installUrl: 'https://apps.shopify.com/gamut',
     fixedName: true,
@@ -433,6 +440,11 @@ const SLUG_KEY: Record<ProviderName, keyof Provider> = {
 
 export function getProvider(slug: string): Provider | undefined {
   return SUPPORTED_PROVIDERS.find((p) => p.slug === slug)
+}
+
+/** The provider's display name, or its slug capitalized when the catalog does not list it. */
+export function getProviderDisplayName(slug: string): string {
+  return getProvider(slug)?.displayName ?? `${slug.charAt(0).toUpperCase()}${slug.slice(1)}`
 }
 
 export function getAllProviders(providerName?: ProviderName): Provider[] {

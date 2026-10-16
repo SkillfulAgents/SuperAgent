@@ -256,7 +256,7 @@ describe('OpenRouterLlmProvider — capabilities and defaults', () => {
     expect(provider.supportsModelSearch).toBe(true)
     expect(provider.getDefaultModel('summarizer')).toBe('haiku')
     expect(provider.getDefaultModel('agent')).toBe('sonnet')
-    expect(provider.getDefaultModel('browser')).toBe('sonnet')
+    expect(provider.getDefaultModel('browser')).toBe('haiku')
     expect(provider.getDefaultModel('dashboard')).toBe('opus')
   })
 })

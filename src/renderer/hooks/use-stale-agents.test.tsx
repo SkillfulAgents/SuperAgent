@@ -14,7 +14,7 @@ vi.mock('./use-agents', () => ({
 import { useStaleAgents } from './use-stale-agents'
 
 function agent(slug: string, name: string, stale?: boolean, hasActiveSessions?: boolean): ApiAgent {
-  return { slug, displaySlug: slug, name, createdAt: new Date(), status: 'running', containerPort: 4000, stale, hasActiveSessions }
+  return { avatar: { color: 'tonal-blue', shape: 'circle' } as const, slug, displaySlug: slug, name, createdAt: new Date(), status: 'running', containerPort: 4000, stale, hasActiveSessions }
 }
 
 describe('useStaleAgents', () => {

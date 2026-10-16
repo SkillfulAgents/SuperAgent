@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { AppLinkContext } from '../agent-integrations/app-link'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 

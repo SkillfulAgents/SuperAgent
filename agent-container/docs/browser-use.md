@@ -124,6 +124,11 @@ must complete, immediately call
 `mcp__user-input__request_browser_input`. Describe exactly what is visible and
 what the user must do. After completion, snapshot the updated state.
 
+Use it only for steps a human must perform. When a form just needs information
+or a decision from the user (a phone number, an address, which option to pick),
+ask with `AskUserQuestion` and fill the field yourself. The answer is easier to
+give, especially on mobile, and stays in the conversation for later.
+
 Do not ask the user to paste credentials into chat. The browser profile retains
 successful sessions. Follow the system prompt's confirmation rules for
 submissions with financial, legal, destructive, or externally visible impact.

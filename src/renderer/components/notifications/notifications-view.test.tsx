@@ -294,6 +294,16 @@ describe('NotificationsView', () => {
     expect(button).toBeDisabled()
   })
 
+  it('enables mark-all-read when unread rows are types the badge count skips', () => {
+    mockUnreadCount = 0
+    mockNotificationsData = {
+      items: [makeNotification({ id: '1', type: 'session_scheduled', isRead: false })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByTestId('notifications-mark-all-read')).toBeEnabled()
+  })
+
   // -----------------------------------------------------------------------
   // Pagination
   // -----------------------------------------------------------------------

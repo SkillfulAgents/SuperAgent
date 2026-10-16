@@ -130,3 +130,24 @@ it('still routes the SDK hosted WebSearch helper through Responses', async () =>
   const client = await grok((body, res) => { expect(body.tools).toEqual([{ type: 'web_search' }]); answer(res) })
   await client.messages.create({ ...prompt, tools: [{ type: 'web_search_20250305', name: 'web_search' }] })
 })
+
+it('replaces PDF document blocks with a text note because the subscription endpoint rejects input_file', async () => {
+  const pdf = { type: 'base64' as const, media_type: 'application/pdf' as const, data: 'JVBERi0xLjMK' }
+  const client = await grok((body, res) => {
+    expect(JSON.stringify(body)).not.toContain('input_file')
+    expect(JSON.stringify(body)).not.toContain('JVBERi0xLjMK')
+    const output = body.input.find((item: Json) => item.type === 'function_call_output').output
+    expect(output[0]).toEqual({ type: 'input_text', text: expect.stringContaining('PDF file read') })
+    expect(output[1].text).toContain('does not accept file input')
+    const user = body.input.filter((item: Json) => item.role === 'user').at(-1)
+    expect(user.content).toContainEqual({ type: 'input_text', text: expect.stringContaining('"receipt.pdf" was not sent') })
+    answer(res)
+  })
+  await client.messages.create({ ...prompt, messages: [...prompt.messages,
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'read', name: 'Read', input: { file_path: '/tmp/receipt.pdf' } }] },
+    { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'read', content: [{ type: 'text', text: 'PDF file read: /tmp/receipt.pdf' }, { type: 'document', source: pdf }] as never },
+      { type: 'document', title: 'receipt.pdf', source: pdf },
+    ] },
+  ] })
+})

@@ -1,3 +1,4 @@
+import { captureException } from '../error-reporting'
 import { platformEmailProvider } from '../email-integrations/provider'
 import type { IntegrationProviderSetup } from './setup-types'
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
@@ -5,17 +6,22 @@ import type { PublicAgentIntegration } from './public'
 import type { IntegrationMcpConnection } from './mcp-types'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
+import type { LiveConversationSetting } from '../voice/live-types'
 import { taskManagerProviders } from '../task-manager-integrations/providers'
+import { meetingProviders } from '../meeting-integrations/providers'
 import { chatProviders } from '../chat-integrations/providers'
 import { formatProviderName } from './presentation'
 
 export interface IntegrationProvider {
+  /** Delegate to the integration class without constructing a live connection. */
+  isAvailable?(): boolean | Promise<boolean>
   setup?: IntegrationProviderSetup
   definition: AgentIntegrationDefinition
   /** Child tables, in deletion order, owned by this provider/family. */
   storage?(): readonly SQLiteTable[]
   serialize?(record: AgentIntegrationRecord): PublicAgentIntegration
-  updateSettings?(record: AgentIntegrationRecord, input: Record<string, unknown>): Promise<void>
+  /** Resolves `{ reconnect: true }` when the change needs a fresh connection (e.g. a new transport). */
+  updateSettings?(record: AgentIntegrationRecord, input: Record<string, unknown>): Promise<void | { reconnect?: boolean }>
   configuration?: {
     identityLabel?: string
     identityPaths: readonly string[]
@@ -24,6 +30,12 @@ export interface IntegrationProvider {
   }
   /** Access and session policy must be available independently of a live connection. */
   policy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'>
+  /**
+   * How a voice conversation in one of this provider's sessions differs from
+   * a person alone with the app (a meeting room). Absent for providers whose
+   * sessions are ordinary conversations.
+   */
+  liveSetting?(record: AgentIntegrationRecord, externalId: string): Promise<LiveConversationSetting | undefined>
   create(record: AgentIntegrationRecord): Promise<AgentIntegration>
   mcp?(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null>
   cleanup?(record: AgentIntegrationRecord): Promise<void>
@@ -59,6 +71,26 @@ export class AgentIntegrationRegistry {
 
   listDefinitions(): AgentIntegrationDefinition[] {
     return [...this.providers.values()].map(provider => provider.definition)
+  }
+
+  async isAvailable(provider: string): Promise<boolean> {
+    const implementation = this.providers.get(provider)
+    if (!implementation) return false
+    try { return await implementation.isAvailable?.() ?? true }
+    catch (error) {
+      captureException(error, { tags: { component: 'agent-integration', operation: 'availability' }, extra: { provider } })
+      return false
+    }
+  }
+
+  async listAvailableDefinitions(): Promise<AgentIntegrationDefinition[]> {
+    const definitions = this.listDefinitions()
+    const available = await Promise.all(definitions.map(definition => this.isAvailable(definition.provider)))
+    return definitions.filter((_, index) => available[index])
+  }
+
+  async liveSetting(record: AgentIntegrationRecord, externalId: string): Promise<LiveConversationSetting | undefined> {
+    return this.providers.get(record.provider)?.liveSetting?.(record, externalId)
   }
 
   async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
@@ -102,4 +134,4 @@ export class AgentIntegrationRegistry {
   }
 }
 
-export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders, platformEmailProvider])
+export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders, ...meetingProviders, platformEmailProvider])

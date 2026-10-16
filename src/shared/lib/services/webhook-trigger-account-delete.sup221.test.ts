@@ -67,7 +67,7 @@ import {
   getActiveComposioTriggerIds,
 } from './webhook-trigger-service'
 
-// Per CLAUDE.md: validate JSON read back from the DB at the boundary with Zod.
+// Per AGENTS.md: validate JSON read back from the DB at the boundary with Zod.
 const TriggerConfigSchema = z.object({ label: z.string() })
 
 const ACCOUNT_ID = 'ca_to_delete'
