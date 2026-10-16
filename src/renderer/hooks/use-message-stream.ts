@@ -80,9 +80,8 @@ interface StreamState {
   backgroundTasks: BackgroundTaskRef[] // Every live background task the runtime lists: Bash commands, dynamic workflows, background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
   // Uuids of queued user messages the runtime reported dead (command_lifecycle
-  // state discarded/cancelled — e.g. killed by an interrupt). MessageList
-  // rescues matching ghosts' text to the composer immediately instead of
-  // racing the post-idle refetch, then consumes each uuid.
+  // state discarded, e.g. killed by an interrupt). MessageList returns matching
+  // ghosts' text to the composer, then consumes each uuid.
   discardedCommandUuids: string[]
 }
 
@@ -757,10 +756,8 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
       // Per-command lifecycle (runtime >= CLI 2.1.206). A started command
-      // drives queued-ghost reconciliation; terminal dead states name a
-      // message that will never run — the deterministic rescue signal.
-      // 'cancelled' for a command that already materialized is harmless:
-      // rescue only fires while its ghost still exists.
+      // drives queued-ghost reconciliation; 'discarded' names a message that
+      // will never run, the deterministic rescue signal.
       else if (data.type === 'command_lifecycle') {
         const commandUuid = typeof data.commandUuid === 'string' ? data.commandUuid : null
         if (commandUuid && data.state === 'started') {
@@ -775,9 +772,10 @@ function getOrCreateEventSource(
         ) {
           startedCommandsAwaitingTranscript.delete(commandUuid)
         }
+        // Stop also cancels the command that is running, so 'cancelled' is no answer.
         if (
           current &&
-          (data.state === 'discarded' || data.state === 'cancelled') &&
+          data.state === 'discarded' &&
           commandUuid &&
           !current.discardedCommandUuids.includes(commandUuid)
         ) {
