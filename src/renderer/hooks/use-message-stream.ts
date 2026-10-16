@@ -390,6 +390,24 @@ function lastPersistedAssistantMatches(
   return false
 }
 
+// Does the persisted transcript end on the assistant's side? For a turn whose
+// output has ended this holds once the transcript has caught up, whatever the
+// turn said — including a turn that said nothing.
+function lastPersistedMessageIsAssistant(queryClient: QueryClient, sessionId: string): boolean {
+  const entries = queryClient.getQueriesData({
+    queryKey: ['messages', sessionId],
+  })
+  for (const [, data] of entries) {
+    const messages = messagesFromQueryCache(data)
+    if (!messages) continue
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') return true
+      if (messages[i].type === 'user') return false
+    }
+  }
+  return false
+}
+
 // The session_idle SSE event can arrive before the final assistant line is
 // durably readable in the JSONL transcript (it's written across the container
 // boundary), so the immediate invalidate's refetch may come back without it.
@@ -407,6 +425,17 @@ async function reconcileMessagesAfterIdle(
   // Nothing streamed (e.g. a tool-only or interrupted turn) — no text to match
   // against, so the handler's immediate invalidate is all we can do.
   if (!expected) return
+  await reconcileMessagesUntil(sessionId, queryClient, () =>
+    lastPersistedAssistantMatches(queryClient, sessionId, expected))
+}
+
+// The bounded refetch loop behind every reconcile: refetch with short backoff
+// until `caughtUp` says the persisted transcript has the turn, then stop.
+async function reconcileMessagesUntil(
+  sessionId: string,
+  queryClient: QueryClient,
+  caughtUp: () => boolean
+): Promise<void> {
   const token = Symbol(sessionId)
   idleReconcileOwners.set(sessionId, token)
   // The stream generation this loop belongs to. The sleeps below can straddle
@@ -420,7 +449,7 @@ async function reconcileMessagesAfterIdle(
     // ~1.5s total across 3 tries — long enough to beat the write/read race,
     // short enough that a genuine mismatch falls through to the poll quickly.
     for (const delay of [250, 500, 750]) {
-      if (lastPersistedAssistantMatches(queryClient, sessionId, expected)) return
+      if (caughtUp()) return
       await new Promise((resolve) => setTimeout(resolve, delay))
       if (idleReconcileOwners.get(sessionId) !== token) return
       if (eventSources.get(sessionId) !== generation) return
@@ -525,6 +554,21 @@ function getOrCreateEventSource(
         // safety-net poll. Without this, a late join only recovers on the next poll
         // tick, which races the assertion timeout in tests and shows a stale UI in prod.
         invalidateMessagesThrottled(queryClient, sessionId)
+        // A turn that ended while its background tasks run on — a quick turn
+        // that launched one, say — leaves the session active with no
+        // session_idle to come, and that single refetch can beat the
+        // transcript write. Retry it the way a late join to a completed turn
+        // does (below), until the transcript ends on the assistant's side.
+        // There is no reply text to match: a turn that ends into waiting on
+        // background records no outcome (only idle, an error or a stop does),
+        // so any outcome this frame carries can be an earlier turn's. The
+        // server sets isWaitingBackground only once the turn's output has
+        // ended and clears it on the next accepted message or wake turn, so
+        // it is never true while a turn streams beside a running task.
+        if (data.isWaitingBackground === true) {
+          void reconcileMessagesUntil(sessionId, queryClient, () =>
+            lastPersistedMessageIsAssistant(queryClient, sessionId))
+        }
         // Resync the unified pending-request store too: its create/resolve
         // events are one-shot, so anything settled or opened while this
         // stream was down must be recovered from the snapshot endpoint.
