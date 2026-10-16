@@ -84,6 +84,10 @@ interface StreamState {
   // rescues matching ghosts' text to the composer immediately instead of
   // racing the post-idle refetch, then consumes each uuid.
   discardedCommandUuids: string[]
+  // Uuids of user messages the runtime reported started or completed. Proof the
+  // agent has the message, so the idle rescue must not treat a transcript that
+  // has not caught up yet as a lost message.
+  deliveredCommandUuids: string[]
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
@@ -131,6 +135,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   backgroundTasks: [],
   isWaitingBackground: false,
   discardedCommandUuids: [],
+  deliveredCommandUuids: [],
 }
 
 const streamStates = new Map<string, StreamState>()
@@ -544,6 +549,7 @@ function getOrCreateEventSource(
           isWaitingBackground:
             data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
         // Reconcile against the persisted transcript on every (re)connect. A client
         // that opens the stream AFTER the agent already broadcast events (common for a
@@ -679,6 +685,7 @@ function getOrCreateEventSource(
           backgroundTasks: [],
           isWaitingBackground: false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
         invalidateMessagesThrottled(queryClient, sessionId)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -752,6 +759,7 @@ function getOrCreateEventSource(
           backgroundTasks: [],
           isWaitingBackground: false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
         invalidateMessagesThrottled(queryClient, sessionId)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -784,6 +792,17 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             discardedCommandUuids: [...current.discardedCommandUuids, commandUuid],
+          })
+        }
+        if (
+          current &&
+          (data.state === 'started' || data.state === 'completed') &&
+          commandUuid &&
+          !current.deliveredCommandUuids.includes(commandUuid)
+        ) {
+          streamStates.set(sessionId, {
+            ...current,
+            deliveredCommandUuids: [...current.deliveredCommandUuids, commandUuid],
           })
         }
       }
@@ -932,6 +951,7 @@ function getOrCreateEventSource(
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
       }
       else if (data.type === 'stream_delta') {
@@ -958,6 +978,7 @@ function getOrCreateEventSource(
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
       }
       else if (data.type === 'stream_api_error') {
@@ -1000,6 +1021,7 @@ function getOrCreateEventSource(
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -1042,6 +1064,7 @@ function getOrCreateEventSource(
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          deliveredCommandUuids: current?.deliveredCommandUuids ?? [],
         })
       }
       else if (data.type === 'user_message') {

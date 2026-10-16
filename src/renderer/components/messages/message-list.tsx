@@ -247,6 +247,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     typingUser,
     peerUserMessages,
     discardedCommandUuids,
+    deliveredCommandUuids,
     workflows,
     thinkingBlocks,
   } = useMessageStream(sessionId, agentSlug)
@@ -392,9 +393,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // boundary rather than a user message, and compact_complete can beat the
   // boundary refetch by more than this grace period. Consume its ghost at idle
   // without prepending the command over a draft typed during compaction.
+  //
+  // A message the runtime reported started or completed is delivered, whatever
+  // the cached transcript says. On a slow link every transcript read can still
+  // be in flight (or aborted by the next refetch) when this grace runs out, so
+  // the cache is not proof the message was lost. Leave those pending until the
+  // transcript shows them.
   useEffect(() => {
     if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
-    const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
+    const delivered = new Set(deliveredCommandUuids)
+    const undelivered = (pendingUserMessages ?? []).filter((p) => (p.queued || p.uuid) && !(p.uuid && delivered.has(p.uuid)))
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
         const restored = undelivered
@@ -409,7 +417,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       clearPeerUserMessages(sessionId)
     }, 1500)
     return () => clearTimeout(timerId)
-  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
+  }, [pendingUserMessages, peerUserMessages, isActive, deliveredCommandUuids, onPendingMessageAppeared, sessionId, draftsStore])
 
   // Hidden system messages and redundant interrupt markers must not consume
   // window slots: windowing operates on what the user can see.

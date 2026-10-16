@@ -2729,6 +2729,20 @@ describe('useMessageStream', () => {
       expect(result.current.discardedCommandUuids).toEqual([])
     })
 
+    it('records started or completed command uuids as delivered, deduped, and ignores queued', async () => {
+      const { result, es } = await setupHook('cmd-delivered')
+
+      act(() => {
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'queued' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'queued' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'started' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'completed' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u3', state: 'completed' })
+      })
+
+      expect(result.current.deliveredCommandUuids).toEqual(['u1', 'u3'])
+    })
+
     it('refetches at queued-command pickup and again when its model response starts', async () => {
       vi.useFakeTimers()
       try {

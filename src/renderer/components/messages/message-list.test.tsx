@@ -70,6 +70,7 @@ const mockStreamState = {
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender?: { id: string; name?: string; email?: string }; queued?: boolean; integration?: IntegrationMessageDisplay }>,
   discardedCommandUuids: [] as string[],
+  deliveredCommandUuids: [] as string[],
   thinkingBlocks: [] as Array<{ id: number; persistedId?: string; text: string; startedAt: number; endedAt: number | null }>,
   error: null as string | null,
   apiErrorCode: null as string | null,
@@ -198,6 +199,7 @@ describe('MessageList', () => {
       typingUser: null,
       peerUserMessages: [],
       discardedCommandUuids: [],
+      deliveredCommandUuids: [],
       thinkingBlocks: [],
       error: null,
       apiErrorCode: null,
@@ -1393,6 +1395,49 @@ describe('MessageList', () => {
 
       expect(onAppeared).toHaveBeenCalledWith('l1')
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('lost message')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a delivered message out of the composer when the transcript lags past the idle grace', async () => {
+    // Slow link: the runtime already reported the command started and completed,
+    // but every transcript read is still in flight, so the cache has nothing.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockStreamState.isActive = false
+      mockStreamState.deliveredCommandUuids = ['u-ran']
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[
+              { localId: 'l1', uuid: 'u-ran', text: 'hello', sentAt: Date.now() },
+              { localId: 'l2', uuid: 'u-lost', text: 'never ran', sentAt: Date.now(), queued: true },
+            ]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(onAppeared).not.toHaveBeenCalledWith('l1')
+      expect(onAppeared).toHaveBeenCalledWith('l2')
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('never ran')
+      expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('hello')
     } finally {
       vi.useRealTimers()
     }
