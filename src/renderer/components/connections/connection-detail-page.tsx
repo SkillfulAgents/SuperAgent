@@ -23,13 +23,15 @@ interface ConnectionDetailPageProps {
    */
   backLabel?: string
   onViewLogs: () => void
+  /** The agent whose connections this was opened from (absent in global settings). */
+  agentSlug?: string
 }
 
 /**
  * Detail view for a single connection: two columns showing which agents have
  * access and the per-scope / per-tool permissions for the connection.
  */
-export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Connections' }: ConnectionDetailPageProps) {
+export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Connections', agentSlug }: ConnectionDetailPageProps) {
   // Hide the default SettingsPage header — the detail page owns its own — and
   // use the full inset width so the two columns can lay out like the agent home.
   useHideSettingsHeader(true)
@@ -119,7 +121,12 @@ export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Con
           )}
 
           {(row.type === 'oauth' || row.type === 'mcp') && (
-            <ProxyRulesSection kind={row.type === 'oauth' ? 'api' : 'mcp'} targetId={row.id} />
+            <ProxyRulesSection
+              kind={row.type === 'oauth' ? 'api' : 'mcp'}
+              targetId={row.id}
+              targetName={row.name}
+              agentSlug={agentSlug}
+            />
           )}
         </div>
       </div>

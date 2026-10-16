@@ -1,5 +1,5 @@
 /**
- * Shared steps for saving a rule, whoever wrote it: load the target's context,
+ * Steps for saving a rule an agent proposed: load the target's context,
  * validate the draft, and restate it from its code.
  */
 import { and, eq } from 'drizzle-orm'
@@ -12,9 +12,6 @@ import {
 } from '@shared/lib/db/schema'
 import { parseCachedMcpTools } from '@shared/lib/mcp/connection-schema'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
-import { SCOPE_MAPS } from '../scope-maps'
-import { matchScopes } from '../scope-matcher'
-import { resolveApiPolicy, resolveMcpPolicy } from '../policy-resolver'
 import { validateRuleDraft, type RuleDraft, type RuleDraftReport, type RuleKind } from './engine'
 import { catalogFor, restateRule } from './author'
 import type { RuleTarget } from './store'
@@ -27,28 +24,6 @@ export interface TargetContext {
   toolkit?: string
   tools?: McpToolInfo[]
   userId: string | null
-}
-
-/**
- * The policy each catalog entry resolves to today, keyed "METHOD /path" (api)
- * or tool name (mcp) — what the author needs to pick a rule's effect.
- */
-export async function catalogPolicies(context: TargetContext): Promise<Record<string, string>> {
-  const userId = context.userId ?? 'local'
-  const policies: Record<string, string> = {}
-  if (context.target.kind === 'api') {
-    const map = context.toolkit ? SCOPE_MAPS[context.toolkit] : undefined
-    for (const entry of map?.scopeMap ?? []) {
-      const path = entry.pathPattern.replace(/\*+/g, 'x')
-      const match = matchScopes(context.toolkit!, entry.method, path, map!.apiHost)
-      policies[`${entry.method} ${entry.pathPattern}`] = (await resolveApiPolicy(context.target.targetId, match, userId, context.toolkit)).decision
-    }
-  } else {
-    for (const tool of context.tools ?? []) {
-      policies[tool.name] = (await resolveMcpPolicy(context.target.targetId, tool.name, userId)).decision
-    }
-  }
-  return policies
 }
 
 export async function loadTargetContext(target: RuleTarget): Promise<TargetContext | null> {
@@ -100,7 +75,7 @@ export async function prepareDraft(context: TargetContext, draft: RuleDraft): Pr
   let restatement = ''
   try {
     const catalog = draft.effect === 'require'
-      ? catalogFor({ kind: draft.kind, toolkit: context.toolkit, tools: context.tools }, { schemas: false })
+      ? catalogFor({ kind: draft.kind, toolkit: context.toolkit, tools: context.tools })
       : undefined
     const restated = await restateRule(draft, catalog)
     name = restated.name

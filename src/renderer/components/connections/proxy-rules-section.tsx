@@ -1,14 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, ChevronRight, Loader2, Trash2, X } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Trash2 } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { useAgents } from '@renderer/hooks/use-agents'
+import { useAccountAgents } from '@renderer/hooks/use-connected-accounts'
+import { useMcpAgents } from '@renderer/hooks/use-remote-mcps'
+import { useCreateSession } from '@renderer/hooks/use-sessions'
+import { useUser } from '@renderer/context/user-context'
+import { AgentDropdown } from '@renderer/components/agents/agent-dropdown'
 import { Button } from '@renderer/components/ui/button'
 import { Textarea } from '@renderer/components/ui/textarea'
-import { Input } from '@renderer/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { cn } from '@shared/lib/utils/cn'
-import { ruleEffectLabel, ruleTestExpectLabel, type RuleEffectView } from '@shared/lib/proxy/rules/proposal-schema'
+import { ruleEffectLabel, type RuleEffectView } from '@shared/lib/proxy/rules/proposal-schema'
 
 type RuleKind = 'api' | 'mcp'
 
@@ -31,96 +37,50 @@ interface RuleView {
   warnings: string[]
 }
 
-interface Draft { effect: RuleEffectView; description: string; patterns: string[]; code: string; tests: RuleTestCase[] }
-
-interface DraftReport {
-  ok: boolean
-  errors: string[]
-  warnings: string[]
-  testResults: Array<{ name: string; expect: boolean; passed: boolean; error?: string; outcome: { result: string } }>
-}
-
-type AuthorResponse =
-  | { type: 'question'; question: string }
-  | { type: 'draft'; draft: Draft; name: string; restatement: string; report: DraftReport; coverage: string[] }
-
-/** A draft, with the author job it came from (saving takes the job's copy). */
-type DraftResult = Extract<AuthorResponse, { type: 'draft' }> & { jobId: string }
-
-/** A response body; a proxy's error page (not JSON) becomes a readable error. */
-async function readJson(res: Response): Promise<Record<string, unknown>> {
-  try {
-    return await res.json() as Record<string, unknown>
-  } catch {
-    throw new Error(`The server answered with HTTP ${res.status}. Try again.`)
-  }
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+type AppliesTo = 'agent' | 'all_agents'
 
 /**
- * Writing a rule takes over a minute at times, longer than proxies let one
- * request run, so the server writes it as a job and this polls for it. Each
- * poll is held open up to 15 s. Network errors and 5xx answers (proxies send
- * those, JSON or not) are retried; the job reports its own failure as a result.
+ * The first message of the chat that writes a rule: the person's words, the
+ * connection, and who the rule should apply to. The agent proposes the rule
+ * with its rule tools, and the person approves it on the card in that chat.
  */
-export async function authorRuleJob(
-  kind: RuleKind,
-  targetId: string,
-  body: { description: string; clarifications: Array<{ question: string; answer: string }> },
-  signal: AbortSignal,
-): Promise<AuthorResponse & { jobId: string }> {
-  const started = await apiFetch(`/api/proxy-rules/${kind}/${targetId}/author`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-  const job = await readJson(started)
-  if (started.status !== 202 || typeof job.jobId !== 'string') {
-    throw new Error(typeof job.error === 'string' ? job.error : 'Could not write the rule')
-  }
-  const jobId = job.jobId
-  for (let failures = 0; ;) {
-    let res: Response
-    let result: Record<string, unknown>
-    try {
-      res = await apiFetch(`/api/proxy-rules/${kind}/${targetId}/author/${jobId}`, { signal })
-      result = await readJson(res)
-    } catch (error) {
-      if (signal.aborted || ++failures > 3) throw error
-      await sleep(1000 * failures)
-      continue
-    }
-    if (res.status >= 500 && ++failures <= 3) {
-      await sleep(1000 * failures)
-      continue
-    }
-    if (res.status === 202) {
-      failures = 0
-      await sleep(250)
-      continue
-    }
-    if (!res.ok || result.type === 'failed') {
-      const message = [result.message, result.error].find((m): m is string => typeof m === 'string')
-      throw new Error(message ?? 'Could not write the rule')
-    }
-    return { ...(result as AuthorResponse), jobId }
-  }
+export function ruleRequestPrompt(request: {
+  kind: RuleKind
+  targetId: string
+  targetName: string
+  description: string
+  appliesTo: AppliesTo
+}): string {
+  const target = request.kind === 'api'
+    ? `the connected account "${request.targetName}" (account id ${request.targetId})`
+    : `the MCP server "${request.targetName}" (MCP id ${request.targetId})`
+  const scope = request.appliesTo === 'agent' ? 'only your requests' : 'every agent using this connection'
+  return [
+    `Create a proxy rule for ${target}:`,
+    '',
+    request.description.trim().split('\n').map((line) => `> ${line}`).join('\n'),
+    '',
+    `It should apply to ${scope}. Check the rules it already has first, and ask me before submitting if anything is unclear, such as which requests it should cover or whether it should let them skip review or hold them for review.`,
+  ].join('\n')
 }
 
 interface ProxyRulesSectionProps {
   kind: RuleKind
   /** Connected account id (api) or remote MCP server id (mcp). */
   targetId: string
+  /** The account's or server's display name. */
+  targetName: string
+  /** The agent whose connections this page was opened from, if any. */
+  agentSlug?: string
 }
 
 /**
  * "Rules" panel on a connection: rules that let specific requests skip the
- * review the permissions above would ask for. Rules are written from a plain
- * English description; the user saves only after reading what the code does.
+ * review the permissions above would ask for, or hold ones they allow. A rule
+ * is written by an agent: the person describes it here, which starts a chat
+ * where the agent writes it and the person approves it.
  */
-export function ProxyRulesSection({ kind, targetId }: ProxyRulesSectionProps) {
+export function ProxyRulesSection({ kind, targetId, targetName, agentSlug }: ProxyRulesSectionProps) {
   const queryKey = ['proxy-rules', kind, targetId]
   const queryClient = useQueryClient()
   const [adding, setAdding] = useState(false)
@@ -193,13 +153,12 @@ export function ProxyRulesSection({ kind, targetId }: ProxyRulesSectionProps) {
           <p className="px-3 pb-3 text-xs text-red-600" role="alert" data-testid="proxy-rules-delete-error">{remove.error.message}</p>
         )}
         {adding && (
-          <RuleComposer
+          <RuleRequestForm
             kind={kind}
             targetId={targetId}
-            onDone={() => {
-              setAdding(false)
-              void queryClient.invalidateQueries({ queryKey })
-            }}
+            targetName={targetName}
+            contextAgentSlug={agentSlug}
+            onCancel={() => setAdding(false)}
           />
         )}
       </div>
@@ -279,63 +238,41 @@ function Warnings({ warnings }: { warnings: string[] }) {
   )
 }
 
-function RuleComposer({ kind, targetId, onDone }: { kind: RuleKind; targetId: string; onDone: () => void }) {
+function RuleRequestForm({ kind, targetId, targetName, contextAgentSlug, onCancel }: {
+  kind: RuleKind
+  targetId: string
+  targetName: string
+  contextAgentSlug?: string
+  onCancel: () => void
+}) {
+  const navigate = useNavigate()
+  const { isAuthMode, rolesReady, canUseAgent } = useUser()
+  const agents = useAgents()
+  const accountAgents = useAccountAgents(kind === 'api' ? targetId : '')
+  const mcpAgents = useMcpAgents(kind === 'mcp' ? targetId : '')
+  const assignment = kind === 'api' ? accountAgents : mcpAgents
+  const createSession = useCreateSession()
+
+  // Only an agent with this connection can propose a rule for it.
+  const assigned = new Set(assignment.data?.agentSlugs ?? [])
+  const candidates = (agents.data ?? []).filter((a) => assigned.has(a.slug) && (!isAuthMode || canUseAgent(a.slug)))
+  const loading = agents.isLoading || assignment.isLoading || (isAuthMode && !rolesReady)
+  const preselected = contextAgentSlug && candidates.some((a) => a.slug === contextAgentSlug)
+    ? contextAgentSlug
+    : candidates.length === 1 ? candidates[0].slug : null
+
   const [description, setDescription] = useState('')
-  const [clarifications, setClarifications] = useState<Array<{ question: string; answer: string }>>([])
-  const [question, setQuestion] = useState<string | null>(null)
-  const [answer, setAnswer] = useState('')
-  const [name, setName] = useState('')
-  const [result, setResult] = useState<DraftResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  // Stops polling for a rule being written once the composer closes.
-  const polling = useRef<AbortController | null>(null)
-  useEffect(() => () => polling.current?.abort(), [])
+  const [picked, setPicked] = useState<string | null>(null)
+  const [appliesTo, setAppliesTo] = useState<AppliesTo>(contextAgentSlug ? 'agent' : 'all_agents')
+  const writer = candidates.find((a) => a.slug === (picked ?? preselected))
 
-  const author = useMutation({
-    mutationFn: (answers: Array<{ question: string; answer: string }>) => {
-      polling.current?.abort()
-      polling.current = new AbortController()
-      return authorRuleJob(kind, targetId, { description, clarifications: answers }, polling.current.signal)
-    },
-    onSuccess: (response) => {
-      setError(null)
-      if (response.type === 'question') {
-        setQuestion(response.question)
-        setResult(null)
-      } else {
-        setQuestion(null)
-        setName(response.name)
-        setResult(response)
-      }
-    },
-    onError: (err) => setError(err instanceof Error ? err.message : 'Could not write the rule'),
-  })
-
-  const save = useMutation({
-    mutationFn: async (jobId: string) => {
-      const res = await apiFetch(`/api/proxy-rules/${kind}/${targetId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId, ...(name.trim() ? { name: name.trim() } : {}) }),
-      })
-      const body = await readJson(res)
-      if (!res.ok) throw new Error((Array.isArray(body.errors) ? body.errors : [body.error]).join(' ') || 'Could not save the rule')
-    },
-    onSuccess: onDone,
-    onError: (err) => setError(err instanceof Error ? err.message : 'Could not save the rule'),
-  })
-
-  const submitAnswer = () => {
-    if (!question || !answer.trim()) return
-    const next = [...clarifications, { question, answer: answer.trim() }]
-    setClarifications(next)
-    setQuestion(null)
-    setAnswer('')
-    author.mutate(next)
+  const submit = () => {
+    if (!writer || !description.trim()) return
+    createSession.mutate(
+      { agentSlug: writer.slug, message: ruleRequestPrompt({ kind, targetId, targetName, description, appliesTo }) },
+      { onSuccess: (session) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: writer.slug, sessionId: session.id } }) },
+    )
   }
-
-  const busy = author.isPending || save.isPending
-  const report = result?.report
 
   return (
     <div className="space-y-3 border-t px-3 py-3" data-testid="proxy-rule-composer">
@@ -346,112 +283,55 @@ function RuleComposer({ kind, targetId, onDone }: { kind: RuleKind; targetId: st
           ? 'e.g. Let it send email when every recipient is at our company domain'
           : 'e.g. Let it request payments up to $5,000'}
         rows={2}
-        disabled={busy || !!result}
+        disabled={createSession.isPending}
         data-testid="proxy-rule-description"
       />
 
-      {clarifications.map((c) => (
-        <div key={c.question} className="text-xs">
-          <p className="text-muted-foreground">{c.question}</p>
-          <p className="text-foreground">{c.answer}</p>
-        </div>
-      ))}
-
-      {question && (
-        <div className="space-y-2" data-testid="proxy-rule-question">
-          <p className="text-sm text-foreground">{question}</p>
-          <div className="flex gap-2">
-            <Input
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitAnswer() }}
-              placeholder="Your answer"
-              disabled={busy}
-              data-testid="proxy-rule-answer"
-            />
-            <Button size="sm" onClick={submitAnswer} disabled={busy || !answer.trim()}>Answer</Button>
-          </div>
-        </div>
-      )}
-
-      {result && report && (
-        <div className="space-y-3" data-testid="proxy-rule-draft">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Name</p>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={80}
-              className="mt-1"
-              disabled={busy}
-              data-testid="proxy-rule-name-input"
-            />
-          </div>
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">What the code does</p>
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="proxy-rule-effect">
-              {result.draft.effect === 'require'
-                ? 'Requires review: holds matching requests for review, even ones your permissions allow, unless the code returns true.'
-                : 'Skips review: lets matching requests your permissions would review through when the code returns true.'}
-            </p>
-            <p className="mt-1 text-sm leading-6" data-testid="proxy-rule-restatement">
-              {result.restatement || 'No description could be generated — read the code below.'}
-            </p>
-          </div>
-          {report.errors.length > 0 && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs">
-              {report.errors.map((e) => <p key={e}>{e}</p>)}
-            </div>
-          )}
-          {report.warnings.length > 0 && <Warnings warnings={report.warnings} />}
-          {result.coverage.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {result.coverage.map((c) => <span key={c} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{c}</span>)}
-            </div>
-          )}
-          <ul className="space-y-0.5">
-            {report.testResults.map((t) => (
-              <li key={t.name} className="flex items-start gap-2 text-xs leading-5">
-                {t.passed ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" /> : <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-600" />}
-                <span>{t.name}</span>
-                <span className="ml-auto shrink-0 text-muted-foreground">{ruleTestExpectLabel(result.draft.effect, t.expect)}</span>
-              </li>
-            ))}
-          </ul>
-          <Collapsible>
-            <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-              <ChevronRight className="h-3.5 w-3.5" /> Show code
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <pre className="mt-2 max-h-64 overflow-auto rounded-md border bg-muted/50 p-2 font-mono text-[11px] leading-5">{result.draft.code}</pre>
-            </CollapsibleContent>
-          </Collapsible>
+      {loading ? null : candidates.length === 0 ? (
+        <p className="text-xs text-muted-foreground" data-testid="proxy-rule-no-agent">
+          An agent writes each rule, and no agent you can use has this connection. Give one access above to write rules for it.
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <AgentDropdown
+            value={writer?.slug ?? null}
+            onValueChange={(slug) => setPicked(slug)}
+            filter={(a) => candidates.some((c) => c.slug === a.slug)}
+            disabled={createSession.isPending}
+            testId="proxy-rule-agent"
+            trigger={
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" data-testid="proxy-rule-agent-trigger">
+                <span className="max-w-[12rem] truncate">{writer ? writer.name : 'Choose an agent'}</span>
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </Button>
+            }
+          />
+          <Select value={appliesTo} onValueChange={(value) => setAppliesTo(value as AppliesTo)} disabled={createSession.isPending}>
+            <SelectTrigger className="h-8 w-auto gap-1.5 text-xs" aria-label="Applies to" data-testid="proxy-rule-applies-to">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="agent">Only {writer ? writer.name : 'that agent'}</SelectItem>
+              <SelectItem value="all_agents">All agents</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       )}
 
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      <p className="text-xs text-muted-foreground">
+        Opens a chat where {writer ? writer.name : 'the agent'} writes the rule. You approve it there before it is saved.
+      </p>
 
       <div className="flex justify-end gap-2">
-        <Button size="sm" variant="ghost" onClick={onDone} disabled={save.isPending}>Cancel</Button>
-        {result ? (
-          <>
-            <Button size="sm" variant="outline" onClick={() => { setResult(null); setClarifications([]) }} disabled={busy}>
-              Start over
-            </Button>
-            <Button size="sm" onClick={() => save.mutate(result.jobId)} disabled={busy || !report?.ok} data-testid="proxy-rule-save">
-              {save.isPending ? 'Saving…' : 'Save rule'}
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="sm"
-            onClick={() => author.mutate(clarifications)}
-            disabled={busy || !description.trim() || !!question}
-            data-testid="proxy-rule-write"
-          >
-            {author.isPending ? <><Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> Writing…</> : 'Write rule'}
-          </Button>
-        )}
+        <Button size="sm" variant="ghost" onClick={onCancel} disabled={createSession.isPending}>Cancel</Button>
+        <Button
+          size="sm"
+          onClick={submit}
+          disabled={createSession.isPending || !writer || !description.trim()}
+          data-testid="proxy-rule-create"
+        >
+          {createSession.isPending ? <><Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> Starting…</> : 'Create rule'}
+        </Button>
       </div>
     </div>
   )
