@@ -758,8 +758,12 @@ export interface OpenFile {
    * the end stops at the end. The last use of the handle: the open is
    * released when the stream ends, so a caller that hands the stream on (an
    * HTTP response) has nothing left to close.
+   *
+   * `chunkBytes` is the preferred size of each underlying read — a hint: a
+   * reader that knows how much it will consume asks for it in fewer, larger
+   * reads. Omitted, the implementation's default applies.
    */
-  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array>
+  stream(range?: { start: number; end?: number }, options?: { chunkBytes?: number }): ReadableStream<Uint8Array>
   /** Release what the open holds. Safe to call more than once, and after `stream`. */
   close(): Promise<void>
 }

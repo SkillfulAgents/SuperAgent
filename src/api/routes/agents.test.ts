@@ -4562,6 +4562,113 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     })
   })
 
+  describe('max_bytes', () => {
+    const pageOpts = () => vi.mocked(getSessionMessagesPage).mock.calls[0]![2]
+
+    beforeEach(() => {
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages: [], anchor: null })
+    })
+
+    // Every client that predates the parameter (old iOS builds, old web
+    // bundles) must get exactly the call it got before: no budget passed, so
+    // the reader applies its own default window.
+    it('passes no byte budget when the request has none', async () => {
+      const res = await getReq(app, `${URL}?limit=300&media=ref`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toEqual({ limit: 300, cursor: undefined, signal: expect.any(AbortSignal), media: 'ref' })
+      expect(pageOpts()).not.toHaveProperty('byteBudget')
+
+      vi.mocked(getSessionMessagesPage).mockClear()
+      await getReq(app, `${URL}?limit=200&cursor=m1&media=ref`)
+      expect(pageOpts()).not.toHaveProperty('byteBudget')
+    })
+
+    it('forwards max_bytes as the byte budget of the trailing page', async () => {
+      const res = await getReq(app, `${URL}?limit=300&media=ref&max_bytes=524288`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toEqual({
+        limit: 300,
+        cursor: undefined,
+        signal: expect.any(AbortSignal),
+        media: 'ref',
+        byteBudget: 524288,
+      })
+    })
+
+    it('forwards max_bytes on an older page, alongside the older-page limit cap', async () => {
+      process.env.MESSAGES_PAGE_OLDER_LIMIT = '80'
+      const res = await getReq(app, `${URL}?limit=200&cursor=m1&max_bytes=1048576`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toMatchObject({ limit: 80, cursor: 'm1', byteBudget: 1048576 })
+    })
+
+    it('clamps max_bytes into [64 KiB, 4 MiB]', async () => {
+      const cases: [string, number][] = [
+        ['1', 64 * 1024],
+        ['65535', 64 * 1024],
+        ['65536', 64 * 1024],
+        ['300000', 300000],
+        ['4194304', 4 * 1024 * 1024],
+        ['4194305', 4 * 1024 * 1024],
+        ['99999999999', 4 * 1024 * 1024],
+      ]
+      for (const [raw, budget] of cases) {
+        vi.mocked(getSessionMessagesPage).mockClear()
+        const res = await getReq(app, `${URL}?limit=10&max_bytes=${raw}`)
+        expect(res.status, raw).toBe(200)
+        expect(pageOpts().byteBudget, raw).toBe(budget)
+      }
+    })
+
+    it('rejects a malformed max_bytes instead of guessing', async () => {
+      for (const raw of ['', 'abc', '0', '-1', '1.5', 'Infinity', '1e400']) {
+        const res = await getReq(app, `${URL}?limit=10&max_bytes=${encodeURIComponent(raw)}`)
+        expect(res.status, raw).toBe(400)
+      }
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+      expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+    })
+
+    it('honors max_bytes on its own, as a bounded trailing page', async () => {
+      // Otherwise asking for a bounded response quietly returns the whole
+      // transcript from the unpaginated read.
+      const res = await getReq(app, `${URL}?max_bytes=524288`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ messages: [], nextCursor: null })
+      expect(pageOpts()).toMatchObject({ limit: 300, cursor: undefined, byteBudget: 524288 })
+      expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+    })
+
+    it('ignores max_bytes on a forward delta, which the live turn already bounds', async () => {
+      const res = await getReq(app, `${URL}?limit=300&after=m1&media=ref&max_bytes=65536`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ messages: [], anchor: null })
+      expect(getSessionMessagesDelta).toHaveBeenCalledWith(
+        expect.objectContaining({ slug: 'test-agent' }),
+        'sess-1',
+        { after: 'm1', signal: expect.any(AbortSignal), media: 'ref' },
+      )
+      expect(vi.mocked(getSessionMessagesDelta).mock.calls[0]![2]).not.toHaveProperty('byteBudget')
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+
+    it('still validates max_bytes on a forward delta', async () => {
+      const res = await getReq(app, `${URL}?after=m1&max_bytes=abc`)
+      expect(res.status).toBe(400)
+      expect(getSessionMessagesDelta).not.toHaveBeenCalled()
+    })
+
+    it('leaves the unpaginated read untouched', async () => {
+      vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+      mockTransformMessages.mockReturnValue([])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+  })
+
   // The renderer aborts superseded refetches (SSE burst throttling); the route
   // must honor that server-side. Without it every abandoned request still runs
   // the full read/parse/serialize pipeline — orphaned jobs accumulate at the

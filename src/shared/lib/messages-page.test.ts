@@ -12,7 +12,11 @@ import { describe, it, expect, afterEach } from 'vitest'
 
 import {
   capMessagesPageLimit,
+  clampMessagesPageBytes,
+  MESSAGES_PAGE_BYTES,
   MESSAGES_PAGE_LIMIT,
+  MESSAGES_PAGE_MAX_BYTES,
+  MESSAGES_PAGE_MIN_BYTES,
   MESSAGES_PAGE_OLDER_LIMIT,
   MESSAGES_PAGE_MAX_LIMIT,
 } from './messages-page'
@@ -107,5 +111,35 @@ describe('capMessagesPageLimit — env overrides', () => {
     // '1e2' is a valid integer to Number, and envLimit accepts it.
     process.env.MESSAGES_PAGE_LIMIT = '1e2'
     expect(capMessagesPageLimit(undefined)).toBe(100)
+  })
+})
+
+describe('clampMessagesPageBytes', () => {
+  it('leaves an absent budget absent, so the reader applies its default', () => {
+    expect(clampMessagesPageBytes(undefined)).toBeUndefined()
+  })
+
+  it('honors a budget inside the bounds', () => {
+    expect(clampMessagesPageBytes(512 * 1024)).toBe(512 * 1024)
+    expect(clampMessagesPageBytes(MESSAGES_PAGE_MIN_BYTES)).toBe(MESSAGES_PAGE_MIN_BYTES)
+    expect(clampMessagesPageBytes(MESSAGES_PAGE_MAX_BYTES)).toBe(MESSAGES_PAGE_MAX_BYTES)
+  })
+
+  it('raises a tiny budget to the floor', () => {
+    // A page of a couple of items would turn reading history into hundreds
+    // of requests, each paying its own transcript scan.
+    expect(clampMessagesPageBytes(1)).toBe(MESSAGES_PAGE_MIN_BYTES)
+    expect(clampMessagesPageBytes(MESSAGES_PAGE_MIN_BYTES - 1)).toBe(MESSAGES_PAGE_MIN_BYTES)
+  })
+
+  it('never lets a request raise the window past the server default', () => {
+    expect(clampMessagesPageBytes(MESSAGES_PAGE_MAX_BYTES + 1)).toBe(MESSAGES_PAGE_MAX_BYTES)
+    expect(clampMessagesPageBytes(Number.MAX_SAFE_INTEGER)).toBe(MESSAGES_PAGE_MAX_BYTES)
+  })
+
+  it('keeps the renderer budget a real reduction inside the bounds', () => {
+    expect(MESSAGES_PAGE_BYTES).toBeGreaterThanOrEqual(MESSAGES_PAGE_MIN_BYTES)
+    expect(MESSAGES_PAGE_BYTES).toBeLessThan(MESSAGES_PAGE_MAX_BYTES)
+    expect(clampMessagesPageBytes(MESSAGES_PAGE_BYTES)).toBe(MESSAGES_PAGE_BYTES)
   })
 })

@@ -17,11 +17,13 @@ import {
 import {
   isAbsentFile,
   iterateLinesBackward,
+  readChunkFor,
   readJsonl,
   readTailLines,
   streamJsonl,
   streamLines,
 } from '@shared/lib/agent-actor/jsonl-files'
+import { MESSAGES_PAGE_MAX_BYTES } from '@shared/lib/messages-page'
 import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { parseJsonl, parseJsonlLine } from '@shared/lib/utils/file-storage'
@@ -1014,8 +1016,9 @@ const MAX_TAIL_LINES = 50_000
 // with huge tool results used to pull the whole file into one window). Soft:
 // the scan runs past it until the window holds at least two display items
 // (one sacrificial head plus one servable), so a single item larger than the
-// budget still serves instead of yielding an empty page.
-const MESSAGES_PAGE_BYTE_BUDGET = 4 * 1024 * 1024
+// budget still serves instead of yielding an empty page. A request's
+// `max_bytes` can lower it, never raise it (the route clamps to this value).
+const MESSAGES_PAGE_BYTE_BUDGET = MESSAGES_PAGE_MAX_BYTES
 // Ceiling on the window — the structural memory bound. The true per-request
 // bound is O(hardCap + one turn's span + largest single row): the cap yields
 // only to three exceptions, each bounded by content that must be materialized
@@ -1186,6 +1189,9 @@ interface PageWindowScan {
    * dropping them would lose data (an empty page behind a huge tool-result
    * run, a trailing system item swallowed by display reordering). */
   dropHead: boolean
+  /** Bytes the window read (pass 2) is expected to cover — to EOF as of the
+   * scan when `endOffset` is undefined. Sizes that read's chunks. */
+  readBytes: number
 }
 
 /** Smallest recorded line-start offset at or past the grace distance, so the
@@ -1308,6 +1314,8 @@ async function scanMessagesPageWindow(
   // (a single-slot map keyed by the next message), so deeper boundaries in
   // the same span collapse away and must not count as display items.
   let boundaryCountedSinceAnchor = false
+  // End of the newest line: the file's end as this scan saw it.
+  let scanEnd: number | undefined
 
   for await (const { line, offset } of iterateLinesBackward(store.files, jsonlPath, signal)) {
     linesScanned++
@@ -1317,6 +1325,7 @@ async function scanMessagesPageWindow(
       hitLineCap = true
       break
     }
+    scanEnd ??= offset + line.length + 1
     lineOffsets?.push(offset)
 
     if (cursorNeedle && line.includes(cursorNeedle)) {
@@ -1462,6 +1471,7 @@ async function scanMessagesPageWindow(
       endOffset: undefined,
       reachedStart: !hitLineCap,
       dropHead: true,
+      readBytes: 0,
     }
   }
   return {
@@ -1470,19 +1480,23 @@ async function scanMessagesPageWindow(
     endOffset,
     reachedStart: startOffset === 0,
     dropHead: deepestCountedIsGroup,
+    readBytes: Math.max(0, (endOffset ?? scanEnd ?? startOffset) - startOffset),
   }
 }
 
 /** Pass 2 of the paged read: parse + normalize + filter the entries of a byte
  * range chosen by pass 1. Identical filtering to readTransformedTail; memory
- * is bounded by the range, which pass 1 bounded by the byte budget. */
+ * is bounded by the range, which pass 1 bounded by the byte budget. Reads in
+ * chunks of `chunkBytes` (the range's expected size, clamped): a window pass 1
+ * sized within READ_CHUNK_MAX comes back in one read. */
 async function readEntriesRange(
   store: SessionStore,
   jsonlPath: string,
   startOffset: number,
   endOffset: number | undefined,
   signal?: AbortSignal,
-  media?: boolean
+  media?: boolean,
+  chunkBytes?: number
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
   // Rows arrive in file order from a line-boundary start, so accumulating
@@ -1495,7 +1509,8 @@ async function readEntriesRange(
     store.files,
     jsonlPath,
     { start: startOffset, end: endOffset },
-    signal
+    signal,
+    chunkBytes
   )) {
     const offset = lineOffset
     lineOffset += line.length + 1
@@ -1572,7 +1587,8 @@ export async function getSessionMessagesPage(
       scan.startOffset,
       scan.endOffset,
       signal,
-      opts.media === 'ref'
+      opts.media === 'ref',
+      readChunkFor(scan.readBytes)
     )
   } catch (error) {
     if (isAbsentFile(error)) {
