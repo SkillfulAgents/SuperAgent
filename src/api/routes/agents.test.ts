@@ -6358,7 +6358,6 @@ describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
         name: 'Legacy run',
         createdAt: new Date('2026-08-20T10:00:00.000Z'),
         lastActivityAt: new Date('2026-08-20T10:05:00.000Z'),
-        messageCount: 2,
       },
       {
         id: 'settled-session',
@@ -6366,7 +6365,6 @@ describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
         name: 'Settled run',
         createdAt: new Date('2026-08-21T10:00:00.000Z'),
         lastActivityAt: new Date('2026-08-21T10:05:00.000Z'),
-        messageCount: 3,
       },
     ])
     vi.mocked(messagePersister.isSessionActive).mockImplementation(
@@ -6419,7 +6417,6 @@ describe('GET /api/agents (enriched summary)', () => {
     name: 'Settled conversation',
     createdAt: new Date('2026-01-01T11:00:00.000Z'),
     lastActivityAt: new Date('2026-01-01T12:00:00.000Z'),
-    messageCount: 2,
   })
 
   beforeEach(async () => {
@@ -8918,7 +8915,6 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     name: id,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     lastActivityAt: new Date(lastActivityAt),
-    messageCount: 0,
   })
 
   beforeEach(async () => {
@@ -9058,7 +9054,6 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     name: id,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     lastActivityAt: new Date(lastActivityAt),
-    messageCount: 0,
   })
 
   beforeEach(async () => {
@@ -9280,7 +9275,6 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
         name: 'One',
         createdAt: new Date('2026-01-01T00:00:00Z'),
         lastActivityAt: new Date('2026-01-01T00:00:00Z'),
-        messageCount: 0,
       },
     ])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set())
@@ -9338,7 +9332,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
     vi.mocked(getSession).mockResolvedValue({
-      id: 'src-1', agentSlug: 'test-agent', name: 'Pricing', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 2,
+      id: 'src-1', agentSlug: 'test-agent', name: 'Pricing', createdAt: new Date(), lastActivityAt: new Date(),
     } as any)
     vi.mocked(getSessionMetadata).mockResolvedValue({
       name: 'Pricing', model: 'claude-sonnet-5', effort: 'high', speed: 'fast',
@@ -9470,7 +9464,6 @@ describe('session existence guards read metadata, not the transcript', () => {
     name: 'Renamed',
     createdAt: new Date('2026-03-01T10:00:00.000Z'),
     lastActivityAt: new Date('2026-03-01T10:05:00.000Z'),
-    messageCount: 7,
   }
 
   beforeEach(async () => {
@@ -9478,11 +9471,12 @@ describe('session existence guards read metadata, not the transcript', () => {
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
     vi.mocked(getSession).mockResolvedValue(SESSION_INFO)
+    vi.mocked(readSessionMetadata).mockResolvedValue({})
   })
 
   it('returns x-agent provenance for the session breadcrumb and back bar', async () => {
-    vi.mocked(getSessionMetadata).mockResolvedValue({
-      invokedByAgentSlug: 'caller-agent',
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-1': { invokedByAgentSlug: 'caller-agent' },
     })
     vi.mocked(getAgent).mockResolvedValue({
       frontmatter: { name: 'Caller Agent' },
@@ -9499,9 +9493,8 @@ describe('session existence guards read metadata, not the transcript', () => {
   })
 
   it('returns widget repair provenance for the session breadcrumb and back bar', async () => {
-    vi.mocked(getSessionMetadata).mockResolvedValue({
-      isWidgetRepair: true,
-      widgetRepairSlug: 'weather',
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-1': { isWidgetRepair: true, widgetRepairSlug: 'weather' },
     })
 
     const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
@@ -9517,10 +9510,9 @@ describe('session existence guards read metadata, not the transcript', () => {
   })
 
   it('returns fork lineage from the parent listing name', async () => {
-    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
-      if (id === 'src-1') return { name: 'Pricing' }
-      return null
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-1': { forkedFromSessionId: 'src-1' },
+      'src-1': { name: 'Pricing' },
     })
 
     const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
@@ -9531,15 +9523,20 @@ describe('session existence guards read metadata, not the transcript', () => {
       forkedFromSessionId: 'src-1',
       forkedFromSessionName: 'Pricing',
     })
+    // One metadata read serves the session and its parent's name, and is
+    // handed to getSession rather than read again there.
+    expect(readSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(getSessionMetadata).not.toHaveBeenCalled()
     expect(getSession).toHaveBeenCalledTimes(1)
-    expect(getSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1')
+    expect(getSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
+      metadata: { forkedFromSessionId: 'src-1' },
+    })
   })
 
   it('uses the registered listing name, not a transcript-derived title', async () => {
-    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
-      if (id === 'src-1') return { name: 'Pricing' }
-      return null
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-1': { forkedFromSessionId: 'src-1' },
+      'src-1': { name: 'Pricing' },
     })
     vi.mocked(getSession).mockImplementation(async (_slug, id) => {
       if (id === 'sess-1') return SESSION_INFO
@@ -9555,9 +9552,8 @@ describe('session existence guards read metadata, not the transcript', () => {
   })
 
   it('omits forkedFromSessionName when the parent listing is gone', async () => {
-    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
-      return null
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-1': { forkedFromSessionId: 'src-1' },
     })
 
     const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
@@ -9568,13 +9564,15 @@ describe('session existence guards read metadata, not the transcript', () => {
     expect(body).not.toHaveProperty('forkedFromSessionName')
   })
 
-  it('renames a session with a single transcript read', async () => {
+  it('renames a session with a single session read', async () => {
     const res = await patchJson(app, '/api/agents/test-agent/sessions/sess-1', { name: 'Renamed' })
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ id: 'sess-1', name: 'Renamed', messageCount: 7 })
+    const body = await res.json()
+    expect(body).toMatchObject({ id: 'sess-1', name: 'Renamed' })
+    expect(body).not.toHaveProperty('messageCount')
     expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', 'Renamed')
-    // Was two full passes over the transcript — one on each side of the rename.
+    // Was one read on each side of the rename.
     expect(getSession).toHaveBeenCalledTimes(1)
   })
 
@@ -9736,7 +9734,7 @@ describe('cross-agent session scoping', () => {
     )
     vi.mocked(getSession).mockImplementation(async (store, sessionId: string) =>
       store.slug === ATTACKER && sessionId === OWN_SESSION
-        ? ({ id: sessionId, agentSlug: store.slug, name: 'Own', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 1 } as any)
+        ? ({ id: sessionId, agentSlug: store.slug, name: 'Own', createdAt: new Date(), lastActivityAt: new Date() } as any)
         : null,
     )
     vi.mocked(deleteSession).mockResolvedValue(false)

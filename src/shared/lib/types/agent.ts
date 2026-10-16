@@ -161,7 +161,6 @@ export interface SessionInfo {
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
   isActive?: boolean
 }
 

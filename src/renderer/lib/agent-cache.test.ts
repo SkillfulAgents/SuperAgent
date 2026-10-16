@@ -107,7 +107,6 @@ describe('targeted agent cache updates', () => {
       name: `Session ${id}`,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       lastActivityAt: new Date('2026-01-01T00:00:00.000Z'),
-      messageCount: 1,
       isActive: true,
       ...overrides,
     })

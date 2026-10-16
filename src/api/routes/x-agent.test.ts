@@ -1773,8 +1773,8 @@ describe('/get-sessions', () => {
   it('returns sessions with isRunning annotation', async () => {
     reviewDecisions.push('allow')
     mockListSessions.mockResolvedValue([
-      { id: 'sess-1', name: 'S1', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 3 },
-      { id: 'sess-2', name: 'S2', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 0 },
+      { id: 'sess-1', name: 'S1', createdAt: new Date(), lastActivityAt: new Date() },
+      { id: 'sess-2', name: 'S2', createdAt: new Date(), lastActivityAt: new Date() },
     ])
     mockIsSessionActive.mockImplementation((_agentSlug?: string, id?: string) => id === 'sess-1')
     const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
@@ -1826,7 +1826,6 @@ describe('/get-sessions', () => {
       name: `S${i}`,
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: i,
     }))
     mockListSessions.mockResolvedValue(all)
 

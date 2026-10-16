@@ -30,7 +30,6 @@ export const getSessionsResultSchema = z.object({
     name: z.string(),
     createdAt: z.string(),
     lastActivityAt: z.string(),
-    messageCount: z.number().int().nonnegative(),
     isRunning: z.boolean(),
   })),
   total: z.number().int().nonnegative(),

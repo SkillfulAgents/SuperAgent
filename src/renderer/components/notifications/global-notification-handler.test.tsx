@@ -444,7 +444,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       name: 'S',
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: 1,
       isActive: true,
     }
     queryClient.setQueryData(['sessions', 'my-agent'], [
@@ -487,7 +486,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       name: 'S',
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: 1,
       isActive: true,
     }
     queryClient.setQueryData(['sessions', 'my-agent'], [{ ...sessionBase, id: 'sess-1' }])
@@ -519,7 +517,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       name: 'S',
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: 1,
     }
     queryClient.setQueryData(['sessions', 'my-agent'], [
       { ...sessionBase, id: 'sess-1', isActive: true, isAwaitingInput: true },
@@ -562,7 +559,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         name: 'S',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 1,
         isActive: false,
       },
     ])
@@ -611,7 +607,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         name: 'S',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 1,
         isActive: false,
       },
     ])
@@ -656,7 +651,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         name: 'S',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 1,
         isActive: false,
         hasUnreadNotifications: true,
       },

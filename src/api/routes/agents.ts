@@ -2139,7 +2139,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         name: 'New Session',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 0,
         isActive: true,
         model: resolved.model,
         llmProviderId: resolved.llmProviderId,
@@ -2953,14 +2952,18 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const actor = agentRegistry.get(agentSlug)
 
-    const session = await actor.sessions.get(sessionId)
+    // One metadata read serves the session, its fork source's name, and the
+    // fields below.
+    const metadataMap = await actor.sessions.readMetadata()
+    const metadataOf = (id: string) => (Object.hasOwn(metadataMap, id) ? metadataMap[id] : null)
+    const metadata = metadataOf(sessionId)
+    const session = await actor.sessions.get(sessionId, { metadata })
 
     if (!session) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
-    const metadata = await actor.sessions.metadata(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
     if (getSettings().llmDefault) {
       try {
@@ -2982,7 +2985,6 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       name: session.name,
       createdAt: session.createdAt,
       lastActivityAt: session.lastActivityAt,
-      messageCount: session.messageCount,
       isActive,
       // Carried so single-session consumers can gate on the same live/idle
       // condition the session lists use (the breadcrumb context menu hides
@@ -3002,7 +3004,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       widgetRepairSlug: metadata?.widgetRepairSlug,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
-        ? (await actor.sessions.metadata(metadata.forkedFromSessionId))?.name
+        ? metadataOf(metadata.forkedFromSessionId)?.name
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
@@ -3041,9 +3043,9 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       await actor.sessions.rename(sessionId, name.trim())
     }
 
-    // Read the transcript once, after the rename, rather than on both sides of
-    // it: renaming touches metadata only, so the pre-rename read differed from
-    // this one by exactly the name.
+    // Read once, after the rename, rather than on both sides of it: renaming
+    // touches metadata only, so the pre-rename read differed from this one by
+    // exactly the name.
     const updated = await actor.sessions.get(sessionId)
 
     if (!updated) {
@@ -3056,7 +3058,6 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       name: updated.name,
       createdAt: updated.createdAt,
       lastActivityAt: updated.lastActivityAt,
-      messageCount: updated.messageCount,
     })
   } catch (error) {
     console.error('Failed to update session:', error)
