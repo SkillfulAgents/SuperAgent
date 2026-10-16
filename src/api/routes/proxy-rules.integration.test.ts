@@ -30,6 +30,7 @@ vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: { fromResourceCreator: async () => ({}) },
   runWithAttribution: (_attribution: unknown, fn: () => unknown) => fn(),
+  runWithRequestUser: (_userId: string, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/account-providers', () => ({
   getAccountProviderByName: () => ({
@@ -40,16 +41,20 @@ vi.mock('@shared/lib/account-providers', () => ({
     },
   }),
 }))
+const restated = {
+  name: 'Sends to @acme.com only',
+  restatement: 'Allows sends when every recipient is @acme.com. Everything else goes to review.',
+}
 vi.mock('@shared/lib/proxy/rules/author', () => ({
   catalogFor: () => '',
-  restateRule: async () => ({
-    name: 'Sends to @acme.com only',
-    restatement: 'Allows sends when every recipient is @acme.com. Everything else goes to review.',
-  }),
+  restateRule: vi.fn(async () => restated),
+  authorRule: vi.fn(),
 }))
 
 import proxy from './proxy'
-import xAgentRules from './x-agent-rules'
+import xAgentRules, { _setProposalTimingForTest } from './x-agent-rules'
+import proxyRules from './proxy-rules'
+import { authorRule, restateRule } from '@shared/lib/proxy/rules/author'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { addRuleVersion, createRule, invalidateRuleCache, listRules } from '@shared/lib/proxy/rules/store'
@@ -137,9 +142,11 @@ beforeEach(() => {
   app = new Hono()
   app.route('/api/proxy', proxy)
   app.route('/api/x-agent/rules', xAgentRules)
+  app.route('/api/proxy-rules', proxyRules)
 })
 
 afterEach(() => {
+  _setProposalTimingForTest({ waitMs: 20_000, leaseMs: 60_000 })
   userInputRequestManager.reset()
   sqlite.close()
 })
@@ -313,13 +320,22 @@ describe('agent rule tools', () => {
     })
   }
 
+  /** What the agent tool does: submit, then wait on the proposal until it settles. */
+  async function propose(agent: string, op: 'create' | 'delete', body: unknown) {
+    let res = await call(agent, op, body)
+    if (res.status !== 202) return res
+    const { proposalId } = await res.json() as { proposalId: string }
+    while (res.status === 202) res = await call(agent, 'wait', { proposalId })
+    return res
+  }
+
   const draft = {
     kind: 'api', targetId: 'acct-gmail', description: 'Send only to @acme.com',
     patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests,
   }
 
   it('returns failing drafts to the agent without asking the user', async () => {
-    const res = await call('agent-a', 'create', { ...draft, tests: [{ ...gmailTests[1], expect: true }, gmailTests[0]] })
+    const res = await propose('agent-a', 'create', { ...draft, tests: [{ ...gmailTests[1], expect: true }, gmailTests[0]] })
     expect(res.status).toBe(422)
     const body = await res.json() as { failedTests: Array<{ name: string }> }
     expect(body.failedTests.map((t) => t.name)).toEqual(['external'])
@@ -327,7 +343,7 @@ describe('agent rule tools', () => {
   })
 
   it('saves an approved rule scoped to the proposing agent, with the host restatement', async () => {
-    const pending = call('agent-a', 'create', draft)
+    const pending = propose('agent-a', 'create', draft)
     const review = await waitForReview('agent-a')
     const proposal = (review.payload as { ruleProposal: { name: string; restatement: string; tests: Array<{ passed: boolean }>; coverage: string[] } }).ruleProposal
     expect(proposal.name).toBe('Sends to @acme.com only')
@@ -358,7 +374,7 @@ describe('agent rule tools', () => {
   })
 
   it('saves a require rule an agent proposes with its effect', async () => {
-    const pending = call('agent-a', 'create', { ...draft, effect: 'require' })
+    const pending = propose('agent-a', 'create', { ...draft, effect: 'require' })
     const review = await waitForReview('agent-a')
     const proposal = (review.payload as { ruleProposal: { effect: string; warnings: string[] } }).ruleProposal
     expect(proposal.effect).toBe('require')
@@ -376,7 +392,7 @@ describe('agent rule tools', () => {
   })
 
   it('does not save a rejected rule', async () => {
-    const pending = call('agent-a', 'create', draft)
+    const pending = propose('agent-a', 'create', draft)
     const review = await waitForReview('agent-a')
     agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
     expect((await pending).status).toBe(403)
@@ -386,7 +402,7 @@ describe('agent rule tools', () => {
   it('lists without approval, showing code only for the agent\'s own rules', async () => {
     const shared = await userRule()
     await userRule('agent-b')
-    const created = call('agent-a', 'create', draft)
+    const created = propose('agent-a', 'create', draft)
     agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await created).status).toBe(200)
 
@@ -401,10 +417,10 @@ describe('agent rule tools', () => {
   it('deletes only with the user\'s approval, and never another agent\'s rule', async () => {
     const shared = await userRule(null, INTERNAL_ONLY, 'require')
     const others = await userRule('agent-b')
-    expect((await call('agent-a', 'delete', { ruleId: others.rule.id })).status).toBe(404)
+    expect((await propose('agent-a', 'delete', { ruleId: others.rule.id })).status).toBe(404)
 
     // Kept: the user says no.
-    const kept = call('agent-a', 'delete', { ruleId: shared.rule.id })
+    const kept = propose('agent-a', 'delete', { ruleId: shared.rule.id })
     const keepReview = await waitForReview('agent-a')
     const proposal = (keepReview.payload as { ruleProposal: { deletesRuleId: string; effect: string; warnings: string[] } }).ruleProposal
     expect(proposal.deletesRuleId).toBe(shared.rule.id)
@@ -415,7 +431,7 @@ describe('agent rule tools', () => {
     expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.id)).toContain(shared.rule.id)
 
     // Deleted: the user approves.
-    const deleted = call('agent-a', 'delete', { ruleId: shared.rule.id })
+    const deleted = propose('agent-a', 'delete', { ruleId: shared.rule.id })
     agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await deleted).status).toBe(200)
     expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.id)).toEqual([others.rule.id])
@@ -426,7 +442,7 @@ describe('agent rule tools', () => {
 
   it('deletes only the version the user was shown', async () => {
     const rule = await userRule()
-    const pending = call('agent-a', 'delete', { ruleId: rule.rule.id })
+    const pending = propose('agent-a', 'delete', { ruleId: rule.rule.id })
     const review = await waitForReview('agent-a')
     // The rule becomes a require rule while the deletion card is open.
     const replaced = await addRuleVersion(rule.rule.id, {
@@ -443,12 +459,12 @@ describe('agent rule tools', () => {
   })
 
   it('replaces only the version the user was shown', async () => {
-    const created = call('agent-a', 'create', draft)
+    const created = propose('agent-a', 'create', draft)
     agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await created).status).toBe(200)
     const [rule] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
 
-    const pending = call('agent-a', 'create', { ...draft, replacesRuleId: rule.rule.id })
+    const pending = propose('agent-a', 'create', { ...draft, replacesRuleId: rule.rule.id })
     const review = await waitForReview('agent-a')
     await addRuleVersion(rule.rule.id, {
       effect: 'require', name: 'Changed meanwhile', description: 'x', restatement: 'x',
@@ -463,9 +479,9 @@ describe('agent rule tools', () => {
 
   it('holds the cap when proposals are approved concurrently', async () => {
     for (let i = 0; i < 19; i++) await userRule()
-    const first = call('agent-a', 'create', draft)
+    const first = propose('agent-a', 'create', draft)
     const firstReview = await waitForReview('agent-a')
-    const second = call('agent-a', 'create', draft)
+    const second = propose('agent-a', 'create', draft)
     let secondReview = pendingReviews('agent-a').find((r) => r.id !== firstReview.id)
     for (let i = 0; !secondReview && i < 100; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5))
@@ -478,11 +494,110 @@ describe('agent rule tools', () => {
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(20)
   })
 
+  it('answers at once with a proposal only its agent can wait on or withdraw', async () => {
+    _setProposalTimingForTest({ waitMs: 20 })
+    const res = await call('agent-a', 'create', draft)
+    expect(res.status).toBe(202)
+    const { proposalId } = await res.json() as { proposalId: string }
+    await waitForReview('agent-a')
+
+    expect((await call('agent-a', 'wait', { proposalId })).status).toBe(202)
+    expect((await call('agent-b', 'wait', { proposalId })).status).toBe(404)
+    expect(await (await call('agent-b', 'cancel', { proposalId })).json()).toEqual({ ok: false })
+    expect(pendingReviews('agent-a')).toHaveLength(1)
+
+    expect(await (await call('agent-a', 'cancel', { proposalId })).json()).toEqual({ ok: true })
+    let settled = await call('agent-a', 'wait', { proposalId })
+    for (let i = 0; settled.status === 202 && i < 50; i++) settled = await call('agent-a', 'wait', { proposalId })
+    expect(settled.status).toBe(408)
+    expect(pendingReviews('agent-a')).toHaveLength(0)
+    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toEqual([])
+  })
+
+  it('withdraws the card of a proposal its agent stopped waiting for', async () => {
+    _setProposalTimingForTest({ leaseMs: 30 })
+    expect((await call('agent-a', 'create', draft)).status).toBe(202)
+    await waitForReview('agent-a')
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(pendingReviews('agent-a')).toHaveLength(0)
+    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toEqual([])
+  })
+
+  it('raises no card for a proposal abandoned while it was being prepared', async () => {
+    // The cloud case: a proxy cut the agent off during the restatement, and
+    // the agent asked again. The first proposal must not reach the user.
+    _setProposalTimingForTest({ leaseMs: 30 })
+    vi.mocked(restateRule).mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      return restated
+    })
+    expect((await call('agent-a', 'create', draft)).status).toBe(202)
+    await vi.waitFor(() => expect(vi.mocked(logAuditEvent).mock.calls.map(([event]) => event.action)).toContain('rejected'))
+    expect(pendingReviews('agent-a')).toHaveLength(0)
+    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toEqual([])
+  })
+
   it('caps rules per connection', async () => {
     for (let i = 0; i < 20; i++) await userRule()
-    const res = await call('agent-a', 'create', draft)
+    const res = await propose('agent-a', 'create', draft)
     expect(res.status).toBe(422)
     expect((await res.json() as { error: string }).error).toBe('too_many_rules')
     expect(pendingReviews('agent-a')).toHaveLength(0)
+  })
+})
+
+describe('writing a rule in the app', () => {
+  const base = '/api/proxy-rules/api/acct-gmail'
+  const json = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+  beforeEach(() => {
+    vi.mocked(authorRule).mockReset()
+    vi.mocked(authorRule).mockResolvedValue({
+      type: 'draft',
+      draft: { kind: 'api', effect: 'allow', description: 'Send only to @acme.com', patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests },
+      report: { ok: true, errors: [], warnings: [], testResults: [], coverage: [], toolSchemaHash: null },
+      attempts: 1,
+    } as Awaited<ReturnType<typeof authorRule>>)
+  })
+
+  async function author() {
+    const started = await app.request(`${base}/author`, json({ description: 'Send only to @acme.com' }))
+    expect(started.status).toBe(202)
+    const { jobId } = await started.json() as { jobId: string }
+    let res = await app.request(`${base}/author/${jobId}`)
+    while (res.status === 202) res = await app.request(`${base}/author/${jobId}`)
+    return { jobId, res }
+  }
+
+  it('writes the rule as a job, and saves the draft that job validated and restated', async () => {
+    const { jobId, res } = await author()
+    expect(res.status).toBe(200)
+    const body = await res.json() as { type: string; name: string; restatement: string; report: { ok: boolean } }
+    expect(body).toMatchObject({ type: 'draft', name: restated.name, restatement: restated.restatement, report: { ok: true } })
+    const calls = vi.mocked(restateRule).mock.calls.length
+
+    const saved = await app.request(base, json({ jobId, name: 'Internal sends' }))
+    expect(saved.status).toBe(200)
+    // Saving reuses the job's restatement instead of asking the model again.
+    expect(vi.mocked(restateRule).mock.calls.length).toBe(calls)
+    const [rule] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
+    expect(rule.version).toMatchObject({ name: 'Internal sends', restatement: restated.restatement, code: INTERNAL_ONLY })
+    expect(rule.rule.createdBy).toBe('user')
+
+    // A draft saves once.
+    expect((await app.request(base, json({ jobId }))).status).toBe(410)
+    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(1)
+  })
+
+  it('returns a clarifying question from the job', async () => {
+    vi.mocked(authorRule).mockResolvedValueOnce({ type: 'question', question: 'Which domain?' })
+    const { jobId, res } = await author()
+    expect(await res.json()).toEqual({ type: 'question', question: 'Which domain?' })
+    expect((await app.request(base, json({ jobId }))).status).toBe(410)
+  })
+
+  it('refuses a job id it did not hand out', async () => {
+    expect((await app.request(`${base}/author/nope`)).status).toBe(410)
+    expect((await app.request(base, json({ jobId: 'nope' }))).status).toBe(410)
   })
 })

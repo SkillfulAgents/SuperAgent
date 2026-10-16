@@ -176,6 +176,9 @@ export class AgentReviews {
   }
 
   request(details: ReviewRequest, signal?: AbortSignal, options: ReviewRequestOptions = {}): Promise<ReviewDecision> {
+    // The caller is already gone (abort listeners never fire for a signal
+    // aborted before they were added): raise no card nobody waits on.
+    if (signal?.aborted) return Promise.reject(new Error('Request aborted'))
     const id = crypto.randomUUID()
 
     return new Promise<ReviewDecision>((resolve, reject) => {
