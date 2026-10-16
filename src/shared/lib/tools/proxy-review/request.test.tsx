@@ -5,9 +5,35 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
 
+const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
+  useRouter: () => ({ state: { location: { pathname: '/agents/my-agent/sessions/s1', searchStr: '' } } }),
 }))
+
+let mockAccounts: unknown[] = []
+let mockMcps: unknown[] = []
+vi.mock('@renderer/hooks/use-connected-accounts', () => ({
+  useAgentConnectedAccounts: () => ({ data: { accounts: mockAccounts } }),
+}))
+vi.mock('@renderer/hooks/use-remote-mcps', () => ({
+  useAgentRemoteMcps: () => ({ data: { mcps: mockMcps } }),
+}))
+
+let mockDirty = false
+const mockSave = vi.fn(async () => true)
+type MockActions = (a: { isDirty: boolean; saving: boolean; save: () => Promise<boolean> }) => React.ReactNode
+vi.mock('@renderer/components/settings/scope-policy-editor', () => ({
+  scopeGroupTitle: () => 'Write/Delete actions',
+  ScopePolicyEditorBody: ({ accountId, renderActions }: { accountId: string; renderActions: MockActions }) => (
+    <div data-testid="scope-policy-section" data-account={accountId}>
+      {renderActions({ isDirty: mockDirty, saving: false, save: mockSave })}
+    </div>
+  ),
+}))
+
+const mockToastError = vi.fn()
+vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => mockToastError(...args) } }))
 
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
@@ -60,6 +86,7 @@ describe('ProxyReviewRequestItem title', () => {
 
 describe('ProxyReviewRequestItem "always" policy routing', () => {
   beforeEach(() => {
+    mockAccounts = []
     mockApiFetch.mockReset()
     mockApiFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
   })
@@ -76,21 +103,22 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     await waitFor(() => expect(screen.getByTestId('proxy-review-completed')).toBeInTheDocument())
   })
 
-  it('sends the stamped api type even when the path looks like a tool call', async () => {
-    renderCard({ reviewType: 'api', targetPath: 'tools/call: something' })
-    await chooseAlwaysAllowAll()
+  it.each([
+    { case: 'a stamped api review whose path looks like a tool call', reviewType: 'api' as const, targetPath: 'tools/call: something' },
+    { case: 'an unstamped review with an API path', reviewType: undefined, targetPath: 'gmail/v1/users/me/messages' },
+  ])('offers no MCP "always" options for $case', async ({ reviewType, targetPath }) => {
+    renderCard({ reviewType, targetPath })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-always-allow-btn'))
 
-    expect(sentBody()).toMatchObject({ reviewType: 'api' })
+    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-always-allow-all')).not.toBeInTheDocument()
   })
 
-  it.each([
-    { targetPath: 'tools/call: list_issues', expected: 'mcp' },
-    { targetPath: 'gmail/v1/users/me/messages', expected: 'api' },
-  ])('falls back to the path prefix for an unstamped review ($targetPath → $expected)', async ({ targetPath, expected }) => {
-    renderCard({ targetPath })
+  it('falls back to the path prefix for an unstamped MCP review', async () => {
+    renderCard({ targetPath: 'tools/call: list_issues' })
     await chooseAlwaysAllowAll()
 
-    expect(sentBody()).toMatchObject({ reviewType: expected })
+    expect(sentBody()).toMatchObject({ reviewType: 'mcp' })
   })
 
   it('shows the server error inline and stays pending when the policy did not save', async () => {
@@ -103,5 +131,190 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     expect(await screen.findByText(/MCP server no longer exists/)).toBeInTheDocument()
     expect(screen.getByTestId('proxy-review-request')).toBeInTheDocument()
     expect(screen.queryByTestId('proxy-review-completed')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProxyReviewRequestItem permissions in the Allow menu', () => {
+  beforeEach(() => {
+    mockApiFetch.mockReset()
+    mockApiFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockSave.mockReset()
+    mockToastError.mockReset()
+    mockSave.mockResolvedValue(true)
+    mockDirty = false
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+  })
+
+  async function openAllowMenu() {
+    renderCard({ reviewType: 'api', toolkit: 'slack' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await screen.findByTestId('scope-policy-section')
+    return user
+  }
+
+  const decisionCalls = () =>
+    mockApiFetch.mock.calls.filter(([url]) => url === '/api/agents/my-agent/proxy-review/review-1')
+
+  it('allows once from the permissions footer when nothing changed', async () => {
+    const user = await openAllowMenu()
+
+    expect(screen.getByTestId('scope-policy-section')).toHaveAttribute('data-account', 'acct-or-mcp')
+    expect(screen.getAllByTestId('proxy-review-allow-once-menu-btn')).toHaveLength(1)
+    expect(screen.queryByTestId('proxy-review-save-permissions')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Allow Once' }))
+
+    expect(mockSave).not.toHaveBeenCalled()
+    await waitFor(() => expect(decisionCalls()).toHaveLength(1))
+  })
+
+  it('allows only after the save settles, with Deny held off meanwhile', async () => {
+    mockDirty = true
+    let finishSave: (ok: boolean) => void = () => {}
+    mockSave.mockReturnValue(new Promise<boolean>((resolve) => { finishSave = resolve }))
+    const user = await openAllowMenu()
+    await user.click(screen.getByRole('button', { name: 'Save & Allow' }))
+
+    expect(decisionCalls()).toHaveLength(0)
+    expect(screen.getByTestId('proxy-review-deny-btn')).toBeDisabled()
+    finishSave(true)
+    await waitFor(() => expect(decisionCalls()).toHaveLength(1))
+  })
+
+  it('does not allow when the save fails', async () => {
+    mockDirty = true
+    mockSave.mockResolvedValue(false)
+    const user = await openAllowMenu()
+    await user.click(screen.getByRole('button', { name: 'Save & Allow' }))
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Failed to save permissions'))
+    expect(screen.getByTestId('proxy-review-deny-btn')).toBeEnabled()
+    expect(decisionCalls()).toHaveLength(0)
+  })
+
+  it('saves without answering the card with Save', async () => {
+    mockDirty = true
+    const user = await openAllowMenu()
+    await user.click(screen.getByTestId('proxy-review-save-permissions'))
+
+    expect(mockSave).toHaveBeenCalledOnce()
+    await waitFor(() => expect(screen.queryByTestId('scope-policy-section')).not.toBeInTheDocument())
+    expect(decisionCalls()).toHaveLength(0)
+    expect(screen.getByTestId('proxy-review-request')).toBeInTheDocument()
+  })
+
+  it('keeps the MCP Always deny options on a card a require rule held', async () => {
+    mockMcps = [{ id: 'acct-or-mcp', name: 'Linear' }]
+    renderCard({
+      reviewType: 'mcp',
+      matchedScopes: ['search'],
+      ruleOutcomes: [{ ruleId: 'r1', version: 1, effect: 'require', restatement: 'Ask first', result: 'false' }],
+    })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-deny-btn-chevron'))
+
+    expect(await screen.findByTestId('proxy-review-always-deny-search')).toBeInTheDocument()
+  })
+
+  it('shows a failed plain Save in the menu without answering the card', async () => {
+    mockDirty = true
+    mockSave.mockResolvedValue(false)
+    const user = await openAllowMenu()
+    await user.click(screen.getByTestId('proxy-review-save-permissions'))
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Failed to save permissions'))
+    expect(decisionCalls()).toHaveLength(0)
+  })
+
+  it('offers Allow Once and the settings link, not the editor, when a require rule held the request', async () => {
+    renderCard({
+      reviewType: 'api',
+      toolkit: 'slack',
+      ruleOutcomes: [{ ruleId: 'r1', version: 1, effect: 'require', name: 'External sends', restatement: 'Ask before external sends', result: 'false' }],
+    })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-always-allow-btn'))
+
+    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('proxy-review-held-by-rule-note')).toBeInTheDocument()
+    expect(screen.getByTestId('proxy-review-edit-permissions')).toBeInTheDocument()
+    expect(screen.queryByTestId('scope-policy-section')).not.toBeInTheDocument()
+  })
+
+  it('offers only Allow once for an API account another member owns', async () => {
+    mockAccounts = [{ kind: 'connected-account', toolkitSlug: 'slack', mappingId: 'm1' }]
+    renderCard({ reviewType: 'api', toolkit: 'slack' })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-always-allow-btn'))
+
+    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('scope-policy-section')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProxyReviewRequestItem connection link', () => {
+  beforeEach(() => {
+    mockNavigate.mockReset()
+    mockAccounts = []
+    mockMcps = []
+  })
+
+  it.each([
+    { reviewType: 'api' as const, detail: 'account-acct-or-mcp' },
+    { reviewType: 'mcp' as const, detail: 'mcp-acct-or-mcp' },
+  ])('opens the $reviewType connection page and returns to the card', async ({ reviewType, detail }) => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    mockMcps = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-connection-link'))
+
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'my-agent' },
+      search: { detail, source: 'home', from: '/agents/my-agent/sessions/s1' },
+    })
+  })
+
+  it('opens the connection page from the header gear and the Allow menu', async () => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-permissions-btn'))
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-edit-permissions'))
+
+    expect(mockNavigate).toHaveBeenCalledTimes(2)
+    for (const [arg] of mockNavigate.mock.calls) {
+      expect(arg).toMatchObject({ search: { detail: 'account-acct-or-mcp' } })
+    }
+  })
+
+  it('links the toolkit name on the answered card', async () => {
+    mockApiFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-allow-once-menu-btn'))
+    await screen.findByTestId('proxy-review-completed')
+    await user.click(screen.getByTestId('proxy-review-connection-link'))
+
+    expect(mockNavigate).toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ detail: 'account-acct-or-mcp' }) }))
+  })
+
+  it('links the toolkit name on a read-only card too', () => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api', readOnly: true })
+
+    expect(screen.getByTestId('proxy-review-connection-link')).toHaveTextContent('Railway')
+  })
+
+  it.each([
+    { case: 'another member owns', accounts: [{ kind: 'connected-account', toolkitSlug: 'railway', mappingId: 'm1' }] },
+    { case: 'is no longer on the agent', accounts: [{ id: 'other-account' }] },
+  ])('renders no link for a connection that $case', ({ accounts }) => {
+    mockAccounts = accounts
+    renderCard({ reviewType: 'api' })
+
+    expect(screen.queryByTestId('proxy-review-connection-link')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-permissions-btn')).not.toBeInTheDocument()
+    expect(screen.getByText('Railway')).toBeInTheDocument()
   })
 })

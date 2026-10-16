@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { PendingRequestStack } from './pending-request-stack'
@@ -303,6 +303,25 @@ describe('RequestItemShell', () => {
       // Both cards render pagination (both in DOM, one hidden via CSS)
       const paginationTexts = screen.getAllByText('1 of 2')
       expect(paginationTexts.length).toBeGreaterThan(0)
+    })
+
+    it('keeps headerRight beside the pagination controls', () => {
+      render(
+        <PendingRequestStack>
+          {[
+            <RequestItemShell key="a" title="Request A" icon={<HelpCircle />} theme="blue" headerRight={<span data-testid="header-right-a" />} data-testid="card-a">
+              <div>Content A</div>
+            </RequestItemShell>,
+            <RequestItemShell key="b" title="Request B" icon={<HelpCircle />} theme="blue">
+              <div>Content B</div>
+            </RequestItemShell>,
+          ]}
+        </PendingRequestStack>
+      )
+
+      const cardA = within(screen.getByTestId('card-a'))
+      expect(cardA.getByTestId('header-right-a')).toBeInTheDocument()
+      expect(cardA.getByText('1 of 2')).toBeInTheDocument()
     })
 
     it('does not show pagination controls for a single item', () => {
