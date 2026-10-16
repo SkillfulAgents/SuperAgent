@@ -1,11 +1,11 @@
 /**
  * Session wake delivery — the single path that resumes a sleeping session,
- * shared by the scheduler's wake branch and the manual "Wake now" route.
+ * shared by the scheduler's wake branch and the manual "Run now" route.
  *
  * Both callers run in the same process (the scheduler singleton and the HTTP
  * routes live in one API server), so a per-task in-process claim makes
  * check-status → send → record a critical section: a scheduler poll and a
- * "Wake now" click landing simultaneously can never both deliver. The claim is
+ * "Run now" click landing simultaneously can never both deliver. The claim is
  * taken before delivery and the task status is re-read under it, while the
  * durable status flip (markTaskExecuted) stays AFTER the send — a crash
  * between send and record is caught by the lastWake metadata guard on the next
@@ -62,7 +62,7 @@ export async function deliverSessionWake(
 
   try {
     // Re-read under the claim: the caller's copy may predate the other path's
-    // delivery (a due-task batch loaded just before a "Wake now", or vice versa).
+    // delivery (a due-task batch loaded just before a "Run now", or vice versa).
     const task = await getScheduledTask(staleTask.id)
     if (!task || (task.status !== 'pending' && task.status !== 'paused')) {
       return { outcome: 'not-pending', status: task?.status ?? 'missing' }

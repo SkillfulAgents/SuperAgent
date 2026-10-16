@@ -1,9 +1,7 @@
-import { MoonStar, X, Play } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, format } from 'date-fns'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
-import { useMutation } from '@tanstack/react-query'
 
 interface PendingWakeBannerProps {
   sessionId: string
@@ -11,13 +9,15 @@ interface PendingWakeBannerProps {
   wakeAt: string
   taskId: string
   note?: string
+  /** The agent's one line for the user; wakes scheduled before it existed fall back to the note. */
+  summary?: string
   readOnly?: boolean
 }
 
 /**
- * Bar shown above the composer while the session has a pending scheduled wake
- * (long sleep): when it will auto-resume, the agent's note-to-self, and
- * Wake now / Cancel actions.
+ * Card shown above the composer while the session has a pending scheduled wake
+ * (long sleep): when it will auto-resume, what the agent is waiting on, and
+ * Cancel / Run now actions. Styled to match `StaleSessionNotice`.
  */
 export function PendingWakeBanner({
   sessionId,
@@ -25,6 +25,7 @@ export function PendingWakeBanner({
   wakeAt,
   taskId,
   note,
+  summary,
   readOnly,
 }: PendingWakeBannerProps) {
   const queryClient = useQueryClient()
@@ -60,46 +61,47 @@ export function PendingWakeBanner({
   const isPending = wakeNow.isPending || cancelWake.isPending
 
   return (
-    <div
-      className="mx-4 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground"
-      data-testid="pending-wake-banner"
-    >
-      <div className="flex min-w-0 grow basis-40 items-start gap-2">
-        <MoonStar className="mt-px h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 line-clamp-2">
-          This session will auto-resume{' '}
-          <span className="font-medium text-foreground" title={format(wakeDate, 'PPpp')}>
-            {formatDistanceToNow(wakeDate, { addSuffix: true })}
-          </span>
-          {note ? <> — &ldquo;{note}&rdquo;</> : null}
-        </span>
+    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+      <div
+        className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl bg-muted/80 p-4 backdrop-blur-md"
+        data-testid="pending-wake-banner"
+      >
+        <div className="flex min-w-0 grow basis-40 flex-col gap-0.5">
+          <p className="line-clamp-2 text-sm font-medium" data-testid="pending-wake-summary">
+            {summary || note || 'This conversation will pick back up on its own.'}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Auto-resumes{' '}
+            <span title={format(wakeDate, 'PPpp')}>
+              {formatDistanceToNow(wakeDate, { addSuffix: true })}
+            </span>
+          </p>
+        </div>
+        {!readOnly && (
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isPending}
+              onClick={() => cancelWake.mutate()}
+              data-testid="pending-wake-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              loading={wakeNow.isPending}
+              disabled={isPending}
+              onClick={() => wakeNow.mutate()}
+              data-testid="pending-wake-wake-now"
+            >
+              Run now
+            </Button>
+          </div>
+        )}
       </div>
-      {!readOnly && (
-        <span className="flex min-w-0 flex-wrap items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1 px-2 text-xs"
-            disabled={isPending}
-            onClick={() => wakeNow.mutate()}
-            data-testid="pending-wake-wake-now"
-          >
-            <Play className="h-3 w-3" />
-            Wake now
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1 px-2 text-xs"
-            disabled={isPending}
-            onClick={() => cancelWake.mutate()}
-            data-testid="pending-wake-cancel"
-          >
-            <X className="h-3 w-3" />
-            Cancel
-          </Button>
-        </span>
-      )}
     </div>
   )
 }

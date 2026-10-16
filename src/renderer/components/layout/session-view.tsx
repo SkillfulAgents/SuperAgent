@@ -188,6 +188,7 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
               pendingWakeAt={session?.pendingWakeAt}
               pendingWakeTaskId={session?.pendingWakeTaskId}
               pendingWakeNote={session?.pendingWakeNote}
+              pendingWakeSummary={session?.pendingWakeSummary}
             />
           </div>
         </WorkflowProvider>

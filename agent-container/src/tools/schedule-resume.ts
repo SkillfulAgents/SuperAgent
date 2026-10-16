@@ -30,7 +30,7 @@ Use this when you are waiting on something external and want to check back later
 - You submitted something for review and want to check its status in 72 hours
 - You kicked off a long-running external process and want to check on it later
 
-How it works: after this tool succeeds, END YOUR TURN. The session goes idle (it costs nothing and survives restarts while sleeping) and is resumed at the scheduled time with a system message that echoes your note back to you. If what you were waiting for still hasn't happened when you wake, you can call schedule_resume again to check later.
+How it works: after this tool succeeds, END YOUR TURN. The session goes idle (it costs nothing and survives restarts while sleeping) and is resumed at the scheduled time with a system message that echoes your note back to you. While it sleeps, the user sees your summary in a banner above the composer. If what you were waiting for still hasn't happened when you wake, you can call schedule_resume again to check later.
 
 wakeTime accepts natural language: "tomorrow 9am", "in 72 hours", "next monday 8am", "2027-03-15 14:00".
 
@@ -45,10 +45,15 @@ This is different from schedule_task, which starts a NEW session with no memory 
       .describe(
         'When to resume this session. Natural language, e.g. "tomorrow 9am", "in 72 hours", "next monday". Interpreted in the timezone parameter (or the owner\'s timezone if omitted).'
       ),
+    summary: z
+      .string()
+      .describe(
+        'One short line for the user, shown in the banner while this session sleeps: what you are waiting on, in plain words (e.g. "Waiting on Pepco\'s payment-history letter"). Under 80 characters, no instructions to yourself.'
+      ),
     note: z
       .string()
       .describe(
-        'Why you are pausing and what to check when you wake. Echoed back to you verbatim in the resume message — write it as a note to your future self.'
+        'Why you are pausing and what to check when you wake. Echoed back to you verbatim in the resume message — write it as a note to your future self. Only you read it.'
       ),
     timezone: z
       .string()
@@ -66,6 +71,18 @@ This is different from schedule_task, which starts a NEW session with no memory 
           {
             type: 'text' as const,
             text: 'wakeTime cannot be empty. Provide a time like "tomorrow 9am" or "in 72 hours".',
+          },
+        ],
+        isError: true,
+      }
+    }
+
+    if (!args.summary.trim()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'summary cannot be empty. Write one short line telling the user what you are waiting on.',
           },
         ],
         isError: true,

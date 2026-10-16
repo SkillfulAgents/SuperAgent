@@ -1,5 +1,6 @@
 export interface ScheduleResumeInput {
   wakeTime?: string
+  summary?: string
   note?: string
   timezone?: string
 }
@@ -9,13 +10,14 @@ function parseInput(input: unknown): ScheduleResumeInput {
 }
 
 function getSummary(input: unknown): string | null {
-  const { wakeTime, note, timezone } = parseInput(input)
+  const { wakeTime, summary, note, timezone } = parseInput(input)
   const time = wakeTime?.replace(/^at\s+/i, '')
   const tzSuffix = timezone ? ` (${timezone.replace(/_/g, ' ')})` : ''
+  const text = summary || note
 
-  if (time && note) return `${time}${tzSuffix} · ${note}`
+  if (time && text) return `${time}${tzSuffix} · ${text}`
   if (time) return `${time}${tzSuffix}`
-  if (note) return note
+  if (text) return text
   return null
 }
 

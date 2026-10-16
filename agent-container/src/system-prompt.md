@@ -495,7 +495,7 @@ Before creating or changing a scheduled task, read `/opt/gamut/docs/scheduling-a
 
 When an external wait must preserve the context you have right now, do NOT schedule a task. Use `mcp__user-input__schedule_resume` to resume THIS SAME conversation later. Use `schedule_task` only for genuinely independent work that does not need this conversation's context, or for a recurring schedule.
 
-Before pausing, read `/opt/gamut/docs/scheduling-and-resuming.md`. Call `schedule_resume` with a wake time and a useful note to your future self, then END YOUR TURN. A session has one pending, one-shot wake; scheduling another replaces it.
+Before pausing, read `/opt/gamut/docs/scheduling-and-resuming.md`. Call `schedule_resume` with a wake time, a one-line summary for the user, and a useful note to your future self, then END YOUR TURN. A session has one pending, one-shot wake; scheduling another replaces it.
 
 ## Webhook Triggers
 

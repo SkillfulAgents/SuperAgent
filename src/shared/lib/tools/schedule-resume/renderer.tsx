@@ -7,7 +7,7 @@ import { scheduleResumeDef, type ScheduleResumeInput } from './definition'
 const parseScheduleResumeInput = scheduleResumeDef.parseInput
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { wakeTime, note, timezone } = parseScheduleResumeInput(input)
+  const { wakeTime, summary, note, timezone } = parseScheduleResumeInput(input)
 
   return (
     <div className="space-y-3">
@@ -27,6 +27,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
         )}
       </div>
 
+      {summary && <Field label="Summary">{summary}</Field>}
       {note && <Field label="Wake Note" className="whitespace-pre-wrap">{note}</Field>}
       {result && <ResultField result={result} isError={isError} />}
     </div>
@@ -53,6 +54,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
         )}
       </div>
 
+      {parsed.summary && <Field label="Summary">{parsed.summary}</Field>}
       {parsed.note && (
         <Field label="Wake Note" className="whitespace-pre-wrap">
           {parsed.note}

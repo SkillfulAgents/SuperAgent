@@ -4557,7 +4557,7 @@ class MessagePersister {
     agentSlug: string
   ): void {
     void (async () => {
-      let input: { wakeTime?: string; note?: string; timezone?: string }
+      let input: { wakeTime?: string; summary?: string; note?: string; timezone?: string }
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -4590,6 +4590,9 @@ class MessagePersister {
           agentSlug,
           scheduleExpression,
           note: input.note,
+          // Optional here: containers built before `summary` existed omit it,
+          // and the banner falls back to the note.
+          summary: input.summary?.trim() || undefined,
           sessionId,
           createdByUserId: sessionOwnerId ?? undefined,
           timezone,

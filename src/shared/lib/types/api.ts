@@ -162,9 +162,12 @@ export interface ApiSession {
   llmProviderId?: string | null
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
+  // pendingWakeSummary is the agent's one line for the user (absent on wakes
+  // scheduled before it existed).
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  pendingWakeSummary?: string
 }
 
 // ============================================================================

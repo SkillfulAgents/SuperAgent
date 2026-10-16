@@ -1938,6 +1938,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
               pendingWakeTaskId: wake.id,
               pendingWakeNote: wake.prompt,
+              pendingWakeSummary: wake.name ?? undefined,
             }
           : {}),
       }
@@ -3047,6 +3048,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
             pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),
             pendingWakeTaskId: pendingWake.id,
             pendingWakeNote: pendingWake.prompt,
+            pendingWakeSummary: pendingWake.name ?? undefined,
           }
         : {}),
     })
