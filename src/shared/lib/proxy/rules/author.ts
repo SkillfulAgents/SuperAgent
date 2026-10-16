@@ -26,20 +26,16 @@ The rule runs in an isolated sandbox: no network, no require/process/eval, the i
 const PATTERN_DOC = `API patterns are "METHOD /path" strings. METHOD is an HTTP verb or *. In the path, * matches exactly one segment (and may be partial, e.g. msg*), ** matches zero or more segments. The query string is not matched (the rule sees it in req.query). Patterns match the path as forwarded to the API host. List every endpoint the rule should cover (e.g. both the JSON and the /upload/ variant of an endpoint) and nothing wider than needed.
 MCP patterns are tool-name globs (requestSendMoney, notion-update-*), where * matches any run of characters.`
 
-async function authoringClient(): Promise<{ client: Anthropic; model: string; viaHelper: boolean }> {
+/**
+ * Rules are written and restated by the default (agent) model when the
+ * active provider can be called directly, and otherwise — or when that call
+ * fails — by the configured summarizer model, which is always reachable
+ * through the helper client.
+ */
+function directAuthoringClient(): { client: Anthropic; model: string } | null {
   const provider = getActiveLlmProvider()
-  if (provider.supportsDirectApi !== false && provider.getApiKeyStatus().isConfigured) {
-    return {
-      client: provider.createClient(),
-      model: resolveActiveProviderModel(getEffectiveModels().agentModel, 'agent'),
-      viaHelper: false,
-    }
-  }
-  return {
-    client: await getConfiguredLlmClient(),
-    model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
-    viaHelper: true,
-  }
+  if (provider.supportsDirectApi === false || !provider.getApiKeyStatus().isConfigured) return null
+  return { client: provider.createClient(), model: resolveActiveProviderModel(getEffectiveModels().agentModel, 'agent') }
 }
 
 async function complete(params: {
@@ -49,19 +45,32 @@ async function complete(params: {
   maxTokens: number
   timeoutMs: number
 }): Promise<string | null> {
-  const { client, model, viaHelper } = await authoringClient()
-  const request = {
+  const request = (model: string) => ({
     model,
     max_tokens: params.maxTokens,
     system: params.system,
     messages: [{ role: 'user' as const, content: params.user }],
     output_config: { format: { type: 'json_schema' as const, schema: params.schema } },
+  })
+  const direct = directAuthoringClient()
+  if (direct) {
+    const signal = AbortSignal.timeout(params.timeoutMs)
+    try {
+      const response = await direct.client.messages.create(
+        request(direct.model) as Anthropic.MessageCreateParamsNonStreaming,
+        { signal },
+      )
+      const block = response.content.find((b) => b.type === 'text')
+      return block && block.type === 'text' ? block.text : null
+    } catch (error) {
+      // A timeout already used the whole budget; trying again would double it.
+      if (signal.aborted) throw error
+      console.warn('[proxy-rules] The default model failed; falling back to the summarizer model:', error)
+    }
   }
-  const signal = AbortSignal.timeout(params.timeoutMs)
-  if (viaHelper) return createSummarizerText(client, request, signal)
-  const response = await client.messages.create(request as Anthropic.MessageCreateParamsNonStreaming, { signal })
-  const block = response.content.find((b) => b.type === 'text')
-  return block && block.type === 'text' ? block.text : null
+  const client = await getConfiguredLlmClient()
+  const summarizerModel = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  return createSummarizerText(client, request(summarizerModel), AbortSignal.timeout(params.timeoutMs))
 }
 
 function parseJson(text: string): unknown {
