@@ -48,7 +48,6 @@ function mutate<T>(namespace: string, paths: string[], operation: () => Promise<
 export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
   readonly type = 's3'
   readonly cacheMode = 'remote'
-  readonly dirCacheSeconds = 30
   private readonly client: S3VolumeClient
   constructor(id: string, name: string, config: S3VolumeConfig, private readonly agentSlug?: string) {
     super(id, name, config)
@@ -288,15 +287,15 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
     const key = this.key(relative, true)
     volumeUploads.beforeDelete(this.uploadKey(relative))
     await this.audit('DELETE', relative, () => this.change([relative], async () => {
-      const current = await this.freshStat(relative)
-      if (current.kind === 'directory') {
+      const object = await this.head(key)
+      if (!object) {
+        if (!await this.directoryExists(relative)) throw new WorkspaceFileError('not-found')
         await this.requireEmptyDirectory(relative)
         await this.preserveParent(relative)
         await this.client.send(new DeleteObjectCommand({ Bucket: this.Bucket, Key: `${key}/` }))
       } else {
         if (await this.directoryExists(relative)) throw new WorkspaceFileError('not-accessible', 'S3 has both a file and folder at this path; resolve the collision in the bucket first.')
-        const object = await this.head(key)
-        if (!object?.ETag) throw new WorkspaceFileError('not-found')
+        if (!object.ETag) throw new WorkspaceFileError('not-found')
         await this.preserveParent(relative)
         await this.client.send(new DeleteObjectCommand({ Bucket: this.Bucket, Key: key, IfMatch: object.ETag }))
       }

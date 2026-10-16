@@ -151,7 +151,7 @@ describe('S3 object-store filesystem behavior', () => {
     const gate = new Promise<void>(resolve => { release = resolve })
     f.transport.mockImplementation(async (...args) => {
       const response = await original(...args)
-      if (!held && (args[0] as { query?: Record<string, unknown> }).query?.delimiter) { held = true; await gate }
+      if (!held && args[0].query?.delimiter) { held = true; await gate }
       return response
     })
     const reading = volume.list('')
@@ -168,5 +168,12 @@ describe('S3 object-store filesystem behavior', () => {
     f.putObject('mounted/dir', bytes('a file with the folder name'))
     await expect(volume.write('dir/child', new Blob(['x']).stream())).rejects.toBeTruthy()
     expect(f.objects.has('mounted/dir/child')).toBe(false)
+  })
+
+  it('deletes a file with one lookup of it', async () => {
+    const f = s3Fixture(); f.put('gone.txt', bytes('gone'))
+    await f.volume().delete('gone.txt')
+    expect(f.requests.filter(request => request.method === 'HEAD' && request.key === 'mounted/gone.txt')).toHaveLength(1)
+    expect(f.exists('gone.txt')).toBe(false)
   })
 })
