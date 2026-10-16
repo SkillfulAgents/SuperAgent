@@ -489,6 +489,25 @@ describe('ReviewManager', () => {
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
   })
 
+  it('raises no review for a caller that is already gone', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: [],
+      scopeDescriptions: {},
+    }, controller.signal)
+
+    await expect(promise).rejects.toThrow('Request aborted')
+    expect(manager.getPendingReviewsForAgent('agent-1')).toHaveLength(0)
+    expect(created()).toHaveLength(0)
+  })
+
   it('abort settles the entry so every surface drops the prompt', async () => {
     const controller = new AbortController()
 
