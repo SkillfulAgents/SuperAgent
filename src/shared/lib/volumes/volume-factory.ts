@@ -9,6 +9,8 @@ import { DropboxMountableVolume, prepareDropboxVolume } from './dropbox-mountabl
 import { dropboxVolumeConfigSchema } from './dropbox-schema'
 import { GoogleDriveMountableVolume, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { googleDriveVolumeConfigSchema } from './google-drive-schema'
+import { PlatformMountableVolume, preparePlatformVolume } from './platform-mountable-volume'
+import { platformVolumeConfigSchema, storedPlatformVolumeConfigSchema } from './volume-config-schema'
 import type { BaseMountableVolume } from './base-mountable-volume'
 import type { VolumeFolderBrowser, VolumeSetupViewer } from './volume-folder-browser'
 import { VolumeError } from './volume-error'
@@ -62,6 +64,13 @@ const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume, DropboxMountableVolume.browseFolders),
   googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume, GoogleDriveMountableVolume.browseFolders),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
+  platform: {
+    ...volumeType(platformVolumeConfigSchema, (row, config, agentSlug) => new PlatformMountableVolume(row.id, row.name, storedPlatformVolumeConfigSchema.parse(config), agentSlug), preparePlatformVolume, PlatformMountableVolume.browseFolders),
+    instantiate(row, agentSlug) {
+      const parsed = storedPlatformVolumeConfigSchema.safeParse(row.config)
+      return parsed.success ? new PlatformMountableVolume(row.id, row.name, parsed.data, agentSlug) : null
+    },
+  },
 }
 
 function isVolumeType(type: string): type is VolumeType {

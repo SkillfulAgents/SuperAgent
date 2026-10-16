@@ -1,7 +1,7 @@
 import type { VolumeValidation } from './volume-validation-schema'
 import { randomUUID } from 'node:crypto'
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, UploadPartCommand } from '@aws-sdk/client-s3'
-import { S3VolumeClient } from './s3-client'
+import { S3VolumeClient, sealedS3Keys } from './s3-client'
 import { s3InputConfigSchema, type S3InputConfig, type S3VolumeConfig } from './s3-schema'
 import { sealS3Config } from './s3-credentials'
 import { VolumeError } from './volume-error'
@@ -10,7 +10,7 @@ import { VolumeError } from './volume-error'
  * require ListBuckets, IAM, ACL, or any access outside the mounted prefix. */
 export async function validateS3Volume(raw: unknown): Promise<VolumeValidation> {
   const config = s3InputConfigSchema.parse(raw)
-  const client = new S3VolumeClient(config)
+  const client = new S3VolumeClient(config, sealedS3Keys(config))
   const Bucket = config.bucket
   const Prefix = config.prefix ? `${config.prefix}/` : ''
   const probe = `${Prefix}.gamut-check-${randomUUID()}`

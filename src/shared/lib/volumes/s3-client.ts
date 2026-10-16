@@ -6,7 +6,7 @@ import { S3Client, type ServiceInputTypes, type ServiceOutputTypes } from '@aws-
 import type { Command, HttpHandlerOptions } from '@smithy/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { openS3Credentials } from './s3-credentials'
-import type { S3VolumeConfig } from './s3-schema'
+import type { S3Credentials, S3Location, S3VolumeConfig } from './s3-schema'
 import { VolumeError } from './volume-error'
 import { RemoteRequestPacer } from './remote-request-pacer'
 import { throwIfUploadAborted } from './remote-transfer'
@@ -20,6 +20,7 @@ const pacer = new RemoteRequestPacer((status, delay) => new VolumeError('S3 is b
 
 /** Never surface an SDK error verbatim: providers may echo signed URLs and key IDs. */
 export function s3Error(error: unknown): Error {
+  if (error instanceof VolumeError || error instanceof WorkspaceFileError) return error
   const value = error as { name?: string; $metadata?: { httpStatusCode?: number }; $response?: { headers?: Record<string, string> } }
   const code = value?.name
   const status = value?.$metadata?.httpStatusCode
@@ -40,9 +41,27 @@ export function s3Error(error: unknown): Error {
   return new VolumeError('Could not reach the S3 bucket. Check the endpoint and network, then try again.', 503)
 }
 
-export function s3Namespace(config: S3VolumeConfig): string {
+export function s3Namespace(config: S3Location): string {
   try { return JSON.stringify([new URL(config.endpoint || `https://s3.${config.region}.amazonaws.com`).origin, config.bucket]) }
   catch { throw new VolumeError('Invalid S3 endpoint.', 400) }
+}
+
+/** Where a volume's keys come from. Volumes with the same `cacheKey` may share cached views. */
+export interface S3KeySource {
+  cacheKey: string
+  /** The SDK refreshes keys that carry an expiration a few minutes before it. */
+  credentials: () => Promise<S3Credentials & { expiration?: Date }>
+  /** Throws when the keys cannot be used, before any request or cached answer. */
+  authorize: () => void | Promise<void>
+}
+
+/** A user's own keys, sealed with the volume. */
+export function sealedS3Keys(config: S3VolumeConfig): S3KeySource {
+  return {
+    cacheKey: createHash('sha256').update(JSON.stringify(config)).digest('hex'),
+    credentials: async () => openS3Credentials(config),
+    authorize: () => { openS3Credentials(config) },
+  }
 }
 
 /** SDK signs requests; explicit credentials prevent falling back to host AWS credentials.
@@ -52,22 +71,22 @@ export class S3VolumeClient {
   readonly namespace: string
   readonly cacheKey: string
   private readonly client: S3Client
-  constructor(readonly config: S3VolumeConfig) {
+  constructor(readonly config: S3Location, private readonly keys: S3KeySource) {
     try { this.host = new URL(config.endpoint || `https://s3.${config.region}.amazonaws.com`).host } catch { throw new VolumeError('Invalid S3 endpoint.', 400) }
     this.namespace = s3Namespace(config)
-    this.cacheKey = createHash('sha256').update(JSON.stringify(config)).digest('hex')
+    this.cacheKey = keys.cacheKey
     this.client = new S3Client({
       region: config.region, endpoint: config.endpoint || undefined, forcePathStyle: config.forcePathStyle,
-      credentials: async () => openS3Credentials(config), maxAttempts: 1,
+      credentials: keys.credentials, maxAttempts: 1,
       requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED',
       requestHandler: transport,
     })
   }
 
-  authorize(): void { openS3Credentials(this.config) }
+  async authorize(): Promise<void> { await this.keys.authorize() }
 
   async send<I extends ServiceInputTypes, O extends ServiceOutputTypes>(command: Command<ServiceInputTypes, I, ServiceOutputTypes, O, S3Client['config']>, options: { read?: boolean; signal?: AbortSignal } = {}): Promise<O> {
-    this.authorize()
+    await this.authorize()
     return pacer.run(this.namespace, options.read ?? false, async () => {
       throwIfUploadAborted(options.signal)
       try {
