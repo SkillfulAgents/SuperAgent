@@ -1,7 +1,9 @@
 import { Hono } from 'hono'
+import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
@@ -32,12 +34,29 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // Parse target host and path from rest: <host>/<path...>
   const firstSlash = rest.indexOf('/')
   const targetHost = firstSlash === -1 ? rest : rest.slice(0, firstSlash)
-  const targetPath = firstSlash === -1 ? '' : rest.slice(firstSlash + 1)
+  // The path is read from the raw request URL and canonicalised once: policy
+  // matching, review, audit and the forwarded URL all use this one value.
+  const target = canonicalizeTargetPath(rawRouteTail(c.req.url, routePath(c), 'rest'), targetHost)
+  const targetPath = target.ok ? target.path : target.rawPath
 
   const method = c.req.method
 
   if (!targetHost) {
     return c.json({ error: 'Missing target host in proxy URL' }, 400)
+  }
+
+  if (!target.ok) {
+    const message = `Invalid target path: ${target.error}`
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: '',
+      targetHost,
+      targetPath,
+      method,
+      errorMessage: message,
+    })
+    return c.json({ error: 'invalid_target_path', message }, 400)
   }
 
   // 1. Validate synthetic token
@@ -321,7 +340,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // 4. Build target URL
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
-  const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
+  const targetUrl = `https://${targetHost}/${target.encodedPath}${queryString}`
 
   // 5. Verify remote connection status before forwarding
   let provider = getAccountProviderByName(account.providerName)
