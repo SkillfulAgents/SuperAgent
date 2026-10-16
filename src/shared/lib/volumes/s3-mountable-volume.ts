@@ -16,10 +16,12 @@ import { VolumeError } from './volume-error'
 
 export const S3_PART_BYTES = 8 * 1024 * 1024
 const COPY_PART_BYTES = 128 * 1024 * 1024
-const listings = new RemoteListingCache<VolumeEntry>()
+// A git clone or npm install makes thousands of folders; the shared default of 256 evicts them mid-run.
+const listings = new RemoteListingCache<VolumeEntry>(undefined, { maxDirectories: 4096, maxEntries: 50_000 })
 const health = new RemoteHealthCache()
 const directory = (name: string): VolumeEntry => ({ name, kind: 'directory', size: 0, mtimeMs: 0 })
 const filename = (key: string) => key.split('/').at(-1) ?? ''
+const parentOf = (relative: string) => { const parent = path.posix.dirname(relative); return parent === '.' ? '' : parent }
 const representable = (name: string) => !!name && name !== '.' && name !== '..' && !/[\\/]/.test(name) && ![...name].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
 const missing = (error: unknown) => error instanceof WorkspaceFileError && error.code === 'not-found'
 const md5 = (bytes: Uint8Array) => createHash('md5').update(bytes).digest('base64')
@@ -46,7 +48,6 @@ function mutate<T>(namespace: string, paths: string[], operation: () => Promise<
 export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
   readonly type = 's3'
   readonly cacheMode = 'remote'
-  readonly dirCacheSeconds = 30
   private readonly client: S3VolumeClient
   constructor(id: string, name: string, config: S3VolumeConfig, private readonly agentSlug?: string) {
     super(id, name, config)
@@ -91,10 +92,16 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
     if (await this.directoryExists(relative)) return directory(filename(relative))
     throw new WorkspaceFileError('not-found')
   }
+  /** True when a fresh listing of the parent shows nothing at this path. Same staleness as `list`. */
+  private knownAbsent(relative: string): boolean {
+    return !!relative && listings.cached(this.cacheKey(parentOf(relative)))?.some(entry => entry.name === filename(relative)) === false
+  }
   async stat(relative: string): Promise<VolumeEntry> {
     this.client.authorize()
-    const cached = listings.cached(this.cacheKey(path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative)))?.find(entry => entry.name === filename(relative))
+    if (this.knownAbsent(relative)) throw new WorkspaceFileError('not-found')
+    const cached = listings.cached(this.cacheKey(parentOf(relative)))?.find(entry => entry.name === filename(relative))
     if (relative && cached?.kind === 'directory') return cached
+    // File sizes stay fresh after an external edit, as for every source.
     return this.freshStat(relative)
   }
   override async health(): Promise<VolumeEntry> {
@@ -146,8 +153,7 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
     })
   }
   private async parent(relative: string): Promise<void> {
-    const parent = path.posix.dirname(relative)
-    if ((await this.freshStat(parent === '.' ? '' : parent)).kind !== 'directory') throw new WorkspaceFileError('not-a-directory')
+    if ((await this.freshStat(parentOf(relative))).kind !== 'directory') throw new WorkspaceFileError('not-a-directory')
   }
   private async existingFile(relative: string): Promise<HeadObjectCommandOutput | null> {
     const file = await this.head(this.key(relative))
@@ -155,24 +161,41 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
     if (file && !file.ETag) throw new VolumeError('S3 returned no object version (ETag).', 503)
     return file
   }
-  private invalidate(paths: string[]): void {
+  /** `keep` spares this mount's own parent listings, which the change then settles in place. */
+  private invalidate(paths: string[], keep: Set<string> = new Set()): void {
     // All overlapping mounts, even with different credentials, see a mutation.
     listings.forgetWhere(this.client.namespace, key => {
+      if (keep.has(key)) return false
       // These keys are created by cacheKey, never provider data.
       let remote: string
       try { remote = z.tuple([z.string(), z.string()]).parse(JSON.parse(key))[1] } catch { return true }
       return paths.some(relative => {
         const changed = this.key(relative)
-        return remote === changed || remote.startsWith(`${changed}/`) || remote === this.key(path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative))
+        return remote === changed || remote.startsWith(`${changed}/`) || remote === this.key(parentOf(relative))
       })
     })
     health.invalidate(this.client.cacheKey)
   }
-  private async change<T>(paths: string[], operation: () => Promise<T>): Promise<T> {
+  /** Runs a change. On success, `settled` names each changed path's new entry (null when removed): this
+   * mount's warm parent listings take it in place instead of being read again. A failure drops them,
+   * since its outcome in S3 may be unknown. */
+  private async change<T>(paths: string[], operation: () => Promise<T>, settled?: () => [string, VolumeEntry | null][]): Promise<T> {
     return mutate(this.client.namespace, paths.map(relative => this.key(relative)), async () => {
       this.client.authorize()
-      this.invalidate(paths)
-      try { return await operation() } finally { this.invalidate(paths) }
+      const keep = new Set(settled ? paths.map(relative => this.cacheKey(parentOf(relative))) : [])
+      this.invalidate(paths, keep)
+      let ok = false
+      try { const result = await operation(); ok = true; return result } finally {
+        this.invalidate(paths, ok ? keep : new Set())
+        if (ok && settled) for (const [relative, entry] of settled()) {
+          const key = this.cacheKey(parentOf(relative))
+          const listing = listings.recent(key, Infinity)
+          // With no listing to update, a read still in flight began before this change: detach it.
+          if (listing) listings.put(this.client.namespace, key, [...listing.entries.filter(item => item.name !== filename(relative)), ...(entry ? [entry] : [])], listing.readAt, listing.checkedAt)
+          else listings.forget(key)
+          if (entry?.kind === 'directory') listings.seed(this.client.namespace, this.cacheKey(relative), [], Date.now())
+        }
+      }
     })
   }
   private async audit<T>(operation: string, relative: string, run: () => Promise<T>): Promise<T> {
@@ -187,13 +210,15 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
     this.key(relative, true)
     return volumeUploads.write(this.uploadKey(relative), body, signal, () => this.audit('PUT', relative, async () => {
       const Key = this.key(relative)
-      const previous = await this.existingFile(relative)
+      // A baseline only: the check just before publishing is always fresh.
+      const previous = this.knownAbsent(relative) ? null : await this.existingFile(relative)
       const chunks = uploadChunks(body, S3_PART_BYTES, signal)
       let UploadId: string | undefined
       try {
         const first = await chunks.next()
         let next = await chunks.next()
         const parts: CompletedPart[] = []
+        let size = first.value?.byteLength ?? 0
         if (!next.done) {
           const created = await this.client.send(new CreateMultipartUploadCommand({ Bucket: this.Bucket, Key }), { signal })
           UploadId = created.UploadId
@@ -207,7 +232,7 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
             parts.push({ ETag: result.ETag, PartNumber })
           }
           await upload(first.value!)
-          do { await upload(next.value); next = await chunks.next() } while (!next.done)
+          do { size += next.value.byteLength; await upload(next.value); next = await chunks.next() } while (!next.done)
         }
         await this.change([relative], async () => {
           throwIfUploadAborted(signal)
@@ -226,7 +251,7 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
             await this.client.send(new DeleteObjectCommand({ Bucket: this.Bucket, Key, IfMatch: stored.ETag }))
           }
           throwIfUploadAborted(signal)
-        })
+        }, () => [[relative, { name: filename(relative), kind: 'file', size, mtimeMs: Date.now() }]])
       } finally {
         await chunks.return(undefined)
         if (UploadId) {
@@ -243,7 +268,7 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
       const current = await this.freshStat(relative).catch(error => { if (missing(error)) return null; throw error })
       if (current) throw new WorkspaceFileError('already-exists')
       await this.client.send(new PutObjectCommand({ Bucket: this.Bucket, Key, Body: new Uint8Array(), IfNoneMatch: '*' }))
-    }))
+    }, () => [[relative, directory(filename(relative))]]))
   }
   private async preserveParent(relative: string): Promise<void> {
     const parent = path.posix.dirname(relative)
@@ -262,19 +287,19 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
     const key = this.key(relative, true)
     volumeUploads.beforeDelete(this.uploadKey(relative))
     await this.audit('DELETE', relative, () => this.change([relative], async () => {
-      const current = await this.freshStat(relative)
-      if (current.kind === 'directory') {
+      const object = await this.head(key)
+      if (!object) {
+        if (!await this.directoryExists(relative)) throw new WorkspaceFileError('not-found')
         await this.requireEmptyDirectory(relative)
         await this.preserveParent(relative)
         await this.client.send(new DeleteObjectCommand({ Bucket: this.Bucket, Key: `${key}/` }))
       } else {
         if (await this.directoryExists(relative)) throw new WorkspaceFileError('not-accessible', 'S3 has both a file and folder at this path; resolve the collision in the bucket first.')
-        const object = await this.head(key)
-        if (!object?.ETag) throw new WorkspaceFileError('not-found')
+        if (!object.ETag) throw new WorkspaceFileError('not-found')
         await this.preserveParent(relative)
         await this.client.send(new DeleteObjectCommand({ Bucket: this.Bucket, Key: key, IfMatch: object.ETag }))
       }
-    }))
+    }, () => [[relative, null]]))
   }
   private async copy(source: string, target: string, object: { ETag: string; Size: number }, previous?: string): Promise<void> {
     const CopySource = `${this.Bucket}/${source.split('/').map(encodeURIComponent).join('/')}`
