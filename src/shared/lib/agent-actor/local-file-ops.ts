@@ -192,8 +192,18 @@ class LocalOpenFile implements OpenFile {
     return buffer.subarray(0, filled)
   }
 
-  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array> {
-    const source = this.handle.createReadStream(range ? { start: range.start, end: range.end } : undefined)
+  stream(range?: { start: number; end?: number }, options?: { chunkBytes?: number }): ReadableStream<Uint8Array> {
+    // The read stream's high-water mark is the size of each `read` it issues
+    // (or what is left of the range).
+    const highWaterMark = options?.chunkBytes
+    const source = this.handle.createReadStream(
+      range || highWaterMark !== undefined
+        ? {
+          ...(range ? { start: range.start, end: range.end } : {}),
+          ...(highWaterMark !== undefined ? { highWaterMark } : {}),
+        }
+        : undefined,
+    )
     return Readable.toWeb(source) as ReadableStream<Uint8Array>
   }
 

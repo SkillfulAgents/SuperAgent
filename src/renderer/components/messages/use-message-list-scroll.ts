@@ -23,6 +23,9 @@ import type { PendingMessage } from './pending-message'
 const BASE_WINDOW = MESSAGES_PAGE_LIMIT
 const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
 const TURN_ANCHOR_TOP = 100
+// Older-page fetches that add no rows before an underfilled list stops
+// filling (until the list changes) — see the fill effect.
+const FILL_MAX_MISSES = 3
 
 // ---------------------------------------------------------------------------
 // The follow engine.
@@ -782,6 +785,36 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       rememberPosition()
     }
   }, [windowSize, rememberPosition])
+
+  // Older pages load when the reader scrolls near the top, but a list that
+  // does not overflow cannot scroll: a trailing page shorter than the viewport
+  // (the server cuts the page at a byte budget, and a few heavy turns can
+  // render short on a tall window) would leave older history unreachable.
+  // Fetch older pages until the list overflows or history runs out. Nothing
+  // moves under the reader: a list this short is pinned at its live edge,
+  // which the resize observer keeps in view as rows land above. A fetch that
+  // adds no rows (failed, or overlapping rows already loaded) counts toward a
+  // small cap that resets only when rows change, so neither an offline client
+  // nor a server that keeps answering the same cursor can make it spin.
+  const fillRef = useRef<{ rows: string; misses: number }>({ rows: '', misses: 0 })
+  useEffect(() => {
+    const el = scrollRef.current
+    // clientHeight 0: not laid out (hidden, or no layout engine) — nothing to fill.
+    if (!el || el.clientHeight === 0) return
+    if (hiddenCount > 0 || !hasOlder || isFetchingOlder || !fetchOlder) return
+    if (el.scrollHeight > el.clientHeight + 1) return
+    const first = visibleMessages[0] as { id?: unknown } | undefined
+    const rows = `${visibleMessages.length}:${String(first?.id)}`
+    const fill = fillRef.current
+    if (fill.rows !== rows) {
+      fill.rows = rows
+      fill.misses = 0
+    }
+    if (fill.misses >= FILL_MAX_MISSES) return
+    void fetchOlder().then((grew) => {
+      if (!grew && fillRef.current.rows === rows) fillRef.current.misses++
+    })
+  }, [visibleMessages, hiddenCount, hasOlder, isFetchingOlder, fetchOlder])
 
   const scrollToBottom = useCallback(() => {
     // Drop the turn reserve first so the trip's target is the true live edge,

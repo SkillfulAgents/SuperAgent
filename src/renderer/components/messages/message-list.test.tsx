@@ -2894,6 +2894,95 @@ describe('MessageList', () => {
       expect(screen.queryByText('m5')).not.toBeInTheDocument()
       expect(screen.getByText('m305')).toBeInTheDocument()
     })
+
+    // The server cuts the trailing page at a byte budget, so a few heavy turns
+    // can arrive as a page that renders shorter than the viewport. Such a list
+    // cannot scroll, so the near-top trigger never fires: it fills itself.
+    describe('filling a list too short to scroll', () => {
+      // The geometry has to exist when the list mounts, so it is defined on
+      // the prototype (jsdom's own lives on Element.prototype and returns 0).
+      let geometry = { scrollHeight: 0, clientHeight: 0 }
+      beforeEach(() => {
+        geometry = { scrollHeight: 0, clientHeight: 0 }
+        for (const key of ['scrollHeight', 'clientHeight'] as const) {
+          Object.defineProperty(HTMLElement.prototype, key, {
+            configurable: true,
+            get(this: HTMLElement) {
+              return this.dataset.testid === 'message-list' ? geometry[key] : 0
+            },
+          })
+        }
+      })
+      afterEach(() => {
+        delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+        delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+      })
+
+      const flush = () => act(async () => {
+        await Promise.resolve()
+      })
+
+      it('fetches older history while the list is too short to scroll', async () => {
+        geometry = { scrollHeight: 300, clientHeight: 800 }
+        mockFetchOlder.mockResolvedValue(true)
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = true
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).toHaveBeenCalledOnce()
+        // Nothing to hold in place: the short list is pinned at its live edge.
+        expect(mockFetchOlder.mock.calls[0]).toEqual([])
+      })
+
+      it('leaves a list that already overflows alone', async () => {
+        geometry = { scrollHeight: 2000, clientHeight: 800 }
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = true
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).not.toHaveBeenCalled()
+      })
+
+      it('does nothing without older history, or before layout', async () => {
+        geometry = { scrollHeight: 300, clientHeight: 800 }
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = false
+        const { unmount } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        unmount()
+
+        geometry = { scrollHeight: 0, clientHeight: 0 }
+        mockMessagesData.hasOlder = true
+        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).not.toHaveBeenCalled()
+      })
+
+      it('stops after a few fetches that add nothing, and resumes when the list changes', async () => {
+        geometry = { scrollHeight: 300, clientHeight: 800 }
+        // Failed or fully overlapping pages: no rows land.
+        mockFetchOlder.mockResolvedValue(false)
+        mockMessagesData.data = manyMessages(3)
+        mockMessagesData.hasOlder = true
+        const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        // Each finished fetch flips isFetchingOlder back, which re-checks.
+        for (let i = 0; i < 6; i++) {
+          mockMessagesData.isFetchingOlder = true
+          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          mockMessagesData.isFetchingOlder = false
+          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+          await flush()
+        }
+        expect(mockFetchOlder).toHaveBeenCalledTimes(3)
+
+        // A new row is a new list: filling is worth another try.
+        mockMessagesData.data = [...manyMessages(3), createUserMessage({ content: { text: 'm3' } })]
+        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+        await flush()
+        expect(mockFetchOlder).toHaveBeenCalledTimes(4)
+      })
+    })
   })
 
   describe('new-turn scroll anchoring', () => {
