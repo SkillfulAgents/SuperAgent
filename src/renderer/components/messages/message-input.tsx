@@ -243,6 +243,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { warmStart } = useWarmStartOnType({
     agentSlug,
+    // Also resumes this session's agent process if it went idle.
+    sessionId,
     message: composer.message,
     enabled: warmStartEnabled && !isViewOnly && !isOffline,
   })

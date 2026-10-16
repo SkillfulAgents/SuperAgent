@@ -214,6 +214,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
     deleteLive: (sessionId) => client().deleteSession(sessionId),
+    warm: (sessionId) => client().warmSession(sessionId),
 
     activity: (sessionId) => deps.messagePersister.getSessionActivity(slug, sessionId),
     isActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),

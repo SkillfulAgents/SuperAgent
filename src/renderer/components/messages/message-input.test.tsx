@@ -603,7 +603,7 @@ describe('MessageInput', () => {
       expect(mockStartAgent).toHaveBeenCalledTimes(1)
     })
 
-    it('starts the agent container once on the first typed edit', async () => {
+    it('starts the agent container once on the first typed edit, naming the session to resume', async () => {
       mockWarmStartEnabled = true
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       expect(mockStartAgent).not.toHaveBeenCalled()
@@ -611,7 +611,18 @@ describe('MessageInput', () => {
       await userEvent.type(screen.getByTestId('message-input'), 'Hi')
 
       await waitFor(() => expect(mockStartAgent).toHaveBeenCalledTimes(1))
-      expect(mockStartAgent).toHaveBeenCalledWith({ slug: 'agent-1', source: 'warm-start' }, expect.anything())
+      expect(mockStartAgent).toHaveBeenCalledWith({ slug: 'agent-1', source: 'warm-start', sessionId: 's-1' }, expect.anything())
+    })
+
+    it('names no session from a new-session composer', async () => {
+      mockWarmStartEnabled = true
+      renderWithProviders(<MessageInput sessionId={null} agentSlug="agent-1" onSessionCreated={vi.fn()} />)
+
+      await userEvent.type(screen.getByTestId('message-input'), 'Hi')
+
+      await waitFor(() => expect(mockStartAgent).toHaveBeenCalledTimes(1))
+      expect(mockStartAgent.mock.calls[0][0]).toEqual({ slug: 'agent-1', source: 'warm-start' })
+      expect(mockStartAgent.mock.calls[0][0]).not.toHaveProperty('sessionId')
     })
 
     it('does not start the container when the setting is off', async () => {

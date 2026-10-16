@@ -30,6 +30,9 @@ interface SessionData {
   // completion-wake window) — the only state a subprocess may be stopped in.
   settlement: SessionSettlementTracker;
   eviction: Promise<void> | null;
+  // Speculative typing keeps even threshold-0 sessions alive briefly, without
+  // promoting an automated session or marking it busy. Never persisted.
+  warmUntil?: number;
   // Identity of the CLI process currently backing this session, re-minted on
   // every replacement. The host mirrors our background-task bookkeeping and
   // needs to know when its copy belongs to a process that no longer exists;
@@ -71,6 +74,9 @@ const DEFAULT_UNDELIVERED_TURN_GRACE_MS = 60_000;
 const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
 const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
 const IDLE_EVICTION_POLL_MS = 30_000;
+// Covers the composer's 60s repeat interval, with room for a pause in typing.
+// No further warm request means the ordinary idle policy resumes after this.
+const DEFAULT_SESSION_WARM_GRACE_MS = 2 * 60_000;
 
 // Minutes → ms. < 0 disables that class; 0 = evict as soon as idle.
 // Parsed once at startup so misconfiguration is loud.
@@ -121,6 +127,7 @@ export class SessionManager extends EventEmitter {
   private persistence: SessionPersistence;
   private readonly idleEvictionMs: number;
   private readonly automatedIdleEvictionMs: number;
+  private readonly warmGraceMs: number;
   private readonly wakeGraceMs: number | undefined;
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // A CLI subprocess spawned ahead of demand, parked past its initialize
@@ -149,6 +156,7 @@ export class SessionManager extends EventEmitter {
     options?: {
       idleEvictionMs?: number;
       automatedIdleEvictionMs?: number;
+      warmGraceMs?: number;
       wakeGraceMs?: number;
       evictionPollMs?: number;
       prewarmEnabled?: boolean;
@@ -162,6 +170,7 @@ export class SessionManager extends EventEmitter {
     this.prewarmEnabled =
       options?.prewarmEnabled ?? !['0', 'false'].includes((process.env.SESSION_PREWARM ?? '').trim().toLowerCase());
     this.wakeGraceMs = options?.wakeGraceMs;
+    this.warmGraceMs = options?.warmGraceMs ?? DEFAULT_SESSION_WARM_GRACE_MS;
     this.undeliveredTurnGraceMs = options?.undeliveredTurnGraceMs ?? DEFAULT_UNDELIVERED_TURN_GRACE_MS;
     this.idleEvictionMs =
       options?.idleEvictionMs ??
@@ -996,6 +1005,51 @@ export class SessionManager extends EventEmitter {
     await sessionData.process.sendMessage(content, uuid, options);
   }
 
+  /** Whether this container knows the session: live in memory, or persisted and resumable. */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId) || this.persistence.getSession(sessionId) !== null;
+  }
+
+  /**
+   * Pre-resume a session's CLI ahead of its next message: the host asks for
+   * this when a person starts typing into the session. A session that is not
+   * in memory is resumed from persistence; a cold process (idle-evicted, or a
+   * resume whose start waits for the first send) is restarted the way a cold
+   * send restarts it, but with no message queued, so that send skips the CLI
+   * spawn and `--resume`.
+   *
+   * Never marks the session busy or promotes an automated session. It
+   * restarts the idle clock and grants a bounded eviction grace period, even
+   * for threshold-0 sessions. If no message comes, normal idle eviction
+   * reclaims the process after the grace expires.
+   *
+   * - 'unknown': no such session
+   * - 'busy': a turn (or background work) is in flight; left alone
+   * - 'running': the process was already live (idle clock and grace renewed)
+   * - 'resumed': the process was cold and has been restarted
+   * - 'skipped': deleted or shutting down meanwhile, or a send took over
+   */
+  async warmSession(sessionId: string): Promise<'unknown' | 'busy' | 'running' | 'resumed' | 'skipped'> {
+    if (this.shuttingDown) return 'skipped';
+    let data = this.sessions.get(sessionId);
+    // Shared with a racing send through the resume dedup, like every resume.
+    const fromDisk = !data;
+    data ??= await this.resumeSession(sessionId);
+    if (!data) return 'unknown';
+    // A racing idle eviction may be closing the process: let it finish, then
+    // resume — the order a send into the same session takes.
+    if (data.eviction) await data.eviction;
+    if (this.shuttingDown || this.sessions.get(sessionId) !== data) return 'skipped';
+    if (!data.settlement.isSettled()) return 'busy';
+    // In memory only: the reaper reads this clock. The persisted timestamp is
+    // conversation activity, and a keystroke is not that.
+    data.session.lastActivity = new Date();
+    data.warmUntil = data.session.lastActivity.getTime() + this.warmGraceMs;
+    // A resume that needs no host credentials starts its process right away.
+    if (data.process.isRunning()) return fromDisk ? 'resumed' : 'running';
+    return (await data.process.warm()) ? 'resumed' : 'skipped';
+  }
+
   /**
    * Cancel a queued (not yet picked up) message. Returns false when the
    * session isn't live or the message was already dequeued for execution —
@@ -1158,6 +1212,7 @@ export class SessionManager extends EventEmitter {
       if (data.eviction) continue; // already evicting
       if (!data.settlement.isSettled(now)) continue;
       if (!data.process.isRunning()) continue; // already cold
+      if (data.warmUntil !== undefined && now < data.warmUntil) continue;
       const thresholdMs = this.idleThresholdMs(data);
       if (thresholdMs < 0) continue; // disabled for this class
       if (now - data.session.lastActivity.getTime() < thresholdMs) continue;
