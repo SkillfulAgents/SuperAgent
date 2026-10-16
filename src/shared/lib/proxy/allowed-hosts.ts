@@ -121,7 +121,9 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
  * Generic host-vs-patterns matcher. A pattern is either an exact host or a
  * `*.suffix` wildcard that matches any real subdomain (but not the bare domain
  * or a suffix-spoof). Shared by the toolkit allowlist and the web allowed-sites
- * filter so the two cannot drift.
+ * filter so the two cannot drift. It does no validation of its own: `host` must
+ * already be a hostname the URL parser produced or accepted unchanged. Rejecting
+ * odd hosts here would let them slip past the web filter's block list.
  */
 export function matchesHostPatterns(host: string, patterns: string[]): boolean {
   return patterns.some((pattern) => {
@@ -133,8 +135,32 @@ export function matchesHostPatterns(host: string, patterns: string[]): boolean {
   })
 }
 
+// Dot-separated labels of lowercase letters, digits and hyphens: no userinfo,
+// port, brackets, percent-escapes, whitespace, `#`, `?`, `\`, uppercase, or
+// trailing dot.
+const BARE_HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/
+
+/**
+ * Whether `https://<host>/` names exactly `host`. Callers match the host
+ * string against the allowlist and then request `https://<host>/<path>`, so a
+ * string the URL parser would read as some other host must not pass.
+ */
+function isBareHostname(host: string): boolean {
+  if (!BARE_HOSTNAME.test(host)) return false
+  try {
+    return new URL(`https://${host}/`).hostname === host
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the toolkit may be called at `host`. Only a bare, canonical hostname
+ * qualifies, so the host checked here is the host a request to
+ * `https://<host>/…` reaches.
+ */
 export function isHostAllowed(toolkit: string, host: string): boolean {
   const allowed = TOOLKIT_ALLOWED_HOSTS[toolkit]
   if (!allowed) return false
-  return matchesHostPatterns(host, allowed)
+  return isBareHostname(host) && matchesHostPatterns(host, allowed)
 }

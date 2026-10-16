@@ -189,7 +189,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       result.reason === 'missing' ? 404 : 502)
   }
 
-  // 3. Validate target host against toolkit allowlist
+  // 3. Validate target host against toolkit allowlist. Only a bare hostname
+  // passes, so the URL built in step 4 reaches exactly this host.
   if (!isHostAllowed(account.toolkitSlug, targetHost)) {
     await logAuditEntry({
       agentSlug,
