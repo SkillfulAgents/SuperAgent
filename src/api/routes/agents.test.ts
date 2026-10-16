@@ -13,6 +13,9 @@ const mockNotifyAgentMembersChanged = vi.fn()
 const mockChangeMemberRole = vi.fn()
 const mockRemoveMember = vi.fn()
 import { Hono } from 'hono'
+import { getRequestListener } from '@hono/node-server'
+import { createServer, request as httpRequest, type ClientRequest } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
@@ -1544,6 +1547,11 @@ describe('agent startup — POST /:id/start', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
+    const streamedBody = (body: ReadableStream<Uint8Array>, headers: Record<string, string> = {}): RequestInit & { duplex: 'half' } => ({
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body,
+      duplex: 'half',
+    })
     // Lets the fire-and-forget pre-resume run (or provably not run).
     const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 
@@ -1652,6 +1660,154 @@ describe('agent startup — POST /:id/start', () => {
       expect(response.status).toBe(200)
       await settle()
       expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it.each([16 * 1024 - 1, 16 * 1024, 16 * 1024 + 1])('bounds a body without Content-Length at %i bytes', async (bytes) => {
+      const empty = JSON.stringify({ sessionId: 'session-1', padding: '' })
+      const body = JSON.stringify({ sessionId: 'session-1', padding: 'x'.repeat(bytes - Buffer.byteLength(empty)) })
+      expect(Buffer.byteLength(body)).toBe(bytes)
+
+      const response = await startRequest({ headers: { 'Content-Type': 'application/json' }, body })
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(mockClientWarmSession).toHaveBeenCalledTimes(bytes <= 16 * 1024 ? 1 : 0)
+    })
+
+    it('counts UTF-8 bytes rather than characters', async () => {
+      const body = JSON.stringify({ sessionId: 'session-1', padding: 'é'.repeat(9000) })
+      expect(body.length).toBeLessThan(16 * 1024)
+      expect(Buffer.byteLength(body)).toBeGreaterThan(16 * 1024)
+
+      const response = await startRequest({ body })
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(sessionIsKnown).not.toHaveBeenCalled()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('decodes JSON split inside multibyte characters', async () => {
+      const sessionId = 'session-é-😀'
+      const bytes = Buffer.from(JSON.stringify({ sessionId }))
+      let offset = 0
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (offset === bytes.length) controller.close()
+          else controller.enqueue(bytes.subarray(offset, ++offset))
+        },
+      }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body))
+
+      expect(response.status).toBe(200)
+      await vi.waitFor(() => expect(mockClientWarmSession).toHaveBeenCalledWith(sessionId))
+      expect(body.locked).toBe(false)
+    })
+
+    it.each(['absent', 'understated'])('stops an oversized stream with %s Content-Length before the sender finishes', async (length) => {
+      const cancel = vi.fn(() => new Promise<void>(() => {}))
+      const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+        controller.enqueue(new Uint8Array(8193))
+        // Deliberately never close: the route must stop after two chunks,
+        // including when the sender's cancellation hook never resolves.
+      })
+      const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body, length === 'understated' ? { 'Content-Length': '2' } : {}))
+
+      expect(response.status).toBe(200)
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      expect(pull).toHaveBeenCalledTimes(2)
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(body.locked).toBe(false)
+      expect(sessionIsKnown).not.toHaveBeenCalled()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('ignores cancellation errors after the byte limit is crossed', async () => {
+      const cancel = vi.fn(async () => { throw new Error('sender disconnected') })
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(new Uint8Array(16 * 1024 + 1)) },
+        cancel,
+      }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body))
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(body.locked).toBe(false)
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('still starts when reading the request stream fails', async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) { controller.error(new Error('sender disconnected')) },
+      }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body))
+
+      expect(response.status).toBe(200)
+      expect(body.locked).toBe(false)
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('does not pull a stream whose declared size is already too large', async () => {
+      const pull = vi.fn()
+      const body = new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body, { 'Content-Length': String(16 * 1024 + 1) }))
+
+      expect(response.status).toBe(200)
+      expect(pull).not.toHaveBeenCalled()
+      expect(body.locked).toBe(false)
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it.each(['valid chunked', 'oversized chunked', 'oversized declared'])('answers a real HTTP request with a %s body', async (kind) => {
+      const listener = getRequestListener(createApp().fetch, { overrideGlobalObjects: false })
+      const server = createServer(listener)
+      let outgoing: ClientRequest | undefined
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      try {
+        const port = (server.address() as AddressInfo).port
+        const response = await new Promise<{ status: number | undefined; text: string }>((resolve, reject) => {
+          outgoing = httpRequest({
+            hostname: '127.0.0.1', port, path: '/api/agents/test-agent/start', method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(kind === 'oversized declared' ? { 'Content-Length': String(20_000) } : {}),
+            },
+          }, (incoming) => {
+            let text = ''
+            incoming.setEncoding('utf8')
+            incoming.on('data', (chunk: string) => { text += chunk })
+            incoming.on('end', () => resolve({ status: incoming.statusCode, text }))
+            incoming.on('error', reject)
+          })
+          outgoing.on('error', reject)
+          outgoing.setTimeout(5000, () => outgoing?.destroy(new Error('start waited for the oversized sender')))
+          if (kind === 'valid chunked') {
+            outgoing.write('{"sessionId":')
+            outgoing.end('"session-1"}')
+          } else {
+            outgoing.write('{"sessionId":"session-1","padding":"')
+            outgoing.write('x'.repeat(20_000))
+            // Do not end the request: oversized input must not hold /start
+            // open, and cancelling its stream must not destroy the response.
+          }
+        })
+        expect(response.status).toBe(200)
+        expect(JSON.parse(response.text)).toMatchObject({ slug: 'test-agent', status: 'running' })
+        await settle()
+        expect(mockClientWarmSession).toHaveBeenCalledTimes(kind === 'valid chunked' ? 1 : 0)
+      } finally {
+        outgoing?.destroy()
+        server.closeAllConnections()
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+      }
     })
   })
 })

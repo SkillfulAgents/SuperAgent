@@ -156,11 +156,14 @@ paths:
         session. Answers at once; the resume runs in the background. A session
         that is not in memory is resumed from persistence, and a cold process
         (idle-evicted, or a resume whose start waits for the first message) is
-        restarted with no message queued. A live process only has its idle
-        clock reset, and a session with a turn in flight is left alone. The
-        session is never marked busy, so idle eviction can reclaim it again if
-        no message follows. A message that arrives during the resume waits for
-        it instead of restarting the process a second time.
+        restarted with no message queued. Both live and resumed processes get
+        a fresh idle clock and two minutes of eviction grace, including
+        automated sessions whose idle threshold is zero. Further warm requests
+        renew the grace; without one, normal idle eviction resumes. A session
+        with a turn in flight is left alone. Warming never marks the session
+        busy or promotes it from automated to interactive. A message that
+        arrives during the resume waits for it instead of restarting the
+        process a second time.
       operationId: warmSession
       parameters:
         - $ref: '#/components/parameters/SessionId'

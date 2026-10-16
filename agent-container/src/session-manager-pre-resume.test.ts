@@ -2,8 +2,8 @@
  * SessionManager.warmSession — the entry point of POST /sessions/:id/warm.
  * Resumes session data that is not in memory, restarts a cold process through
  * ClaudeCodeProcess.warm(), and leaves busy sessions alone. It restarts the
- * idle clock without marking the session busy, so the reaper can still evict
- * it if no message follows.
+ * idle clock and grants finite eviction grace without marking the session
+ * busy or promoting it, so the reaper can still evict it if no message follows.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'events'
@@ -24,7 +24,10 @@ vi.mock('./session-persistence', () => ({
     updateLastActivity() {}
     updateEffort() {}
     updateModel() {}
-    updateMetadata() {}
+    updateMetadata(id: string, metadata: Record<string, unknown>) {
+      const existing = persistedSessions.get(id)
+      if (existing) persistedSessions.set(id, { ...existing, metadata })
+    }
   },
 }))
 
@@ -123,11 +126,12 @@ describe('SessionManager.warmSession', () => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-manager-pre-resume-'))
     spawned.length = 0
     persistedSessions.clear()
-    manager = new SessionManager(workDir, { prewarmEnabled: false, idleEvictionMs: IDLE_MS, automatedIdleEvictionMs: 0 })
+    manager = new SessionManager(workDir, { prewarmEnabled: false, idleEvictionMs: IDLE_MS, automatedIdleEvictionMs: 0, warmGraceMs: IDLE_MS })
   })
 
   afterEach(async () => {
     await manager.stopAll()
+    vi.useRealTimers()
     fs.rmSync(workDir, { recursive: true, force: true })
   })
 
@@ -266,5 +270,144 @@ describe('SessionManager.warmSession', () => {
 
     await expect(manager.warmSession('after-shutdown')).resolves.toBe('skipped')
     expect(spawned).toHaveLength(0)
+  })
+
+  describe('bounded eviction grace', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    })
+
+    const advance = (ms: number) => vi.setSystemTime(Date.now() + ms)
+
+    async function automatedSession() {
+      const session = await manager.createSession({ initialMessage: 'scheduled task', metadata: { isAutomated: true } })
+      const proc = spawned[spawned.length - 1]
+      emitSettled(proc)
+      return { id: session.id, proc }
+    }
+
+    it.each(['live', 'evicted', 'persisted', 'deferred'])('protects a %s automated session, then reclaims it without a message', async (state) => {
+      let id: string
+      if (state === 'persisted' || state === 'deferred') {
+        id = `automated-${state}`
+        persist(id, { metadata: { isAutomated: true }, ...(state === 'deferred' ? { llmProviderId: 'connection-1' } : {}) })
+      } else {
+        id = (await automatedSession()).id
+        if (state === 'evicted') {
+          await manager.evictIdleSessions()
+          expect(spawned.at(-1)!.isRunning()).toBe(false)
+        }
+      }
+      const before = structuredClone(persistedSessions.get(id))
+
+      await expect(manager.warmSession(id)).resolves.toBe(state === 'live' ? 'running' : 'resumed')
+      const proc = spawned.at(-1)!
+      const stoppedBefore = proc.stopCalls
+      expect(manager.isTurnInFlight(id)).toBe(false)
+      expect(manager.getAllSessions().find((s) => s.id === id)?.metadata?.isAutomated).toBe(true)
+      expect(persistedSessions.get(id)).toEqual(before)
+
+      await manager.evictIdleSessions()
+      advance(IDLE_MS - 1)
+      await manager.evictIdleSessions()
+      expect(proc.stopCalls).toBe(stoppedBefore)
+      expect(proc.isRunning()).toBe(true)
+
+      advance(1)
+      await manager.evictIdleSessions()
+      expect(proc.stopCalls).toBe(stoppedBefore + 1)
+      expect(proc.isRunning()).toBe(false)
+    })
+
+    it('extends the grace only when another warm request arrives', async () => {
+      const { id, proc } = await automatedSession()
+      await manager.warmSession(id)
+      advance(IDLE_MS - 1)
+      await manager.warmSession(id)
+
+      advance(IDLE_MS - 1)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(true)
+      expect(proc.warmCalls).toBe(0) // live requests extend the deadline without restarting
+
+      advance(1)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(false)
+    })
+
+    it('only promotes the automated session when the human actually sends', async () => {
+      const { id, proc } = await automatedSession()
+      await manager.evictIdleSessions()
+      await manager.warmSession(id)
+      advance(IDLE_MS / 2)
+      await manager.sendMessage(id, 'human reply')
+      expect(manager.isTurnInFlight(id)).toBe(true)
+      expect(manager.getAllSessions().find((s) => s.id === id)?.metadata?.isAutomated).toBe(false)
+      expect(persistedSessions.get(id)?.metadata).toEqual({ isAutomated: false })
+      emitSettled(proc)
+
+      advance(IDLE_MS / 2) // the speculative grace expires, but real activity is newer
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(true)
+      advance(IDLE_MS / 2)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(false)
+    })
+
+    it('does not grant grace to an automated session that is busy', async () => {
+      const session = await manager.createSession({ initialMessage: 'scheduled task', metadata: { isAutomated: true } })
+      const proc = spawned.at(-1)!
+      await expect(manager.warmSession(session.id)).resolves.toBe('busy')
+      emitSettled(proc)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(false)
+      expect(proc.warmCalls).toBe(0)
+    })
+
+    it('protects a cold automated process while warm is still completing', async () => {
+      const { id, proc } = await automatedSession()
+      await manager.evictIdleSessions()
+      let finishWarm!: () => void
+      vi.spyOn(proc, 'warm').mockImplementationOnce(async () => {
+        proc.running = true
+        await new Promise<void>((resolve) => { finishWarm = resolve })
+        return true
+      })
+      const warm = manager.warmSession(id)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(true)
+      expect(manager.isTurnInFlight(id)).toBe(false)
+      finishWarm()
+      await expect(warm).resolves.toBe('resumed')
+      advance(IDLE_MS)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(false)
+    })
+
+    it('uses a finite two-minute grace by default, including a zero interactive threshold', async () => {
+      await manager.stopAll()
+      manager = new SessionManager(workDir, { prewarmEnabled: false, idleEvictionMs: 0, automatedIdleEvictionMs: 0 })
+      const { id, proc } = await settledSession()
+      await manager.evictIdleSessions()
+      await manager.warmSession(id)
+
+      advance(2 * 60_000 - 1)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(true)
+      advance(1)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(false)
+    })
+
+    it('still honors disabled idle eviction after the grace expires', async () => {
+      await manager.stopAll()
+      manager = new SessionManager(workDir, { prewarmEnabled: false, idleEvictionMs: -1, automatedIdleEvictionMs: -1, warmGraceMs: IDLE_MS })
+      const { id, proc } = await automatedSession()
+      await manager.warmSession(id)
+      advance(IDLE_MS * 10)
+      await manager.evictIdleSessions()
+      expect(proc.isRunning()).toBe(true)
+    })
   })
 })

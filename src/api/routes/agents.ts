@@ -1741,22 +1741,41 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 const startAgentBodySchema = z.object({
   sessionId: z.string().min(1).max(256).optional(),
 })
-// A `{ sessionId }` body is tiny. One declaring more is not that, and is left
-// unread, as every body was before the field existed.
+// A `{ sessionId }` body is tiny. Reject a declared oversize without reading,
+// and also bound actual bytes: chunked requests need not declare their size.
 const START_AGENT_BODY_MAX_BYTES = 16 * 1024
 
 async function sessionToPreResume(c: Context): Promise<string | null> {
   if (Number(c.req.header('content-length')) > START_AGENT_BODY_MAX_BYTES) return null
-  const raw = await c.req.text().catch(() => '')
-  if (!raw.trim()) return null
-  let json: unknown
   try {
-    json = JSON.parse(raw)
+    const reader = c.req.raw.body?.getReader()
+    if (!reader) return null
+    const chunks: Uint8Array[] = []
+    let size = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.byteLength
+        if (size > START_AGENT_BODY_MAX_BYTES) {
+          // A speculative hint must not wait for the sender (or its cancel
+          // hook) to finish. Oversize is still a successful plain start.
+          void reader.cancel().catch(() => {})
+          return null
+        }
+        if (value.byteLength) chunks.push(value)
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    const json: unknown = JSON.parse(Buffer.concat(chunks, size).toString('utf8'))
+    const parsed = startAgentBodySchema.safeParse(json)
+    return parsed.success ? parsed.data.sessionId ?? null : null
   } catch {
+    // Malformed JSON, a disconnected sender, or an already-consumed body is
+    // no usable hint; none should prevent the container from starting.
     return null
   }
-  const parsed = startAgentBodySchema.safeParse(json)
-  return parsed.success ? parsed.data.sessionId ?? null : null
 }
 
 // Never delays or fails the start. The id is the caller's, so it is acted on
