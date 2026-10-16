@@ -9,6 +9,7 @@ import {
   type NewSessionCarryover,
 } from '@renderer/lib/new-session-carryover'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import { STALE_TIME_GAP_MS } from '@shared/lib/stale-session/stale-session-config'
 import { useStaleSession } from './use-stale-session'
 
 const { navigate, apiFetch } = vi.hoisted(() => ({ navigate: vi.fn(), apiFetch: vi.fn() }))
@@ -72,6 +73,21 @@ describe('useStaleSession', () => {
     expect(result.current.stale.showNotice).toBe(true)
     act(() => result.current.stale.ignore())
     expect(result.current.stale.showNotice).toBe(false)
+  })
+
+  it('shows once an idle session crosses the gap, with no other render', () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderStale({ lastActivityAt: new Date(Date.now() - STALE_TIME_GAP_MS + 60_000) })
+      expect(result.current.stale.showNotice).toBe(false)
+
+      act(() => { vi.advanceTimersByTime(59_000) })
+      expect(result.current.stale.showNotice).toBe(false)
+      act(() => { vi.advanceTimersByTime(2_000) })
+      expect(result.current.stale.showNotice).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not show while active or for view-only users', () => {
