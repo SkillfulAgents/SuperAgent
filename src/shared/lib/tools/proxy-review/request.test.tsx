@@ -44,6 +44,20 @@ function sentBody(): Record<string, unknown> {
   return JSON.parse(init.body as string)
 }
 
+describe('ProxyReviewRequestItem title', () => {
+  it('renders the endpoint description as inline Markdown', () => {
+    renderCard({
+      displayText: 'Allow sends the specified message to the recipients in the `To`, `Cc`, and `Bcc` headers. For example usage, see [Sending email](https://developers.google.com/workspace/gmail/api/guides/sending)?',
+    })
+    const link = screen.getByRole('link', { name: 'Sending email' })
+    expect(link.getAttribute('href')).toBe('https://developers.google.com/workspace/gmail/api/guides/sending')
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(screen.getByText('To').tagName).toBe('CODE')
+    expect(document.body.textContent).not.toContain('](')
+    expect(document.body.textContent).not.toContain('`')
+  })
+})
+
 describe('ProxyReviewRequestItem "always" policy routing', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()

@@ -571,11 +571,12 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
+const mockSubmitDecision = vi.fn((..._args: unknown[]) => false)
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
     denyAllForAgent: vi.fn(),
-    submitDecision: vi.fn(),
+    submitDecision: (...args: unknown[]) => mockSubmitDecision(...args),
     resolveMatchingPending: vi.fn(),
     resolveMatchingPendingByLabel: vi.fn(),
     resolveMatchingXAgentByOperation: vi.fn(),
@@ -7610,6 +7611,48 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
 // ============================================================================
 // Proxy Review "Always" Policy Tests
 // ============================================================================
+
+describe('POST /api/agents/:id/proxy-review/:reviewId (agent rule requests)', () => {
+  const app = createApp()
+  const proposal = {
+    ruleKind: 'api', targetId: 'acct-1', targetName: 'me@acme.com', appliesTo: 'agent', effect: 'require',
+    description: 'd', name: 'Review external sends', restatement: 'r', patterns: ['POST /x'], code: '() => true',
+    tests: [], coverage: [], warnings: [],
+  }
+
+  beforeEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockSubmitDecision.mockReturnValue(true)
+    vi.mocked(logAuditEvent).mockClear()
+  })
+
+  afterEach(() => {
+    mockSubmitDecision.mockReturnValue(false)
+    mockGetPendingReviewsForAgent.mockReturnValue([])
+  })
+
+  it.each([
+    { decision: 'allow', action: 'approved', ruleProposal: proposal, request: 'create' },
+    { decision: 'deny', action: 'rejected', ruleProposal: { ...proposal, deletesRuleId: 'rule-9' }, request: 'delete' },
+  ])('audits who decided ($action, $request)', async ({ decision, action, ruleProposal, request }) => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'RULE', targetPath: 'proxy-rules', matchedScopes: [], scopeDescriptions: {}, ruleProposal }])
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision })
+    expect(res.status).toBe(200)
+    expect(logAuditEvent).toHaveBeenCalledWith({
+      userId: expect.anything(),
+      object: 'proxy_rule',
+      objectId: 'acct-1',
+      action,
+      details: expect.objectContaining({ request, name: 'Review external sends', effect: 'require', agentSlug: 'my-agent', via: 'app' }),
+    })
+  })
+
+  it('does not audit ordinary proxy reviews as rule decisions', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'POST', targetPath: 'x', matchedScopes: [], scopeDescriptions: {} }])
+    expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow' })).status).toBe(200)
+    expect(vi.mocked(logAuditEvent).mock.calls.some(([event]) => event.object === 'proxy_rule')).toBe(false)
+  })
+})
 
 describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
   const app = createApp()

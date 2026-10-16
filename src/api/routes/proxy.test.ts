@@ -69,6 +69,9 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
+// No proxy rules exist in these tests; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
+
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: { fromResourceCreator: () => null },
   runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
@@ -1202,6 +1205,7 @@ describe('proxy policy enforcement', () => {
     expect(mockRequestReview).toHaveBeenCalledWith(
       expect.objectContaining({ reviewType: 'api', accountId: 'acc-123' }),
       expect.anything(),
+      expect.objectContaining({ reevaluate: expect.any(Function) }),
     )
   })
 

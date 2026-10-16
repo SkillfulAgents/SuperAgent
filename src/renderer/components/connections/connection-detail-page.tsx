@@ -6,6 +6,7 @@ import { IntegrationRowActions } from '@renderer/components/connections/integrat
 import { ConnectionUsageCard } from '@renderer/components/connections/connection-usage-card'
 import { ScopePolicySection } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
+import { ProxyRulesSection } from '@renderer/components/connections/proxy-rules-section'
 import {
   useHideSettingsHeader,
   useFullWidthSettingsContent,
@@ -115,6 +116,10 @@ export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Con
                 )}
               </div>
             </section>
+          )}
+
+          {(row.type === 'oauth' || row.type === 'mcp') && (
+            <ProxyRulesSection kind={row.type === 'oauth' ? 'api' : 'mcp'} targetId={row.id} />
           )}
         </div>
       </div>

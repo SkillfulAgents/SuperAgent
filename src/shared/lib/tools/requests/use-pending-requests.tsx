@@ -1,4 +1,5 @@
 import { getToolDefinition } from '../registry'
+import { parseRuleOutcomes, parseRuleProposal, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
 import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -234,6 +235,8 @@ export interface PendingReview {
   scopeDescriptions: Record<string, string>
   displayText?: string
   xAgent?: XAgentReview
+  ruleOutcomes?: ReviewRuleOutcomeView[]
+  ruleProposal?: RuleProposalReview
 }
 
 export interface PendingAccountReauth {
@@ -358,6 +361,8 @@ export function reviewFromEnvelope(
         : {},
     displayText: typeof payload.displayText === 'string' ? payload.displayText : undefined,
     ...(xAgent ? { xAgent } : {}),
+    ...(parseRuleOutcomes(payload.ruleOutcomes) ? { ruleOutcomes: parseRuleOutcomes(payload.ruleOutcomes) } : {}),
+    ...(parseRuleProposal(payload.ruleProposal) ? { ruleProposal: parseRuleProposal(payload.ruleProposal) } : {}),
   }
 }
 
@@ -895,6 +900,8 @@ export function usePendingRequests({
           matchedScopes: review.matchedScopes,
           scopeDescriptions: review.scopeDescriptions,
           displayText: review.displayText,
+          ruleOutcomes: review.ruleOutcomes,
+          ruleProposal: review.ruleProposal,
           onComplete: handleProxyReviewComplete,
         })
       }

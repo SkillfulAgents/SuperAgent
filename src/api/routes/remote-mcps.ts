@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
@@ -624,7 +625,9 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   } catch (error) {
     console.warn(`Failed to resolve agents assigned MCP ${id} before delete:`, error)
   }
+  const removedRules = await rulesAboutToBeRemoved({ kind: 'mcp', targetId: id })
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+  for (const rule of removedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'mcp_deleted' }, getCurrentUserId(c))
   const liveRefresh = assignedAgentSlugs
     ? await syncRemoteMcpAgents(assignedAgentSlugs)
     : false

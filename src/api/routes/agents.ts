@@ -6,6 +6,7 @@ import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-hold
 import type { SendMessageResult } from '@shared/lib/container/types'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
+import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
@@ -120,6 +121,8 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
+import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
+import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -6096,7 +6099,7 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
     // Sort by time descending, then paginate
     normalized.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     const total = (proxyTotal[0]?.count ?? 0) + (mcpTotal[0]?.count ?? 0)
-    const entries = normalized.slice(offset, offset + limit)
+    const entries = await withRuleNames(normalized.slice(offset, offset + limit))
 
     return c.json({ entries, total })
   } catch (error) {
@@ -7593,12 +7596,26 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
   }
 
+  // Approving an agent's proxy rule persists access on the account or MCP
+  // server, so (like "always allow") only its owner may approve it.
+  const proposal = agentRegistry.get(slug).inputs.reviews.pending()
+    .find((review) => review.id === reviewId)?.ruleProposal
+  if (proposal && body.decision === 'allow' && isAuthMode()) {
+    const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
+    if (!context || context.userId !== getCurrentUserId(c)) {
+      return c.json({ error: 'Forbidden: only the owner of this connection can approve its rules' }, 403)
+    }
+  }
+
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
   const success = agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
+  }
+  if (proposal) {
+    await auditRuleDecision({ proposal, approved: body.decision === 'allow', agentSlug: slug, via: 'app', userId: getCurrentUserId(c) })
   }
 
   return c.json({ ok: true })
@@ -7624,6 +7641,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const pendingReview = agentRegistry.get(slug).inputs.reviews.pending().find((review) => review.id === reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
     return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
+  }
+  if (pendingReview?.ruleProposal) {
+    return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
