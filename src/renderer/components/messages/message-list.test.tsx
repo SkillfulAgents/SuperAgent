@@ -2778,18 +2778,6 @@ describe('MessageList', () => {
       mockMessagesData.isFetchingOlder = true
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.getByRole('status')).toHaveTextContent('Loading older messages')
-      expect(screen.queryByRole('button', { name: 'Load earlier messages' })).not.toBeInTheDocument()
-    })
-
-    it('offers an explicit history load only when the server has older messages', () => {
-      mockMessagesData.data = manyMessages(50)
-      mockMessagesData.hasOlder = true
-      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeInTheDocument()
-
-      mockMessagesData.hasOlder = false
-      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-      expect(screen.queryByRole('button', { name: 'Load earlier messages' })).not.toBeInTheDocument()
     })
 
     it('hides the loading indicator once the older page has landed', () => {
@@ -2816,7 +2804,7 @@ describe('MessageList', () => {
     // Geometry derives from the mounted row count, so the restore effect only
     // sees scrollHeight growth at the commit where the prepended rows mount.
     // Fixed-geometry mocks cannot catch a guard consumed one commit too early.
-    it.each(['scroll', 'button'] as const)('compensates scrollTop when %s loads an older page above the viewport', (trigger) => {
+    it('compensates scrollTop when an older page prepends above the viewport', () => {
       const base = Array.from({ length: 300 }, (_, i) =>
         createUserMessage({ content: { text: `row${i}` } })
       )
@@ -2842,8 +2830,7 @@ describe('MessageList', () => {
         set: (v: number) => { top = v },
       })
 
-      if (trigger === 'scroll') fireEvent.scroll(el)
-      else fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+      fireEvent.scroll(el)
       expect(mockFetchOlder).toHaveBeenCalledOnce()
       expect(onBeforePrepend).toBeDefined()
 
@@ -2906,122 +2893,6 @@ describe('MessageList', () => {
       // Pinned to bottom: the slice slides so the DOM stays bounded — m5 drops off.
       expect(screen.queryByText('m5')).not.toBeInTheDocument()
       expect(screen.getByText('m305')).toBeInTheDocument()
-    })
-
-    // The server cuts the trailing page at a byte budget, so a few heavy turns
-    // can arrive as a page that renders shorter than the viewport. Such a list
-    // cannot scroll, so the near-top trigger never fires: it fills itself.
-    describe('filling a list too short to scroll', () => {
-      // The geometry has to exist when the list mounts, so it is defined on
-      // the prototype (jsdom's own lives on Element.prototype and returns 0).
-      let geometry = { scrollHeight: 0, clientHeight: 0 }
-      beforeEach(() => {
-        geometry = { scrollHeight: 0, clientHeight: 0 }
-        for (const key of ['scrollHeight', 'clientHeight'] as const) {
-          Object.defineProperty(HTMLElement.prototype, key, {
-            configurable: true,
-            get(this: HTMLElement) {
-              return this.dataset.testid === 'message-list' ? geometry[key] : 0
-            },
-          })
-        }
-      })
-      afterEach(() => {
-        delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
-        delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
-      })
-
-      const flush = () => act(async () => {
-        await Promise.resolve()
-      })
-
-      it('fetches older history while the list is too short to scroll', async () => {
-        geometry = { scrollHeight: 300, clientHeight: 800 }
-        mockFetchOlder.mockResolvedValue(true)
-        mockMessagesData.data = manyMessages(3)
-        mockMessagesData.hasOlder = true
-        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        await flush()
-        expect(mockFetchOlder).toHaveBeenCalledOnce()
-        // Nothing to hold in place: the short list is pinned at its live edge.
-        expect(mockFetchOlder.mock.calls[0]).toEqual([])
-      })
-
-      it('leaves a list that already overflows alone', async () => {
-        geometry = { scrollHeight: 2000, clientHeight: 800 }
-        mockMessagesData.data = manyMessages(3)
-        mockMessagesData.hasOlder = true
-        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        await flush()
-        expect(mockFetchOlder).not.toHaveBeenCalled()
-      })
-
-      it('does nothing without older history, or before layout', async () => {
-        geometry = { scrollHeight: 300, clientHeight: 800 }
-        mockMessagesData.data = manyMessages(3)
-        mockMessagesData.hasOlder = false
-        const { unmount } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        await flush()
-        unmount()
-
-        geometry = { scrollHeight: 0, clientHeight: 0 }
-        mockMessagesData.hasOlder = true
-        renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        await flush()
-        expect(mockFetchOlder).not.toHaveBeenCalled()
-      })
-
-      it('stops after a few fetches that add nothing, and resumes when the list changes', async () => {
-        geometry = { scrollHeight: 300, clientHeight: 800 }
-        // Failed or fully overlapping pages: no rows land.
-        mockFetchOlder.mockResolvedValue(false)
-        mockMessagesData.data = manyMessages(3)
-        mockMessagesData.hasOlder = true
-        const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        await flush()
-        // Each finished fetch flips isFetchingOlder back, which re-checks.
-        for (let i = 0; i < 6; i++) {
-          mockMessagesData.isFetchingOlder = true
-          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-          mockMessagesData.isFetchingOlder = false
-          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-          await flush()
-        }
-        expect(mockFetchOlder).toHaveBeenCalledTimes(3)
-
-        // A new row is a new list: filling is worth another try.
-        mockMessagesData.data = [...manyMessages(3), createUserMessage({ content: { text: 'm3' } })]
-        rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        await flush()
-        expect(mockFetchOlder).toHaveBeenCalledTimes(4)
-      })
-
-      it('allows explicit retries after automatic filling is exhausted without restarting the loop', async () => {
-        geometry = { scrollHeight: 300, clientHeight: 800 }
-        mockFetchOlder.mockResolvedValue(false)
-        mockMessagesData.data = manyMessages(3)
-        mockMessagesData.hasOlder = true
-        const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-        const finishFetch = async () => {
-          mockMessagesData.isFetchingOlder = true
-          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-          mockMessagesData.isFetchingOlder = false
-          rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
-          await flush()
-        }
-        await flush()
-        for (let i = 0; i < 4; i++) await finishFetch()
-        expect(mockFetchOlder).toHaveBeenCalledTimes(3)
-
-        // The transcript still cannot scroll. The reader can retry even if
-        // reconnecting/refetching leaves the same three visible messages.
-        for (let attempt = 4; attempt <= 5; attempt++) {
-          fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
-          await flush()
-          await finishFetch()
-          expect(mockFetchOlder).toHaveBeenCalledTimes(attempt)
-        }
-      })
     })
   })
 

@@ -12,9 +12,9 @@
  * anchor, so the scan always reaches the start).
  *
  * `max_bytes` is what the clients send: iOS 512 KiB for the latest page and
- * 1 MiB for "Load Earlier", the web 1 MiB for its trailing page. No
- * `max_bytes` is every client that predates it, served the default 4 MiB
- * window exactly as before.
+ * 1 MiB for "Load Earlier"; 1 MiB is also pinned as a mid-range budget. No
+ * `max_bytes` is every other client (the web renderer included), served the
+ * default 4 MiB window exactly as before.
  *
  * Before (fixed 64 KiB reads, no `max_bytes`; a 512 KiB request then got the
  * default window too): trailing page 139 ops / 133 reads / 8.6 MB read; older
@@ -129,7 +129,7 @@ describe('chat transcript — long session', () => {
     })
   })
 
-  it('trailing page, max_bytes=1MiB (web trailing page)', async () => {
+  it('trailing page, max_bytes=1MiB', async () => {
     const { body, measurement, responseBytes } = await read<PageBody>(`limit=300&media=ref&max_bytes=${MiB}`)
     expectTrailingPage(body)
     expect(responseBytes).toBeLessThan(2 * MiB)

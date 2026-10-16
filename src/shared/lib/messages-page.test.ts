@@ -13,7 +13,6 @@ import { describe, it, expect, afterEach } from 'vitest'
 import {
   capMessagesPageLimit,
   clampMessagesPageBytes,
-  MESSAGES_PAGE_BYTES,
   MESSAGES_PAGE_LIMIT,
   MESSAGES_PAGE_MAX_BYTES,
   MESSAGES_PAGE_MIN_BYTES,
@@ -135,11 +134,5 @@ describe('clampMessagesPageBytes', () => {
   it('never lets a request raise the window past the server default', () => {
     expect(clampMessagesPageBytes(MESSAGES_PAGE_MAX_BYTES + 1)).toBe(MESSAGES_PAGE_MAX_BYTES)
     expect(clampMessagesPageBytes(Number.MAX_SAFE_INTEGER)).toBe(MESSAGES_PAGE_MAX_BYTES)
-  })
-
-  it('keeps the renderer budget a real reduction inside the bounds', () => {
-    expect(MESSAGES_PAGE_BYTES).toBeGreaterThanOrEqual(MESSAGES_PAGE_MIN_BYTES)
-    expect(MESSAGES_PAGE_BYTES).toBeLessThan(MESSAGES_PAGE_MAX_BYTES)
-    expect(clampMessagesPageBytes(MESSAGES_PAGE_BYTES)).toBe(MESSAGES_PAGE_BYTES)
   })
 })

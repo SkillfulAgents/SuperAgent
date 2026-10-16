@@ -8,7 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, InterruptScope, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
-import { MESSAGES_PAGE_BYTES, MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
 
 // Re-export for convenience
@@ -62,13 +62,10 @@ function deletedMessagesKey(sessionId: string) {
 async function fetchMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string; maxBytes?: number; signal?: AbortSignal }
+  opts: { limit: number; cursor?: string; signal?: AbortSignal }
 ): Promise<MessagesPage> {
   const params = new URLSearchParams({ limit: String(opts.limit), media: 'ref' })
   if (opts.cursor) params.set('cursor', opts.cursor)
-  // A server that predates `max_bytes` ignores it and serves its default
-  // window, which is what this client asked for before.
-  if (opts.maxBytes !== undefined) params.set('max_bytes', String(opts.maxBytes))
   const res = await apiFetch(
     `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
     { signal: opts.signal }
@@ -153,13 +150,8 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
           }
         }
       }
-      // Byte-bounded: on a long tool-heavy session the default window is
-      // multi-MB, re-read on open and by every drift repair. A page the budget
-      // cuts short is a valid short page — its cursor walks the rest, and
-      // MessageList fetches older pages until the list fills the viewport.
       const page = await fetchMessagesPage(agentSlug, sessionId, {
         limit: MESSAGES_PAGE_LIMIT,
-        maxBytes: MESSAGES_PAGE_BYTES,
         signal,
       })
       return {
@@ -265,9 +257,6 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     olderAbortRef.current = controller
     setIsFetchingOlder(true)
     try {
-      // No byte budget on older pages: each one re-walks the transcript to its
-      // cursor whatever its size, so on the desktop a larger step is the
-      // cheaper walk through history.
       const page = await fetchMessagesPage(agentSlug, sessionId, {
         limit: MESSAGES_PAGE_OLDER_LIMIT,
         cursor,

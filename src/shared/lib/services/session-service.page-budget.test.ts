@@ -1,9 +1,9 @@
 /**
  * Budgeted page walks over a realistic transcript.
  *
- * Clients now pick the page's byte budget (`max_bytes`: iOS 512 KiB for its
- * latest page and 1 MiB for older ones, the web 1 MiB, the clamp floor 64
- * KiB), and the readers walk the file in reads that grow from 64 KiB to 1 MiB.
+ * Clients may pick the page's byte budget (`max_bytes`: iOS 512 KiB for its
+ * latest page and 1 MiB for older ones, the clamp floor 64 KiB), and the
+ * readers walk the file in reads that grow from 64 KiB to 1 MiB.
  * The small fixtures in session-service.test.ts prove every classification
  * rule; this file proves the same contract at the scale where the new read
  * sizes and budgets actually bite: a multi-MB transcript of tool-heavy turns,
@@ -24,6 +24,7 @@ import * as os from 'os'
 
 import { getSessionMessagesPage, getSessionMessagesWithCompact } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { prng } from '@shared/lib/agent-actor/testing/prng'
 import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
 
 const KiB = 1024
@@ -39,18 +40,6 @@ let testDir: string
 let originalDataDir: string | undefined
 let transcriptBytes = 0
 let full: TransformedItem[]
-
-/** Deterministic PRNG (mulberry32): a failure reproduces from the seed. */
-function prng(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
 
 function payload(bytes: number, seed: number): string {
   const unit = `line ${seed}: const value = compute(${seed}); // ${'pad'.repeat(10)}\n`
@@ -169,7 +158,7 @@ describe('budgeted page walks over a multi-MB transcript', () => {
     expectConsistentWalk(steps)
   }, WALK_TIMEOUT_MS)
 
-  it('the web budget: 1 MiB trailing page, default older pages', async () => {
+  it('a 1 MiB trailing page with default older pages', async () => {
     expectConsistentWalk(await walk({ limit: 300, byteBudget: 1 * MiB }, { limit: 200 }))
   }, WALK_TIMEOUT_MS)
 
