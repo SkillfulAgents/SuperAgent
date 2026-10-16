@@ -2703,17 +2703,18 @@ describe('useMessageStream', () => {
       return { mod, result, es, queryClient: wrapper.queryClient }
     }
 
-    it('accumulates terminal-dead command uuids (discarded/cancelled), deduped', async () => {
+    it('accumulates discarded command uuids, deduped, and treats cancelled as no answer', async () => {
       const { result, es } = await setupHook('cmd-s1')
 
       act(() => {
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+        // Stop cancels the running command too, so cancelled proves nothing
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'cancelled' })
         // Redelivery must not double up
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
       })
 
-      expect(result.current.discardedCommandUuids).toEqual(['u1', 'u2'])
+      expect(result.current.discardedCommandUuids).toEqual(['u1'])
     })
 
     it('does not treat non-terminal states or malformed frames as discarded', async () => {
