@@ -89,10 +89,11 @@ describe('single-session read — small profile', () => {
     const body = await result.json()
     expect(body).toMatchObject({ id: sessionId, name: 'Renamed' })
     expect(body).not.toHaveProperty('messageCount')
-    // Was 173 ops (162 handle.read), 10.5MB read and ~1.8s.
+    // Was 173 ops (162 handle.read), 10.5MB read and ~1.8s. The rename's
+    // atomic write counts its data write and its two fsyncs.
     expectWithinBudget('small: PATCH session rename (10MB transcript)', measurement, {
-      totalOps: 10,
-      ops: { stat: 2, readFile: 2, open: 2, realpath: 2, lstat: 1, rename: 1 },
+      totalOps: 12,
+      ops: { stat: 1, readFile: 2, open: 2, realpath: 2, lstat: 1, rename: 1, 'handle.write': 1, 'handle.sync': 2 },
       bytesRead: 0,
       wallMs: 230,
     })

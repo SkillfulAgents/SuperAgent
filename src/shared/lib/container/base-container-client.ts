@@ -21,6 +21,7 @@ import type {
   CreateSessionOptions,
   HostPortProbeResult,
   SendMessageOptions,
+  SendMessageResult,
   StartOptions,
   StopOptions,
   StopResult,
@@ -1472,7 +1473,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     const port = await this.getPortOrThrow().catch(error => {
       throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
     })
@@ -1483,22 +1484,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // deleted connection, rotate credentials, or rebuild the active query.
     const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
     let llmRuntime: ConnectionRuntime | undefined
+    const result: SendMessageResult = {}
     if (!preserveRuntime) {
       try {
         const { agentRegistry } = await import('@shared/lib/agent-actor')
         const actor = agentRegistry.get(this.config.agentId)
-        const metadata = await actor.sessions.metadata(sessionId)
-        const prefs = await actor.config.get('preferences')
+        const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
         const selected = await resolveExecutionSelection(
           options?.model || options?.llmProviderId !== undefined
             ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
             : null,
           storedSelection(metadata?.model, metadata?.llmProviderId),
-          storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
+          async () => {
+            const prefs = await actor.config.get('preferences')
+            return storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId)
+          },
         )
         llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
         rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
-        await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
+        result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
+        // The container checks its credentials back through llm-runtime/resolve,
+        // which serves the STORED binding and refuses another, so a changed
+        // binding is stored before the container has the message. An unchanged
+        // one has nothing to store.
+        if (metadata?.llmProviderId !== selected.llmProviderId || metadata?.model !== selected.model) {
+          await actor.sessions.updateMetadata(sessionId, { ...options?.metadataUpdates, ...result.selection })
+          result.metadataWritten = true
+        }
       } catch (error) {
         // Provider preparation happens before HTTP, so durable delivery can
         // retry it without risking a second copy of the user's message.
@@ -1577,6 +1589,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       throw err
     }
+    return result
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {

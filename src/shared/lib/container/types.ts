@@ -1,5 +1,6 @@
 import type { RuntimeOptions } from './runtime-options'
 import type { ContainerVolume } from '@shared/lib/types/mount'
+import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 /** The container refused an operation because the session is mid-turn (HTTP 409). */
@@ -24,6 +25,26 @@ export interface SendMessageOptions extends RuntimeOptions {
   preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
+  /**
+   * The session's metadata entry as the caller just read it (null: it has
+   * none). The send binds its provider from it instead of reading it again.
+   */
+  sessionMetadata?: SessionMetadata | null
+  /**
+   * Fields the caller is about to store for this send. When the send has to
+   * store a changed provider binding, these go in the same write.
+   */
+  metadataUpdates?: Partial<SessionMetadata>
+}
+
+export interface SendMessageResult {
+  /** The provider binding the send resolved; absent when it kept the running turn's. */
+  selection?: { llmProviderId: string; model: string }
+  /**
+   * The send stored a changed binding before the container had the message,
+   * together with `metadataUpdates`.
+   */
+  metadataWritten?: boolean
 }
 
 export const CONTAINER_RUNNER_IDS = [
@@ -269,7 +290,7 @@ export interface ContainerClient {
   forkSession(sessionId: string): Promise<{ id: string } | null>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>

@@ -33,6 +33,7 @@ import type {
   InterruptSessionOptions,
   InterruptSessionResult,
   SendMessageOptions,
+  SendMessageResult,
   SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
@@ -384,8 +385,11 @@ export interface SessionOps {
   broadcastUpdate(sessionId: string): void
   /** `messagePersister.recoverSessionAwaitingInput` */
   recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
-  /** `messagePersister.promoteAutomatedSession` */
-  promoteAutomated(sessionId: string): Promise<void>
+  /**
+   * `messagePersister.promoteAutomatedSession`. `metadata` is the session's
+   * entry as the caller just read it; resolves to the entry as it now stands.
+   */
+  promoteAutomated(sessionId: string, metadata?: SessionMetadata | null): Promise<SessionMetadata | null>
   /** `messagePersister.grantSessionCapability` */
   grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): void
   /** `messagePersister.getSlashCommands` */
@@ -400,8 +404,11 @@ export interface SessionOps {
   // Container stream attachment — messagePersister follows the container's
   // stream for a session and persists what arrives.
 
-  /** `messagePersister.subscribeToSession` with this agent's client. */
-  subscribeStream(sessionId: string, containerSessionId: string): Promise<void>
+  /**
+   * `messagePersister.subscribeToSession` with this agent's client. `metadata`
+   * is the session's entry as the caller just read it (null: none).
+   */
+  subscribeStream(sessionId: string, containerSessionId: string, metadata?: SessionMetadata | null): Promise<void>
   /** `messagePersister.unsubscribeFromSession` */
   unsubscribeStream(sessionId: string): void
   /** `messagePersister.isSubscribed` */
@@ -412,7 +419,7 @@ export interface MessageOps {
   // Live — ContainerClient.
 
   /** `client.sendMessage` */
-  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
+  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
   /** `client.cancelQueuedMessage` */
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
   /** `client.interruptSession` */

@@ -1,7 +1,9 @@
-import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, markSessionSelection, selectionUnchangedSince, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
+import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
+import type { SendMessageResult } from '@shared/lib/container/types'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -2003,7 +2005,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       dashboardDispatch = parsed.data
     }
 
-    const agent = await getAgent(slug)
+    // The agent's name is all this route needs of it, and the catalog has it.
+    const agent = await getAgentRecord(slug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -2086,6 +2089,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       if (deviceId) initialMetadata.createdByDeviceId = deviceId
     }
 
+    // Slash commands from the container's init event (captured during session
+    // creation) go in the registration write rather than a second one.
+    if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+      initialMetadata.slashCommands = containerSession.slashCommands
+    }
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -2094,7 +2103,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     try {
       agentRegistry.get(slug).sessions.markActive(sessionId)
       lifecycleStarted = true
-      await actor.sessions.subscribeStream(sessionId, sessionId)
+      // The session's metadata is the registration below: nothing to read.
+      await actor.sessions.subscribeStream(sessionId, sessionId, initialMetadata)
 
       // Record author for initial message after we know the sessionId
       if (isAuthMode()) {
@@ -2115,10 +2125,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       }
       throw error
     }
-    // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
       agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
-      actor.sessions.updateMetadata(sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
 
     if (isSystemMessageText(message.trim())) {
@@ -2128,7 +2136,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         slug,
         sessionId,
         message.trim(),
-        agent.frontmatter.name
+        agent.name
       ).catch(console.error)
     }
 
@@ -2719,17 +2727,26 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const agent = await getAgent(agentSlug)
+    // The agent's name is all this route needs of it, and the catalog has it.
+    const agent = await getAgentRecord(agentSlug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
+
+    // The session's metadata, read once for the whole send: the promotion
+    // check, the stream's lifecycle, the runtime selection and the container's
+    // provider binding all work from it. Marked first, so the selection turn
+    // below can tell whether another send of this session finished since and
+    // may have stored newer values.
+    const selectionMark = markSessionSelection(agentSlug, sessionId)
+    let metadata = await actor.sessions.metadata(sessionId)
 
     // A message through this AgentUser route is human-originated. Promote any
     // hidden automation before delivery so the host and container agree that
     // a person has joined the session. This must precede sendMessage: a fast
     // turn can settle immediately, and completion notification visibility is
     // decided from the host-side promotedToInteractive marker.
-    await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
+    metadata = await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId, metadata)
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2766,7 +2783,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     if (!agentRegistry.get(agentSlug).sessions.isStreamSubscribed(sessionId)) {
-      await actor.sessions.subscribeStream(sessionId, sessionId)
+      await actor.sessions.subscribeStream(sessionId, sessionId, metadata)
     }
 
     // A transcript-only append (the voice-mode notices): the message enters
@@ -2790,7 +2807,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     return await withSessionSelection(agentSlug, sessionId, async () => {
-      const currentSelection = await actor.sessions.metadata(sessionId)
+      const currentSelection = selectionUnchangedSince(selectionMark) ? metadata : await actor.sessions.metadata(sessionId)
       // Authorize before mutating activity or persisting the user's message.
       await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, currentSelection?.llmProviderId)
       // If the session is awaiting user input (an open AskUserQuestion / secret / file
@@ -2830,26 +2847,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      try {
-        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
-      } catch (error) {
-        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
-        throw error
-      }
-      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
-      const updates: Partial<SessionMetadata> = {}
-      if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
-      if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
-      // The container client stores the resolved pair, including inherited
-      // fallback after deletion. Do not overwrite it with a stale request pair.
-      const effectiveMetadata = getSettings().llmDefault ? await actor.sessions.metadata(sessionId) : null
-      if (!wasQueued && effectiveMetadata?.model) {
-        updates.model = effectiveMetadata.model
-        updates.llmProviderId = effectiveMetadata.llmProviderId
-      } else {
-        if (runtimeOptions.model) updates.model = runtimeOptions.model
-        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
-      }
+      // What this send stores about the session besides its provider binding.
+      // Handed to the container client too: a send whose binding changed
+      // stores it before its POST, and these then go in that same write.
+      const fields: Partial<SessionMetadata> = {}
+      if (runtimeOptions.effort) fields.effort = runtimeOptions.effort
+      if (runtimeOptions.speed) fields.speed = runtimeOptions.speed
       if (isAuthMode()) {
         // Alert claim: the device that spoke last in a session is the one
         // awaiting its outcome, so visible pushes follow it. A send with no
@@ -2858,32 +2861,58 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         // covers them there). Explicit null ≠ absent: absent falls back to the
         // creation stamp in ApnsRelayChannel. Awaited via the metadata write
         // below so a fast turn can't complete ahead of its own claim.
-        updates.alertDeviceId = getRequestDeviceId(c)
+        fields.alertDeviceId = getRequestDeviceId(c)
       }
-      if (Object.keys(updates).length > 0) {
-        try {
-          const previous = await actor.sessions.updateMetadata(sessionId, updates)
-          // The composer re-sends its whole selection on every fresh turn, so
-          // option presence alone doesn't mean anything changed. Compare against
-          // the previous metadata (captured under the update's lock) — otherwise
-          // every send would make every open window refetch the session list and
-          // detail for a no-op. A failed metadata write skips the broadcast too:
-          // peers would only refetch the stale values.
-          const runtimeSelectionChanged =
-            (updates.effort !== undefined && previous?.effort !== updates.effort) ||
-            (updates.speed !== undefined && previous?.speed !== updates.speed) ||
-            (updates.model !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.model !== updates.model) ||
-            (updates.llmProviderId !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.llmProviderId !== updates.llmProviderId)
-          if (runtimeSelectionChanged) {
-            // Other windows/devices may already have seeded their composer from
-            // the previous session metadata. Tell both the local session stream
-            // and the global event stream to refresh before their next send.
-            agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
-            messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
-          }
-        } catch (error) {
-          console.error(error)
+
+      let sent: SendMessageResult
+      try {
+        sent = await actor.messages.send(sessionId, agentText, messageUuid, {
+          ...runtimeOptions,
+          ...(wasQueued ? { preserveRuntime: true } : {}),
+          sessionMetadata: currentSelection,
+          metadataUpdates: fields,
+        })
+      } catch (error) {
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
+        throw error
+      }
+      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
+      const updates: Partial<SessionMetadata> = { ...fields }
+      // The container client resolves the pair, including inherited fallback
+      // after deletion. Do not overwrite it with a stale request pair.
+      const effective = getSettings().llmDefault ? (sent.selection ?? currentSelection) : null
+      if (!wasQueued && effective?.model) {
+        updates.model = effective.model
+        updates.llmProviderId = effective.llmProviderId
+      } else {
+        if (runtimeOptions.model) updates.model = runtimeOptions.model
+        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
+      }
+
+      // What the session holds now, as far as this send knows. Only a value it
+      // does not hold yet costs a write: an unchanged send writes nothing, and
+      // nothing is left over after the client stored a changed binding.
+      const stored = sent.metadataWritten ? { ...currentSelection, ...fields, ...sent.selection } : currentSelection
+      try {
+        if (!sessionMetadataHolds(stored, updates)) await actor.sessions.updateMetadata(sessionId, updates)
+        // The composer re-sends its whole selection on every fresh turn, so
+        // option presence alone doesn't mean anything changed. Compare against
+        // the metadata the send started from — otherwise every send would make
+        // every open window refetch the session list and detail for a no-op.
+        // A failed metadata write skips the broadcast too: peers would only
+        // refetch the stale values.
+        const runtimeSelectionChanged = (['effort', 'speed', 'model', 'llmProviderId'] as const).some(
+          (key) => updates[key] !== undefined && currentSelection?.[key] !== updates[key],
+        )
+        if (runtimeSelectionChanged) {
+          // Other windows/devices may already have seeded their composer from
+          // the previous session metadata. Tell both the local session stream
+          // and the global event stream to refresh before their next send.
+          agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
+          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
         }
+      } catch (error) {
+        console.error(error)
       }
 
       return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)

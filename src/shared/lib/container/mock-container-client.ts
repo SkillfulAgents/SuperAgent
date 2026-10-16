@@ -16,6 +16,7 @@ import type {
   ContainerStats,
   CreateSessionOptions,
   SendMessageOptions,
+  SendMessageResult,
   StartOptions,
   StopOptions,
   StreamMessage,
@@ -3403,21 +3404,28 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     // Resolve like the real container client so E2E sees the concrete wire id.
     let model = resolveContainerModel(options?.model, 'agent')
+    const result: SendMessageResult = {}
     if (getSettings().llmDefault && !options?.preserveRuntime && !isQueuedSessionSend(this.config.agentId, sessionId)) {
       const { agentRegistry } = await import('../agent-actor')
       const actor = agentRegistry.get(this.config.agentId)
-      const metadata = await actor.sessions.metadata(sessionId)
-      const preferences = await actor.config.get('preferences')
+      const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
       const selected = await resolveSelectionHierarchy(
         storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
         storedSelection(metadata?.model, metadata?.llmProviderId),
-        storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
+        async () => {
+          const preferences = await actor.config.get('preferences')
+          return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)
+        },
       )
       model = selected.wireModel
-      await actor.sessions.updateMetadata(sessionId, { model: selected.model, llmProviderId: selected.llmProviderId })
+      result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
+      if (metadata?.llmProviderId !== selected.llmProviderId || metadata?.model !== selected.model) {
+        await actor.sessions.updateMetadata(sessionId, { ...options?.metadataUpdates, ...result.selection })
+        result.metadataWritten = true
+      }
     }
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
@@ -3462,7 +3470,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         message: { role: 'user', content },
         timestamp: new Date().toISOString(),
       })
-      return
+      return result
     }
 
     // Mid-turn send — mirror the real CLI's steering behavior: no user entry
@@ -3517,7 +3525,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const timers = this.queuedSteeringTimers.get(sessionId) ?? new Map()
       timers.set(steeringUuid, timer)
       this.queuedSteeringTimers.set(sessionId, timers)
-      return
+      return result
     }
 
     // Remember the uuid so the scenario's JSONL echo of this message gets it
@@ -3549,6 +3557,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
     scenario.execute(sessionId, this.scenarioView(sessionId), content)
+    return result
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
