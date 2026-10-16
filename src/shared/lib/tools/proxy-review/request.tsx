@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useEffect, useRef } from 'react'
-import { ShieldCheck, ShieldX, ChevronDown, ChevronRight, ArrowUp } from 'lucide-react'
+import { useNavigate, useRouter } from '@tanstack/react-router'
+import { ShieldCheck, ShieldX, ChevronDown, ChevronRight, ArrowUp, Settings2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
@@ -14,6 +15,14 @@ import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { Components } from 'react-markdown'
 import { Markdown } from '@renderer/components/ui/markdown'
+import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
+import { useAgentRemoteMcps } from '@renderer/hooks/use-remote-mcps'
+import {
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
+  type AgentConnectedAccountDto,
+  type AgentRemoteMcpDto,
+} from '@shared/lib/agent-connections/public'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
@@ -32,6 +41,21 @@ const TITLE_MARKDOWN: Components = {
 // read is least privileged, destructive most — used to pick the minimal group
 // whose "allow all" still satisfies this request (resolver takes most-permissive).
 const LABEL_RANK: Record<ScopeLabel, number> = { read: 0, write: 1, destructive: 2 }
+
+// The connections-page detail key for the reviewed account or MCP server, or null
+// when this viewer can't open it: another member's connection (foreign DTOs carry
+// no id) or one no longer on the agent.
+function ownedConnectionDetailKey(
+  reviewType: ProxyReviewType,
+  id: string,
+  accounts: AgentConnectedAccountDto[] | undefined,
+  mcps: AgentRemoteMcpDto[] | undefined,
+): string | null {
+  if (reviewType === 'mcp') {
+    return mcps?.some((m) => !isForeignAgentRemoteMcp(m) && m.id === id) ? `mcp-${id}` : null
+  }
+  return accounts?.some((a) => !isForeignAgentConnectedAccount(a) && a.id === id) ? `account-${id}` : null
+}
 
 interface ProxyReviewRequestItemProps {
   reviewId: string
@@ -120,6 +144,45 @@ function ScopeReviewRequestItem({
   // rule holding the next one, so only one-off decisions are offered.
   const heldByRule = heldByRequireRule(ruleOutcomes)
 
+  const navigate = useNavigate()
+  const router = useRouter()
+  const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
+  const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
+  const connectionDetailKey = ownedConnectionDetailKey(
+    resolvedReviewType,
+    accountId,
+    accountsData?.accounts,
+    mcpsData?.mcps,
+  )
+  // `source: 'home'` is required with `detail`; `from` overrides where Back goes.
+  const openConnection = connectionDetailKey
+    ? () => {
+        void navigate({
+          to: '/agents/$slug/connections',
+          params: { slug: agentSlug },
+          search: {
+            detail: connectionDetailKey,
+            source: 'home',
+            from: router.state.location.pathname + router.state.location.searchStr,
+          },
+        })
+      }
+    : null
+  // The toolkit name opens its connection page wherever the card shows it.
+  const toolkitName = (className?: string) =>
+    openConnection ? (
+      <button
+        type="button"
+        data-testid="proxy-review-connection-link"
+        onClick={openConnection}
+        className={cn(className, 'hover:underline')}
+      >
+        {toolkit}
+      </button>
+    ) : (
+      <span className={className}>{toolkit}</span>
+    )
+
   // Clean up timer on unmount
   useEffect(() => {
     return () => {
@@ -202,7 +265,7 @@ function ScopeReviewRequestItem({
         label: (
           <>
             <span className="font-medium">{requestLabel}</span>{' '}
-            <span className="text-xs text-muted-foreground capitalize">{toolkit}</span>
+            {toolkitName('text-xs text-muted-foreground capitalize')}
           </>
         ),
         statusLabel: status === 'allowed' ? 'Allowed' : 'Denied',
@@ -219,7 +282,7 @@ function ScopeReviewRequestItem({
                 {requestLabel}
               </span>
             </div>
-            <p className="mt-2 text-sm leading-5 text-foreground/80 capitalize">Via {toolkit}</p>
+            <p className="mt-2 text-sm leading-5 text-foreground/80 capitalize">Via {toolkitName()}</p>
           </>
         ),
       }
@@ -234,6 +297,18 @@ function ScopeReviewRequestItem({
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for approval"
+      headerRight={openConnection && (
+        <button
+          type="button"
+          onClick={openConnection}
+          aria-label="Edit permissions"
+          title="Edit permissions"
+          data-testid="proxy-review-permissions-btn"
+          className="inline-flex h-5 w-5 items-center justify-center rounded text-foreground transition-colors hover:bg-muted"
+        >
+          <Settings2 className="h-3.5 w-3.5" />
+        </button>
+      )}
       error={error}
       data-testid={isCompleted ? 'proxy-review-completed' : 'proxy-review-request'}
       data-review-id={reviewId}
@@ -242,9 +317,7 @@ function ScopeReviewRequestItem({
       {/* Code block showing method/path + toolkit */}
       <div className="mt-3">
         <div className="rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
-          <span className="mr-2 inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
-            {toolkit}
-          </span>
+          {toolkitName('mr-2 inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize')}
           <span className="font-mono text-xs text-foreground/85">
             {requestLabel}
           </span>
@@ -553,6 +626,27 @@ function ScopeReviewRequestItem({
                         <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
                           Allow full read/edit access to {toolkit}
                         </span>
+                      </span>
+                    </Button>
+                  </>
+                )}
+
+                {openConnection && (
+                  <>
+                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
+                    <Button
+                      data-testid="proxy-review-edit-permissions"
+                      onClick={() => {
+                        setAllowMenuOpen(false)
+                        openConnection()
+                      }}
+                      variant="ghost"
+                      size="xs"
+                      className="h-auto min-w-0 w-full justify-start gap-1.5 py-2 text-foreground hover:bg-muted"
+                    >
+                      <Settings2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>
+                        Edit <span className="capitalize">{toolkit}</span> permissions
                       </span>
                     </Button>
                   </>
