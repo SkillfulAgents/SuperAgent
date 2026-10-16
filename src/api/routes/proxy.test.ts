@@ -1211,7 +1211,7 @@ describe('proxy policy enforcement', () => {
 
   it('review → passes endpoint ambiguity and what the request sends to the review', async () => {
     setupThroughHostValidation()
-    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['read'], descriptions: {}, endpointAmbiguous: true })
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['read', 'write'], descriptions: {}, endpointAmbiguous: true })
     mockResolveApiPolicy.mockResolvedValue({
       decision: 'review',
       matchedScopes: ['read'],
@@ -1232,8 +1232,40 @@ describe('proxy policy enforcement', () => {
       expect.anything(),
       expect.anything(),
     )
+    // The matcher gets the body, to name a GraphQL operation, again when a sweep re-decides the request.
+    expect(new TextDecoder().decode(mockMatchScopes.mock.calls[0][4])).toBe(body)
+    await expect(mockRequestReview.mock.calls[0][2].reevaluate()).resolves.toBe('review')
+    expect(new TextDecoder().decode(mockMatchScopes.mock.calls[1][4])).toBe(body)
     // The body read for the card is the one forwarded.
     expect(new TextDecoder().decode(mockMakeApiCall.mock.calls[0][0].body)).toBe(body)
+  })
+
+  it('review → leaves a binary upload unread until the call is allowed', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['drive.file'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['drive.file'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const upload = new Uint8Array([0, 1, 2, 3])
+    const request = new Request('http://localhost/api/proxy/my-agent/acc-123/www.googleapis.com/upload/drive/v3/files', {
+      method: 'POST',
+      body: upload,
+      headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/octet-stream; name=data.json' },
+    })
+    let readBeforeReview: boolean | undefined
+    mockRequestReview.mockImplementation(async () => {
+      readBeforeReview = request.bodyUsed
+      return 'allow'
+    })
+
+    await app.request(request)
+    expect(readBeforeReview).toBe(false)
+    expect(mockRequestReview).toHaveBeenCalledWith(expect.objectContaining({ requestBody: undefined }), expect.anything(), expect.anything())
+    expect(new Uint8Array(mockMakeApiCall.mock.calls[0][0].body)).toEqual(upload)
   })
 
   it('review → user denies → returns 403, error: "denied_by_user"', async () => {
@@ -1407,7 +1439,7 @@ describe('proxy target path canonicalisation', () => {
     const res = await send(`gmail.googleapis.com/${path}`)
     expect(res.status).toBe(403)
     expect((await res.json()).error).toBe('blocked_by_policy')
-    expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', '/gmail/v1/users/me/messages/send', 'gmail.googleapis.com')
+    expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', '/gmail/v1/users/me/messages/send', 'gmail.googleapis.com', null)
     expect(mockMakeApiCall).not.toHaveBeenCalled()
   })
 
@@ -1440,7 +1472,7 @@ describe('proxy target path canonicalisation', () => {
       const path = `gmail/v1/users/me/messages/${ending}`
       const res = await send(`gmail.googleapis.com/${path}?q=%23`)
       expect(res.status).toBe(200)
-      expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', `/${path}`, 'gmail.googleapis.com')
+      expect(mockMatchScopes).toHaveBeenCalledWith('gmail', 'POST', `/${path}`, 'gmail.googleapis.com', null)
       expect(mockResolveApiPolicy).toHaveBeenCalledWith(
         'acc-123', expect.objectContaining({ matched: false, scopes: [] }), 'user-1', 'gmail',
       )
@@ -1465,7 +1497,7 @@ describe('proxy target path canonicalisation', () => {
     const canonicalPath = `repos/o/r/contents/${canonicalFile}`
     const res = await send(`api.github.com/${path}?ref=main`, 'GET')
     expect(res.status).toBe(200)
-    expect(mockMatchScopes).toHaveBeenCalledWith('github', 'GET', `/${canonicalPath}`, 'api.github.com')
+    expect(mockMatchScopes).toHaveBeenCalledWith('github', 'GET', `/${canonicalPath}`, 'api.github.com', null)
     expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://api.github.com/${path}?ref=main`)
     expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(canonicalPath)
   })
@@ -1503,7 +1535,7 @@ describe('proxy target path canonicalisation', () => {
     const res = await send('www.googleapis.com/calendar/v3/calendars/me%40example.com/events?maxResults=5', 'GET')
     expect(res.status).toBe(200)
     expect(mockMatchScopes).toHaveBeenCalledWith(
-      'googlecalendar', 'GET', '/calendar/v3/calendars/me@example.com/events', 'www.googleapis.com',
+      'googlecalendar', 'GET', '/calendar/v3/calendars/me@example.com/events', 'www.googleapis.com', null,
     )
     const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
     expect(targetUrl).toBe('https://www.googleapis.com/calendar/v3/calendars/me%40example.com/events?maxResults=5')
@@ -1516,7 +1548,7 @@ describe('proxy target path canonicalisation', () => {
     useAccount('gitlab')
     const res = await send('gitlab.com/api/v4/projects/group%2Fproject/issues', 'GET')
     expect(res.status).toBe(200)
-    expect(mockMatchScopes).toHaveBeenCalledWith('gitlab', 'GET', '/api/v4/projects/group%2Fproject/issues', 'gitlab.com')
+    expect(mockMatchScopes).toHaveBeenCalledWith('gitlab', 'GET', '/api/v4/projects/group%2Fproject/issues', 'gitlab.com', null)
     const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
     expect(targetUrl).toBe('https://gitlab.com/api/v4/projects/group%2Fproject/issues')
   })

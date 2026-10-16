@@ -145,6 +145,7 @@ function ScopeReviewRequestItem({
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
+  const named = !!endpointDescription
 
   // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
   // group is the smallest-blast-radius "allow all" that still lets this request
@@ -163,6 +164,9 @@ function ScopeReviewRequestItem({
   // A require rule held this request: changing the policy wouldn't stop the
   // rule holding the next one, so only one-off decisions are offered.
   const heldByRule = heldByRequireRule(ruleOutcomes)
+  // An unnamed API call's scopes union every action on its path, so allowing any of
+  // them can allow a delete. Those cards offer no label or scope allow either.
+  const policyAllows = !heldByRule && (!isApiReview || named)
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -257,7 +261,7 @@ function ScopeReviewRequestItem({
   const readOnlyConfig = readOnly
     ? {
         extraContent: (
-          <RequestDetails toolkit={toolkit} requestLabel={requestLabel} requestBody={requestBody} named={!!endpointDescription} />
+          <RequestDetails toolkit={toolkit} requestLabel={requestLabel} requestBody={requestBody} named={named} />
         ),
       }
     : false as const
@@ -276,8 +280,8 @@ function ScopeReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Code block showing method/path + toolkit, and what the request sends */}
-      <RequestDetails toolkit={toolkit} requestLabel={requestLabel} requestBody={requestBody} named={!!endpointDescription} />
+      {/* Code block showing method/path + toolkit, what the request sends, and the rules that held it */}
+      <RequestDetails toolkit={toolkit} requestLabel={requestLabel} requestBody={requestBody} named={named} />
       {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 
       {/* Action buttons */}
@@ -455,7 +459,7 @@ function ScopeReviewRequestItem({
                 </Button>
 
                 {/* Minimal risk group — smallest "allow all" that still covers this request */}
-                {!heldByRule && isApiReview && minimalLabel && (
+                {policyAllows && isApiReview && minimalLabel && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Button
@@ -488,7 +492,7 @@ function ScopeReviewRequestItem({
                 )}
 
                 {/* Per-scope "always allow" — tucked behind a disclosure */}
-                {!heldByRule && matchedScopes.length > 0 && (
+                {policyAllows && matchedScopes.length > 0 && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Collapsible

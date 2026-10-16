@@ -32,6 +32,10 @@ function mostPermissive(a: PolicyDecision, b: PolicyDecision): PolicyDecision {
   return DECISION_PRIORITY[a] >= DECISION_PRIORITY[b] ? a : b
 }
 
+function agreed(a: PolicyDecision, b: PolicyDecision): PolicyDecision {
+  return a === b ? a : 'review'
+}
+
 /**
  * Resolve the policy decision for an API proxy request.
  *
@@ -40,7 +44,9 @@ function mostPermissive(a: PolicyDecision, b: PolicyDecision): PolicyDecision {
  * 2. account label default ('*read'/'*write'/'*destructive' — by the scope's risk label)
  * 3. account-wide default ('*')
  * 4. global default (user settings)
- * Then return the most permissive decision across all matched scopes.
+ * Then return the most permissive decision across all matched scopes. When the matched
+ * endpoints disagree, the scopes union every action on the path, so a policy on one of them
+ * must not decide for the others: only a decision every scope shares stands, else review.
  *
  * `toolkit` is needed to look up each scope's risk label. It is optional so the
  * label tier is simply skipped when unknown (preserves legacy behavior).
@@ -84,7 +90,8 @@ export async function resolveApiPolicy(
     }
   }
 
-  // Resolve per-scope, then take most permissive
+  // Resolve per-scope, then fold
+  const fold = matchResult.endpointAmbiguous ? agreed : mostPermissive
   let bestDecision: PolicyDecision | null = null
   let resolvedFrom: PolicyResult['resolvedFrom'] = 'global_default'
 
@@ -114,7 +121,7 @@ export async function resolveApiPolicy(
       resolvedFrom = scopeFrom
     } else {
       const prev: PolicyDecision = bestDecision
-      bestDecision = mostPermissive(bestDecision, scopeDecision)
+      bestDecision = fold(bestDecision, scopeDecision)
       // Track the source of the winning decision
       if (bestDecision !== prev) {
         resolvedFrom = scopeFrom

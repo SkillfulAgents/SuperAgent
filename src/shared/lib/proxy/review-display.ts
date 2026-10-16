@@ -92,8 +92,9 @@ export function generateReviewDisplayText(
   const candidate = endpointDescription || (endpointAmbiguous ? undefined : Object.values(scopeDescriptions)[0])
   if (candidate) {
     if (candidate.endsWith('?')) return candidate
-    // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
-    const stripped = candidate.replace(/^allow\s+/i, '')
+    // Strip leading "allow" (case-insensitive) to avoid "Allow allow...", and the
+    // GraphQL root-field key the matcher reads (`Mutation: issueDelete - `).
+    const stripped = candidate.replace(/^allow\s+/i, '').replace(/^(Query|Mutation|Subscription): \S+ - /, '')
     return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
   }
 
@@ -112,12 +113,11 @@ export function generateReviewDisplayText(
 
 const PREVIEW_MAX_CHARS = 2000
 // Bodies past this size are shown from their start, unparsed.
-const PARSE_MAX_BYTES = 64_000
-const TEXT_BODY = /json|text\/|x-www-form-urlencoded|graphql|xml/i
+export const PARSE_MAX_BYTES = 64_000
 const GRAPHQL_KEYS = new Set(['query', 'variables', 'operationName'])
 
 /** A GraphQL request: a `query` string and nothing beyond the standard GraphQL fields. */
-function isGraphqlRequest(json: unknown): json is { query: string; variables?: unknown; operationName?: unknown } {
+export function isGraphqlRequest(json: unknown): json is { query: string; variables?: unknown; operationName?: unknown } {
   return !!json && typeof json === 'object' && !Array.isArray(json) &&
     'query' in json && typeof json.query === 'string' &&
     Object.keys(json).every((key) => GRAPHQL_KEYS.has(key))
@@ -125,13 +125,15 @@ function isGraphqlRequest(json: unknown): json is { query: string; variables?: u
 
 /**
  * The request body as the approval card shows it: a GraphQL query as written with its operation and variables,
- * other JSON pretty-printed, other text as sent. Binary and blank bodies have no preview.
+ * other JSON pretty-printed, other text as sent. The caller passes only bodies of a previewable content type.
  */
-export function requestBodyPreview(body: ArrayBuffer | null, contentType: string | undefined): string | undefined {
-  if (!body || !contentType || !TEXT_BODY.test(contentType)) return undefined
-  let text = new TextDecoder().decode(body.byteLength > PARSE_MAX_BYTES ? body.slice(0, PARSE_MAX_BYTES) : body)
+export function requestBodyPreview(body: ArrayBuffer | null): string | undefined {
+  if (!body) return undefined
+  const parsable = body.byteLength <= PARSE_MAX_BYTES
+  // A UTF-8 character is at most 4 bytes, so this prefix covers every character the preview keeps.
+  let text = new TextDecoder().decode(parsable ? body : body.slice(0, PREVIEW_MAX_CHARS * 4))
   if (!text.trim()) return undefined
-  if (body.byteLength <= PARSE_MAX_BYTES) {
+  if (parsable) {
     try {
       const json: unknown = JSON.parse(text)
       text = isGraphqlRequest(json)

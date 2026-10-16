@@ -117,6 +117,30 @@ describe('ProxyReviewRequestItem request body', () => {
     expect(screen.queryByTestId('proxy-review-body')).toBeNull()
   })
 
+  it('offers label and scope allows on an API card only when the headline names the call', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read', 'write'] })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-allow-label-read')).toBeNull()
+    expect(screen.queryByTestId('proxy-review-specific-scope-toggle')).toBeNull()
+    await user.click(screen.getByTestId('proxy-review-deny-btn-chevron'))
+    expect(await screen.findByTestId('proxy-review-deny-reason-input')).toBeInTheDocument()
+    expect(screen.getByTestId('proxy-review-always-deny-read')).toBeInTheDocument()
+    unmount()
+    renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(await screen.findByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
+    expect(screen.getByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
+  })
+
+  it('keeps per-tool policies on an MCP card, which never carries an endpoint description', async () => {
+    const user = userEvent.setup()
+    renderCard({ reviewType: 'mcp', matchedScopes: ['create_issue'] })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(await screen.findByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
+  })
+
   it('opens a folded body on click, and has nothing to open without one', async () => {
     const user = userEvent.setup()
     const { unmount } = renderCard({ requestBody: '{"to":"a@b.co"}', endpointDescription: 'Send an email' })

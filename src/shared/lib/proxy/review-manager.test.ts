@@ -109,7 +109,7 @@ describe('ReviewManager', () => {
     expect(entry.kind).toBe('proxy_review')
     if (entry.kind !== 'proxy_review') return
     expect(entry.payload.displayText).toBe('Allow POST request to Linear?')
-    expect(entry.payload).not.toHaveProperty('endpointAmbiguous')
+    expect(entry.payload).toHaveProperty('endpointAmbiguous', true)
     manager.submitDecision(entry.id, 'deny')
     await promise
   })
@@ -610,24 +610,27 @@ describe('ReviewManager', () => {
       expect(result).toBe('Allow sending message via Slack?')
     })
 
-    it('previews what a request sends: a GraphQL query with its variables, other JSON readable, nothing for binary or blank', () => {
+    it('previews what a request sends: a GraphQL query with its variables, other JSON readable, nothing for blank', () => {
       const bytes = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer
-      expect(requestBodyPreview(bytes('{"query":"mutation($id: String!) { issueDelete(id: $id) { success } }","variables":{"id":"LIN-1"}}'), 'application/json'))
+      expect(requestBodyPreview(bytes('{"query":"mutation($id: String!) { issueDelete(id: $id) { success } }","variables":{"id":"LIN-1"}}')))
         .toBe('mutation($id: String!) { issueDelete(id: $id) { success } }\n\n{\n  "id": "LIN-1"\n}')
       // A search body with a `query` field is not GraphQL: every field stays visible.
-      expect(requestBodyPreview(bytes('{"query":"x","filter":{"a":1}}'), 'Application/JSON')).toContain('"filter"')
-      expect(requestBodyPreview(bytes('channel=C1&text=hi'), 'application/x-www-form-urlencoded')).toBe('channel=C1&text=hi')
-      expect(requestBodyPreview(bytes('<Invoice/>'), 'application/xml')).toBe('<Invoice/>')
-      expect(requestBodyPreview(bytes('PNG...'), 'image/png')).toBeUndefined()
-      expect(requestBodyPreview(bytes('{"operationName":"Del","query":"mutation Del { issueDelete }"}'), 'application/json'))
+      expect(requestBodyPreview(bytes('{"query":"x","filter":{"a":1}}'))).toContain('"filter"')
+      expect(requestBodyPreview(bytes('channel=C1&text=hi'))).toBe('channel=C1&text=hi')
+      expect(requestBodyPreview(bytes('<Invoice/>'))).toBe('<Invoice/>')
+      expect(requestBodyPreview(bytes('{"operationName":"Del","query":"mutation Del { issueDelete }"}')))
         .toBe('operation: Del\n\nmutation Del { issueDelete }')
-      expect(requestBodyPreview(bytes('  \n'), 'application/json')).toBeUndefined()
-      expect(requestBodyPreview(bytes('{"query":"  "}'), 'application/json')).toBeUndefined()
+      expect(requestBodyPreview(bytes('  \n'))).toBeUndefined()
+      expect(requestBodyPreview(bytes('{"query":"  "}'))).toBeUndefined()
       // Past 64 KB the body is shown from its start, not parsed and reformatted.
       const big = `{"a":"${'x'.repeat(70_000)}"}`
-      expect(requestBodyPreview(bytes(big), 'application/json')).toBe(`${big.slice(0, 2000)}…`)
-      expect(requestBodyPreview(null, 'application/json')).toBeUndefined()
-      expect(requestBodyPreview(bytes('x'.repeat(3000)), 'text/plain')).toHaveLength(2001)
+      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 2000)}…`)
+      expect(requestBodyPreview(null)).toBeUndefined()
+      expect(requestBodyPreview(bytes('x'.repeat(3000)))).toHaveLength(2001)
+    })
+
+    it('names a GraphQL operation by its action, not its root-field key', () => {
+      expect(generateReviewDisplayText('linear', 'POST', '/graphql', {}, 'Mutation: issueDelete - Delete an issue')).toBe('Allow delete an issue?')
     })
 
     it('uses generic text when several endpoints match and disagree', () => {
