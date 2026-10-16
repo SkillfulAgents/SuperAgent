@@ -288,7 +288,7 @@ export function useAgentTemplateStatus(agentSlug: string | null) {
     templateRefreshSet.add(agentSlug)
 
     let cancelled = false
-    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, { method: 'POST' })
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh?background=1`, { method: 'POST' })
       .then(async (r) => {
         if (cancelled || !r.ok) return
         const fresh = await r.json() as ApiAgentTemplateStatus
