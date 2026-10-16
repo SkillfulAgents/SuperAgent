@@ -3,6 +3,8 @@ import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { requestBodyPreview } from '@shared/lib/proxy/review-display'
+import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
 import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -255,17 +257,18 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     return c.json({ error: 'invalid_path', message: 'The request path must not contain "." or ".." segments.' }, 400)
   }
 
-  // The body is read at most once: by rules (when one's patterns match) and
-  // by the forwarder.
+  // The body is read at most once, shared by the matcher, the card, rules and the
+  // forwarder: text bodies before matching, others only when a rule or the forward needs them.
   let bodyRead: Promise<ArrayBuffer | null> | null = null
   const readBody = () => bodyRead ??= (method === 'GET' || method === 'HEAD')
     ? Promise.resolve(null)
     : c.req.arrayBuffer()
+  const textBody = isPreviewableContentType(c.req.header('content-type')) ? await readBody() : null
 
   // 3.5 Policy enforcement
   const resolvePolicy = async () => {
     try {
-      const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost)
+      const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost, textBody)
       const userId = account.userId ?? 'local'
       return await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
     } catch (policyError) {
@@ -354,6 +357,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
         endpointDescription: policyResult.endpointDescription,
+        endpointAmbiguous: policyResult.endpointAmbiguous,
+        requestBody: requestBodyPreview(textBody),
         ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
       }, c.req.raw.signal, {
         // When an "always" decision on another card changes the policy, this

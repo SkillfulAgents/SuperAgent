@@ -47,6 +47,10 @@ interface ProxyReviewRequestItemProps {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  /** The specific call, when the lookup could name it. Without it the headline is general, so the body opens. */
+  endpointDescription?: string
+  /** What the request sends, as text. */
+  requestBody?: string
   /** Proxy rules that ran on the request and did not allow it. */
   ruleOutcomes?: ReviewRuleOutcomeView[]
   /** Present when the review asks to approve an agent's proxy rule. */
@@ -58,6 +62,44 @@ interface ProxyReviewRequestItemProps {
 }
 
 type RequestStatus = 'pending' | 'submitting' | 'allowed' | 'denied'
+
+/**
+ * The service, method and path, and what the request sends. The body starts open when the card
+ * cannot name the call: it is then the only thing that says what the call does.
+ */
+function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
+  toolkit: string
+  requestLabel: string
+  requestBody?: string
+  named: boolean
+}) {
+  return (
+    <Collapsible defaultOpen={!named} className="mt-3 rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
+      <div className="flex items-center">
+        <span className="mr-2 inline-flex h-7 shrink-0 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
+          {toolkit}
+        </span>
+        <span className="min-w-0 flex-1 break-all font-mono text-xs text-foreground/85">{requestLabel}</span>
+        {requestBody && (
+          <CollapsibleTrigger
+            data-testid="proxy-review-body-toggle"
+            aria-label="Show what the request sends"
+            className="group ml-2 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted"
+          >
+            <ChevronRight className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-90" />
+          </CollapsibleTrigger>
+        )}
+      </div>
+      {requestBody && (
+        <CollapsibleContent>
+          <pre data-testid="proxy-review-body" className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-foreground/75">
+            {requestBody}
+          </pre>
+        </CollapsibleContent>
+      )}
+    </Collapsible>
+  )
+}
 
 export function ProxyReviewRequestItem(props: ProxyReviewRequestItemProps) {
   if (props.ruleProposal) {
@@ -86,6 +128,8 @@ function ScopeReviewRequestItem({
   matchedScopes,
   scopeDescriptions,
   displayText,
+  endpointDescription,
+  requestBody,
   ruleOutcomes,
   sessionId,
   agentSlug,
@@ -101,6 +145,7 @@ function ScopeReviewRequestItem({
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
+  const named = !!endpointDescription
 
   // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
   // group is the smallest-blast-radius "allow all" that still lets this request
@@ -119,6 +164,9 @@ function ScopeReviewRequestItem({
   // A require rule held this request: changing the policy wouldn't stop the
   // rule holding the next one, so only one-off decisions are offered.
   const heldByRule = heldByRequireRule(ruleOutcomes)
+  // An unnamed API call's scopes union every action on its path, so allowing any of
+  // them can allow a delete. Those cards offer no label or scope allow either.
+  const policyAllows = !heldByRule && (!isApiReview || named)
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -213,14 +261,7 @@ function ScopeReviewRequestItem({
   const readOnlyConfig = readOnly
     ? {
         extraContent: (
-          <>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs text-foreground/85">
-                {requestLabel}
-              </span>
-            </div>
-            <p className="mt-2 text-sm leading-5 text-foreground/80 capitalize">Via {toolkit}</p>
-          </>
+          <RequestDetails toolkit={toolkit} requestLabel={requestLabel} requestBody={requestBody} named={named} />
         ),
       }
     : false as const
@@ -239,18 +280,9 @@ function ScopeReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Code block showing method/path + toolkit */}
-      <div className="mt-3">
-        <div className="rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
-          <span className="mr-2 inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
-            {toolkit}
-          </span>
-          <span className="font-mono text-xs text-foreground/85">
-            {requestLabel}
-          </span>
-        </div>
-        {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
-      </div>
+      {/* Code block showing method/path + toolkit, what the request sends, and the rules that held it */}
+      <RequestDetails toolkit={toolkit} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+      {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 
       {/* Action buttons */}
       <RequestItemActions>
@@ -427,7 +459,7 @@ function ScopeReviewRequestItem({
                 </Button>
 
                 {/* Minimal risk group — smallest "allow all" that still covers this request */}
-                {!heldByRule && isApiReview && minimalLabel && (
+                {policyAllows && isApiReview && minimalLabel && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Button
@@ -460,7 +492,7 @@ function ScopeReviewRequestItem({
                 )}
 
                 {/* Per-scope "always allow" — tucked behind a disclosure */}
-                {!heldByRule && matchedScopes.length > 0 && (
+                {policyAllows && matchedScopes.length > 0 && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Collapsible

@@ -25,6 +25,7 @@ import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
+import { matchScopes } from '../proxy/scope-matcher'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 
@@ -1500,6 +1501,7 @@ export class ProxyReviewScenario implements MockScenario {
         targetPath: this.targetPath,
         matchedScopes: this.matchedScopes,
         scopeDescriptions: this.scopeDescriptions,
+        endpointDescription: matchScopes(this.toolkit, this.method, '/' + this.targetPath).endpointDescription,
       }).then((decision) => {
         // Write JSONL and complete the session after the user decides
         client.writeJsonlEntry(sessionId, {

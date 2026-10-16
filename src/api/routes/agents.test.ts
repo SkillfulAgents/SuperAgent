@@ -7697,6 +7697,21 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
+  it('rejects a scope or label allow on an unnamed API review', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'acc-1', toolkit: 'linear', method: 'POST',
+      targetPath: '/graphql', matchedScopes: ['read', 'write'], endpointAmbiguous: true,
+    }])
+    for (const scope of ['read', '*read']) {
+      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+        decision: 'allow', scope, accountId: 'acc-1', reviewType: 'api',
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'This request can only be allowed once or for every request to this account' })
+    }
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
   it('saves to mcpToolPolicies when reviewType is mcp', async () => {
     const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
       decision: 'allow',

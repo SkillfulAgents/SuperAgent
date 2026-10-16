@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
+import { requestBodyPreview } from './review-display'
 import {
   userInputRequestManager,
   type UserInputRequestTransition,
@@ -93,6 +94,26 @@ describe('ReviewManager', () => {
     expect(result).toBe('deny')
   })
 
+  it('raises a tied review with the generic headline', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'linear',
+      method: 'POST',
+      targetPath: '/graphql',
+      matchedScopes: ['read', 'write'],
+      scopeDescriptions: { read: "Read access to the user's account" },
+      endpointAmbiguous: true,
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(entry.kind).toBe('proxy_review')
+    if (entry.kind !== 'proxy_review') return
+    expect(entry.payload.displayText).toBe('Allow POST request to Linear?')
+    expect(entry.payload).toHaveProperty('endpointAmbiguous', true)
+    manager.submitDecision(entry.id, 'deny')
+    await promise
+  })
+
   it('submitDecision returns false for unknown reviewId', () => {
     const result = manager.submitDecision('nonexistent-id', 'allow')
     expect(result).toBe(false)
@@ -107,6 +128,7 @@ describe('ReviewManager', () => {
       targetPath: '/gmail/v1/users/me/messages',
       matchedScopes: ['gmail.readonly'],
       scopeDescriptions: { 'gmail.readonly': 'Read email' },
+      requestBody: 'q=from:ada',
     })
 
     // The unified wire renders review cards from this envelope alone — it must
@@ -117,6 +139,7 @@ describe('ReviewManager', () => {
     expect(payload.toolkit).toBe('gmail')
     expect(payload.targetPath).toBe('/gmail/v1/users/me/messages')
     expect(payload.scopeDescriptions).toEqual({ 'gmail.readonly': 'Read email' })
+    expect(payload.requestBody).toBe('q=from:ada')
     expect(typeof payload.displayText).toBe('string')
     expect((payload.displayText as string).length).toBeGreaterThan(0)
 
@@ -585,6 +608,36 @@ describe('ReviewManager', () => {
     it('handles MCP tool call paths', () => {
       const result = generateReviewDisplayText('slack', 'POST', 'tools/call: send_message', {})
       expect(result).toBe('Allow sending message via Slack?')
+    })
+
+    it('previews what a request sends: a GraphQL query with its variables, other JSON readable, nothing for blank', () => {
+      const bytes = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer
+      expect(requestBodyPreview(bytes('{"query":"mutation($id: String!) { issueDelete(id: $id) { success } }","variables":{"id":"LIN-1"}}')))
+        .toBe('mutation($id: String!) { issueDelete(id: $id) { success } }\n\n{\n  "id": "LIN-1"\n}')
+      // A search body with a `query` field is not GraphQL: every field stays visible.
+      expect(requestBodyPreview(bytes('{"query":"x","filter":{"a":1}}'))).toContain('"filter"')
+      expect(requestBodyPreview(bytes('channel=C1&text=hi'))).toBe('channel=C1&text=hi')
+      expect(requestBodyPreview(bytes('<Invoice/>'))).toBe('<Invoice/>')
+      expect(requestBodyPreview(bytes('{"operationName":"Del","query":"mutation Del { issueDelete }"}')))
+        .toBe('operation: Del\n\nmutation Del { issueDelete }')
+      expect(requestBodyPreview(bytes('  \n'))).toBeUndefined()
+      expect(requestBodyPreview(bytes('{"query":"  "}'))).toBeUndefined()
+      // Past 64 KB the body is shown from its start, not parsed and reformatted.
+      const big = `{"a":"${'x'.repeat(70_000)}"}`
+      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 2000)}…`)
+      expect(requestBodyPreview(null)).toBeUndefined()
+      expect(requestBodyPreview(bytes('x'.repeat(3000)))).toHaveLength(2001)
+    })
+
+    it('names a GraphQL operation by its action, not its root-field key', () => {
+      expect(generateReviewDisplayText('linear', 'POST', '/graphql', {}, 'Mutation: issueDelete - Delete an issue')).toBe('Allow delete an issue?')
+    })
+
+    it('uses generic text when several endpoints match and disagree', () => {
+      const result = generateReviewDisplayText('linear', 'POST', '/graphql', {
+        read: "Read access to the user's account",
+      }, undefined, true)
+      expect(result).toBe('Allow POST request to Linear?')
     })
 
     it('falls back to generic text when no scope descriptions or MCP path', () => {

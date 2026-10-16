@@ -7642,6 +7642,10 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
     return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
   }
+  // An unnamed call's scopes union every action on its path: a policy on one of them can allow a delete.
+  if (body.decision === 'allow' && body.scope !== '*' && pendingReview?.endpointAmbiguous) {
+    return c.json({ error: 'This request can only be allowed once or for every request to this account' }, 400)
+  }
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }

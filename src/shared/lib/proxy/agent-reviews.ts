@@ -60,10 +60,11 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
       : {}
   const endpointDescription =
     typeof p.endpointDescription === 'string' ? p.endpointDescription : undefined
+  const endpointAmbiguous = p.endpointAmbiguous === true
   const displayText =
     typeof p.displayText === 'string' && p.displayText.length > 0
       ? p.displayText
-      : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription)
+      : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription, endpointAmbiguous)
   return {
     agentSlug: entry.scope.agentSlug ?? '',
     accountId: typeof p.accountId === 'string' ? p.accountId : '',
@@ -74,6 +75,8 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
     matchedScopes: Array.isArray(p.matchedScopes) ? (p.matchedScopes as string[]) : [],
     scopeDescriptions,
     ...(endpointDescription !== undefined ? { endpointDescription } : {}),
+    ...(endpointAmbiguous ? { endpointAmbiguous } : {}),
+    ...(typeof p.requestBody === 'string' ? { requestBody: p.requestBody } : {}),
     ...(Array.isArray(p.ruleOutcomes) && p.ruleOutcomes.length > 0
       ? { ruleOutcomes: p.ruleOutcomes as ReviewDetails['ruleOutcomes'] }
       : {}),
@@ -218,6 +221,7 @@ export class AgentReviews {
         details.targetPath,
         details.scopeDescriptions,
         details.endpointDescription,
+        details.endpointAmbiguous,
       )
 
       // Reviews are agent-scoped — no sessionId in the proxied call, so the
