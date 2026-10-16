@@ -11,6 +11,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
 import { VoiceModeComposer } from './voice-mode-composer'
+import { useVoiceModeHost } from './voice-mode-host'
 import { AnimatedHeight } from './animated-height'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
@@ -18,16 +19,10 @@ import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import type { PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { useAgent } from '@renderer/hooks/use-agents'
-import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
-import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
-import { useHoldSound } from '@renderer/hooks/use-hold-sound'
-import { useUserMusicPreference, useUserMusicSession, userMusicSupported } from '@renderer/hooks/use-user-music'
-import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
-import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
+import { VoiceModeControls } from './voice-mode-controls'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
-import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
-import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
-import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
+import { clearVoiceModeRequest, isAnyVoiceModeActive, isVoiceModeRequested } from '@renderer/lib/voice-mode-handoff'
+import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
 import { ComposerActionButton } from './composer-action-button'
@@ -79,19 +74,7 @@ interface MessageInputProps {
   inputRequests?: readonly VoiceInputRequest[]
 }
 
-/**
- * Whether Space is voice mode's to take: nothing else has handled it, and
- * focus is on the page itself or on the voice composer outside its controls.
- * Anywhere else (the message list, a drawer row, the live browser) Space
- * keeps its own meaning rather than interrupting the agent.
- */
-function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): boolean {
-  if (event.defaultPrevented) return false
-  const target = event.target
-  if (target === document.body) return true
-  if (!(target instanceof Element) || !frame?.contains(target)) return false
-  return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
-}
+const NO_INPUT_REQUESTS: readonly VoiceInputRequest[] = []
 
 export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
   useRenderTracker('MessageInput')
@@ -380,40 +363,23 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
 
   const isDisabled = isSending || composer.isUploading || isOffline || !isRuntimeReady
 
-  // Voice mode. A session opened from the home page's voice button arrives
-  // with the request already made (and the entry notice already sent as its
-  // first message); otherwise it starts here, with the notice appended for
-  // the agent to read with the next utterance.
-  const [openedByVoice] = useState(() => !!sessionId && isVoiceModeRequested(sessionId))
-  const [voiceModeOn, setVoiceModeOn] = useState(openedByVoice)
+  // Voice mode runs in the app-level host, so it carries on when this
+  // session is left. A session opened from the home page's voice button
+  // arrives with the request already made (its first message already is the
+  // entry notice).
+  const voiceHost = useVoiceModeHost()
+  const { start: startVoiceMode, exit: exitVoiceMode, registerView: registerVoiceView, voice } = voiceHost
+  const voiceModeOn = !!sessionId && voiceHost.session?.sessionId === sessionId
+  // Another session's conversation holds the microphone: no dictation here meanwhile.
+  const otherVoiceModeOn = !!voiceHost.session && !voiceModeOn
   useEffect(() => {
     if (!sessionId) return
-    if (isVoiceModeRequested(sessionId)) setVoiceModeOn(true)
+    if (isVoiceModeRequested(sessionId)) startVoiceMode({ sessionId, agentSlug, openedByVoice: true })
     clearVoiceModeRequest(sessionId)
-  }, [sessionId])
-  // The rest of the session view draws around the mic (activity card, hints).
-  useEffect(() => {
-    if (!sessionId) return
-    setVoiceModeActive(sessionId, voiceModeOn)
-    return () => setVoiceModeActive(sessionId, false)
-  }, [sessionId, voiceModeOn])
-  // Its own mutation: the composer treats a pending send as "busy", and an
-  // utterance spoken while the entry notice is still in flight must not be
-  // dropped for it.
-  // A notice that fails (the session was deleted, the app is offline as
-  // the person leaves) is not worth a toast: the agent misses a hint.
-  const sendNotice = useSendMessage({ quiet: true })
-  const sendNoticeRef = useRef<(content: string) => void>(() => {})
-  sendNoticeRef.current = (content: string) => {
-    if (!sessionId) return
-    sendNotice.mutate(
-      { sessionId, agentSlug, content, shouldQuery: false },
-      { onError: (err) => console.warn('Voice-mode notice not delivered:', err) },
-    )
-  }
+  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   const enterVoiceMode = useCallback(() => {
-    // Audio output is unlocked inside the click, for the first reply to use.
     if (isDisabled) return
+    // Audio output is unlocked inside the click, for the first reply to use.
     readAloud.unlockAudio()
     if (!sessionId) {
       void createFirstTurn(VOICE_MODE_ENTERED_MESSAGE, true).then(() => {
@@ -425,98 +391,31 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       })
       return
     }
-    setVoiceModeOn(true)
-    sendNoticeRef.current(VOICE_MODE_ENTERED_MESSAGE)
+    startVoiceMode({ sessionId, agentSlug, openedByVoice: false })
     track('voice_mode_entered', { origin: 'session' })
-  }, [track, isDisabled, sessionId, createFirstTurn])
-  const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
-  useEffect(() => {
-    if (sessionId) return registerVoiceModeExit(sessionId, exitVoiceMode)
-  }, [sessionId, exitVoiceMode])
-  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const trackRef = useRef(track)
-  trackRef.current = track
-  // Leaving voice mode — by the exit button or by navigating away from the
-  // session — tells the agent. Deferred a tick so a development-mode
-  // remount does not send it for a mode that is still on.
-  useEffect(() => {
-    if (!voiceModeOn) return
-    return () => {
-      const timer = setTimeout(() => {
-        sendNoticeRef.current(VOICE_MODE_EXITED_MESSAGE)
-        trackRef.current('voice_mode_exited', { origin: openedByVoice ? 'home' : 'session' })
-      }, 0)
-      exitTimerRef.current = timer
-    }
-  }, [voiceModeOn, openedByVoice])
-  useEffect(() => {
-    if (!voiceModeOn || exitTimerRef.current === null) return
-    clearTimeout(exitTimerRef.current)
-    exitTimerRef.current = null
-  }, [voiceModeOn])
+  }, [track, isDisabled, sessionId, agentSlug, createFirstTurn, startVoiceMode])
+  // What is said goes through this composer while it is on screen, for the
+  // optimistic copy and the selected model.
   const { submitMessage } = composer
-  // Transport bound only; the host trims to the voice model's token budget.
-  const voiceHistory = useMemo(() => boundVoiceHistoryTransport((messages ?? []).flatMap((message) =>
-      (message.type === 'user' || message.type === 'assistant') && message.content.text.trim()
-        ? [{ role: message.type, content: message.content.text }]
-        : [],
-    )), [messages])
-  const voice = useVoiceMode({
-    sessionId,
-    agentSlug,
-    active: voiceModeOn && !isViewOnly,
-    paused: suspended,
-    inputRequests,
-    send: (text) => {
-      voiceSendRef.current = true
-      return submitMessage(text).finally(() => { voiceSendRef.current = false })
-    },
-    startWithAgentTurn: openedByVoice,
-    history: voiceHistory,
-  })
-  // Keys while voice mode is on: Space interrupts the agent (the orb's own
-  // action while it has the floor), ⌘⇧M (Ctrl⇧M) mutes the microphone and
-  // ⌘⇧A (Ctrl⇧A) the agent's voice. Read from the latest render so the
-  // listener is bound once per voice session.
-  const voiceRef = useRef(voice)
-  voiceRef.current = voice
+  const voiceSubmitRef = useRef<((text: string) => Promise<boolean>) | undefined>(undefined)
+  voiceSubmitRef.current = (text) => {
+    voiceSendRef.current = true
+    return submitMessage(text).finally(() => { voiceSendRef.current = false })
+  }
   const voiceFrameRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!voiceModeOn || isViewOnly) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === ' ' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
-        if (!spaceInterruptsVoice(event, voiceFrameRef.current)) return
-        if (voiceRef.current.phase === 'listening') return
-        voiceRef.current.pressMic()
-        event.preventDefault()
-        return
-      }
-      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return
-      const key = event.key.toLowerCase()
-      if (key === 'm') voiceRef.current.setMicMuted(!voiceRef.current.micMuted)
-      else if (key === 'a') voiceRef.current.setOutputMuted(!voiceRef.current.outputMuted)
-      else return
-      event.preventDefault()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [voiceModeOn, isViewOnly])
-  // Something to hear while the agent works, unless the person muted it:
-  // their own music if it was playing when voice mode came on, else the loop.
-  // The takeover lasts the whole voice session: a muted hold sound or a
-  // request card keeps the music paused, and leaving voice mode gives it back.
-  const holdSoundWanted = useHoldSoundPreference()
-  const userMusicWanted = useUserMusicPreference()
-  const music = useUserMusicSession(voiceModeOn && !isViewOnly && userMusicWanted && userMusicSupported())
-  useHoldSound({
-    enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
-    agentTurn: voice.hold.allowed,
-    delayMs: voice.hold.delayMs,
-    speaking: voice.speechActive ?? voice.phase === 'speaking',
-    working: voice.working,
-    source: music.active ? userMusic : holdSound,
-  })
-
+    return registerVoiceView({
+      kind: 'composer',
+      suspended,
+      inputRequests: inputRequests ?? NO_INPUT_REQUESTS,
+      frameRef: voiceFrameRef,
+      submitRef: voiceSubmitRef,
+    })
+  }, [voiceModeOn, isViewOnly, suspended, inputRequests, registerVoiceView])
+  // Whatever is being read stops with the session view, unless voice mode
+  // is talking through the same reader.
+  useEffect(() => () => { if (!isAnyVoiceModeActive()) readAloud.stop() }, [])
 
   if (isViewOnly) {
     return null
@@ -666,7 +565,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
             <VoiceInputButton
               voiceInput={composer.voiceInput}
               message={composer.message}
-              disabled={isDisabled}
+              disabled={isDisabled || otherVoiceModeOn}
             />
             {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
             <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />

@@ -199,7 +199,7 @@ export function VoiceModeComposer({
 const MIC_SIZE = 152
 
 /** Which of the orb's designed states the composer's phase is. */
-function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolean): DotOrbState {
+export function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolean): DotOrbState {
   if (!ready) return 'boot'
   if (phase === 'speaking') return 'agent'
   if (phase === 'thinking') return 'thinking'

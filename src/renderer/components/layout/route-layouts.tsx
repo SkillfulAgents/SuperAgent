@@ -24,6 +24,8 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
+import { VoiceModeHost } from '@renderer/components/messages/voice-mode-host'
+import { VoiceModeOrb } from '@renderer/components/messages/voice-mode-orb'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 import { homeSearchSchema } from '@renderer/router/search-schemas'
 import { lenient } from '@renderer/router/zod-search'
@@ -143,6 +145,7 @@ export function RootLayout() {
       <ModelAvailabilityActionProvider>
         <UpdateStatusProvider>
           <OnboardingProvider>
+            <VoiceModeHost>
             {/* Real-time + native-nav handlers live HERE (root, above the
                 shell⇄settings switch) so they stay mounted while /settings is open.
                 The /settings route replaces the whole shell, so handlers mounted
@@ -177,6 +180,10 @@ export function RootLayout() {
             ) : (
               <Outlet />
             )}
+            {/* The voice conversation outlives the session it started in, so its
+                host sits above the shell⇄settings switch too. */}
+            <VoiceModeOrb />
+            </VoiceModeHost>
           </OnboardingProvider>
         </UpdateStatusProvider>
       </ModelAvailabilityActionProvider>

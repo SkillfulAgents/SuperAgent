@@ -6,14 +6,21 @@ import { MessageInput } from './message-input'
 import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
-import { renderWithProviders } from '@renderer/test/test-utils'
+import { renderWithProviders as renderWithAppProviders } from '@renderer/test/test-utils'
+import { VoiceModeHost } from './voice-mode-host'
 import { useDraft } from '@renderer/context/drafts-context'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
+
+// The voice host lives above the routes in the app, so it wraps every render here.
+function renderWithProviders(ui: ReactElement) {
+  const result = renderWithAppProviders(<VoiceModeHost>{ui}</VoiceModeHost>)
+  return { ...result, rerender: (next: ReactElement) => result.rerender(<VoiceModeHost>{next}</VoiceModeHost>) }
+}
 
 const mockCreateSession = { mutateAsync: vi.fn(), isPending: false, error: null }
 let mockSessions: Array<{ id: string }> = []
@@ -588,6 +595,52 @@ describe('MessageInput', () => {
       await waitFor(() =>
         expect(mockSendMessage.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
       )
+    })
+
+    it('keeps talking to the session it started in after another session opens', async () => {
+      mockCanUseVoiceMode = true
+      const onMessageSent = vi.fn()
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      rerender(<MessageInput sessionId="s-2" agentSlug="agent-1" onMessageSent={onMessageSent} />)
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 's-1', active: true }))
+      // No exit notice: the conversation is still on.
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('message-input')).toBeInTheDocument()
+
+      // What is said now goes to s-1 directly, not through the s-2 composer.
+      const { send } = mockUseVoiceMode.mock.calls.at(-1)?.[0] as { send(text: string): Promise<boolean> }
+      await act(async () => { await send('Check my calendar') })
+      expect(mockSendMessage.mutateAsync).toHaveBeenLastCalledWith({ sessionId: 's-1', agentSlug: 'agent-1', content: 'Check my calendar' })
+      expect(onMessageSent).not.toHaveBeenCalled()
+
+      // Back in s-1, its composer shows the conversation again.
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} />)
+      expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
+      await userEvent.click(screen.getByTestId('voice-mode-exit'))
+      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+    })
+
+    it('ends the other session\'s voice mode when it starts in this one', async () => {
+      mockCanUseVoiceMode = true
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      rerender(<MessageInput sessionId="s-2" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+
+      expect(mockSendMessage.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's-2', content: VOICE_MODE_ENTERED_MESSAGE }), expect.anything(),
+      )
+      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's-1', content: VOICE_MODE_EXITED_MESSAGE }), expect.anything(),
+      ))
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 's-2', active: true }))
+
+      await userEvent.click(screen.getByTestId('voice-mode-exit'))
+      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(4))
     })
   })
 

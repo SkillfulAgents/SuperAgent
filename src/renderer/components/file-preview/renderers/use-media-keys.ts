@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
-import { isAnyVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { voiceModeTakesSpace } from '@renderer/lib/voice-mode-handoff'
 
 /** YouTube's playback speeds. */
 export const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
@@ -85,10 +85,11 @@ export function useMediaKeys(mediaRef: RefObject<HTMLMediaElement | null>, optio
       const { frameStep } = latest.current
       // C and M belong to the comment box.
       if (!media || !action || action.type === 'comment') return
-      // While voice mode is on, Space belongs to the player only when focus is
-      // inside it; elsewhere it interrupts the agent. K still plays and pauses.
+      // While voice mode's composer is on screen, Space belongs to the player
+      // only when focus is inside it; elsewhere it interrupts the agent. K
+      // still plays and pauses.
       const inPlayer = event.target instanceof Node && media.closest('[data-media-player]')?.contains(event.target)
-      if (event.key === ' ' && !inPlayer && isAnyVoiceModeActive()) return
+      if (event.key === ' ' && !inPlayer && voiceModeTakesSpace()) return
       event.preventDefault()
       // Holding the play key toggles once.
       if (event.repeat && action.type === 'toggle') return
