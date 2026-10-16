@@ -3,7 +3,7 @@ import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
 import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { IntegrationList, IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
-import { Folder, Globe, Lock, Plus, Trash2 } from 'lucide-react'
+import { Folder, Globe, Lock, Plus, X } from 'lucide-react'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 import { Button } from '@renderer/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
@@ -45,7 +45,7 @@ export function VolumesTab() {
       setDeleting(null)
       if (selectedId === deleting.id) backToList()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete drive')
+      setError(err instanceof Error ? err.message : 'Could not remove drive')
     }
   }
 
@@ -82,9 +82,9 @@ export function VolumesTab() {
               onActivate={() => openVolume(volume.id)}
               ariaLabel={`Open ${volume.name} drive settings`}
               right={<>
-                {volume.canManage && <Button variant="ghost" size="icon" aria-label={`Delete ${volume.name}`} disabled={volume.attachmentCount > 0}
-                  title={volume.attachmentCount > 0 ? 'Remove from all agents before deleting' : 'Delete saved drive'}
-                  onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><Trash2 className="h-4 w-4" /></Button>}
+                {volume.canManage && <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${volume.name}`} disabled={volume.attachmentCount > 0}
+                  title={volume.attachmentCount > 0 ? 'Remove from all agents first' : 'Remove drive'}
+                  onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><X className="h-4 w-4" /></Button>}
                 <RowHoverChevron />
               </>}
             />
@@ -99,14 +99,14 @@ export function VolumesTab() {
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete saved drive?</AlertDialogTitle>
+            <AlertDialogTitle>Remove drive?</AlertDialogTitle>
             <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved drives. The source folder and its files will remain unchanged.</AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction disabled={remove.isPending} onClick={event => { event.preventDefault(); void deleteVolume() }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{remove.isPending ? 'Deleting…' : 'Delete drive'}</AlertDialogAction>
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{remove.isPending ? 'Removing…' : 'Remove drive'}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
