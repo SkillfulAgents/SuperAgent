@@ -53,7 +53,8 @@ function declaresScope(toolkit: string, scope: string): boolean {
  *
  * When the toolkit's own map has no entry, each provider in its
  * `scopeFallbacks` is tried, but only if that provider's `apiHost` is the
- * request's `targetHost`. Borrowed scopes are returned as `<provider>:<scope>`
+ * request's `targetHost` (compared without case, as the proxy accepts any
+ * case). Borrowed scopes are returned as `<provider>:<scope>`
  * so a policy on the toolkit's own scope of the same name never covers them;
  * their risk label is the fallback provider's (see getScopeLabel).
  */
@@ -70,7 +71,7 @@ export function matchScopes(
   if (!targetHost) return empty
 
   for (const fallback of SCOPE_MAPS[toolkit]?.scopeFallbacks ?? []) {
-    if (SCOPE_MAPS[fallback]?.apiHost !== targetHost) continue
+    if (SCOPE_MAPS[fallback]?.apiHost !== targetHost.toLowerCase()) continue
     const borrowed = matchProvider(fallback, method, targetPath)
     if (!borrowed) continue
     const scopes = borrowed.scopes.map((s) => `${fallback}:${s}`)

@@ -299,6 +299,11 @@ describe('scope fallbacks', () => {
     expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'evil.example.com').matched).toBe(false)
   })
 
+  it('matches the fallback provider host in any case', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'WWW.GoogleApis.com').scopes)
+      .toContain('googledrive:drive.readonly')
+  })
+
   it('does not fall back without a target host', () => {
     expect(matchScopes('gmail', 'GET', DRIVE_FILE).matched).toBe(false)
   })

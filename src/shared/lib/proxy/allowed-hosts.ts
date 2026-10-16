@@ -135,32 +135,35 @@ export function matchesHostPatterns(host: string, patterns: string[]): boolean {
   })
 }
 
-// Dot-separated labels of lowercase letters, digits and hyphens: no userinfo,
-// port, brackets, percent-escapes, whitespace, `#`, `?`, `\`, uppercase, or
-// trailing dot.
-const BARE_HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/
+// Dot-separated labels of ASCII letters, digits and hyphens: no userinfo, port,
+// brackets, percent-escapes, whitespace, `#`, `?`, `\`, or trailing dot. Without
+// the `u` flag, `i` never folds a non-ASCII character onto an ASCII letter.
+const BARE_HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/i
 
 /**
- * Whether `https://<host>/` names exactly `host`. Callers match the host
- * string against the allowlist and then request `https://<host>/<path>`, so a
- * string the URL parser would read as some other host must not pass.
+ * The lowercase hostname `https://<host>/` names, when that is exactly `host`
+ * up to case; otherwise null. Callers match the host string against the
+ * allowlist and then request `https://<host>/<path>`, so a string the URL
+ * parser would read as some other host must not pass.
  */
-function isBareHostname(host: string): boolean {
-  if (!BARE_HOSTNAME.test(host)) return false
+function bareHostname(host: string): string | null {
+  if (!BARE_HOSTNAME.test(host)) return null
+  const lower = host.toLowerCase()
   try {
-    return new URL(`https://${host}/`).hostname === host
+    return new URL(`https://${host}/`).hostname === lower ? lower : null
   } catch {
-    return false
+    return null
   }
 }
 
 /**
- * Whether the toolkit may be called at `host`. Only a bare, canonical hostname
- * qualifies, so the host checked here is the host a request to
- * `https://<host>/…` reaches.
+ * Whether the toolkit may be called at `host`. Only a bare hostname qualifies
+ * (in any case, as DNS ignores it), so the host checked here is the host a
+ * request to `https://<host>/…` reaches.
  */
 export function isHostAllowed(toolkit: string, host: string): boolean {
   const allowed = TOOLKIT_ALLOWED_HOSTS[toolkit]
   if (!allowed) return false
-  return isBareHostname(host) && matchesHostPatterns(host, allowed)
+  const hostname = bareHostname(host)
+  return hostname !== null && matchesHostPatterns(hostname, allowed)
 }

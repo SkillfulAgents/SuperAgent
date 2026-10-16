@@ -758,6 +758,7 @@ describe('proxy route', () => {
       'evil.com%23%40acme.atlassian.net',
       'evil.com%09.atlassian.net',
       'evil.com%2523.atlassian.net',
+      'Evil.com%23.Atlassian.net',
     ])('rejects %s before policy or forwarding', async (host) => {
       setupSuccessPath({ toolkit: 'jira' })
       await useRealAllowlist()
@@ -777,18 +778,22 @@ describe('proxy route', () => {
       expect(entry.errorMessage).toContain('not allowed')
     })
 
-    it('forwards a real subdomain to that host', async () => {
-      setupSuccessPath({ toolkit: 'jira' })
+    it.each([
+      ['jira', 'acme.atlassian.net', 'acme.atlassian.net'],
+      ['jira', 'Acme.atlassian.net', 'acme.atlassian.net'],
+      ['github', 'API.GitHub.com', 'api.github.com'],
+    ])('forwards %s at %s to %s', async (toolkit, host, expectedHost) => {
+      setupSuccessPath({ toolkit })
       await useRealAllowlist()
 
       const res = await makeRequest(
-        '/api/proxy/my-agent/acc-123/acme.atlassian.net/rest/api/3/myself',
+        `/api/proxy/my-agent/acc-123/${host}/rest/api/3/myself`,
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
       expect(res.status).toBe(200)
       const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
-      expect(targetUrl).toBe('https://acme.atlassian.net/rest/api/3/myself')
+      expect(new URL(targetUrl).hostname).toBe(expectedHost)
     })
   })
 

@@ -175,9 +175,20 @@ describe('isHostAllowed', () => {
       expect(isHostAllowed('jira', 'acme.atlassian.net:8443')).toBe(false)
     })
 
-    it('accepts only the canonical form: lowercase, no trailing dot', () => {
-      expect(isHostAllowed('jira', 'ACME.atlassian.net')).toBe(false)
-      expect(isHostAllowed('github', 'API.GITHUB.COM')).toBe(false)
+    it('ignores case, as DNS does', () => {
+      expect(isHostAllowed('jira', 'Acme.atlassian.net')).toBe(true)
+      expect(isHostAllowed('jira', 'ACME.ATLASSIAN.NET')).toBe(true)
+      expect(isHostAllowed('github', 'API.GitHub.com')).toBe(true)
+      expect(isHostAllowed('github', 'Evil-GitHub.com')).toBe(false)
+      expect(isHostAllowed('jira', 'EVIL.COM#.ATLASSIAN.NET')).toBe(false)
+    })
+
+    it('rejects a non-ASCII letter that lowercases to an ASCII one', () => {
+      // U+212A KELVIN SIGN lowercases to `k`.
+      expect(isHostAllowed('jira', 'Kacme.atlassian.net')).toBe(false)
+    })
+
+    it('rejects a trailing dot', () => {
       expect(isHostAllowed('jira', 'acme.atlassian.net.')).toBe(false)
     })
 
