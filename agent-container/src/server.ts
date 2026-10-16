@@ -49,8 +49,8 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
-import { VP8_STREAM_CODEC, type BrowserTabInfo, type BrowserTabListMessage } from './browser-stream-protocol';
-import { Vp8ScreencastEncoder } from './screencast-encoder';
+import { H264_STREAM_CODEC, parseBrowserStreamScale, type BrowserStreamScale, type BrowserTabInfo, type BrowserTabListMessage } from './browser-stream-protocol';
+import { H264ScreencastEncoder } from './screencast-encoder';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -2255,9 +2255,11 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
       return;
     }
 
-    const wantsVp8 = url.searchParams.get('codec') === VP8_STREAM_CODEC;
+    const wantsH264 = url.searchParams.get('codec') === H264_STREAM_CODEC;
+    const scale = parseBrowserStreamScale(url.searchParams.get('scale'));
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      if (wantsVp8) vp8Viewers.add(ws);
+      if (wantsH264) h264Viewers.add(ws);
+      viewerScales.set(ws, scale);
       handleBrowserStreamConnection(ws);
     });
     return;
@@ -2459,16 +2461,37 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
-  /** Set when the viewer asked for VP8; frames go through it instead of out as JPEGs. */
-  encoder: Vp8ScreencastEncoder | null;
+  /** Set when the viewer asked for H.264; frames go through it instead of out as JPEGs. */
+  encoder: H264ScreencastEncoder | null;
+  /** Device pixel ratio the viewer asked for; the page renders at it while streamed. */
+  scale: BrowserStreamScale;
 } | null = null;
 
-/** Viewers that opened the stream with `?codec=vp8`. */
-const vp8Viewers = new WeakSet<WebSocket>();
+/** Viewers that opened the stream with `?codec=h264`. */
+const h264Viewers = new WeakSet<WebSocket>();
+const viewerScales = new WeakMap<WebSocket, BrowserStreamScale>();
+const H264_BITRATE_BY_SCALE: Record<BrowserStreamScale, string> = { 1: '4M', 1.5: '8M', 2: '12M' };
 
 function screencastParams(state: NonNullable<typeof cdpScreencast>): Record<string, unknown> {
-  // VP8 re-encodes these frames inside the container, so a cleaner source is nearly free.
-  return { format: 'jpeg', quality: state.encoder ? 90 : 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 };
+  return {
+    format: 'jpeg',
+    // H.264 re-encodes these frames inside the container, so a cleaner source is nearly free.
+    quality: state.encoder ? 90 : 80,
+    maxWidth: Math.round(1280 * state.scale),
+    maxHeight: Math.round(720 * state.scale),
+    everyNthFrame: 1,
+  };
+}
+
+/** Start the screencast, first rendering the page at the viewer's pixel ratio when it asked for one. */
+function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
+  if (state.scale !== 1) {
+    // width/height 0 keep the window's own size; Chrome drops the override when this connection closes.
+    state.cdpWs.send(cdpMsg(state, 'Emulation.setDeviceMetricsOverride', {
+      width: 0, height: 0, deviceScaleFactor: state.scale, mobile: false,
+    }));
+  }
+  state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', screencastParams(state)));
 }
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -2817,10 +2840,11 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
     lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
     autoFollow: prevAutoFollow, pendingSelections: new Set(),
-    encoder: vp8Viewers.has(clientWs)
-      ? new Vp8ScreencastEncoder((message) => {
+    scale: viewerScales.get(clientWs) ?? 1,
+    encoder: h264Viewers.has(clientWs)
+      ? new H264ScreencastEncoder((message) => {
         if (cdpScreencast === state && clientWs.readyState === WebSocket.OPEN) clientWs.send(message);
-      })
+      }, H264_BITRATE_BY_SCALE[viewerScales.get(clientWs) ?? 1])
       : null,
     navigation: createBrowserNavigation({
       targetId,
@@ -2849,7 +2873,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      cdpWs.send(cdpMsg(state, 'Page.startScreencast', screencastParams(state)));
+      startScreencast(state);
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
       // Discover the main frame ID so we only forward loading events for the
@@ -2868,7 +2892,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
         state.cdpSessionId = msg.result.sessionId;
-        cdpWs.send(cdpMsg(state, 'Page.startScreencast', screencastParams(state)));
+        startScreencast(state);
         // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
         cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
@@ -2888,8 +2912,6 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
           if (meta && (meta.deviceWidth !== state.lastDeviceWidth || meta.deviceHeight !== state.lastDeviceHeight)) {
             state.lastDeviceWidth = meta.deviceWidth;
             state.lastDeviceHeight = meta.deviceHeight;
-            // libvpx can't change size mid-stream; start a new one at the new size.
-            state.encoder?.reset();
             clientWs.send(JSON.stringify({
               type: 'metadata',
               deviceWidth: meta.deviceWidth,

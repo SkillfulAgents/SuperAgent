@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
 import {
-  VP8_FRAME_HEADER_BYTES,
-  VP8_STREAM_CODEC,
-  isVp8FrameMessage,
-  isVp8KeyFrameMessage,
+  BROWSER_STREAM_SCALES,
+  parseBrowserStreamScale,
+  H264_FRAME_HEADER_BYTES,
+  H264_STREAM_CODEC,
+  isH264FrameMessage,
+  isH264KeyFrameMessage,
   type BrowserKeyframeRequest,
+  type BrowserStreamScale,
   type BrowserTabInfo,
   type BrowserNavigateAction,
 } from '@shared/lib/browser-stream-protocol'
@@ -23,6 +26,26 @@ export type NavigateAction = BrowserNavigateAction
 const RECONNECT_BASE_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 8000
 const MAX_FAILED_RECONNECTS = 5
+
+const STREAM_SCALE_STORAGE_KEY = 'superagent-browser-stream-scale'
+
+// Chromium builds without proprietary codecs (e.g. Playwright's) have VideoDecoder but no H.264.
+let h264Support: Promise<boolean> | null = null
+function probeH264Support(): Promise<boolean> {
+  h264Support ??= VideoDecoder.isConfigSupported({ codec: 'avc1.42E033' })
+    .then((result) => result.supported === true, () => false)
+  return h264Support
+}
+
+/** `avc1.PPCCLL` (profile, constraint flags, level) from the SPS that every keyframe carries. */
+function h264CodecString(frame: Uint8Array): string | null {
+  for (let i = 0; i + 6 < frame.length; i++) {
+    if (frame[i] === 0 && frame[i + 1] === 0 && frame[i + 2] === 1 && (frame[i + 3] & 0x1f) === 7) {
+      return `avc1.${[frame[i + 4], frame[i + 5], frame[i + 6]].map((b) => b.toString(16).padStart(2, '0')).join('')}`
+    }
+  }
+  return null
+}
 
 interface UseBrowserStreamOptions {
   agentSlug: string
@@ -50,6 +73,26 @@ export function useBrowserStream({
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [aspectRatio, setAspectRatio] = useState('16 / 9')
+  const [streamScale, setStreamScale] = useState<BrowserStreamScale>(
+    () => parseBrowserStreamScale(localStorage.getItem(STREAM_SCALE_STORAGE_KEY)),
+  )
+  const cycleStreamScale = useCallback(() => {
+    setStreamScale((current) => {
+      const next = BROWSER_STREAM_SCALES[(BROWSER_STREAM_SCALES.indexOf(current) + 1) % BROWSER_STREAM_SCALES.length]
+      localStorage.setItem(STREAM_SCALE_STORAGE_KEY, String(next))
+      return next
+    })
+  }, [])
+  // null while the H.264 probe runs; the stream connects once it is known.
+  const [canDecodeH264, setCanDecodeH264] = useState<boolean | null>(
+    () => (typeof VideoDecoder === 'undefined' ? false : null),
+  )
+  useEffect(() => {
+    if (canDecodeH264 !== null) return
+    let cancelled = false
+    probeH264Support().then((supported) => { if (!cancelled) setCanDecodeH264(supported) })
+    return () => { cancelled = true }
+  }, [canDecodeH264])
   const [overlayDismissedForId, setOverlayDismissedForId] = useState<string | null>(null)
 
   // Multi-tab state
@@ -123,34 +166,44 @@ export function useBrowserStream({
     ctx.drawImage(image, 0, 0)
   }, [canvasRef])
 
-  // --- VP8 frames (when the container encodes video) ---
+  // --- H.264 frames (when the container encodes video) ---
   const decoderRef = useRef<VideoDecoder | null>(null)
-  const vp8TimestampRef = useRef(0)
+  const h264TimestampRef = useRef(0)
 
-  const decodeVp8 = useCallback((bytes: Uint8Array, requestKeyframe: () => void) => {
-    const keyFrame = isVp8KeyFrameMessage(bytes)
+  const decoderCodecRef = useRef<string | null>(null)
+
+  const decodeH264 = useCallback((bytes: Uint8Array, requestKeyframe: () => void) => {
+    const keyFrame = isH264KeyFrameMessage(bytes)
+    const data = bytes.subarray(H264_FRAME_HEADER_BYTES)
     let decoder = decoderRef.current
-    if (!decoder || decoder.state === 'closed') {
-      // A delta frame can't start a stream; the next keyframe will.
-      if (!keyFrame) return
-      decoder = new VideoDecoder({
-        output: (frame) => {
-          // Every frame must still be decoded during a window resize; only painting is skipped.
-          if (!isResizingWindowRef.current) paint(frame, frame.displayWidth, frame.displayHeight)
-          frame.close()
-        },
-        error: () => {
-          decoderRef.current = null
-          requestKeyframe()
-        },
-      })
-      decoder.configure({ codec: 'vp8', optimizeForLatency: true })
-      decoderRef.current = decoder
+    if (keyFrame) {
+      const codec = h264CodecString(data)
+      if (codec && (!decoder || decoder.state === 'closed' || decoderCodecRef.current !== codec)) {
+        if (!decoder || decoder.state === 'closed') {
+          decoder = new VideoDecoder({
+            output: (frame) => {
+              // Every frame must still be decoded during a window resize; only painting is skipped.
+              if (!isResizingWindowRef.current) paint(frame, frame.displayWidth, frame.displayHeight)
+              frame.close()
+            },
+            error: () => {
+              decoderRef.current = null
+              requestKeyframe()
+            },
+          })
+          decoderRef.current = decoder
+        }
+        // A new size can change the level, so each keyframe's own SPS decides the configuration.
+        decoder.configure({ codec, optimizeForLatency: true })
+        decoderCodecRef.current = codec
+      }
     }
+    // A delta frame can't start a stream; the next keyframe will.
+    if (!decoder || decoder.state !== 'configured') return
     decoder.decode(new EncodedVideoChunk({
       type: keyFrame ? 'key' : 'delta',
-      timestamp: vp8TimestampRef.current++,
-      data: bytes.subarray(VP8_FRAME_HEADER_BYTES),
+      timestamp: h264TimestampRef.current++,
+      data,
     }))
   }, [paint])
 
@@ -192,11 +245,15 @@ export function useBrowserStream({
       reconnectTimerRef.current = null
     }
 
+    if (canDecodeH264 === null) return
+
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    const codecQuery = typeof VideoDecoder === 'undefined' ? '' : `?codec=${VP8_STREAM_CODEC}`
-    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream${codecQuery}`
+    const query = new URLSearchParams()
+    if (canDecodeH264) query.set('codec', H264_STREAM_CODEC)
+    if (streamScale !== 1) query.set('scale', String(streamScale))
+    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream${query.size ? `?${query}` : ''}`
 
     const ws = new WebSocket(wsUrl)
     ws.binaryType = 'arraybuffer'
@@ -224,7 +281,7 @@ export function useBrowserStream({
 
         if (event.data instanceof ArrayBuffer) {
           const bytes = new Uint8Array(event.data)
-          if (isVp8FrameMessage(bytes)) decodeVp8(bytes, requestKeyframe)
+          if (isH264FrameMessage(bytes)) decodeH264(bytes, requestKeyframe)
           else if (!resizing) renderFrame(new Blob([bytes], { type: 'image/jpeg' }))
           return
         }
@@ -345,11 +402,12 @@ export function useBrowserStream({
       ctxRef.current = null
       if (decoderRef.current && decoderRef.current.state !== 'closed') decoderRef.current.close()
       decoderRef.current = null
+      decoderCodecRef.current = null
       ws.close()
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, decodeVp8, reconnectKey, setViewingTargetId])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, decodeH264, reconnectKey, setViewingTargetId, streamScale, canDecodeH264])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {
@@ -613,6 +671,8 @@ export function useBrowserStream({
     connected,
     pageLoading,
     aspectRatio,
+    streamScale,
+    cycleStreamScale,
     tabs,
     viewingTargetId,
     autoFollow,

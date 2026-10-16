@@ -3,6 +3,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 
 interface BrowserViewportControlsProps {
   isExpanded: boolean
+  streamScale: number
+  onCycleStreamScale: () => void
   onStop: () => void
   onToggleExpand?: () => void
 }
@@ -13,7 +15,7 @@ interface BrowserViewportControlsProps {
  * the screencast <canvas> (which sets will-change: transform); without it
  * Safari/WebKit composites the canvas over the pill.
  */
-export function BrowserViewportControls({ isExpanded, onStop, onToggleExpand }: BrowserViewportControlsProps) {
+export function BrowserViewportControls({ isExpanded, streamScale, onCycleStreamScale, onStop, onToggleExpand }: BrowserViewportControlsProps) {
   return (
     <div
       className="sticky bottom-2 z-20 col-start-1 row-start-1 mb-2 self-end flex justify-center pointer-events-none"
@@ -35,6 +37,20 @@ export function BrowserViewportControls({ isExpanded, onStop, onToggleExpand }: 
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">Stop browser agent</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onCycleStreamScale}
+                aria-label={`Stream sharpness ${streamScale}x`}
+                data-testid="browser-tray-scale"
+                className="min-w-8 px-1.5 py-1 rounded-full text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {streamScale}x
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Stream sharpness</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>

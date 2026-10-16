@@ -82,7 +82,7 @@ export function BrowserViewport({
           </div>
         )}
       </div>
-      {controls && <BrowserViewportControls isExpanded={isExpanded} onStop={stream.handleCloseClick} onToggleExpand={onToggleExpand} />}
+      {controls && <BrowserViewportControls isExpanded={isExpanded} streamScale={stream.streamScale} onCycleStreamScale={stream.cycleStreamScale} onStop={stream.handleCloseClick} onToggleExpand={onToggleExpand} />}
     </div>
   )
 }

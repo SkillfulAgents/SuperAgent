@@ -1,12 +1,15 @@
 // Bridge to the container, which owns the wire contract and builds independently.
 export {
-  VP8_STREAM_CODEC,
-  VP8_FRAME_HEADER_BYTES,
-  isVp8FrameMessage,
-  isVp8KeyFrameMessage,
+  BROWSER_STREAM_SCALES,
+  parseBrowserStreamScale,
+  H264_STREAM_CODEC,
+  H264_FRAME_HEADER_BYTES,
+  isH264FrameMessage,
+  isH264KeyFrameMessage,
 } from '../../../agent-container/src/browser-stream-protocol'
 export type {
   BrowserKeyframeRequest,
+  BrowserStreamScale,
   BrowserTabInfo,
   BrowserHistoryState,
   BrowserHistoryMessage,

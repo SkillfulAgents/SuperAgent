@@ -414,15 +414,17 @@ describe('useBrowserStream ordered history', () => {
   })
 })
 
-describe('useBrowserStream VP8 frames', () => {
+describe('useBrowserStream H.264 frames', () => {
   class FakeVideoDecoder {
     static instances: FakeVideoDecoder[] = []
+    static isConfigSupported() { return Promise.resolve({ supported: true }) }
     state = 'unconfigured'
+    codecs: string[] = []
     chunks: Array<{ type: string; bytes: number[] }> = []
     constructor(public init: { output: (frame: unknown) => void; error: (e: Error) => void }) {
       FakeVideoDecoder.instances.push(this)
     }
-    configure() { this.state = 'configured' }
+    configure(config: { codec: string }) { this.state = 'configured'; this.codecs.push(config.codec) }
     decode(chunk: { type: string; data: Uint8Array }) { this.chunks.push({ type: chunk.type, bytes: [...chunk.data] }) }
     close() { this.state = 'closed' }
   }
@@ -431,7 +433,8 @@ describe('useBrowserStream VP8 frames', () => {
     data: Uint8Array
     constructor(init: { type: string; data: Uint8Array }) { this.type = init.type; this.data = init.data }
   }
-  const vp8 = (keyFrame: boolean, ...payload: number[]) => new Uint8Array([0x56, 0x50, 0x38, keyFrame ? 1 : 0, ...payload]).buffer
+  const sps = [0, 0, 1, 0x67, 0x42, 0xc0, 0x1f]
+  const frame = (keyFrame: boolean, ...payload: number[]) => new Uint8Array([0x41, 0x56, 0x43, keyFrame ? 1 : 0, ...payload]).buffer
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -446,34 +449,35 @@ describe('useBrowserStream VP8 frames', () => {
     vi.unstubAllGlobals()
   })
 
-  it('asks for VP8 and decodes frames from the first keyframe on', async () => {
+  async function openSocket() {
     const canvasRef = createRef<HTMLCanvasElement | null>()
     renderHook(() => useBrowserStream(baseOpts(canvasRef)))
     await settle()
+    await settle()
     const ws = FakeWebSocket.instances[0]
-    expect(ws.url).toBe('ws://localhost:47891/api/agents/a/browser/stream?codec=vp8')
+    act(() => ws.completeHandshake())
+    return ws
+  }
+
+  it('asks for H.264 and decodes frames from the first keyframe on, configured from its SPS', async () => {
+    const ws = await openSocket()
+    expect(ws.url).toBe('ws://localhost:47891/api/agents/a/browser/stream?codec=h264')
     act(() => {
-      ws.completeHandshake()
-      ws.onmessage?.({ data: vp8(false, 9) })
-      ws.onmessage?.({ data: vp8(true, 1, 2) })
-      ws.onmessage?.({ data: vp8(false, 3) })
+      ws.onmessage?.({ data: frame(false, 9) })
+      ws.onmessage?.({ data: frame(true, ...sps, 1) })
+      ws.onmessage?.({ data: frame(false, 3) })
     })
     expect(FakeVideoDecoder.instances).toHaveLength(1)
+    expect(FakeVideoDecoder.instances[0].codecs).toEqual(['avc1.42c01f'])
     expect(FakeVideoDecoder.instances[0].chunks).toEqual([
-      { type: 'key', bytes: [1, 2] },
+      { type: 'key', bytes: [...sps, 1] },
       { type: 'delta', bytes: [3] },
     ])
   })
 
   it('asks for a new keyframe when the decoder fails', async () => {
-    const canvasRef = createRef<HTMLCanvasElement | null>()
-    renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => {
-      ws.completeHandshake()
-      ws.onmessage?.({ data: vp8(true, 1) })
-    })
+    const ws = await openSocket()
+    act(() => ws.onmessage?.({ data: frame(true, ...sps, 1) }))
     act(() => FakeVideoDecoder.instances[0].init.error(new Error('decode failed')))
     expect(ws.sent).toEqual([{ type: 'keyframe_request' }])
   })

@@ -15,7 +15,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
 import { BrowserFrameRelay, MAX_BUFFERED_FRAME_BYTES } from './browser-frame-relay'
-import { VP8_STREAM_CODEC, type BrowserKeyframeRequest } from '@shared/lib/browser-stream-protocol'
+import { H264_STREAM_CODEC, parseBrowserStreamScale, type BrowserKeyframeRequest } from '@shared/lib/browser-stream-protocol'
 
 const KEYFRAME_REQUEST = JSON.stringify({ type: 'keyframe_request' } satisfies BrowserKeyframeRequest)
 
@@ -43,7 +43,8 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         return
       }
       ;(request as any)._agentId = agentSlug
-      ;(request as any)._wantsVp8 = url.searchParams.get('codec') === VP8_STREAM_CODEC
+      ;(request as any)._wantsH264 = url.searchParams.get('codec') === H264_STREAM_CODEC
+      ;(request as any)._scale = parseBrowserStreamScale(url.searchParams.get('scale'))
 
       // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
       authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
@@ -72,7 +73,10 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     const agentSlug = (request as any)._agentId as string | undefined
     if (!agentSlug) { ws.close(1011, 'Invalid path'); return }
     const canInput = (request as any)._canInput === true
-    const wantsVp8 = (request as any)._wantsVp8 === true
+    const wantsH264 = (request as any)._wantsH264 === true
+    const upstreamQuery = new URLSearchParams()
+    if (wantsH264) upstreamQuery.set('codec', H264_STREAM_CODEC)
+    if ((request as any)._scale !== 1) upstreamQuery.set('scale', String((request as any)._scale))
 
     try {
         // Cached status only — no runtime query
@@ -87,7 +91,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
         const upstream = actor.container.openWebSocket(
           '/browser/stream',
-          wantsVp8 ? { search: `?codec=${VP8_STREAM_CODEC}` } : undefined,
+          upstreamQuery.size ? { search: `?${upstreamQuery}` } : undefined,
         )
 
         upstream.on('open', () => {

@@ -10,11 +10,11 @@
  * rather than on whatever frame happened to get through. Text frames are
  * small state updates and always go through.
  *
- * VP8 frames only decode on top of every frame before them, so they can't be
- * skipped the same way: after a dropped VP8 frame the relay asks the container
+ * H.264 frames only decode on top of every frame before them, so they can't be
+ * skipped the same way: after a dropped H.264 frame the relay asks the container
  * for a keyframe and drops frames until that keyframe gets through.
  */
-import { isVp8FrameMessage, isVp8KeyFrameMessage } from '@shared/lib/browser-stream-protocol'
+import { isH264FrameMessage, isH264KeyFrameMessage } from '@shared/lib/browser-stream-protocol'
 
 export interface FrameSink {
   readonly readyState: number
@@ -43,7 +43,7 @@ export class BrowserFrameRelay {
     if (this.sink.readyState !== WEBSOCKET_OPEN) return
     if (!isBinary) { this.sink.send(data, { binary: false }); return }
     const bytes = toBytes(data)
-    if (isVp8FrameMessage(bytes)) { this.forwardVp8(data, isVp8KeyFrameMessage(bytes)); return }
+    if (isH264FrameMessage(bytes)) { this.forwardH264(data, isH264KeyFrameMessage(bytes)); return }
     if (this.sink.bufferedAmount > this.maxBuffered) {
       this.held = data
       this.scheduleDrain()
@@ -53,14 +53,14 @@ export class BrowserFrameRelay {
     this.sink.send(data, { binary: true })
   }
 
-  private forwardVp8(data: Buffer | ArrayBuffer | Buffer[], keyFrame: boolean): void {
+  private forwardH264(data: Buffer | ArrayBuffer | Buffer[], keyFrame: boolean): void {
     if (this.sink.bufferedAmount > this.maxBuffered) {
       if (keyFrame) {
         this.held = data
         this.awaitingKeyframe = false
         this.scheduleDrain()
       } else {
-        this.dropVp8Frame()
+        this.dropH264Frame()
       }
       return
     }
@@ -73,7 +73,7 @@ export class BrowserFrameRelay {
     this.sink.send(data, { binary: true })
   }
 
-  private dropVp8Frame(): void {
+  private dropH264Frame(): void {
     if (this.awaitingKeyframe) return
     this.awaitingKeyframe = true
     this.requestKeyframe()
