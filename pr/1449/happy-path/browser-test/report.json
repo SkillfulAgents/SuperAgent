@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully executed all test steps: navigated to the application, opened the agent, sent a browser command, received response containing \"Example Domain\" as expected.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 - Successfully loaded the Gamut application homepage showing agent cards and sidebar with available agents.",
+    "Step 2: Found and clicked \"QA-20261016-004531-oveu\" agent in sidebar - Successfully opened the agent configuration page with chat input interface.",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully entered into the chat input field and sent by clicking the Send button.",
+    "Step 4: Waited for agent response - Agent immediately processed the request and responded within 5 seconds (well under the 3-minute timeout).",
+    "Step 5: Verified response mentions \"Example Domain\" - Agent response states: \"The page title of https://example.com is \"Example Domain\". I've closed the browser.\" The response correctly mentions \"Example Domain\" and confirms successful browser navigation and page title retrieval."
+  ],
+  "bugs": [],
+  "durationMs": 67896,
+  "sessionId": "dd087e33-f83e-4e9d-9d35-64713fadb2e6",
+  "cost": {
+    "inputTokens": 350,
+    "outputTokens": 9922,
+    "cacheCreationTokens": 70825,
+    "cacheReadTokens": 945224,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.233014
+  }
+}
