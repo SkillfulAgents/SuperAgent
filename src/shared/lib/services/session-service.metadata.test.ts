@@ -113,6 +113,64 @@ describe('lost-update protection (serialized read-modify-write)', () => {
   })
 })
 
+describe('no-op updates', () => {
+  // A write replaces the file through a rename, so a new inode is the mark of one.
+  const fileIdentity = (slug: string) => {
+    const stat = fs.statSync(metadataPath(slug))
+    return { ino: stat.ino, mtimeMs: stat.mtimeMs }
+  }
+
+  it('writes nothing when every value is already stored', async () => {
+    const { registerSession, updateSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Original')
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', {
+      model: 'opus',
+      effort: 'high',
+      alertDeviceId: null,
+      lastWake: { taskId: 't1', executionAt: '2026-01-01T00:00:00.000Z' },
+    })
+    const before = fileIdentity('agent')
+
+    const store = createLocalSessionStore('agent')
+    const previous = await updateSessionMetadata(store, 's1', { model: 'opus', effort: 'high' })
+    await updateSessionMetadata(store, 's1', { alertDeviceId: null })
+    // Equal by value, not by reference.
+    await updateSessionMetadata(store, 's1', { lastWake: { taskId: 't1', executionAt: '2026-01-01T00:00:00.000Z' } })
+    // An undefined value is the absent key it would serialize to.
+    await updateSessionMetadata(store, 's1', { starred: undefined })
+    await updateSessionMetadata(store, 's1', {})
+
+    expect(fileIdentity('agent')).toEqual(before)
+    expect(previous).toMatchObject({ name: 'Original', model: 'opus', effort: 'high' })
+    expect(fs.readdirSync(workspaceDir('agent')).filter((f) => f.includes('.tmp'))).toEqual([])
+  })
+
+  it('writes when any one value differs, null against absent included', async () => {
+    const { registerSession, updateSessionMetadata, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Original')
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'opus' })
+    const before = fileIdentity('agent')
+
+    // Explicit null clears the alert claim; absent falls back to the creation stamp.
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'opus', alertDeviceId: null })
+
+    expect(fileIdentity('agent').ino).not.toBe(before.ino)
+    const meta = await getSessionMetadata(createLocalSessionStore('agent'), 's1')
+    expect(meta).toMatchObject({ name: 'Original', model: 'opus', alertDeviceId: null })
+  })
+
+  it('creates the entry of a session that has none, however little the update says', async () => {
+    const { registerSession, updateSessionMetadata, isSessionRegistered } = await importService()
+    makeAgent('agent')
+    await registerSession(createLocalSessionStore('agent'), 'other', 'Other')
+
+    expect(await updateSessionMetadata(createLocalSessionStore('agent'), 'fresh', {})).toBeUndefined()
+    expect(await isSessionRegistered(createLocalSessionStore('agent'), 'fresh')).toBe(true)
+  })
+})
+
 describe('atomic writes', () => {
   it('writes valid JSON and leaves no temp file behind', async () => {
     const { registerSession } = await importService()

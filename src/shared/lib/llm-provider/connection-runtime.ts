@@ -136,11 +136,48 @@ export async function withSessionSelection<T>(
 ): Promise<T> {
   const key = `${agentId}:${sessionId}`
   const previous = selectionTurns.get(key) ?? Promise.resolve()
-  const current = previous.catch(() => undefined).then(work)
+  // Counted inside the chain, so the next queued turn always sees this one finished.
+  const current = previous.catch(() => undefined).then(work).finally(() => countFinishedSelectionTurn(key))
   selectionTurns.set(key, current)
   try {
     return await current
   } finally {
     if (selectionTurns.get(key) === current) selectionTurns.delete(key)
   }
+}
+
+// How many selection turns each session has finished, so metadata read before
+// a turn can be checked for one that may have written since. Bounded; a
+// forgotten count makes every outstanding mark stale rather than current.
+const FINISHED_SELECTION_TURNS_KEPT = 10_000
+const finishedSelectionTurns = new Map<string, number>()
+let forgottenSelectionTurns = 0
+
+function countFinishedSelectionTurn(key: string): void {
+  finishedSelectionTurns.set(key, (finishedSelectionTurns.get(key) ?? 0) + 1)
+  if (finishedSelectionTurns.size > FINISHED_SELECTION_TURNS_KEPT) {
+    finishedSelectionTurns.delete(finishedSelectionTurns.keys().next().value!)
+    forgottenSelectionTurns++
+  }
+}
+
+export interface SessionSelectionMark {
+  readonly key: string
+  readonly finished: number
+  readonly forgotten: number
+}
+
+/**
+ * Taken before reading a session's metadata that is used again inside a later
+ * {@link withSessionSelection} turn: {@link selectionUnchangedSince} then says
+ * whether that read is still as fresh as one made in the turn.
+ */
+export function markSessionSelection(agentId: string, sessionId: string): SessionSelectionMark {
+  const key = `${agentId}:${sessionId}`
+  return { key, finished: finishedSelectionTurns.get(key) ?? 0, forgotten: forgottenSelectionTurns }
+}
+
+/** No selection turn of the session has finished since `mark` was taken. */
+export function selectionUnchangedSince(mark: SessionSelectionMark): boolean {
+  return forgottenSelectionTurns === mark.forgotten && (finishedSelectionTurns.get(mark.key) ?? 0) === mark.finished
 }

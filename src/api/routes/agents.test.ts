@@ -208,7 +208,7 @@ vi.mock('../middleware/auth', () => ({
 // Container host — a manager-shaped mock (slug as first argument) adapted into
 // the per-agent runtime shape the actor reads through containerHost.runtime(slug).
 const mockContainerFetch = vi.fn()
-const mockSendMessage = vi.fn()
+const mockSendMessage = vi.fn(async (..._args: unknown[]): Promise<unknown> => ({}))
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
 const mockEnsureRunning = vi.fn()
@@ -263,7 +263,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
-    promoteAutomatedSession: vi.fn(),
+    promoteAutomatedSession: vi.fn(async (_slug: string, _sessionId: string, metadata?: unknown) => metadata ?? null),
     coalesceIfRecovering: vi.fn(() => false),
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
@@ -756,7 +756,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
@@ -3798,9 +3798,15 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     vi.clearAllMocks()
     vi.mocked(countMembersWithMinRole).mockReset()
     app = createApp()
-    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
-    mockSendMessage.mockResolvedValue(undefined)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(getSessionMetadata).mockResolvedValue(null)
+    mockSendMessage.mockResolvedValue({})
   })
+
+  // What the route hands the container client besides the runtime options:
+  // the metadata it read (none here) and the fields it is about to store.
+  const sent = (options: Record<string, unknown> = {}, metadataUpdates: Record<string, unknown> = {}) =>
+    ({ ...options, sessionMetadata: null, metadataUpdates })
 
   it('generates a server uuid, returns it, and skips messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
@@ -3812,7 +3818,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(typeof body.uuid).toBe('string')
     expect(body.queued).toBe(false)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, sent())
 
     // No DB insert for message author outside auth mode
     expect(mockDbInsertValues).not.toHaveBeenCalled()
@@ -3852,7 +3858,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(typeof insertedValues.id).toBe('string')
 
     // sendMessage and the response both carry the same server uuid
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, sent({}, { alertDeviceId: null }))
     const body = await res.json()
     expect(body.uuid).toBe(insertedValues.id)
   })
@@ -3863,16 +3869,16 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const solo = await (await postJson(app, URL, { content: 'hello' })).json()
     expect(countMembersWithMinRole).toHaveBeenLastCalledWith('test-agent', 'user')
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', solo.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', solo.uuid, sent({}, { alertDeviceId: null }))
 
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
     const command = await (await postJson(app, URL, { content: '/compact' })).json()
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '/compact', command.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '/compact', command.uuid, sent({}, { alertDeviceId: null }))
     const notice = await (await postJson(app, URL, { content: '[SYSTEM] note' })).json()
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '[SYSTEM] note', notice.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '[SYSTEM] note', notice.uuid, sent({}, { alertDeviceId: null }))
 
     const shared = await (await postJson(app, URL, { content: 'hello' })).json()
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, sent({}, { alertDeviceId: null }))
   })
 
   it('sends the message unattributed when the member count fails', async () => {
@@ -3881,7 +3887,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', (await res.json()).uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', (await res.json()).uuid, sent({}, { alertDeviceId: null }))
   })
 
   it('ignores a client-supplied uuid — the attribution PK is always server-generated', async () => {
@@ -3896,7 +3902,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockDbInsertValues.mock.calls[0][0].id).not.toBe(clientUuid)
     const body = await res.json()
     expect(body.uuid).not.toBe(clientUuid)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, sent({}, { alertDeviceId: null }))
   })
 
   // ---- Runtime options forwarding ----
@@ -3920,7 +3926,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello', effort: 'low' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { effort: 'low' })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ effort: 'low' }, { effort: 'low' }))
   })
 
   it('forwards model to sendMessage when present in body', async () => {
@@ -3928,7 +3934,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ model: 'claude-haiku-4-5' }))
     expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       model: 'claude-haiku-4-5',
     })
@@ -3956,28 +3962,27 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(updateSessionMetadata).not.toHaveBeenCalled()
   })
 
-  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+  it('neither writes nor broadcasts when the accepted selection matches the stored metadata', async () => {
     mockIsAuthMode.mockReturnValue(false)
     // Seeded composers re-send their whole selection on every fresh turn; a
-    // value the metadata already records must not fan out list/detail
-    // refetches to every open window.
-    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+    // value the metadata already records must not rewrite the document or
+    // fan out list/detail refetches to every open window.
+    vi.mocked(getSessionMetadata).mockResolvedValue({ model: 'claude-haiku-4-5', effort: 'low' })
 
-    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5', effort: 'low' })
     expect(res.status).toBe(201)
-    expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
-      model: 'claude-haiku-4-5',
-    })
+    expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
     expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
   })
 
   it('broadcasts when any one option differs from the stored metadata', async () => {
     mockIsAuthMode.mockReturnValue(false)
-    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+    vi.mocked(getSessionMetadata).mockResolvedValue({
       model: 'claude-haiku-4-5',
       effort: 'medium',
-    } as never)
+    })
 
     const res = await postJson(app, URL, {
       content: 'hello',
@@ -3985,6 +3990,12 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       effort: 'high',
     })
     expect(res.status).toBe(201)
+    expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(updateSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
     expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
     expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
       type: 'session_updated',
@@ -4002,10 +4013,10 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-opus-4-7',
     })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({
       effort: 'medium',
       model: 'claude-opus-4-7',
-    })
+    }, { effort: 'medium' }))
   })
 
   it('drops invalid effort silently and forwards only the valid model', async () => {
@@ -4017,9 +4028,9 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-sonnet-4-6',
     })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({
       model: 'claude-sonnet-4-6',
-    })
+    }))
   })
 
   it('cancels any awaiting-input request before forwarding the message to the container', async () => {
@@ -4040,12 +4051,12 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     mockIsAuthMode.mockReturnValue(false)
     let finishPromotion!: () => void
     vi.mocked(messagePersister.promoteAutomatedSession).mockImplementationOnce(
-      () => new Promise<void>((resolve) => { finishPromotion = resolve }),
+      () => new Promise((resolve) => { finishPromotion = () => resolve(null) }),
     )
 
     const response = postJson(app, URL, { content: 'take it from here' })
     await vi.waitFor(() => {
-      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1')
+      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1', null)
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
 
@@ -4057,7 +4068,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       'sess-1',
       'take it from here',
       expect.any(String),
-      {},
+      sent(),
     )
   })
 
@@ -4076,9 +4087,110 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { preserveRuntime: true })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ preserveRuntime: true }))
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+  })
+
+  describe('session metadata cost of one send (with a default connection)', () => {
+    const bound = { model: 'model-a', llmProviderId: 'conn-1' }
+
+    beforeEach(() => {
+      mockIsAuthMode.mockReturnValue(false)
+      mockRuntimeSettings.mockReturnValue({
+        container: {},
+        skillsets: [],
+        app: { configuredPasswordManagers: ['apple-passwords'] },
+        llmDefault: bound,
+      } as never)
+    })
+
+    afterEach(() => {
+      mockRuntimeSettings.mockReset()
+      mockRuntimeSettings.mockReturnValue({ container: {}, skillsets: [], app: { configuredPasswordManagers: ['apple-passwords'] } })
+    })
+
+    it('reads the metadata once, hands that read to the client, and writes nothing when nothing changed', async () => {
+      const stored = { ...bound, effort: 'low' as const, name: 'Kept' }
+      vi.mocked(getSessionMetadata).mockResolvedValue(stored)
+      mockSendMessage.mockResolvedValue({ selection: bound })
+
+      const res = await postJson(app, URL, { content: 'again', effort: 'low' })
+      expect(res.status).toBe(201)
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1', stored)
+      expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'again', expect.any(String), {
+        effort: 'low',
+        sessionMetadata: stored,
+        metadataUpdates: { effort: 'low' },
+      })
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+      expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    })
+
+    it('writes once, after the POST, when only a per-send field changed', async () => {
+      mockIsAuthMode.mockReturnValue(true)
+      mockRequestDevice.value = 'phone-1'
+      vi.mocked(getSessionMetadata).mockResolvedValue({ ...bound, alertDeviceId: null })
+      mockSendMessage.mockResolvedValue({ selection: bound })
+      try {
+        const res = await postJson(app, URL, { content: 'from the phone' })
+        expect(res.status).toBe(201)
+      } finally {
+        mockRequestDevice.value = null
+      }
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(updateSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
+        alertDeviceId: 'phone-1',
+        ...bound,
+      })
+      expect(mockSendMessage.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(updateSessionMetadata).mock.invocationCallOrder[0])
+      // The alert claim is not a runtime selection: no composer refresh.
+      expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    })
+
+    it('leaves nothing to write once the client stored a changed binding with the send’s fields', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValue({ ...bound, effort: 'low' })
+      const switched = { model: 'model-b', llmProviderId: 'conn-1' }
+      mockSendMessage.mockResolvedValue({ selection: switched, metadataWritten: true })
+
+      const res = await postJson(app, URL, { content: 'switch', model: 'model-b', effort: 'high' })
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'switch', expect.any(String), expect.objectContaining({
+        metadataUpdates: { effort: 'high' },
+      }))
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+      // Peers still learn the selection moved.
+      expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
+    })
+
+    it('reads again in its selection turn when another send of the session finished after its read', async () => {
+      const first = { ...bound, effort: 'low' as const }
+      const staleRead = { ...bound, effort: 'low' as const }
+      const afterFirst = { model: 'model-b', llmProviderId: 'conn-1', effort: 'low' as const }
+      vi.mocked(getSessionMetadata)
+        .mockResolvedValueOnce(first)
+        .mockResolvedValueOnce(staleRead)
+        .mockResolvedValueOnce(afterFirst)
+      let releaseFirst!: () => void
+      mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({}) }))
+
+      const firstSend = postJson(app, URL, { content: 'first', model: 'model-b' })
+      await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
+      // The second send reads while the first is still in its selection turn.
+      const secondSend = postJson(app, URL, { content: 'second' })
+      await vi.waitFor(() => expect(getSessionMetadata).toHaveBeenCalledTimes(2))
+      releaseFirst()
+      expect((await firstSend).status).toBe(201)
+      expect((await secondSend).status).toBe(201)
+
+      expect(getSessionMetadata).toHaveBeenCalledTimes(3)
+      expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'second', expect.any(String), expect.objectContaining({
+        sessionMetadata: afterFirst,
+      }))
+    })
   })
 })
 
@@ -6071,8 +6183,8 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     vi.clearAllMocks()
     vi.mocked(countMembersWithMinRole).mockReset()
     app = createApp()
-    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
-    mockSendMessage.mockResolvedValue(undefined)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockSendMessage.mockResolvedValue({})
   })
 
   it('broadcasts user_message via SSE in auth mode', async () => {
@@ -6166,7 +6278,7 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
     vi.mocked(messagePersister.markSessionProvisionallyActive).mockReturnValue(undoFreshTurn)
   })
 
@@ -8795,7 +8907,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(updateSessionName).not.toHaveBeenCalled()
 
     // A later notice does not name it either.
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     const MESSAGES_URL = '/api/agents/test-agent/sessions/session-123/messages'
     expect((await postJson(app, MESSAGES_URL, { content: '[SYSTEM] The user left voice mode.', shouldQuery: false })).status).toBe(201)
     await new Promise((r) => setTimeout(r, 0))
@@ -9719,7 +9831,7 @@ describe('cross-agent session scoping', () => {
     mockIsAuthMode.mockReturnValue(true)
     mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
     mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: true })
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     mockContainerFetch.mockResolvedValue({ ok: true, json: async () => ({}) })
 
     // The attacker owns exactly one session; the victim's id belongs to another
