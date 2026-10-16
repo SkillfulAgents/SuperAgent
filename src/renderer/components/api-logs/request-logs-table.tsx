@@ -72,6 +72,7 @@ function PolicyBadge({ decision }: { decision: string | null }) {
   const styles: Record<string, string> = {
     allow: 'text-green-700 bg-green-100 dark:text-green-300 dark:bg-green-900/40',
     approved_by_user: 'text-blue-700 bg-blue-100 dark:text-blue-300 dark:bg-blue-900/40',
+    allowed_by_rule: 'text-green-700 bg-green-100 dark:text-green-300 dark:bg-green-900/40',
     block: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
     denied_by_user: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
     review_timeout: 'text-orange-700 bg-orange-100 dark:text-orange-300 dark:bg-orange-900/40',
@@ -79,6 +80,7 @@ function PolicyBadge({ decision }: { decision: string | null }) {
   const labels: Record<string, string> = {
     allow: 'auto-allowed',
     approved_by_user: 'user-approved',
+    allowed_by_rule: 'rule-allowed',
     block: 'auto-blocked',
     denied_by_user: 'user-denied',
     review_timeout: 'timeout',
@@ -91,6 +93,39 @@ function PolicyBadge({ decision }: { decision: string | null }) {
       {labels[decision] ?? decision}
     </span>
   )
+}
+
+interface RuleOutcomeLogEntry { versionId: string; version: number; effect: string; name: string; restatement: string; result: string }
+
+function parseRuleOutcomeLog(json: string | null): RuleOutcomeLogEntry[] {
+  if (!json) return []
+  try {
+    const parsed: unknown = JSON.parse(json)
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== 'object') return []
+      // Rows carry `result` at the top level; rows written by the first
+      // version of this feature nested it under `outcome`.
+      const e = item as { versionId?: unknown; version?: unknown; effect?: unknown; name?: unknown; restatement?: unknown; result?: unknown; outcome?: { result?: unknown } }
+      const result = typeof e.result === 'string' ? e.result : e.outcome?.result
+      if (typeof e.versionId !== 'string' || typeof result !== 'string') return []
+      return [{
+        versionId: e.versionId,
+        version: typeof e.version === 'number' ? e.version : 0,
+        effect: e.effect === 'require' ? 'require' : 'allow',
+        name: typeof e.name === 'string' ? e.name : '',
+        restatement: typeof e.restatement === 'string' ? e.restatement : '',
+        result,
+      }]
+    })
+  } catch {
+    return []
+  }
+}
+
+function ruleOutcomeLogText(outcome: RuleOutcomeLogEntry): string {
+  if (outcome.effect === 'require') return outcome.result === 'true' ? 'passed' : `held for review (${outcome.result})`
+  return outcome.result === 'true' ? 'allowed' : outcome.result
 }
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
@@ -118,6 +153,7 @@ function EntryDetails({
     } catch { return [] }
   })() : []
   const ts = new Date(entry.createdAt)
+  const ruleOutcomes = parseRuleOutcomeLog(entry.ruleOutcomes ?? null)
 
   return (
     <div className="text-xs space-y-1.5 pt-1">
@@ -128,6 +164,27 @@ function EntryDetails({
       <DetailRow label="Method" value={entry.method} />
       <DetailRow label="Status" value={entry.statusCode ?? '—'} />
       {entry.policyDecision && <DetailRow label="Policy" value={<PolicyBadge decision={entry.policyDecision} />} />}
+      {ruleOutcomes.length > 0 && (
+        <DetailRow
+          label="Rules"
+          value={
+            <div className="space-y-0.5">
+              {ruleOutcomes.map((outcome) => (
+                <div key={outcome.versionId} data-testid="request-log-rule-outcome">
+                  <span className={outcome.versionId !== entry.ruleVersionId ? '' : outcome.effect === 'require'
+                    ? 'font-medium text-amber-700 dark:text-amber-300'
+                    : 'font-medium text-green-700 dark:text-green-300'}
+                  >
+                    {ruleOutcomeLogText(outcome)}
+                  </span>
+                  {' · '}
+                  <span className="text-muted-foreground" title={outcome.restatement}>{outcome.name || outcome.restatement} · v{outcome.version}</span>
+                </div>
+              ))}
+            </div>
+          }
+        />
+      )}
       {scopes.length > 0 && (
         <DetailRow
           label="Scopes"

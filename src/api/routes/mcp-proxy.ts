@@ -173,6 +173,8 @@ async function logMcpAuditEntry(entry: {
   durationMs?: number
   policyDecision?: string
   matchedTool?: string
+  ruleVersionId?: string
+  ruleOutcomes?: string
 }): Promise<void> {
   try {
     await db.insert(mcpAuditLog).values({
@@ -183,6 +185,8 @@ async function logMcpAuditEntry(entry: {
       durationMs: entry.durationMs ?? null,
       policyDecision: entry.policyDecision ?? null,
       matchedTool: entry.matchedTool ?? null,
+      ruleVersionId: entry.ruleVersionId ?? null,
+      ruleOutcomes: entry.ruleOutcomes ?? null,
       createdAt: new Date(),
     })
   } catch (error) {
@@ -271,6 +275,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   let bodyBuffer: ArrayBuffer | undefined
   let mcpMethodInfo = rest || '/'
   let toolName: string | null = null
+  let toolArgs: unknown
   let jsonRpcId: string | number | null = null
   let requestedProtocolVersion = '2025-03-26'
   if (method !== 'GET' && method !== 'HEAD') {
@@ -280,7 +285,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       const jsonRpc = JSON.parse(text) as {
         id?: string | number | null
         method?: string
-        params?: { name?: string; protocolVersion?: string }
+        params?: { name?: string; protocolVersion?: string; arguments?: unknown }
       }
       if (
         typeof jsonRpc.id === 'string' ||
@@ -296,6 +301,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         mcpMethodInfo = jsonRpc.method
         if (jsonRpc.method === 'tools/call' && jsonRpc.params?.name) {
           toolName = jsonRpc.params.name
+          toolArgs = jsonRpc.params.arguments
           mcpMethodInfo = `tools/call: ${toolName}`
         }
       }
@@ -426,7 +432,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     mcpMethodInfo.startsWith('notifications/')
 
   const access = await mcp.authorizeInvocation({
-    method, requestPath: mcpMethodInfo, toolName, isProtocolMethod, signal: c.req.raw.signal,
+    method, requestPath: mcpMethodInfo, toolName, args: toolArgs, isProtocolMethod, signal: c.req.raw.signal,
   })
   if (!access.ok) {
     const failures = {
@@ -434,15 +440,18 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         error: 'blocked_by_policy', message: 'This request was blocked by your MCP access policy.',
         tool: toolName, settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
       } },
-      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.' } },
-      review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.' } },
+      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.', rules: access.rules ?? [] } },
+      review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.', rules: access.rules ?? [] } },
+      rules_unavailable: { status: 503, policyDecision: 'rules_unavailable', body: { error: 'rules_unavailable', message: 'Proxy rules could not be checked. Try again shortly.' } },
     } as const
     const failure = failures[access.reason]
     await logMcpAuditEntry({ agentSlug, remoteMcpId: mcp.descriptor.id, remoteMcpName: mcp.descriptor.name,
-      method, requestPath: mcpMethodInfo, policyDecision: failure.policyDecision, matchedTool: toolName ?? undefined })
+      method, requestPath: mcpMethodInfo, policyDecision: failure.policyDecision, matchedTool: toolName ?? undefined,
+      ruleVersionId: access.ruleVersionId, ruleOutcomes: access.ruleOutcomes })
     return c.json(failure.body, failure.status)
   }
   const resolvedPolicyDecision = access.policyDecision
+  const ruleAudit = { ruleVersionId: access.ruleVersionId, ruleOutcomes: access.ruleOutcomes }
 
   // Re-authentication cannot make a policy-blocked tool call permissible.
   // Wait only after policy enforcement so blocked calls remain immediate 403s
@@ -577,6 +586,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         errorMessage: `rewrote non-SSE GET 200 (${upstreamType}) to 405`,
         durationMs,
         policyDecision: resolvedPolicyDecision,
+        ...ruleAudit,
         matchedTool: toolName ?? undefined,
       })
       return new Response(null, {
@@ -595,6 +605,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       statusCode: response.status,
       durationMs,
       policyDecision: resolvedPolicyDecision,
+      ...ruleAudit,
       matchedTool: toolName ?? undefined,
     })
 
@@ -640,6 +651,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       errorMessage: `Proxy request failed: ${error}`,
       durationMs,
       policyDecision: resolvedPolicyDecision,
+      ...ruleAudit,
       matchedTool: toolName ?? undefined,
     })
     if (sessionInitializationFailed) {

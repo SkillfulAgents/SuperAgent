@@ -15,6 +15,8 @@ import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { Markdown } from '@renderer/components/ui/markdown'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
+import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
 
 // read is least privileged, destructive most — used to pick the minimal group
 // whose "allow all" still satisfies this request (resolver takes most-permissive).
@@ -34,6 +36,10 @@ interface ProxyReviewRequestItemProps {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  /** Proxy rules that ran on the request and did not allow it. */
+  ruleOutcomes?: ReviewRuleOutcomeView[]
+  /** Present when the review asks to approve an agent's proxy rule. */
+  ruleProposal?: RuleProposalReview
   sessionId?: string
   agentSlug: string
   readOnly?: boolean
@@ -42,7 +48,24 @@ interface ProxyReviewRequestItemProps {
 
 type RequestStatus = 'pending' | 'submitting' | 'allowed' | 'denied'
 
-export function ProxyReviewRequestItem({
+export function ProxyReviewRequestItem(props: ProxyReviewRequestItemProps) {
+  if (props.ruleProposal) {
+    return (
+      <RuleProposalRequestItem
+        reviewId={props.reviewId}
+        agentSlug={props.agentSlug}
+        displayText={props.displayText}
+        proposal={props.ruleProposal}
+        sessionId={props.sessionId}
+        readOnly={props.readOnly}
+        onComplete={props.onComplete}
+      />
+    )
+  }
+  return <ScopeReviewRequestItem {...props} />
+}
+
+function ScopeReviewRequestItem({
   reviewId,
   accountId,
   reviewType,
@@ -52,6 +75,7 @@ export function ProxyReviewRequestItem({
   matchedScopes,
   scopeDescriptions,
   displayText,
+  ruleOutcomes,
   sessionId,
   agentSlug,
   readOnly,
@@ -81,6 +105,9 @@ export function ProxyReviewRequestItem({
   const resolvedReviewType: ProxyReviewType =
     reviewType ?? (targetPath.startsWith('tools/call') ? 'mcp' : 'api')
   const isApiReview = resolvedReviewType === 'api'
+  // A require rule held this request: changing the policy wouldn't stop the
+  // rule holding the next one, so only one-off decisions are offered.
+  const heldByRule = heldByRequireRule(ruleOutcomes)
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -211,6 +238,7 @@ export function ProxyReviewRequestItem({
             {requestLabel}
           </span>
         </div>
+        {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
       </div>
 
       {/* Action buttons */}
@@ -388,7 +416,7 @@ export function ProxyReviewRequestItem({
                 </Button>
 
                 {/* Minimal risk group — smallest "allow all" that still covers this request */}
-                {isApiReview && minimalLabel && (
+                {!heldByRule && isApiReview && minimalLabel && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Button
@@ -421,7 +449,7 @@ export function ProxyReviewRequestItem({
                 )}
 
                 {/* Per-scope "always allow" — tucked behind a disclosure */}
-                {matchedScopes.length > 0 && (
+                {!heldByRule && matchedScopes.length > 0 && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Collapsible
@@ -487,29 +515,37 @@ export function ProxyReviewRequestItem({
                 )}
 
                 {/* Allow everything for this account */}
-                <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
-                <Button
-                  data-testid="proxy-review-always-allow-all"
-                  onClick={() => {
-                    setAllowMenuOpen(false)
-                    handleAlways('allow', '*')
-                  }}
-                  disabled={status === 'submitting'}
-                  variant="ghost"
-                  size="xs"
-                  className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                >
-                  <span className="flex min-w-0 w-full flex-col items-start text-left">
-                    <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                      <span className="shrink-0">
-                        Always allow all <span className="capitalize">{toolkit}</span> requests
+                {heldByRule ? (
+                  <p className="px-3 py-2 text-xs text-muted-foreground" data-testid="proxy-review-held-by-rule-note">
+                    A rule requires review for requests like this. To stop asking, change or delete the rule on the connection.
+                  </p>
+                ) : (
+                  <>
+                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
+                    <Button
+                      data-testid="proxy-review-always-allow-all"
+                      onClick={() => {
+                        setAllowMenuOpen(false)
+                        handleAlways('allow', '*')
+                      }}
+                      disabled={status === 'submitting'}
+                      variant="ghost"
+                      size="xs"
+                      className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                    >
+                      <span className="flex min-w-0 w-full flex-col items-start text-left">
+                        <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
+                          <span className="shrink-0">
+                            Always allow all <span className="capitalize">{toolkit}</span> requests
+                          </span>
+                        </span>
+                        <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
+                          Allow full read/edit access to {toolkit}
+                        </span>
                       </span>
-                    </span>
-                    <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
-                      Allow full read/edit access to {toolkit}
-                    </span>
-                  </span>
-                </Button>
+                    </Button>
+                  </>
+                )}
               </div>
             </PopoverContent>
           </Popover>

@@ -526,7 +526,11 @@ export interface ReviewOps {
   /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
   /** `AgentReviews.request` — the review is this agent's. */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, signal?: AbortSignal): Promise<'allow' | 'deny'>
+  request(
+    details: Omit<ReviewDetails, 'agentSlug'>,
+    signal?: AbortSignal,
+    options?: { reevaluate?: () => Promise<'allow' | 'deny' | 'review'> },
+  ): Promise<'allow' | 'deny'>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     targetAgentSlug: string,

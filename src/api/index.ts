@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
+import xAgentRules from './routes/x-agent-rules'
 import xAgentIntegrations from './routes/x-agent-integrations'
 import xAgentMeetings from './routes/x-agent-meetings'
 import webSearch from './routes/web-search'
@@ -34,6 +35,7 @@ import profileRouter from './routes/profile'
 import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
+import proxyRulesRoutes from './routes/proxy-rules'
 import runtimeStatusRouter from './routes/runtime-status'
 import webhookRelayRouter from './routes/webhook-relay'
 import firewallRouter from './routes/firewall'
@@ -240,6 +242,7 @@ app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
 app.route('/api/x-agent/meetings', xAgentMeetings)
+app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
@@ -272,6 +275,7 @@ app.route('/api/profile', profileRouter)
 app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
+app.route('/api/proxy-rules', proxyRulesRoutes)
 app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)

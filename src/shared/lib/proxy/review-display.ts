@@ -3,6 +3,8 @@
  * helpers: the review stores and their router both build on them.
  */
 import type { XAgentReview } from './x-agent-review'
+import type { ReviewRuleOutcome } from './rules/gate'
+import type { RuleProposalReview } from './rules/proposal-schema'
 
 /**
  * Which policy table an "always allow/deny" on this review writes to.
@@ -27,6 +29,10 @@ export interface ReviewDetails {
    * Preferred over scopeDescriptions when generating the prompt headline.
    */
   endpointDescription?: string
+  /** Proxy rules that ran on this request and did not allow it. */
+  ruleOutcomes?: ReviewRuleOutcome[]
+  /** Set when the review asks a person to confirm an agent's proxy rule. */
+  ruleProposal?: RuleProposalReview
   // Optional: x-agent review fields.
   // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
   // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
