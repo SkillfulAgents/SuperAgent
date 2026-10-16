@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged, notifyUndeliveredTurn } from './host-events'
+import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged, notifyFileChanged, notifyUndeliveredTurn } from './host-events'
 
 describe('notifyDashboardScreenshotReady', () => {
   beforeEach(() => {
@@ -45,6 +45,19 @@ describe('notifyDashboardScreenshotReady', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 403 }))
 
     await expect(notifyDashboardScreenshotReady('sales-dashboard')).rejects.toThrow('HTTP 403')
+  })
+
+  it('posts changed workspace paths, and watcherDown only when the watcher stopped', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+
+    await expect(notifyFileChanged(['out/a.md'])).resolves.toBe(true)
+    await notifyFileChanged([''], 'no event for .file-watch-probe/file')
+
+    const sent = fetchSpy.mock.calls.map(([url, init]) => [url, (init as RequestInit).body])
+    expect(sent).toEqual([
+      ['http://host.internal/api/agent-bootstrap/agent-a/events/file-changed', JSON.stringify({ paths: ['out/a.md'] })],
+      ['http://host.internal/api/agent-bootstrap/agent-a/events/file-changed', JSON.stringify({ paths: [''], watcherDown: 'no event for .file-watch-probe/file' })],
+    ])
   })
 
   it('posts dashboard status transitions with container authentication', async () => {

@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
-import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
+import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, reloadChangedTabs, useFilePreview, type FileTab, type PreviewTab } from './file-preview-context'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -482,5 +482,23 @@ describe('FilePreviewContext', () => {
 
   it('throws when used outside provider', () => {
     expect(() => renderHook(() => useFilePreview())).toThrow(/FilePreviewProvider/)
+  })
+})
+
+describe('reloadChangedTabs', () => {
+  const tab = (filePath: string, agentSlug = 'agent-1'): FileTab => ({
+    kind: 'file', filePath, agentSlug, displayName: filePath, version: 1, pdfPage: 1,
+  })
+  const versions = (tabs: PreviewTab[]) => tabs.map(t => (t as FileTab).version)
+
+  it('reloads the agent\'s tabs at or under a changed scope that reload in place', () => {
+    const tabs = [tab('/workspace/out/a.md'), tab('/workspace/out/c.pdf'), tab('/workspace/outside.md'), tab('/workspace/notes.md'), tab('/workspace/out/a.md', 'agent-2')]
+    expect(versions(reloadChangedTabs(tabs, 'agent-1', ['/workspace/out', '/workspace/notes.md'], 2))).toEqual([2, 1, 1, 2, 1])
+  })
+
+  it('reloads every agent\'s tabs for the whole workspace, and returns the same tabs when none match', () => {
+    const tabs = [tab('/workspace/a.md'), tab('/workspace/b.csv', 'agent-2')]
+    expect(versions(reloadChangedTabs(tabs, null, ['/workspace'], 2))).toEqual([2, 2])
+    expect(reloadChangedTabs(tabs, 'agent-1', ['/workspace/other.md'], 2)).toBe(tabs)
   })
 })

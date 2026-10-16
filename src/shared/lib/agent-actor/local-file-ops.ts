@@ -32,9 +32,9 @@ export interface LocalFileOpsDeps {
   getAgentWorkspaceDir: (slug: string) => string
 }
 
-export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps): FileOps {
+export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps, onChange?: (workspacePath: string) => void): FileOps {
   // Read at call time: tests and embedded deployments change the data dir in-process.
-  return new LocalFileOps(() => deps.getAgentWorkspaceDir(slug))
+  return new LocalFileOps(() => deps.getAgentWorkspaceDir(slug), onChange)
 }
 
 type ErrnoLike = { code?: string }
@@ -218,7 +218,11 @@ export class LocalFileOps implements FileOps {
   /** The root's real location, kept for `resolve`: the same string for the life of the workspace. */
   private realRootCache: { root: string; real: string } | null = null
 
-  constructor(private readonly rootDir: () => string) {}
+  /** `onChange` hears every workspace path this instance wrote, moved in, appended to, or removed. */
+  constructor(
+    private readonly rootDir: () => string,
+    private readonly onChange?: (workspacePath: string) => void,
+  ) {}
 
   /** Resolve a workspace path lexically and check it stays under the root. */
   private absolute(workspacePath: string): { rel: string; abs: string; root: string } {
@@ -332,6 +336,7 @@ export class LocalFileOps implements FileOps {
     const { rel, abs } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
     await copyFileReplacing(hostPath, abs).catch(fromWriteError)
+    this.onChange?.(rel)
   }
 
   /**
@@ -343,7 +348,7 @@ export class LocalFileOps implements FileOps {
    * second time.
    */
   async moveHostFile(hostPath: string, workspacePath: string): Promise<{ size: number }> {
-    const { abs } = this.forWrite(workspacePath)
+    const { rel, abs } = this.forWrite(workspacePath)
     try {
       await this.writing(abs, () => fs.promises.rename(hostPath, abs))
     } catch (error) {
@@ -351,6 +356,7 @@ export class LocalFileOps implements FileOps {
       await copyFileReplacing(hostPath, abs).catch(fromWriteError)
       await fs.promises.unlink(hostPath)
     }
+    this.onChange?.(rel)
     const stat = await fs.promises.stat(abs).catch(fromFsError)
     return { size: stat.size }
   }
@@ -435,9 +441,10 @@ export class LocalFileOps implements FileOps {
       await this.write(workspacePath, typeof bytes === 'string' ? Buffer.from(bytes) : bytes, { ...options, flush: true })
       return
     }
-    const { abs } = this.forWrite(workspacePath)
+    const { rel, abs } = this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
     await this.writing(abs, () => writeFileAtomicStream(abs, [data], atomicWriteOptions(options))).catch(fromWriteError)
+    this.onChange?.(rel)
   }
 
   async write(
@@ -489,6 +496,7 @@ export class LocalFileOps implements FileOps {
       source?.destroy()
       fromWriteError(error)
     }
+    this.onChange?.(target.rel)
     const stat = await fs.promises.stat(target.abs).catch(fromFsError)
     return { size: stat.size }
   }
@@ -521,16 +529,20 @@ export class LocalFileOps implements FileOps {
       }
     }
     await fs.promises.rm(destination, { recursive: stat.isDirectory(), force: true }).catch(fromFsError)
+    this.onChange?.(rel)
   }
 
+  // Not announced: callers use it to make sure a folder exists, often the root
+  // before every shared config write, and an empty folder changes no open file.
   async mkdir(workspacePath: string): Promise<void> {
     const { abs } = this.absolute(workspacePath)
     await ensureDirectory(abs)
   }
 
   async append(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
-    const { abs } = this.forWrite(workspacePath)
+    const { rel, abs } = this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
     await appendSerialized(abs, () => this.writing(abs, () => fs.promises.appendFile(abs, data))).catch(fromWriteError)
+    this.onChange?.(rel)
   }
 }

@@ -30,5 +30,7 @@ export function useFileSize(fileApiPath: string | null, version = 0, options?: U
     // millisecond it arrived) never needs asking twice.
     staleTime: options?.immutable ? Infinity : 60_000,
     retry: false,
+    // A new version of the same file keeps its last size on screen while the new one loads.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === fileApiPath ? previous : undefined),
   })
 }

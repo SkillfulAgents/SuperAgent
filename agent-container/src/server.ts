@@ -5,7 +5,8 @@ import { serve } from '@hono/node-server';
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
-import { notifyUndeliveredTurn } from './host-events';
+import { notifyFileChanged, notifyUndeliveredTurn } from './host-events';
+import { startWorkspaceWatcher } from './workspace-watcher';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
@@ -2182,6 +2183,9 @@ const server = serve({
   fetch: app.fetch,
   port,
 });
+
+// Open file views on the host reload when the workspace changes, not on every tool call.
+void startWorkspaceWatcher('/workspace', notifyFileChanged);
 
 // Create WebSocket server
 const wss = new WebSocketServer({ noServer: true });

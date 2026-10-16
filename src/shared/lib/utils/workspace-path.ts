@@ -18,6 +18,11 @@ export function getPathName(filePath: string): string {
   return trimmed.split('/').pop() || filePath
 }
 
+/** Whether `candidatePath` is `basePath` or inside it, by whole segments. */
+export function isPathAtOrBelow(basePath: string, candidatePath: string): boolean {
+  return candidatePath === basePath || candidatePath.startsWith(`${basePath}/`)
+}
+
 /**
  * Path relative to the workspace root, without a trailing slash:
  * `/workspace/out/a.txt` → `out/a.txt`.

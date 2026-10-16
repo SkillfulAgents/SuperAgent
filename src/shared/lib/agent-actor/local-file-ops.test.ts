@@ -398,3 +398,23 @@ describe('createLocalFileOps', () => {
     }
   })
 })
+
+describe('LocalFileOps onChange', () => {
+  it('reports each write, host move, append, and delete by workspace path, and not a mkdir', async () => {
+    const root = await tempRoot()
+    const changed: string[] = []
+    const files = new LocalFileOps(() => root, p => changed.push(p))
+    const host = path.join(await tempRoot(), 'upload.bin')
+    await fs.promises.writeFile(host, 'x')
+
+    await files.mkdir('/workspace/out')
+    await files.putDoc('/workspace/out/a.md', 'a')
+    await files.write('out/b.md', new Uint8Array([1]))
+    await files.append('out/a.md', 'more')
+    await files.copyHostFile(host, 'out/c.bin')
+    await files.moveHostFile(host, 'out/d.bin')
+    await files.delete('out', { recursive: true })
+
+    expect(changed).toEqual(['out/a.md', 'out/b.md', 'out/a.md', 'out/c.bin', 'out/d.bin', 'out'])
+  })
+})

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { useOnWindowReturn } from '@renderer/hooks/use-on-window-return'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
@@ -50,27 +51,7 @@ function invalidateBillingSnapshot(queryClient: QueryClient, op: string): Promis
 function useBillingRefresh(active: boolean, blocked: boolean): void {
   const queryClient = useQueryClient()
 
-  useEffect(() => {
-    if (!active) return
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const onReturn = () => {
-      if (timer !== null) return
-      timer = setTimeout(() => {
-        timer = null
-        void invalidateBillingSnapshot(queryClient, 'refresh-on-return')
-      }, 50)
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') onReturn()
-    }
-    window.addEventListener('focus', onReturn)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => {
-      if (timer !== null) clearTimeout(timer)
-      window.removeEventListener('focus', onReturn)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    }
-  }, [active, queryClient])
+  useOnWindowReturn(() => void invalidateBillingSnapshot(queryClient, 'refresh-on-return'), active)
 
   useEffect(() => {
     if (!active || !blocked) return

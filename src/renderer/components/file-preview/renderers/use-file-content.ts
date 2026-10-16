@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 /**
  * Hard cap on how much text we pull into the renderer. Measured in UTF-16 code
@@ -23,8 +23,8 @@ export interface FileContent {
 export function useFileContent(url: string) {
   return useQuery<FileContent>({
     queryKey: ['file-content', url],
-    queryFn: async () => {
-      const res = await fetch(url)
+    queryFn: async ({ signal }) => {
+      const res = await fetch(url, { signal })
       if (!res.ok) throw new Error(`Failed to load file: ${res.status}`)
       const text = await res.text()
       if (text.length > MAX_CONTENT_CHARS) {
@@ -33,5 +33,11 @@ export function useFileContent(url: string) {
       return { text, truncated: false }
     },
     staleTime: 30_000,
+    // Every reload is a new URL, so superseded versions would otherwise pile up for the default five minutes.
+    gcTime: 30_000,
+    // A new version of the same file keeps the old text on screen until the new
+    // one arrives, so a reload after an agent write neither flashes nor loses scroll.
+    // Renderers are keyed by file, so this never shows one file's text for another.
+    placeholderData: keepPreviousData,
   })
 }

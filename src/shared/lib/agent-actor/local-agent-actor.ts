@@ -21,6 +21,7 @@ import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
+import { announceWorkspaceChange } from './workspace-changes'
 import type {
   AccountReauthOps,
   AgentActor,
@@ -111,6 +112,7 @@ export class LocalAgentActor implements AgentActor {
     // all record through it.
     this.store = createLocalSessionStore(slug, deps, {
       onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
+      onFileChange: (workspacePath) => announceWorkspaceChange(slug, [workspacePath], (event) => deps.messagePersister.broadcastGlobal(event)),
     })
     this.state =
       state ??
