@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
@@ -519,7 +519,7 @@ export const dataMigrations = sqliteTable('data_migrations', {
 })
 
 // Agents - which agents exist and what they are called. The row is the
-// authority for name and description; the agent's CLAUDE.md keeps a
+// authority for name and description; the agent's AGENTS.md keeps a
 // frontmatter projection of them that the host writes on create and rename.
 // Placement says where the workspace lives: `runtime` is 'local' for a
 // directory under the agents data directory, and `workspace_handle` is the
@@ -528,10 +528,42 @@ export const agents = sqliteTable('agents', {
   slug: text('slug').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  // Constant SQL defaults permit SQLite's non-null column upgrade without
+  // rebuilding this referenced table. The migration backfills random values;
+  // every runtime insert supplies a random pair through the agent catalog.
+  avatarColor: text('avatar_color').notNull().default('tonal-blue'),
+  avatarShape: text('avatar_shape').notNull().default('circle'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   runtime: text('runtime').notNull().default('local'),
   workspaceHandle: text('workspace_handle'),
 })
+
+// Reusable sources. A NULL owner makes a volume available to every user.
+export const volumeDefinitions = sqliteTable('volume_definitions', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  config: text('config').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
+
+// An attachment owns its mount name and WebDAV identity; renaming a definition
+// never changes a running agent's /mounts/<name> path.
+export const agentVolumes = sqliteTable('agent_volumes', {
+  id: text('id').notNull(),
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  readOnly: integer('read_only', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.id] }),
+  agentVolumeUnique: uniqueIndex('agent_volumes_source_unique').on(table.agentSlug, table.volumeId),
+  agentNameUnique: uniqueIndex('agent_volumes_name_unique').on(table.agentSlug, table.name),
+  volumeIdx: index('agent_volumes_volume_idx').on(table.volumeId),
+}))
 
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
@@ -754,6 +786,41 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
 }))
 
+// Meetings an agent was asked to attend (meeting integration family). The
+// session mapping stays in chat_integration_sessions (externalChatId = meeting
+// id); this row carries the bot lifecycle the participant page and UI follow.
+export const agentIntegrationMeetings = sqliteTable('agent_integration_meetings', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  agentSlug: text('agent_slug').notNull(),
+  meetingUrl: text('meeting_url').notNull(),
+  platform: text('platform').notNull(),
+  botName: text('bot_name').notNull(),
+  // How the agent takes part: 'voice' | 'silent' | 'listen' (see meeting-integrations/schemas.ts).
+  mode: text('mode').notNull().default('voice'),
+  // Provider's bot handle; null until the host accepted the join.
+  botId: text('bot_id'),
+  status: text('status').notNull().default('requested'),
+  statusDetail: text('status_detail'),
+  sessionId: text('session_id'),
+  // The person's brief for this meeting, as given at join time.
+  context: text('context'),
+  // sha256 of the one-time participant page token; the token itself is only in the page URL.
+  participantTokenHash: text('participant_token_hash').notNull(),
+  createdByUserId: text('created_by_user_id'),
+  requestedAt: integer('requested_at', { mode: 'timestamp_ms' }).notNull(),
+  joinedAt: integer('joined_at', { mode: 'timestamp_ms' }),
+  endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  integrationIdx: index('agent_integration_meetings_integration_idx').on(table.integrationId),
+  sessionIdx: index('agent_integration_meetings_session_idx').on(table.agentSlug, table.sessionId),
+  statusIdx: index('agent_integration_meetings_status_idx').on(table.status),
+}))
+export type AgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferSelect
+export type NewAgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferInsert
+
 // Slack participation is independent of session routing: multiple threads can
 // share one channel session. Keep the bounded, least-recently-used thread list
 // across connector recreation, scoped to the installation and bot identity.
@@ -807,6 +874,62 @@ export const auditLog = sqliteTable('audit_log', {
   userIdIdx: index('audit_log_user_id_idx').on(table.userId),
 }))
 
+/**
+ * Todos — the Todo board experiment. One row per item a person put on their
+ * board: a draft they are still writing, then, once they start it, the
+ * session an agent is running it in.
+ *
+ * `status` is what the person decided: `draft` until started, `active` while
+ * the work is theirs to watch, then `done` and `archived`. Where an active
+ * item sits on the board (working, needs input, has updates) is not stored:
+ * the list endpoint reads it live from the session.
+ *
+ * Personal, like `session_unread_marks`: `user_id` is plain text with no FK
+ * because local mode has no user rows (the `'local'` sentinel). `agent_slug`
+ * has no FK either — agent deletion and session deletion unlink rows through
+ * todo-service instead, so an item outlives the agent it was given to.
+ */
+export const todos = sqliteTable('todos', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  title: text('title').notNull(),
+  description: text('description').notNull().default(''),
+  agentSlug: text('agent_slug'),
+  // A draft to be given to an agent created for it on start, named from its
+  // brief. Never set together with agentSlug: the start assigns the new agent.
+  newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
+  // What to start it on, where the person picked over the agent's defaults.
+  model: text('model'),
+  llmProviderId: text('llm_provider_id'),
+  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
+  sessionId: text('session_id'),
+  status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
+  // Where it sits in its column: highest first. New items and items that
+  // change status land on top (the time, in ms); dragging puts one between
+  // its new neighbours.
+  position: real('position').notNull(),
+  // A start in progress: the tab that claimed it creates the session, then
+  // links it with this token. Only one claim holds at a time, so two tabs
+  // can't both start the agent. A claim older than START_CLAIM_TTL_MS has
+  // lapsed (its tab went away mid-start).
+  startClaim: text('start_claim'),
+  startClaimedAt: integer('start_claimed_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  startedAt: integer('started_at', { mode: 'timestamp_ms' }),
+  completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+  // Files held with the item. A JSON list, validated when read.
+  attachments: text('attachments').notNull().default('[]'),
+}, (table) => ({
+  userIdx: index('todos_user_idx').on(table.userId),
+  // Session and agent deletion find the rows that point at them.
+  agentSessionIdx: index('todos_agent_session_idx').on(table.agentSlug, table.sessionId),
+  // A session id is unique only within an agent, so it never stands alone;
+  // and only started work has one.
+  sessionCheck: check('todos_session_check', sql`${table.sessionId} is null or (${table.agentSlug} is not null and ${table.status} <> 'draft')`),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -857,3 +980,4 @@ export type ChatIntegrationAccess = typeof chatIntegrationAccess.$inferSelect
 export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
+export type TodoRow = typeof todos.$inferSelect

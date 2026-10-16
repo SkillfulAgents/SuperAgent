@@ -286,5 +286,7 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
     clearInterval(this.audioMeter)
     this.stopListener()
     this.stopReader()
+    // Left before the first reply opened it: release the output unlocked for it.
+    readAloud.releaseUnlockedAudio()
   }
 }

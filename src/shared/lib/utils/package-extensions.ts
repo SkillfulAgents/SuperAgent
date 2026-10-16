@@ -4,7 +4,7 @@
  * endpoints. (package.json's electron-builder `fileAssociations` block can't
  * import this; keep it in sync when changing these.)
  *
- * Both formats are plain zips: an agent template carries a root CLAUDE.md, a
+ * Both formats are plain zips: an agent template carries a root AGENTS.md, a
  * skill a root SKILL.md. The extension is only ever a routing/ordering hint —
  * import pipelines validate by zip content, never by filename.
  */

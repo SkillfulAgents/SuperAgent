@@ -1,5 +1,6 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
+import { webhookRelayAvailable } from './webhook-relay-env';
 import {
   query,
   startup,
@@ -15,16 +16,18 @@ import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
 import { gamutPluginDir } from './gamut-plugin';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createMeetingsMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
-import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
+import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
@@ -335,6 +338,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
+  meetings: boolean;
   hasModelHints: boolean;
   modelHints: string[];
   hasConnectedAccounts: boolean;
@@ -344,19 +349,10 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  mountPathsJoined: string;
+  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
+  mountIndexes: (VolumeIndex & { pathJson: string })[];
+  globalInstructions: string;
   userInstructions: string;
-}
-
-const mountsEnvSchema = z.array(z.string().min(1));
-
-function parseMountPaths(raw: string | undefined): string[] {
-  if (!raw) return [];
-  try {
-    return mountsEnvSchema.parse(JSON.parse(raw));
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -365,6 +361,11 @@ function parseMountPaths(raw: string | undefined): string[] {
  * environment, the labels of whichever native web tools a vendor replaced, the
  * config dir, and the data behind the sections that only render for some agents.
  */
+/** The host said it can run meeting bots: the meeting tools get registered and advertised. */
+function meetingsAvailable(availableIntegrationFamilies?: string[]): boolean {
+  return availableIntegrationFamilies?.includes('meeting') ?? false;
+}
+
 export function buildSystemPromptVars(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
@@ -373,22 +374,25 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
+  availableIntegrationFamilies?: string[],
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
   const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
-  const composioTriggers = composioPlatform;
+  // Same gates as the webhook tools in mcp-server.ts: every trigger needs the
+  // host's webhook relay, and Composio's also need platform Composio.
+  const webhookEndpoints = webhookRelayAvailable();
+  const composioTriggers = composioPlatform && webhookEndpoints;
   const platformAccounts = composioPlatform;
-  const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
-  // Same gate as webhookEndpoints — do not tighten to also require proxy URL
-  // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
-  const platformServices = webhookEndpoints;
+  // Only the platform token: do not tighten to also require proxy URL.
+  const platformServices = process.env.PLATFORM_AUTH_ACTIVE === 'true';
   const modelHints = modelPromptHints || [];
   const connectedAccounts = connectedAccountGroups();
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
+  const drives = mountedDrives();
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
@@ -408,6 +412,7 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
     modelHints,
     hasConnectedAccounts: connectedAccounts.length > 0,
@@ -416,10 +421,12 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
-    hasMounts: mountPaths.length > 0,
-    // Each path is rendered as a JSON string literal. A folder name is user
-    // bytes, and a raw newline or `#` in it would read as prompt structure.
-    mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
+    hasMounts: drives.length > 0,
+    // Names and paths render as JSON string literals. Both are user bytes, and
+    // a raw newline or `#` in them would read as prompt structure.
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
+    mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
+    globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };
 }
@@ -437,6 +444,8 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
+  availableIntegrationFamilies?: string[],
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -446,6 +455,8 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    globalInstructions,
+    availableIntegrationFamilies,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -530,6 +541,7 @@ export interface ClaudeCodeProcessOptions {
   modelContextWindows?: ModelContextWindows;
   webSearchProvider?: string;
   webFetchProvider?: string;
+  availableIntegrationFamilies?: string[];
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -541,6 +553,7 @@ export interface ClaudeCodeProcessOptions {
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  globalInstructions?: string;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -560,6 +573,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private modelContextWindows: ModelContextWindows;
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
+  private availableIntegrationFamilies: string[] | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -594,6 +608,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   private availableEnvVars: string[] | undefined;
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
+  // Org-wide guidance from host Settings. Tracked per message like the
+  // capability policies, so an edit reaches long-lived sessions too.
+  private globalInstructions: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -673,6 +690,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.modelContextWindows = options.llmRuntime?.modelContextWindows ?? options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
+    this.availableIntegrationFamilies = options.availableIntegrationFamilies;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -687,6 +705,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
+    this.globalInstructions = options.globalInstructions;
     this.refreshSystemPrompt();
   }
 
@@ -705,6 +724,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
+      this.globalInstructions,
+      this.availableIntegrationFamilies,
     );
   }
 
@@ -959,6 +980,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       'widgets': createWidgetsMcpServer(),
       'agents': createAgentsMcpServer(() => this.sessionId),
       'chat': createChatMcpServer(() => this.sessionId),
+      ...(meetingsAvailable(this.availableIntegrationFamilies) ? { 'meetings': createMeetingsMcpServer() } : {}),
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
@@ -1044,6 +1066,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         // agent's other sessions — cross-session messaging we neither want nor
         // surface. SendMessage stays: it is how a spawned subagent is continued.
         'ListAgents',
+        // claude.ai Artifacts: publishes pages to claude.ai and runs a
+        // persistent watcher on them. Our agents ship dashboards and files
+        // through their own tools. Also switched off in `settings` and the
+        // env below; this keeps it out of the tool list either way.
+        'Artifact',
         // Only meaningful under the CLI's bundled code-review skill, which
         // `disableBundledSkills` (below) removes — without it the tool is dead
         // weight in every session's tool list.
@@ -1096,6 +1123,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Gamut plugin (`plugins` below); plugin skills and agent-created
         // skills under /workspace/.claude/skills are unaffected by this flag.
         disableBundledSkills: true,
+        // CLI 2.1.296 lists a built-in `plugin-authoring` skill (making
+        // "mods" to Claude Code's own terminal UI and hooks) that
+        // disableBundledSkills does not remove — verified with the
+        // claude-prompt-drift capture. Meaningless inside an agent session.
+        skillOverrides: { 'plugin-authoring': 'off' },
+        // CLI features that default on "once available" and would run work of
+        // their own inside the session. Both start ambient background tasks:
+        // the SDK lists them in background_tasks_changed, so they keep the
+        // session "working" (and the container awake) with nothing in the UI.
+        // - auto-dream: background memory consolidation forks.
+        // - Artifacts: the claude.ai Artifact tool and its live-update watcher.
+        // Off explicitly so a future SDK bump or server-side flag can't turn
+        // them on under us.
+        autoDreamEnabled: false,
+        enableArtifact: false,
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
@@ -1120,6 +1162,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
       // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
       env: withSpeedHeader(withAgentAttributionHeaders({
+        // The CLI caps concurrent workflow agents at min(16, cores - 2), which
+        // is 1-2 on our 2-core microVMs. Workflow agents mostly wait on the
+        // model API, so floor it at 4. Placed first so a custom env var wins.
+        CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: String(Math.min(16, Math.max(4, os.availableParallelism() - 2))),
         // Agent SDK 0.2.113+ replaces process.env with options.env instead of
         // overlaying it, so we must spread process.env explicitly or the Claude
         // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
@@ -1160,6 +1206,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        // The env-layer off switch for claude.ai Artifacts (see `settings`
+        // above). Pinned here for the same reason: an agent's custom env vars
+        // cannot turn it back on.
+        CLAUDE_CODE_DISABLE_ARTIFACT: '1',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it
@@ -1426,6 +1476,15 @@ export class ClaudeCodeProcess extends EventEmitter {
         ],
         PostToolUse: [
           {
+            matcher: 'Bash',
+            hooks: [
+              async (input) => {
+                const hint = mountIndexCommandHint(((input as any).tool_input as Record<string, unknown> | undefined)?.command);
+                return hint ? { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: hint } } : {};
+              },
+            ],
+          },
+          {
             matcher: 'Read',
             hooks: [
               async (input) => {
@@ -1670,7 +1729,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }): Promise<void> {
     const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
       ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
@@ -1699,7 +1758,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     const connectedAccountsChanged =
       connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
     const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
-    if (connectedAccountsChanged || remoteMcpsChanged) {
+    // Absent means an older host that never sends it: keep what we have.
+    // Compared trimmed, the way the prompt renders it, so whitespace-only
+    // edits do not cost a re-query.
+    const nextGlobalInstructions = options?.globalInstructions;
+    const globalInstructionsChanged = nextGlobalInstructions !== undefined &&
+      nextGlobalInstructions.trim() !== (this.globalInstructions ?? '').trim();
+    if (nextGlobalInstructions !== undefined) this.globalInstructions = nextGlobalInstructions;
+    if (connectedAccountsChanged || remoteMcpsChanged || globalInstructionsChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
       this.refreshSystemPrompt();
@@ -1742,6 +1808,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          this.globalInstructions,
+          this.availableIntegrationFamilies,
         );
       }
       this.reconcilePendingCapabilityReviews();
@@ -1778,6 +1846,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       speedChanged ||
       capabilityBlockChanged ||
       connectedAccountsChanged ||
+      globalInstructionsChanged ||
       contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -1794,6 +1863,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (connectedAccountsChanged) reasons.push('connected accounts changed');
+      if (globalInstructionsChanged) reasons.push('global instructions changed');
       if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
       if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
@@ -2293,24 +2363,23 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Abort the current query
     this.abortController!.abort();
 
-    // Drain SDK teardown before replacing a transcript or resuming it. The
-    // message iterator can finish before the child has flushed and exited.
-    await this.queryInstance?.return(undefined);
+    // Let the message loop consume the abort's terminal frames — the
+    // error_during_execution result and the idle that settles the tracker —
+    // before tearing the iterator down. Calling return() first ends the
+    // iteration at once and drops whatever the CLI wrote in response to the
+    // abort, which left every hard-interrupted session busy forever, beyond
+    // the reaper (session-gc-durability.e2e.test.ts guards this). Bounded, as
+    // in stop(); the generation guard covers the timeout path.
+    if (this.processingDone) {
+      await Promise.race([
+        this.processingDone.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    }
 
-    // Wait for the current processing to stop
-    await new Promise<void>((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (!this.isProcessing) {
-          clearInterval(checkInterval);
-          resolve();
-        }
-      }, 50);
-      // Timeout after 5 seconds
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        resolve();
-      }, 5000);
-    });
+    // Then drain SDK teardown before replacing a transcript or resuming it:
+    // the message iterator can finish before the child has flushed and exited.
+    await this.queryInstance?.return(undefined);
 
     // The SDK's own terminal lifecycle frames died with the query, so emit
     // them ourselves.

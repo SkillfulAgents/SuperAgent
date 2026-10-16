@@ -2,6 +2,7 @@ import { listAgents } from '@shared/lib/services/agent-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
@@ -138,6 +139,8 @@ class SessionAutoDeleteMonitor {
       await deleteNotificationsBySessionIds(deletedIds)
       // Same rule for "mark as unread" marks — see deleteSessionUnreadMarks.
       await deleteSessionUnreadMarks(agentSlug, deletedIds)
+      // And Todo board items started in them.
+      await unlinkTodosFromSessions(agentSlug, deletedIds)
     } catch (error) {
       console.error(
         `[SessionAutoDeleteMonitor] Failed to clean notification records for ${agentSlug}:`,

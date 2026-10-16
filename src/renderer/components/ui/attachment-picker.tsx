@@ -18,6 +18,9 @@ interface AttachmentPickerProps {
   disabled?: boolean
   buttonClassName?: string
   popoverAlign?: 'start' | 'center' | 'end'
+  /** Controls the menu, for a caller that opens it itself. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }
 
 // Cache recent files for 30s to avoid re-fetching on rapid open/close (#7)
@@ -31,8 +34,12 @@ export function AttachmentPicker({
   disabled,
   buttonClassName = 'h-[34px] w-[34px] shrink-0 p-0',
   popoverAlign = 'start',
+  open: openProp,
+  onOpenChange,
 }: AttachmentPickerProps) {
-  const [open, setOpen] = useState(false)
+  const [openState, setOpenState] = useState(false)
+  const open = openProp ?? openState
+  const setOpen = onOpenChange ?? setOpenState
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(recentFilesCache?.files ?? [])
   const [loadingPath, setLoadingPath] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -76,7 +83,7 @@ export function AttachmentPicker({
       setLoadingPath(null)
       setOpen(false)
     }
-  }, [onRecentFileAttach])
+  }, [onRecentFileAttach, setOpen])
 
   const showRecent = isElectron && recentFiles.length > 0 && onRecentFileAttach
 

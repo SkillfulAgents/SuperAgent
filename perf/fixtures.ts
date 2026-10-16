@@ -123,7 +123,7 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
     await fs.promises.mkdir(sessionsDir, { recursive: true })
 
     await fs.promises.writeFile(
-      path.join(workspace, 'CLAUDE.md'),
+      path.join(workspace, 'AGENTS.md'),
       `---\nname: Agent ${a}\ncreatedAt: "${new Date(BASE_TIME - a * 86_400_000).toISOString()}"\n---\n# Agent ${a}\n\nYou are a perf fixture.\n`,
     )
 

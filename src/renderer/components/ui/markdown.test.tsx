@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import {
+  Outlet,
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from '@tanstack/react-router'
+import { DialogContext } from '@renderer/context/dialog-context'
 import { Markdown } from './markdown'
 
 describe('Markdown', () => {
@@ -12,6 +21,62 @@ describe('Markdown', () => {
     expect(link).toHaveAttribute('href', 'https://example.com/docs')
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('opens a settings tab link in the app', () => {
+    const openSettings = vi.fn()
+    render(
+      <DialogContext.Provider value={{ openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }}>
+        <Markdown>{'Browser use is off. [Open Browser settings](/settings/browser)'}</Markdown>
+      </DialogContext.Provider>,
+    )
+    const link = screen.getByRole('link', { name: 'Open Browser settings' })
+    expect(link).not.toHaveAttribute('target')
+    fireEvent.click(link)
+    expect(openSettings).toHaveBeenCalledWith('browser')
+  })
+
+  it('keeps an unknown settings tab as an external link', () => {
+    const openSettings = vi.fn()
+    render(
+      <DialogContext.Provider value={{ openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }}>
+        <Markdown>{'[Open](/settings/not-a-tab)'}</Markdown>
+      </DialogContext.Provider>,
+    )
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
+  })
+
+  it('navigates an agent page link in the app', async () => {
+    const rootRoute = createRootRoute({
+      component: () => (
+        <>
+          <Markdown>{'Add the key on the [Secrets page](/agents/sales-helper/secrets).'}</Markdown>
+          <Outlet />
+        </>
+      ),
+    })
+    const secretsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: 'agents/$slug/secrets',
+      component: () => <p>Secrets for sales-helper</p>,
+    })
+    const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/' })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute, secretsRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    render(<RouterProvider router={router} />)
+
+    const link = await screen.findByRole('link', { name: 'Secrets page' })
+    expect(link).not.toHaveAttribute('target')
+    fireEvent.click(link)
+    expect(await screen.findByText('Secrets for sales-helper')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/agents/sales-helper/secrets')
+  })
+
+  it('keeps an unknown agent page as an external link', () => {
+    render(<Markdown>{'[Open](/agents/sales-helper/not-a-page)'}</Markdown>)
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
   })
 
   it('applies the shared plugins: GFM autolinks with fullwidth trail handling', () => {

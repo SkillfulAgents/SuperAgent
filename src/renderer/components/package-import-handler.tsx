@@ -23,7 +23,7 @@ import { seedAgentTemplatePrompt, useDraftsStore } from '@renderer/context/draft
 
 /**
  * A .agent/.skill package the user opened with the app, already classified by
- * the main process from its zip CONTENT (root CLAUDE.md vs SKILL.md) — the
+ * the main process from its zip CONTENT (root AGENTS.md vs SKILL.md) — the
  * file extension is never trusted for routing. Only the verdict lives here;
  * the bytes stay on disk until the user confirms the import.
  */

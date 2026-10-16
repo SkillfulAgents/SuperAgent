@@ -65,5 +65,5 @@ export abstract class FileHook {
 export function resolveToolFilePath(toolInput: Record<string, unknown>, workingDirectory: string): string | null {
   const filePath = toolInput.file_path as string | undefined
   if (!filePath) return null
-  return path.isAbsolute(filePath) ? filePath : path.resolve(workingDirectory, filePath)
+  return path.resolve(workingDirectory, filePath)
 }

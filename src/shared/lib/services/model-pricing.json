@@ -61,6 +61,21 @@
     "cacheCreation": 1.25,
     "cacheRead": 0.1
   },
+  "claude-haiku-5-5": {
+    "input": 0.1,
+    "output": 0.5,
+    "cacheCreation": 0.125,
+    "cacheCreation1h": 0.2,
+    "cacheRead": 0.01,
+    "longContext": {
+      "thresholdTokens": 100000,
+      "input": 0.5,
+      "output": 2.5,
+      "cacheCreation": 0.625,
+      "cacheCreation1h": 1,
+      "cacheRead": 0.05
+    }
+  },
   "claude-opus-4-1": {
     "input": 15,
     "output": 75,
@@ -192,6 +207,23 @@
     "cacheCreation1h": 4,
     "cacheRead": 0.2
   },
+  "claude-sonnet-5-5": {
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2.5,
+    "cacheCreation1h": 4,
+    "cacheRead": 0.1,
+    "historicalRates": [
+      {
+        "before": "2026-10-07T00:00:00Z",
+        "input": 2,
+        "output": 10,
+        "cacheCreation": 2.5,
+        "cacheCreation1h": 4,
+        "cacheRead": 0.2
+      }
+    ]
+  },
   "gpt-5.4": {
     "input": 2.5,
     "output": 15,
@@ -311,6 +343,23 @@
       "cacheRead": 0.4
     }
   },
+  "gpt-6.1-sol": {
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2.5,
+    "cacheRead": 0.1,
+    "speedMultipliers": {
+      "slow": 0.5,
+      "fast": 2
+    },
+    "longContext": {
+      "thresholdTokens": 272000,
+      "input": 4,
+      "output": 15,
+      "cacheCreation": 5,
+      "cacheRead": 0.2
+    }
+  },
   "gpt-6-astra": {
     "input": 10,
     "output": 50,
@@ -419,6 +468,27 @@
     "cacheCreation": 0.1,
     "cacheCreation1h": 0.2,
     "cacheRead": 0.010000000000000002
+  },
+  "muse-wonder-1.0": {
+    "input": 4,
+    "output": 20,
+    "cacheCreation": 4,
+    "cacheCreation1h": 8,
+    "cacheRead": 0.2
+  },
+  "gemini-4-argon": {
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2,
+    "cacheCreation1h": 4,
+    "cacheRead": 0.1
+  },
+  "glm-5.3": {
+    "input": 1.4,
+    "output": 4.4,
+    "cacheCreation": 1.4,
+    "cacheCreation1h": 2.8,
+    "cacheRead": 0.26
   },
   "glm-5.3-flash": {
     "input": 0.15,

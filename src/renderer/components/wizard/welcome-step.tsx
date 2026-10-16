@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { LoginButton, useFocusAfterCancel } from '@renderer/components/connections/login-button'
 import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import {

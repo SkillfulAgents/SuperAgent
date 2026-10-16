@@ -351,6 +351,55 @@
       "when": 1790125000109,
       "tag": "0049_message_author_integrations",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790976371108,
+      "tag": "0050_todos",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1791396692104,
+      "tag": "0051_foamy_morph",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1791587287364,
+      "tag": "0052_friendly_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1791852666500,
+      "tag": "0053_agent_avatars",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1791910293234,
+      "tag": "0054_todo_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1791924124387,
+      "tag": "0055_read_only_volumes",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1792093164911,
+      "tag": "0056_agent_integration_meetings",
+      "breakpoints": true
     }
   ]
 }

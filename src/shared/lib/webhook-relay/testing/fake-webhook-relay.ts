@@ -15,29 +15,41 @@ import type {
 export interface FakeWebhookRelay extends WebhookRelayService {
   /** Live registrations by consumer id, with their latest scope and endpoints. */
   readonly consumers: Map<string, RelayConsumer>
-  readonly log: Array<{ op: 'register' | 'update' | 'dispose'; id: string }>
+  readonly log: Array<{ op: 'register' | 'update' | 'retryNow' | 'dispose'; id: string }>
   /** Hands events to a consumer as a claim would, with its result per event id. */
   deliver(consumerId: string, events: readonly RelayEvent[]): Promise<Map<string, RelayAcceptResult>>
+  /** Replaces the snapshot and tells onChange listeners, as a status change would. */
+  setSnapshot(next: WebhookRelaySnapshot): void
   reset(): void
+}
+
+const AVAILABLE: WebhookRelaySnapshot = {
+  available: true,
+  unavailableReason: null,
+  transport: 'realtime',
+  lastClaimAt: null,
+  lastError: null,
 }
 
 export function createFakeWebhookRelay(): FakeWebhookRelay {
   const consumers = new Map<string, RelayConsumer>()
   const log: FakeWebhookRelay['log'] = []
-  const snapshot: WebhookRelaySnapshot = {
-    available: true,
-    unavailableReason: null,
-    transport: 'realtime',
-    lastClaimAt: null,
-    lastError: null,
-  }
+  const listeners = new Set<(snapshot: WebhookRelaySnapshot) => void>()
+  let snapshot = AVAILABLE
 
   return {
     kind: 'platform',
     consumers,
     log,
     snapshot: () => snapshot,
-    onChange: () => () => {},
+    onChange(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    setSnapshot(next) {
+      snapshot = next
+      for (const listener of listeners) listener(next)
+    },
     register(consumer): RelayConsumerHandle {
       if (consumers.has(consumer.id)) throw new Error(`consumer ${consumer.id} already registered`)
       let current: RelayConsumer = { ...consumer, endpointIds: [...consumer.endpointIds] }
@@ -54,6 +66,9 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
           }
           consumers.set(consumer.id, current)
           log.push({ op: 'update', id: consumer.id })
+        },
+        retryNow() {
+          if (!disposed) log.push({ op: 'retryNow', id: consumer.id })
         },
         dispose() {
           if (disposed) return
@@ -75,6 +90,8 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
     reset() {
       consumers.clear()
       log.length = 0
+      listeners.clear()
+      snapshot = AVAILABLE
     },
     createEndpoint: () => Promise.reject(new Error('createEndpoint is not faked')),
     updateEndpoint: () => Promise.reject(new Error('updateEndpoint is not faked')),

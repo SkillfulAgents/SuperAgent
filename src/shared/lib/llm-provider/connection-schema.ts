@@ -2,7 +2,7 @@ import { oauthCredentialSchema } from './oauth-schema'
 import { isReservedEnvVar } from '../container/reserved-env-vars'
 import { z } from 'zod'
 import { LLM_PROVIDER_IDS } from './provider-types'
-import { catalogOverrideEntrySchema, modelCatalogSchema, modelDefinitionSchema, type ModelDefinition, type CatalogOverrideEntry } from './model-catalog-schema'
+import { catalogOverrideEntrySchema, isFamilyAlias, modelCatalogSchema, modelDefinitionSchema, type ModelDefinition, type CatalogOverrideEntry } from './model-catalog-schema'
 
 export const modelSelectionSchema = z.object({
   llmProviderId: z.string().min(1),
@@ -134,6 +134,8 @@ export const connectionInfoSchema = z.object({
   isConfigured: z.boolean(),
   supportsDirectApi: z.boolean().optional(),
   supportsUsage: z.boolean().optional(),
+  supportsModelAvailability: z.boolean().optional(),
+  modelAvailabilityRevision: z.string().nullable().optional(),
   catalog: modelCatalogSchema,
   modelOverrides: connectionModelOverridesSchema,
   defaultModel: z.string().nullable(),
@@ -160,7 +162,7 @@ export function resolveSelection(
   const connection = connections.find((c) => c.id === selection.llmProviderId)
   const model =
     connection?.catalog.find((m) => m.id === selection.model) ??
-    connection?.catalog.find((m) => m.family === selection.model && m.isLatest)
+    connection?.catalog.find((m) => m.isLatest && isFamilyAlias(m, selection.model))
   return model ? { ...selection, wireModel: model.id } : null
 }
 

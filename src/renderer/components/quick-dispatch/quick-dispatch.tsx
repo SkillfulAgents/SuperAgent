@@ -19,6 +19,8 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { toast } from 'sonner'
 import { AgentMenu, AttachMenu, ModelEffortMenu } from './quick-dispatch-menus'
 import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
+import { SPEED_LABELS } from '@renderer/components/messages/speed-section'
+import { ModelTooltip } from '@renderer/components/messages/model-tooltip'
 import {
   MarkdownComposerEditor,
   selectAllMarkdownComposer,
@@ -107,6 +109,8 @@ export function QuickDispatch() {
     findCatalogModel(composerOptions.model, composerOptions.catalog) ??
     findCatalogModel(composerOptions.defaultModel, composerOptions.catalog) ??
     composerOptions.catalog[0]
+  const speedLabel: string | undefined = composerOptions.speed !== 'normal' ? SPEED_LABELS[composerOptions.speed] : undefined
+  const modelDetail = `${EFFORT_LABELS[composerOptions.effort]}${speedLabel ? ` · ${speedLabel}` : ''}`
 
   const composer = useMessageComposer({
     agentSlug,
@@ -420,15 +424,20 @@ export function QuickDispatch() {
           <TriggerButton active={openMenu === 'attach'} onClick={() => toggleMenu('attach')} testId="quick-dispatch-attach-trigger">
             <Paperclip className="h-3.5 w-3.5 shrink-0" />
           </TriggerButton>
-          <TriggerButton active={openMenu === 'model'} onClick={() => toggleMenu('model')} testId="composer-options-trigger">
-            <span className="truncate">
-              {selectedModel?.label}
-              <span className="text-muted-foreground">
-                {selectedModel?.label ? ' · ' : ''}{EFFORT_LABELS[composerOptions.effort]}
-              </span>
+          <ModelTooltip line={selectedModel ? `${selectedModel.label} · ${modelDetail}` : undefined} connection={composerOptions.connections?.find(c => c.id === composerOptions.llmProviderId)}>
+            {/* TriggerButton does not forward a ref, so the tooltip anchors to this wrapper. */}
+            <span className="inline-flex min-w-0">
+              <TriggerButton active={openMenu === 'model'} onClick={() => toggleMenu('model')} testId="composer-options-trigger">
+                <span className="truncate">
+                  {selectedModel?.label}
+                  <span className="text-muted-foreground">
+                    {selectedModel?.label ? ' · ' : ''}{modelDetail}
+                  </span>
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+              </TriggerButton>
             </span>
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-          </TriggerButton>
+          </ModelTooltip>
           <div className="ml-auto flex items-center gap-2">
             <span className="inline-flex">
               <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />

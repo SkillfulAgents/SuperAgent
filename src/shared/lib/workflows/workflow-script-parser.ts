@@ -23,6 +23,9 @@ import type { ParsedAgentCall, ParsedScript, WorkflowPhase } from './workflow-sc
 
 const IDENT_RE = /[A-Za-z0-9_$]/
 
+/** Regex source for a prompt the scanner cannot read: it never matches. */
+export const OPAQUE_PROMPT_REGEX = '(?!)'
+
 function isIdentChar(ch: string | undefined): boolean {
   return ch !== undefined && IDENT_RE.test(ch)
 }
@@ -202,23 +205,69 @@ function readStaticString(valSrc: string | undefined): string | null {
 }
 
 /**
- * Convert a prompt argument (string OR template literal) into an anchored regex
- * plus the positional list of `${expr}` source texts.
+ * Literal prompts match exactly; concatenations match their known leading text.
+ * Simple prompt helpers can supply that same prefix. Opaque expressions must
+ * never become a wildcard match: that would assign unrelated agents this phase.
  */
-function parsePromptArg(argSrc: string): { promptRegexSource: string; holeExprs: string[] } {
+function parsePromptArg(argSrc: string, helpers: Map<string, string>): { promptRegexSource: string; holeExprs: string[] } {
   const s = argSrc.trim()
   const q = s[0]
-  if (q === '"' || q === "'") {
-    const inner = readLiteralInner(s) ?? ''
-    return { promptRegexSource: '^' + escapeRegex(unescapeLiteral(inner)) + '$', holeExprs: [] }
+  if (q === '"' || q === "'" || q === '`') {
+    const end = skipQuote(s, 0)
+    const inner = s.slice(1, end - 1)
+    const { regexBody, holeExprs } = q === '`'
+      ? templateToRegex(inner)
+      : { regexBody: escapeRegex(unescapeLiteral(inner)), holeExprs: [] }
+    const tail = s.slice(end).trim()
+    // An all-dynamic template provides no evidence about which call ran.
+    const hasLiteralText = regexBody.split('([\\s\\S]*?)').join('').length > 0
+    if (hasLiteralText && tail === '') {
+      return { promptRegexSource: '^' + regexBody + '$', holeExprs }
+    }
+    if (tail.startsWith('+') && !tail.startsWith('++')) {
+      // The unknown concatenated suffix cannot delimit a template capture. Use
+      // only the fixed prefix, otherwise a trailing hole would capture "" and
+      // incorrectly resolve a label such as `search:${topic}` to `search:`.
+      const prefix = regexBody.split('([\\s\\S]*?)')[0]
+      if (prefix) return { promptRegexSource: '^' + prefix + '[\\s\\S]*$', holeExprs: [] }
+    }
   }
-  if (q === '`') {
-    const inner = readLiteralInner(s) ?? ''
-    const { regexBody, holeExprs } = templateToRegex(inner)
-    return { promptRegexSource: '^' + regexBody + '$', holeExprs }
+  const call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(s)
+  if (call && skipBalanced(s, call[0].length - 1, '(', ')') === s.length) {
+    const pattern = helpers.get(call[1])
+    if (pattern) return { promptRegexSource: pattern, holeExprs: [] }
   }
-  // Non-literal prompt (a variable / call) — match anything; rely on ordinal fallback.
-  return { promptRegexSource: '^[\\s\\S]*$', holeExprs: [] }
+  return { promptRegexSource: OPAQUE_PROMPT_REGEX, holeExprs: [] }
+}
+
+/**
+ * Recognize a top-level `const PROMPT = (args) => "distinct prefix" + ...`.
+ * Only the static leading string is used; neither the function nor its arguments
+ * are evaluated, and helper parameters do not become caller-side label captures.
+ */
+function readPromptHelper(src: string, start: number): { name: string; pattern: string } | null {
+  const declaration = /^const\s+([A-Za-z_$][\w$]*)\s*=\s*/.exec(src.slice(start))
+  if (!declaration) return null
+  let i = start + declaration[0].length
+  if (src[i] === '(') {
+    i = skipBalanced(src, i, '(', ')')
+  } else {
+    const param = /^[A-Za-z_$][\w$]*/.exec(src.slice(i))
+    if (!param) return null
+    i += param[0].length
+  }
+  const arrow = /^\s*=>\s*/.exec(src.slice(i))
+  if (!arrow) return null
+  i += arrow[0].length
+  if (src[i] !== '"' && src[i] !== "'") return null
+  const end = skipQuote(src, i)
+  const prefix = unescapeLiteral(src.slice(i + 1, end - 1))
+  if (!prefix) return null
+  const tail = src.slice(end)
+  const concat = /^\s*\+(?!\+)/.test(tail)
+  const literalOnly = /^\s*(?:;|$)/.test(tail) || /^\s*\n/.test(tail)
+  if (!concat && !literalOnly) return null
+  return { name: declaration[1], pattern: '^' + escapeRegex(prefix) + (concat ? '[\\s\\S]*' : '') + '$' }
 }
 
 /**
@@ -319,6 +368,8 @@ export function parseWorkflowScript(src: string): ParsedScript {
   let fanOutEnd = -1
   let fanOutKey: string | null = null
   let sourceIndex = 0
+  let braceDepth = 0
+  const promptHelpers = new Map<string, string>()
 
   let i = 0
   while (i < src.length) {
@@ -336,6 +387,13 @@ export function parseWorkflowScript(src: string): ParsedScript {
       while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
       i += 2
       continue
+    }
+
+    if (c === '{') braceDepth++
+    if (c === '}') braceDepth--
+    if (braceDepth === 0 && c === 'c' && !isIdentChar(src[i - 1])) {
+      const helper = readPromptHelper(src, i)
+      if (helper) promptHelpers.set(helper.name, helper.pattern)
     }
 
     const phaseParen = callParenAt(src, i, 'phase')
@@ -384,7 +442,7 @@ export function parseWorkflowScript(src: string): ParsedScript {
     if (agentParen >= 0) {
       const end = skipBalanced(src, agentParen, '(', ')')
       const args = splitTopLevelArgs(src.slice(agentParen + 1, end - 1))
-      const { promptRegexSource, holeExprs } = parsePromptArg(args[0] ?? '')
+      const { promptRegexSource, holeExprs } = parsePromptArg(args[0] ?? '', promptHelpers)
       const opts = args[1] ? parseObjectFields(args[1]) : {}
       agentCalls.push({
         promptRegexSource,

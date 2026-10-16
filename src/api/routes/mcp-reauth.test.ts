@@ -43,7 +43,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() })
 
 import mcpReauth from './mcp-reauth'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { getReplacementMcpId } from '@shared/lib/proxy/mcp-replacement'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }

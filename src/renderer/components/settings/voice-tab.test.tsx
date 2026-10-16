@@ -11,8 +11,9 @@ const state = {
   ttsConfigured: true,
   sttProvider: 'deepgram' as string | undefined,
   defaultVoice: undefined as string | undefined,
-  userVoice: undefined as { ttsVoice?: string; ttsSpeed?: number; holdSound?: boolean } | undefined,
+  userVoice: undefined as { ttsVoice?: string; ttsSpeed?: number; holdSound?: boolean; userMusic?: boolean } | undefined,
   platformConnected: false,
+  userMusicSupported: true,
 }
 const VOICES = [
   { id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear' },
@@ -57,6 +58,9 @@ const readAloudRestart = vi.fn()
 vi.mock('@renderer/lib/voice/services/read-aloud', () => ({ readAloud: { restart: () => readAloudRestart() } }))
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
   useReadAloud: () => ({ status: 'idle', isActive: false, toggle: vi.fn(), error: null }),
+}))
+vi.mock('@renderer/hooks/use-user-music', () => ({
+  userMusicSupported: () => state.userMusicSupported,
 }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: { connected: state.platformConnected } }),
@@ -188,6 +192,29 @@ describe('VoiceTab', () => {
     state.userVoice = { holdSound: false }
     renderWithProviders(<VoiceTab />)
     expect(screen.getByLabelText('Hold sound in voice mode')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('offers the person\'s own music as the hold sound where the window can reach a player', () => {
+    renderWithProviders(<VoiceTab />)
+    const toggle = screen.getByLabelText('Use my music as the hold sound')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { userMusic: false } })
+  })
+
+  it('the music choice stands on its own: a muted hold sound still lets voice mode pause the player', () => {
+    state.userVoice = { holdSound: false, userMusic: false }
+    renderWithProviders(<VoiceTab />)
+    const toggle = screen.getByLabelText('Use my music as the hold sound')
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(toggle).toBeEnabled()
+  })
+
+  it('does not mention music where there is no player to reach', () => {
+    state.userMusicSupported = false
+    renderWithProviders(<VoiceTab />)
+    expect(screen.queryByLabelText('Use my music as the hold sound')).toBeNull()
+    state.userMusicSupported = true
   })
 
   it('a saved speed reaches the reader, which drops its cached credentials', () => {

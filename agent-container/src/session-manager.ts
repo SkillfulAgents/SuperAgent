@@ -5,6 +5,7 @@ import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
@@ -36,8 +37,37 @@ interface SessionData {
   // one my snapshot came from?", and it must survive SessionData being rebuilt
   // on a cold resume.
   processInstanceId: string;
+  // Last stream subscriber left mid-turn; cleared when one attaches again.
+  streamDroppedMidTurn?: StreamCloseInfo & { at: number };
+  // Pending undelivered-turn report; cancelled if a subscriber comes back.
+  undeliveredTurnTimer?: ReturnType<typeof setTimeout>;
 }
 
+export interface StreamCloseInfo {
+  code: number;
+  reason: string;
+  socketAgeMs: number;
+  // Time since the last frame went out before the close: a steady value across
+  // reports points at an idle timeout somewhere on the path.
+  idleMsBeforeClose: number;
+  socketError?: string;
+}
+
+export interface UndeliveredTurnReport {
+  sessionId: string;
+  resultSubtype: string | undefined;
+  closeCode: number;
+  closeReason: string;
+  closedAt: string;
+  msSinceClose: number;
+  socketAgeMs: number;
+  idleMsBeforeClose: number;
+  socketError?: string;
+}
+
+// A host that saw the close reconnects within seconds and gets the result by
+// replay. Only one that never comes back is stuck showing "working".
+const DEFAULT_UNDELIVERED_TURN_GRACE_MS = 60_000;
 const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
 const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
 const IDLE_EVICTION_POLL_MS = 30_000;
@@ -112,6 +142,7 @@ export class SessionManager extends EventEmitter {
   // Kill switch for the parked subprocess, so a container can fall back to
   // cold starts (SESSION_PREWARM=0) without a redeploy.
   private readonly prewarmEnabled: boolean;
+  private readonly undeliveredTurnGraceMs: number;
 
   constructor(
     baseWorkingDirectory: string = '/workspace',
@@ -121,6 +152,7 @@ export class SessionManager extends EventEmitter {
       wakeGraceMs?: number;
       evictionPollMs?: number;
       prewarmEnabled?: boolean;
+      undeliveredTurnGraceMs?: number;
     }
   ) {
     super();
@@ -130,6 +162,7 @@ export class SessionManager extends EventEmitter {
     this.prewarmEnabled =
       options?.prewarmEnabled ?? !['0', 'false'].includes((process.env.SESSION_PREWARM ?? '').trim().toLowerCase());
     this.wakeGraceMs = options?.wakeGraceMs;
+    this.undeliveredTurnGraceMs = options?.undeliveredTurnGraceMs ?? DEFAULT_UNDELIVERED_TURN_GRACE_MS;
     this.idleEvictionMs =
       options?.idleEvictionMs ??
       idleEvictionMsFromEnv(
@@ -241,6 +274,7 @@ export class SessionManager extends EventEmitter {
     // never silently degrade a block to allow. Speed likewise — it ends up
     // interpolated into the ANTHROPIC_CUSTOM_HEADERS string.
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
+    const globalInstructions = globalInstructionsSchema.parse(request.globalInstructions);
     const speed = speedLevelSchema.parse(request.speed);
     const subagentModels = subagentModelCatalogSchema.parse(request.subagentModels);
     const modelContextWindows = modelContextWindowsSchema.parse(request.modelContextWindows);
@@ -267,6 +301,7 @@ export class SessionManager extends EventEmitter {
       ...request,
       speed,
       capabilityPolicies,
+      globalInstructions,
       subagentModels,
       modelContextWindows,
       workingDirectory,
@@ -289,6 +324,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows,
         webSearchProvider: request.webSearchProvider,
         webFetchProvider: request.webFetchProvider,
+        availableIntegrationFamilies: request.availableIntegrationFamilies,
         maxOutputTokens: request.maxOutputTokens,
         maxThinkingTokens: request.maxThinkingTokens,
         maxTurns: request.maxTurns,
@@ -297,6 +333,7 @@ export class SessionManager extends EventEmitter {
         effort: request.effort,
         speed,
         capabilityPolicies,
+        globalInstructions,
       });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
@@ -441,6 +478,7 @@ export class SessionManager extends EventEmitter {
       modelContextWindows,
       webSearchProvider: request.webSearchProvider,
       webFetchProvider: request.webFetchProvider,
+      availableIntegrationFamilies: request.availableIntegrationFamilies,
       maxOutputTokens: request.maxOutputTokens,
       maxThinkingTokens: request.maxThinkingTokens,
       maxTurns: request.maxTurns,
@@ -449,6 +487,7 @@ export class SessionManager extends EventEmitter {
       effort: request.effort,
       speed,
       capabilityPolicies,
+      globalInstructions,
       metadata: request.metadata,
     });
 
@@ -540,6 +579,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows: profile.modelContextWindows,
         webSearchProvider: profile.webSearchProvider,
         webFetchProvider: profile.webFetchProvider,
+        availableIntegrationFamilies: profile.availableIntegrationFamilies,
         maxOutputTokens: profile.maxOutputTokens,
         maxThinkingTokens: profile.maxThinkingTokens,
         maxTurns: profile.maxTurns,
@@ -548,6 +588,7 @@ export class SessionManager extends EventEmitter {
         effort: profile.effort,
         speed: profile.speed,
         capabilityPolicies: profile.capabilityPolicies,
+        globalInstructions: profile.globalInstructions,
       });
       try {
         await process.prewarm();
@@ -674,6 +715,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows: persisted.modelContextWindows,
         webSearchProvider: persisted.webSearchProvider,
         webFetchProvider: persisted.webFetchProvider,
+        availableIntegrationFamilies: persisted.availableIntegrationFamilies,
         maxOutputTokens: persisted.maxOutputTokens,
         maxThinkingTokens: persisted.maxThinkingTokens,
         maxTurns: persisted.maxTurns,
@@ -683,6 +725,7 @@ export class SessionManager extends EventEmitter {
         speed: persisted.speed,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
+        globalInstructions: persisted.globalInstructions,
       });
 
       const session: Session = {
@@ -900,7 +943,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -953,6 +996,9 @@ export class SessionManager extends EventEmitter {
     if (options?.capabilityPolicies !== undefined) {
       this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
     }
+    if (options?.globalInstructions !== undefined) {
+      this.persistence.updateGlobalInstructions(sessionId, options.globalInstructions);
+    }
 
     // Send to Claude Code process (messages are stored via handleMessage)
     await sessionData.process.sendMessage(content, uuid, options);
@@ -976,11 +1022,26 @@ export class SessionManager extends EventEmitter {
     }
 
     sessionData.subscribers.add(callback);
+    sessionData.streamDroppedMidTurn = undefined;
+    clearTimeout(sessionData.undeliveredTurnTimer);
+    sessionData.undeliveredTurnTimer = undefined;
 
     // Return unsubscribe function
     return () => {
       sessionData.subscribers.delete(callback);
     };
+  }
+
+  noteStreamClosed(sessionId: string, close: StreamCloseInfo): void {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData || sessionData.subscribers.size > 0 || !this.isTurnInFlight(sessionId)) return;
+    sessionData.streamDroppedMidTurn = { ...close, at: Date.now() };
+  }
+
+  // Busy from the send until the turn's final idle. process.isRunning() is not
+  // this: the query loop stays up between turns and is down mid cold restart.
+  isTurnInFlight(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.settlement.getState().runtime === 'busy';
   }
 
   // Broadcast an arbitrary message to all subscribers of a session
@@ -1032,6 +1093,7 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;
 
+    const wasBusy = sessionData.settlement.getState().runtime === 'busy';
     sessionData.settlement.handleMessage(message);
 
     // Release browser lock when an automated session's turn completes.
@@ -1043,6 +1105,35 @@ export class SessionManager extends EventEmitter {
       if (released) {
         console.log(`[Session ${sessionId}] Released browser lock (automated session turn completed)`);
       }
+    }
+
+    // A subscriber that left mid-turn, including between the result and the
+    // final idle, and never came back means the host is still showing the turn
+    // as working (SUP-991). The turn ends when the settlement tracker leaves
+    // busy, not on any result or idle frame: a queued message's result and a
+    // stale idle both arrive mid-turn.
+    const dropped = sessionData.streamDroppedMidTurn;
+    const endsTurn = wasBusy && sessionData.settlement.getState().runtime !== 'busy';
+    if (endsTurn && dropped && sessionData.subscribers.size === 0) {
+      sessionData.streamDroppedMidTurn = undefined;
+      const report: UndeliveredTurnReport = {
+        sessionId,
+        resultSubtype: sessionData.settlement.getState().lastResultSubtype ?? undefined,
+        closeCode: dropped.code,
+        closeReason: dropped.reason,
+        closedAt: new Date(dropped.at).toISOString(),
+        msSinceClose: Date.now() - dropped.at,
+        socketAgeMs: dropped.socketAgeMs,
+        idleMsBeforeClose: dropped.idleMsBeforeClose,
+        socketError: dropped.socketError,
+      };
+      clearTimeout(sessionData.undeliveredTurnTimer);
+      sessionData.undeliveredTurnTimer = setTimeout(() => {
+        sessionData.undeliveredTurnTimer = undefined;
+        if (this.sessions.get(sessionId) !== sessionData || sessionData.subscribers.size > 0) return;
+        this.emit('undelivered-turn', report);
+      }, this.undeliveredTurnGraceMs);
+      sessionData.undeliveredTurnTimer.unref?.();
     }
 
     // Notify all subscribers

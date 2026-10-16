@@ -2,7 +2,7 @@ import pLimit from 'p-limit'
 import { streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
 import type { FileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, joinWorkspacePath, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
-import { parseWorkflowScript } from './workflow-script-parser'
+import { OPAQUE_PROMPT_REGEX, parseWorkflowScript } from './workflow-script-parser'
 import {
   AgentMetaSchema,
   JournalLineSchema,
@@ -163,6 +163,11 @@ function joinAgents(input: {
   const { startedOrder, statusByAgent, firstPrompts, script } = input
   const usedCallIndices = new Set<number>()
   const nodes: JoinedAgent[] = []
+  const opaqueCalls = script.agentCalls.filter((call) => call.promptRegexSource === OPAQUE_PROMPT_REGEX)
+  const opaquePhases = new Set(opaqueCalls.map((call) => call.phase ?? call.sourcePhase))
+  const opaquePhase = opaqueCalls.length > 0 && opaquePhases.size === 1
+    ? { calls: opaqueCalls, phase: opaqueCalls[0].phase ?? opaqueCalls[0].sourcePhase }
+    : null
 
   startedOrder.forEach((agentId, index) => {
     const firstPrompt = firstPrompts.get(agentId) ?? ''
@@ -178,31 +183,34 @@ function joinAgents(input: {
 
     let chosen: ParsedScript['agentCalls'][number] | null = null
     let captures: string[] = []
-    let resolved: WorkflowAgentNode['resolved'] = 'prompt-regex'
-
     if (candidates.length === 1) {
       chosen = candidates[0].call
       captures = candidates[0].captures
-    } else if (candidates.length > 1) {
-      // Ambiguous: prefer a not-yet-used call site (disambiguates repeated prompts).
+    } else if (candidates.length > 1 && new Set(candidates.map(({ call }) => call.phase ?? call.sourcePhase)).size === 1) {
+      // Multiple matching calls within the same phase can share a prompt. Across
+      // different phases, arrival order cannot disambiguate a parallel fan-out.
       const unused = candidates.find((c) => !usedCallIndices.has(c.call.sourceIndex))
       const pick = unused ?? candidates[0]
       chosen = pick.call
       captures = pick.captures
-    } else {
-      // 2) fallback: next unused call site in source order (keeps the script's phase).
-      chosen = script.agentCalls.find((c) => !usedCallIndices.has(c.sourceIndex)) ?? null
-      resolved = 'ordinal-fallback'
     }
+    // No trustworthy match means no phase. Assigning the next unused call site
+    // sends the second/third child of a fan-out into unrelated later phases.
     if (chosen) usedCallIndices.add(chosen.sourceIndex)
+
+    // Every agent comes from some scanned call site. With no prompt match it must
+    // be one the scanner couldn't read, so if those all share a phase, that's its
+    // phase (e.g. `args.items.map(i => agent(i.prompt, { phase: 'Search' }))`).
+    const opaque = chosen ? null : opaquePhase
+    const fallbackCall = opaque && opaque.calls.length === 1 ? opaque.calls[0] : null
 
     nodes.push({
       agentId,
-      label: resolveLabel(chosen, captures, index),
-      phase: chosen ? chosen.phase ?? chosen.sourcePhase : null,
+      label: resolveLabel(chosen ?? fallbackCall, captures, index),
+      phase: chosen ? chosen.phase ?? chosen.sourcePhase : opaque ? opaque.phase : null,
       status: st.status, // 'running' may be promoted to 'failed' once transcript stats are layered on
       result: displayAgentResult(st.result),
-      resolved,
+      resolved: chosen ? 'prompt-regex' : opaque ? 'opaque-phase' : 'unresolved',
     })
   })
 

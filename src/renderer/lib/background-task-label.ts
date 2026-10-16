@@ -12,6 +12,12 @@ export interface BackgroundTaskRef {
   startedAt: number
   isWorkflow?: boolean
   isSubagent?: boolean
+  /** The runtime's task type (local_bash, local_agent, local_workflow, …). */
+  taskType?: string
+  /** The runtime's own description — the label when the transcript has no launching call. */
+  description?: string
+  /** A subagent task's type, from the runtime's task list (SDK >= 0.3.293). */
+  subagentType?: string
 }
 
 export interface BackgroundTaskLabel {
@@ -42,10 +48,14 @@ function resultText(result: unknown): string {
   return ''
 }
 
+// A task with no launching call in this transcript — a subagent launched it,
+// the call predates what is loaded, or its result has not arrived yet — still
+// has the runtime's description, and a subagent its type.
 function genericLabel(task: BackgroundTaskRef): BackgroundTaskLabel {
-  if (task.isWorkflow) return { title: 'Background workflow', detail: null }
-  if (task.isSubagent) return { title: 'Background agent', detail: null }
-  return { title: 'Background command', detail: null }
+  const detail = task.description || null
+  if (task.isWorkflow) return { title: 'Background workflow', detail }
+  if (task.isSubagent) return { title: task.subagentType || 'Background agent', detail }
+  return { title: 'Background command', detail }
 }
 
 /** Join every background task to the tool call that launched it. */
@@ -76,5 +86,9 @@ export function labelBackgroundTasks(
     }
   }
 
-  return tasks.map((task) => ({ ...task, ...(byTaskId.get(task.taskId) ?? genericLabel(task)) }))
+  return tasks.map((task) => {
+    const fromTranscript = byTaskId.get(task.taskId)
+    if (!fromTranscript) return { ...task, ...genericLabel(task) }
+    return { ...task, ...fromTranscript, detail: fromTranscript.detail ?? (task.description || null) }
+  })
 }

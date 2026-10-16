@@ -142,6 +142,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/ui/user-avatar.tsx': '<img src> — authenticated workspace photo, including the desktop cloud prefix',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
+  'components/volumes/volume-file-browser.tsx':
+    'volume preview and download URLs — handed to the shared file renderers and media/link elements, so they need a URL rather than apiFetch; getApiBaseUrl() preserves the desktop cloud prefix',
   'lib/workspace-file-url.ts':
     'getAgentFileUrl() — the one place a workspace-file URL is composed. Every file surface reaches it through describeWorkspaceFile() in lib/workspace-file.ts rather than directly: the preview tray\'s previewers, the unsupported renderer\'s and delivered-file row\'s download links, a sent message\'s image chip, and file:///workspace Markdown images resolved to the authenticated route. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
@@ -149,6 +151,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
     'EventSource — global notification stream',
   'hooks/use-message-stream.ts': 'EventSource — per-session message stream',
   'hooks/use-browser-stream.ts': 'WebSocket — browser view frames',
+  'components/meeting/meeting-participant-page.tsx':
+    'EventSource — the meeting bot\'s roster stream, token-gated by query because the bot\'s browser has no session',
 }
 
 // ---------------------------------------------------------------------------

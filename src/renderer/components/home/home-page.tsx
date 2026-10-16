@@ -15,9 +15,10 @@ import {
   type HomeCardHealthData,
   type HomeCardWebhook,
 } from '@shared/lib/types/home-card-health-schema'
-import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
+import { agentAvatarState, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
@@ -37,7 +38,7 @@ import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, Che
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { formatDistanceToNow } from 'date-fns'
+import { formatLastRun } from '@renderer/lib/last-run'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { toast } from 'sonner'
 
@@ -525,17 +526,17 @@ function AgentHealthCarousel({
  * unread), looping seamlessly via a duplicated run.
  */
 function TickerTitleMeta({
-  lastWorked,
+  lastRun,
   notifCount,
   notifState,
 }: {
-  lastWorked: string | null
+  lastRun: string
   notifCount: number
   notifState: SessionState
 }) {
   const run = (
     <span className="flex items-center gap-1.5 pr-8 text-muted-foreground">
-      <span>Last run {lastWorked ?? 'never'}</span>
+      <span>{lastRun}</span>
       <SessionStateDot state={notifState} />
       <span>
         {notifCount} new notification{notifCount !== 1 ? 's' : ''}
@@ -578,7 +579,7 @@ function AgentCard({
   health?: HomeCardHealthData
 }) {
   useRenderTracker('AgentCard')
-  const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
+  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Last run never'
 
   const isSmall = size === 'S'
 
@@ -603,13 +604,16 @@ function AgentCard({
       : null
 
   const titleOverlay = (
-    <div className="pointer-events-none absolute bottom-2 left-4 z-10 max-w-[calc(100%-2rem)] rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
-      <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
-      {isSmall && notifState ? (
-        <TickerTitleMeta lastWorked={lastWorked} notifCount={notifSessions.length} notifState={notifState} />
-      ) : (
-        <div className="truncate text-xs text-muted-foreground">Last run {lastWorked ?? 'never'}</div>
-      )}
+    <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
+      <AgentAvatar agent={agent} state={agentAvatarState(agent)} size={34} />
+      <div className="min-w-0">
+        <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
+        {isSmall && notifState ? (
+          <TickerTitleMeta lastRun={lastRun} notifCount={notifSessions.length} notifState={notifState} />
+        ) : (
+          <div className="truncate text-xs text-muted-foreground">{lastRun}</div>
+        )}
+      </div>
     </div>
   )
 
@@ -1133,7 +1137,7 @@ export function HomePage() {
             >
               <Waypoints className="h-8 w-8" />
               <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
-              <Button size="sm" onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
+              <Button size="sm" onClick={() => { void createUntitledAgent({ surface: 'home' }) }} disabled={isCreatingAgent}>
                 <Plus className="h-4 w-4 mr-1" />
                 New Agent
               </Button>
@@ -1172,7 +1176,7 @@ export function HomePage() {
               ) : (
                 <Button
                   size="sm"
-                  onClick={() => { void createUntitledAgent() }}
+                  onClick={() => { void createUntitledAgent({ surface: 'home' }) }}
                   className="app-no-drag"
                   disabled={isCreatingAgent}
                 >
@@ -1265,7 +1269,7 @@ export function HomePage() {
                 <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
                 <HomeEmptySkeletonBoard
                   ctaRef={emptyCtaRef}
-                  onCreate={() => { void createUntitledAgent() }}
+                  onCreate={() => { void createUntitledAgent({ surface: 'home' }) }}
                   isCreating={isCreatingAgent}
                 />
               </div>

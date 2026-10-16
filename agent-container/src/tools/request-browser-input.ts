@@ -5,7 +5,9 @@ import { getBrowserState } from '../browser-state'
 
 export const requestBrowserInputTool = tool(
   'request_browser_input',
-  `Request the user to manually interact with the browser. You MUST call this tool whenever you encounter a login page, CAPTCHA, 2FA challenge, password prompt, cookie consent, or any other obstacle that requires manual user interaction. Do NOT just describe the obstacle in chat — always use this tool.
+  `Hand the browser to the user for a step only a human can perform: a login page, password prompt, CAPTCHA, 2FA challenge, or passkey. When you hit one of these, call this tool instead of just describing the obstacle in chat.
+
+Do NOT use this tool when you only need information or a decision from the user (a phone number, address, which option to pick, whether to submit). Ask with AskUserQuestion instead, then fill the page yourself — the answer is easier to give and stays in the conversation for next time.
 
 The user will see your message and requirements in the UI alongside the browser preview. The tool blocks until the user clicks "Complete" or chooses to chat with you instead. After the user completes, take a browser snapshot to see the current state.
 

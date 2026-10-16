@@ -49,6 +49,8 @@ export const modelDefinitionSchema = z.object({
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
+  /** Older bare names that resolve like `family`, e.g. 'gpt' after the GPT tier split. */
+  familyAliases: z.array(z.string().min(1)).optional(),
   /** Concrete model selected when switching to this model vendor in the picker. */
   isDefault: z.boolean().optional(),
   // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.
@@ -90,6 +92,11 @@ export const modelDefinitionSchema = z.object({
 })
 
 export type ModelDefinition = z.infer<typeof modelDefinitionSchema>
+
+/** True when a bare name selects this model's family: its `family` or one of its `familyAliases`. */
+export function isFamilyAlias(model: ModelDefinition, name: string): boolean {
+  return model.family === name || (model.familyAliases?.includes(name) ?? false)
+}
 
 /**
  * Normalized provider-discovery result. Providers may source this from their

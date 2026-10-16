@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import MarkdownIt from 'markdown-it'
-import { baseKeymap, chainCommands, exitCode, newlineInCode, toggleMark } from 'prosemirror-commands'
+import type Token from 'markdown-it/lib/token.mjs'
+import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
 import { history, redo, undo } from 'prosemirror-history'
 import {
   InputRule,
@@ -17,7 +18,7 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode } from 'prosemirror-model'
+import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
@@ -27,7 +28,9 @@ import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Comma
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { findPotentialSecrets, type PotentialSecret, type SecuredSecret } from '@renderer/lib/secret-detection'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -62,10 +65,37 @@ const markdownSchema = new Schema({
   }),
 })
 
+/**
+ * A setext heading that spans several lines (YAML frontmatter is the common
+ * case) holds line breaks, which the heading schema rejects, so the parser
+ * would drop the whole heading. Keep those lines as a paragraph instead, with
+ * the underline as its last line.
+ */
+export function demoteMultilineSetextHeadings(tokens: Token[], src: string): void {
+  let lines: string[] | undefined
+  for (let i = 0; i < tokens.length - 2; i++) {
+    const open = tokens[i]
+    const inline = tokens[i + 1]
+    if (open.type !== 'heading_open' || (open.markup !== '-' && open.markup !== '=')) continue
+    if (!inline.content.includes('\n') || !open.map) continue
+    lines ??= src.split('\n')
+    // Drop any quote or list indentation prefix from the source line.
+    inline.content += `\n${lines[open.map[1] - 1].replace(/^[\s>]*/, '').trimEnd()}`
+    for (const token of [open, tokens[i + 2]]) {
+      token.type = token.nesting === 1 ? 'paragraph_open' : 'paragraph_close'
+      token.tag = 'p'
+      token.markup = ''
+    }
+  }
+}
+
 const markdownTokenizer = new MarkdownIt('commonmark', {
   html: false,
   linkify: true,
 }).enable('strikethrough')
+markdownTokenizer.core.ruler.after('block', 'demote_multiline_setext', (state) => {
+  demoteMultilineSetextHeadings(state.tokens, state.src)
+})
 
 const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   ...defaultMarkdownParser.tokens,
@@ -73,10 +103,41 @@ const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   s: { mark: 'strike' },
 })
 
+/**
+ * Escapes the markers that would start a block at the start of a line, so the
+ * line reads back as text. A paragraph's first line can start any list, quote,
+ * heading or divider. A continuation line can only be interrupted by a
+ * non-empty bullet or "1." item, a quote, a heading, or a setext underline.
+ */
+export function escapeLineStart(text: string, paragraphStart = false): string {
+  if (paragraphStart) {
+    return text
+      .replace(/^([ \t]*)([->]|\+(?=[ \t]|$)|#{1,6}(?=[ \t]|$))/, '$1\\$2')
+      .replace(/^([ \t]*\d{1,9})([.)])(?=[ \t]|$)/, '$1\\$2')
+  }
+  return text
+    .replace(/^([ \t]*)([-+](?=[ \t]+\S)|-[- \t]*$|=+[ \t]*$|>|#{1,6}(?=[ \t]|$))/, '$1\\$2')
+    .replace(/^([ \t]*0{0,8}1)([.)])(?=[ \t]+\S)/, '$1\\$2')
+}
+
 const markdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
     soft_break: (state) => state.write('\n'),
+    // Unmarked text that starts a source line, where block syntax would re-read as structure.
+    text: (state, node, parent, index) => {
+      const previous = index > 0 ? parent.child(index - 1).type.name : parent.type.name
+      if (parent.type.name === 'heading' && index === parent.childCount - 1 && node.marks.length === 0) {
+        // A trailing " #" would re-read as the heading's optional closing sequence and disappear.
+        state.text(state.esc(node.text ?? '').replace(/(^|[ \t])(#+[ \t]*)$/, '$1\\$2'), false)
+        return
+      }
+      if (node.marks.length > 0 || !['paragraph', 'soft_break', 'hard_break'].includes(previous)) {
+        defaultMarkdownSerializer.nodes.text(state, node, parent, index)
+        return
+      }
+      state.text(escapeLineStart(state.esc(node.text ?? ''), previous === 'paragraph'), false)
+    },
   },
   {
     ...defaultMarkdownSerializer.marks,
@@ -354,6 +415,96 @@ const removeTrailingSoftBreak: Command = (state, dispatch) => {
   return true
 }
 
+/** Replaces the code block around the cursor with a paragraph, keeping each code line as a line break, and puts the cursor at its start. */
+function codeBlockToText(state: EditorState, $from: ResolvedPos): Transaction {
+  const { nodes } = state.schema
+  // setBlockType would collapse the lines into spaces. Paragraphs drop leading whitespace on re-read.
+  const lines = $from.parent.textContent.replace(/\n+$/, '').split('\n').map((line) => line.replace(/^[ \t]+/, ''))
+  const content = lines.flatMap((line, i) => [...(i > 0 ? [nodes.soft_break.create()] : []), ...(line ? [state.schema.text(line)] : [])])
+  const tr = state.tr.replaceWith($from.before(), $from.after(), nodes.paragraph.create(null, content))
+  return tr.setSelection(TextSelection.create(tr.doc, $from.before() + 1))
+}
+
+/** Enter on an empty last line leaves a code block; in an empty block, it turns it into text. */
+const exitCodeBlockOnEmptyLine: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  const block = $from.parent
+  if (!empty || !block.type.spec.code || $from.parentOffset !== block.content.size) return false
+  const text = block.textContent
+  const blank = /^\n*$/.test(text)
+  if (!blank && !text.endsWith('\n')) return false
+  if (!dispatch) return true
+  if (blank) {
+    dispatch(codeBlockToText(state, $from).scrollIntoView())
+    return true
+  }
+  const { paragraph } = state.schema.nodes
+  const tr = state.tr.delete($from.pos - 1, $from.pos)
+  const after = $from.after() - 1
+  if (tr.doc.resolve(after).nodeAfter?.type !== paragraph) tr.insert(after, paragraph.create())
+  dispatch(tr.setSelection(TextSelection.create(tr.doc, after + 1)).scrollIntoView())
+  return true
+}
+
+/** Backspace at the start of a heading or code block, or of a quote's or list item's first paragraph, turns it into plain text. */
+const removeFormattingAtBlockStart: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  if (!empty || $from.parentOffset !== 0) return false
+  const { nodes } = state.schema
+  if ($from.parent.type === nodes.heading) return setBlockType(nodes.paragraph)(state, dispatch)
+  if ($from.parent.type.spec.code) {
+    if (dispatch) dispatch(codeBlockToText(state, $from).scrollIntoView())
+    return true
+  }
+  if ($from.index(-1) !== 0) return false
+  const container = $from.node(-1).type
+  if (container === nodes.list_item) return liftListItem(nodes.list_item)(state, dispatch)
+  if (container === nodes.blockquote) return lift(state, dispatch)
+  return false
+}
+
+/** Whether `pos` touches a link, checking the text on both sides since a link's mark does not extend past its end. */
+function isInLink(state: EditorState, pos: number): boolean {
+  const $pos = state.doc.resolve(pos)
+  const { link } = state.schema.marks
+  return !!(link.isInSet($pos.nodeAfter?.marks ?? []) ?? link.isInSet($pos.nodeBefore?.marks ?? []))
+}
+
+/** Whether `url` is one web or mail address the card can open and paste can link. */
+function isOpenableUrl(url: string): boolean {
+  if (!/^(https?:\/\/|mailto:)\S+$/i.test(url)) return false
+  try {
+    new URL(url)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Pasting a single URL over selected text links it, unless the result could hide or lose anything. */
+function linkPastedUrl(state: EditorState, text: string): Transaction | null {
+  // Select-all over a draft that is a single text block is still a selection inside one block.
+  const wholeSingleBlock = state.selection instanceof AllSelection && state.doc.childCount === 1 && !!state.doc.firstChild?.isTextblock
+  const selection = wholeSingleBlock ? TextSelection.between(state.selection.$from, state.selection.$to) : state.selection
+  const { link, code } = state.schema.marks
+  if (!(selection instanceof TextSelection) || selection.empty) return null
+  const { from, to, $from, $to } = selection
+  if (!$from.sameParent($to) || $from.parent.type.spec.code || state.doc.rangeHasMark(from, to, code)) return null
+  const url = text.trim()
+  // A link hides its URL, and secret highlighting only marks visible text.
+  if (!isOpenableUrl(url) || findPotentialSecrets(url).length > 0) return null
+  return state.tr.addMark(from, to, link.create({ href: markdownTokenizer.normalizeLink(url) })).scrollIntoView()
+}
+
+/** Backspace on an empty paragraph below a list joins it into the text above instead of adding an item. */
+const returnUpFromEmptyLine: Command = (state, dispatch, view) => {
+  const { $from } = state.selection
+  if ($from.parent.type !== state.schema.nodes.paragraph || $from.parent.content.size > 0) return false
+  const before = $from.node(-1).maybeChild($from.index(-1) - 1)
+  if (!before || before.isTextblock) return false
+  return joinTextblockBackward(state, dispatch, view)
+}
+
 function buildCaretSentinelPlugin(): Plugin {
   return new Plugin({
     appendTransaction: (transactions, _oldState, newState) => {
@@ -435,8 +586,8 @@ function buildInputRules() {
 function buildKeymap() {
   const { nodes, marks } = markdownSchema
   return keymap({
-    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule),
-    Enter: chainCommands(codeFenceCommand, splitListItem(nodes.list_item)),
+    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule, removeFormattingAtBlockStart, returnUpFromEmptyLine),
+    Enter: chainCommands(codeFenceCommand, exitCodeBlockOnEmptyLine, newlineInCode, splitListItem(nodes.list_item)),
     'Shift-Enter': chainCommands(newlineInCode, insertSoftBreak),
     Tab: sinkListItem(nodes.list_item),
     'Shift-Tab': liftListItem(nodes.list_item),
@@ -620,7 +771,7 @@ export function MarkdownComposerEditor({
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
-    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
+    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
     className
   )
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -637,6 +788,7 @@ export function MarkdownComposerEditor({
     onRemoveSecuredSecrets,
   })
   const lastMarkdownRef = useRef(value)
+  const [linkCard, setLinkCard] = useState<{ href: string; anchor: { current: Element } } | null>(null)
 
   latestRef.current = {
     onChange,
@@ -762,6 +914,9 @@ export function MarkdownComposerEditor({
       dispatchTransaction: (tr) => {
         const nextState = view.state.apply(tr)
         view.updateState(nextState)
+        // The link card closes on an edit or when the caret leaves every link. A click opens it before the caret moves there.
+        const leavesLink = tr.docChanged || (tr.selectionSet && !isInLink(nextState, nextState.selection.head))
+        if (leavesLink) setLinkCard(null)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
         if (!tr.docChanged) return
         const markdown = serializeComposerMarkdown(
@@ -770,6 +925,12 @@ export function MarkdownComposerEditor({
         )
         lastMarkdownRef.current = markdown
         if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
+      },
+      handleClick: (editorView, pos, event) => {
+        const link = editorView.editable && event.button === 0 && event.target instanceof Element ? event.target.closest('a') : null
+        const href = link?.getAttribute('href') ?? ''
+        if (link && isOpenableUrl(href)) setLinkCard({ href, anchor: { current: link } })
+        return false
       },
       handlePaste: (editorView, event) => {
         const hasFiles = Array.from(event.clipboardData?.items ?? [])
@@ -783,6 +944,11 @@ export function MarkdownComposerEditor({
         const text = event.clipboardData?.getData('text/plain')
         if (!text) return false
         event.preventDefault()
+        const linked = linkPastedUrl(editorView.state, text)
+        if (linked) {
+          editorView.dispatch(linked)
+          return true
+        }
         editorView.dispatch(
           editorView.state.tr
             .replaceSelection(markdownClipboardSlice(text))
@@ -819,6 +985,8 @@ export function MarkdownComposerEditor({
     tr.setSelection(TextSelection.atEnd(tr.doc))
     view.updateState(view.state.apply(tr))
     lastMarkdownRef.current = value
+    // The redraw detaches the link the card points at.
+    setLinkCard(null)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder, value])
 
@@ -826,6 +994,7 @@ export function MarkdownComposerEditor({
     const view = viewRef.current
     if (!view) return
     view.setProps({ editable: () => !disabled })
+    if (disabled) setLinkCard(null)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder])
 
@@ -843,5 +1012,29 @@ export function MarkdownComposerEditor({
     view.dispatch(view.state.tr.setMeta(secretDecorationsMeta, true).setMeta('addToHistory', false))
   }, [potentialSecrets, securedSecrets])
 
-  return <div ref={hostRef} className="contents" />
+  return (
+    <>
+      <div ref={hostRef} className="contents" />
+      <Popover open={linkCard !== null} onOpenChange={(open) => { if (!open) setLinkCard(null) }}>
+        {linkCard && <PopoverAnchor virtualRef={linkCard.anchor} />}
+        <PopoverContent
+          align="start"
+          className="w-auto max-w-80 px-2 py-1.5 text-xs"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            title={linkCard?.href}
+            className="block max-w-full truncate text-blue-500 hover:underline"
+            onClick={() => {
+              if (linkCard) void openExternalUrl(linkCard.href)
+              setLinkCard(null)
+            }}
+          >
+            {linkCard?.href}
+          </button>
+        </PopoverContent>
+      </Popover>
+    </>
+  )
 }

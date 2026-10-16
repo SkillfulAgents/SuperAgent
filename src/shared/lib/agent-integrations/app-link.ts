@@ -17,6 +17,23 @@ export function resolvePublicAppBaseUrl(request?: Request | string): string | nu
   return URL.parse(typeof request === 'string' ? request : request.url)?.origin ?? null
 }
 
+const LOOPBACK_OR_PRIVATE_HOST = /^(localhost|.*\.local|127(\.\d{1,3}){3}|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|0\.0\.0\.0|\[?::1\]?|\[?fc[0-9a-f]{2}:.*|\[?fd[0-9a-f]{2}:.*|\[?fe80:.*)$/i
+
+/**
+ * The URL a machine on the public internet can load this app at, or null.
+ * Only `HOST_PUBLIC_URL` counts, and only when it is https and not a loopback
+ * or private address: trusted origins and request hosts describe where
+ * browsers come from, not where a third-party service can reach us. Features
+ * that hand a page to an outside service (a meeting bot's camera) gate on this.
+ */
+export function resolveInternetAppBaseUrl(): string | null {
+  const configured = process.env.HOST_PUBLIC_URL?.trim()
+  if (!configured) return null
+  const url = URL.parse(configured)
+  if (!url || url.protocol !== 'https:' || LOOPBACK_OR_PRIVATE_HOST.test(url.hostname)) return null
+  return url.origin + url.pathname.replace(/\/+$/, '')
+}
+
 /**
  * Resolve the app surface + optional deep/web link for an agent.
  * Env reads stay inside this function (SUPERAGENT_PROTOCOL is assigned after

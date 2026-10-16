@@ -8,10 +8,10 @@ import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
-import { DeclineButton } from '@renderer/components/messages/decline-button'
+import { DeclineButton } from '@shared/lib/tools/requests/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -69,6 +69,7 @@ export function BrowserTrayContent({
 
   // Same decline/complete behavior as the in-chat request card, shared via the hook.
   const {
+    status,
     submittingAction,
     error: actionError,
     complete,
@@ -76,6 +77,7 @@ export function BrowserTrayContent({
   } = useBrowserInputActions({
     agentSlug,
     sessionId,
+    toolUseId: latestRequest?.toolUseId ?? null,
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
@@ -156,8 +158,8 @@ export function BrowserTrayContent({
                   {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
                 </span>
                 <DeclineButton
-                  onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
-                  disabled={submittingAction !== null}
+                  onDecline={decline}
+                  disabled={status !== 'pending'}
                   label="Decline"
                   showIcon={false}
                   size="sm"
@@ -168,11 +170,12 @@ export function BrowserTrayContent({
                   data-testid="browser-tray-decline-btn"
                 />
                 <Button
-                  onClick={() => complete(latestRequest.toolUseId)}
+                  onClick={() => complete()}
                   loading={submittingAction === 'completing'}
-                  disabled={submittingAction !== null}
+                  disabled={status !== 'pending'}
                   size="sm"
                   className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                  data-testid="browser-tray-complete-btn"
                 >
                   Done
                 </Button>

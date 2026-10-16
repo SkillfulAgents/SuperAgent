@@ -1,32 +1,15 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
+import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
 
-export interface FileTab {
-  kind: 'file'
-  filePath: string
+export interface FileTab extends PreviewFileTab {
   agentSlug: string
-  displayName: string
-  description?: string
-  /**
-   * Cache-busting token for this tab's file URL, bumped every time the file is
-   * (re)delivered or renamed. Seeded from the clock rather than 0 so a reload
-   * never reuses a URL an intermediary may still be serving a stale body for —
-   * the agent rewrites these files in place, so path alone is not an identity.
-   */
-  version: number
-  /** 1-based page currently shown when this tab contains a PDF. */
-  pdfPage: number
 }
 
-export interface FolderTab {
-  kind: 'folder'
-  rootPath: string
+export interface FolderTab extends PreviewFolderTab {
   agentSlug: string
-  displayName: string
-  expandedPaths: string[]
-  selectedPath?: string
-  query: string
 }
 
 export type PreviewTab = FileTab | FolderTab
@@ -58,40 +41,18 @@ export function getWorkspaceFileKey(agentSlug: string, filePath: string): string
   return `${agentSlug}:${filePath}`
 }
 
-/** Does this tab hold that agent's copy of that path? */
-function isFileTabFor(tab: PreviewTab, agentSlug: string, filePath: string): boolean {
-  return tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === filePath
-}
-
 /** The folder equivalent: two agents can have a browser open on the same root. */
 function isFolderTabFor(tab: PreviewTab, agentSlug: string, rootPath: string): tab is FolderTab {
   return tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.rootPath === rootPath
 }
 
-export interface CellRef {
-  /** 1-based data row index (header row excluded). */
-  row: number
-  /** 0-based column index, used to place the comment pin in the grid. */
-  col: number
-  /** Column header name (or "Column N" when the header is blank). */
-  column: string
-  /** Current cell value, included as context for the agent. */
-  value?: string
-}
-
-// TODO should create specific types for CSV / Image (x,y) and text, and FileComment can be a union of those with a `type` field. Deeper validation - if we have x we need y etc...
 export interface FileComment {
   id: string
   filePath: string
   /** Which agent's copy of `filePath` this is feedback on. */
   agentSlug: string
   text: string
-  selectedText?: string
-  x?: number
-  y?: number
-  cell?: CellRef
-  /** Playback position in seconds for audio/video comments (optionally paired with x/y in-frame). */
-  timestamp?: number
+  anchor: CommentAnchor
 }
 
 interface FilePreviewContextType {
@@ -123,14 +84,6 @@ interface FilePreviewContextType {
 }
 
 const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
-
-let lastFileVersion = 0
-
-/** Strictly increasing cache-busting token; clock-seeded, monotonic within a session. */
-function nextFileVersion(): number {
-  lastFileVersion = Math.max(Date.now(), lastFileVersion + 1)
-  return lastFileVersion
-}
 
 /** Tab and title label for a path. */
 function getDisplayName(filePath: string): string {
@@ -170,8 +123,10 @@ export function FilePreviewProvider({
   // state clears when switching sessions; otherwise derive from the active route.
   const sessionId = sessionIdProp !== undefined ? sessionIdProp : (view.kind === 'session' ? view.id : null)
 
-  const [openTabs, setOpenTabs] = useState<PreviewTab[]>([])
-  const [activeTabIndex, setActiveTabIndex] = useState(0)
+  const {
+    openTabs, setOpenTabs, activeTabIndex, setActiveTabIndex, openTab,
+    closeTab: closePreviewTab, setPdfPage: setPreviewPdfPage,
+  } = useFilePreviewTabs<PreviewTab>(getPreviewTabKey)
   // Keyed by getWorkspaceFileKey, not by path: see the note on that function.
   const [comments, setComments] = useState<Map<string, FileComment[]>>(new Map())
   const [isOpen, setIsOpen] = useState(false)
@@ -182,62 +137,25 @@ export function FilePreviewProvider({
     setActiveTabIndex(0)
     setComments(new Map())
     setIsOpen(false)
-  }, [sessionId])
+  }, [sessionId, setOpenTabs, setActiveTabIndex])
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
-    // Minted outside the updater: React may invoke an updater more than once per
-    // commit, and a token that changes between passes is a different file URL.
     const version = nextFileVersion()
-    setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => isFileTabFor(tab, agentSlug, filePath))
-      if (existingIndex >= 0) {
-        setActiveTabIndex(existingIndex)
-        setIsOpen(true)
-        const next = [...prev]
-        const existing = next[existingIndex] as FileTab
-        next[existingIndex] = { ...existing, version }
-        return next
-      }
-      const newTab: FileTab = {
-        kind: 'file',
-        filePath,
-        agentSlug,
-        displayName: getDisplayName(filePath),
-        description,
-        version,
-        pdfPage: 1,
-      }
-      const next = [...prev, newTab]
-      setActiveTabIndex(next.length - 1)
-      setIsOpen(true)
-      return next
-    })
-  }, [])
+    openTab({
+      kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath),
+      description, version, pdfPage: 1,
+    }, existing => ({ ...existing, version }))
+    setIsOpen(true)
+  }, [openTab])
 
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
     const rootPath = normalizeFolderPath(folderPath)
-    setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => isFolderTabFor(tab, agentSlug, rootPath))
-      if (existingIndex >= 0) {
-        setActiveTabIndex(existingIndex)
-        setIsOpen(true)
-        return prev
-      }
-
-      const newTab: FolderTab = {
-        kind: 'folder',
-        rootPath,
-        agentSlug,
-        displayName: getDisplayName(rootPath),
-        expandedPaths: [rootPath],
-        query: '',
-      }
-      const next = [...prev, newTab]
-      setActiveTabIndex(next.length - 1)
-      setIsOpen(true)
-      return next
+    openTab({
+      kind: 'folder', rootPath, agentSlug, displayName: getDisplayName(rootPath),
+      expandedPaths: [rootPath], query: '',
     })
-  }, [])
+    setIsOpen(true)
+  }, [openTab])
 
   const toggleFolder = useCallback((rootPath: string, agentSlug: string, folderPath: string) => {
     setOpenTabs(prev => prev.map(tab => {
@@ -247,24 +165,24 @@ export function FilePreviewProvider({
       else expanded.add(folderPath)
       return { ...tab, expandedPaths: Array.from(expanded) }
     }))
-  }, [])
+  }, [setOpenTabs])
 
   const setFolderQuery = useCallback((rootPath: string, agentSlug: string, query: string) => {
     setOpenTabs(prev => prev.map(tab => (
       isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, query } : tab
     )))
-  }, [])
+  }, [setOpenTabs])
 
   const selectFolderEntry = useCallback((rootPath: string, agentSlug: string, entryPath: string) => {
     setOpenTabs(prev => prev.map(tab => (
       isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, selectedPath: entryPath } : tab
     )))
-  }, [])
+  }, [setOpenTabs])
 
   const renameFilePath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
     const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
-      if (isFileTabFor(tab, agentSlug, oldPath)) {
+      if (tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === oldPath) {
         return {
           ...tab,
           filePath: newPath,
@@ -289,16 +207,10 @@ export function FilePreviewProvider({
       )
       return next
     })
-  }, [])
+  }, [setOpenTabs])
 
   const closeTab = useCallback((tabKey: string) => {
-    setOpenTabs(prev => {
-      const idx = prev.findIndex(tab => getPreviewTabKey(tab) === tabKey)
-      if (idx < 0) return prev
-      // The path comes off the tab rather than back out of the key: a key is an
-      // identity, not a container, and it stopped being parseable the moment
-      // the agent slug joined it.
-      const closed = prev[idx]
+    closePreviewTab(tabKey, (closed, remaining) => {
       if (closed.kind === 'file') {
         const commentKey = getWorkspaceFileKey(closed.agentSlug, closed.filePath)
         setComments(current => {
@@ -308,20 +220,9 @@ export function FilePreviewProvider({
           return next
         })
       }
-      const next = prev.filter((_, i) => i !== idx)
-      if (next.length === 0) {
-        setIsOpen(false)
-        setActiveTabIndex(0)
-      } else {
-        setActiveTabIndex(curr => {
-          if (curr >= next.length) return next.length - 1
-          if (curr > idx) return curr - 1
-          return curr
-        })
-      }
-      return next
+      if (remaining.length === 0) setIsOpen(false)
     })
-  }, [])
+  }, [closePreviewTab])
 
   const removeFilePath = useCallback((filePath: string, agentSlug: string) => {
     closeTab(`file:${getWorkspaceFileKey(agentSlug, filePath)}`)
@@ -330,7 +231,7 @@ export function FilePreviewProvider({
         ? { ...tab, selectedPath: undefined }
         : tab
     )))
-  }, [closeTab])
+  }, [closeTab, setOpenTabs])
 
   const renameDirectoryPath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
     const version = nextFileVersion()
@@ -381,7 +282,7 @@ export function FilePreviewProvider({
       }
       return changed ? next : prev
     })
-  }, [])
+  }, [setOpenTabs])
 
   const removeDirectoryPath = useCallback((directoryPath: string, agentSlug: string) => {
     setOpenTabs(prev => {
@@ -428,26 +329,15 @@ export function FilePreviewProvider({
       }
       return changed ? next : prev
     })
-  }, [])
+  }, [setOpenTabs, setActiveTabIndex])
 
   const setActiveTab = useCallback((index: number) => {
     setActiveTabIndex(index)
-  }, [])
+  }, [setActiveTabIndex])
 
   const setPdfPage = useCallback((filePath: string, agentSlug: string, page: number) => {
-    const nextPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1
-    setOpenTabs(prev => {
-      const index = prev.findIndex(tab => isFileTabFor(tab, agentSlug, filePath))
-      if (index < 0) return prev
-
-      const file = prev[index] as FileTab
-      if (file.pdfPage === nextPage) return prev
-
-      const next = [...prev]
-      next[index] = { ...file, pdfPage: nextPage }
-      return next
-    })
-  }, [])
+    setPreviewPdfPage(`file:${getWorkspaceFileKey(agentSlug, filePath)}`, page)
+  }, [setPreviewPdfPage])
 
   const close = useCallback(() => {
     setIsOpen(false)
