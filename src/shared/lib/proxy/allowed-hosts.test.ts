@@ -29,6 +29,10 @@ describe('matchesHostPatterns', () => {
   it('matches when any pattern in the list matches', () => {
     expect(matchesHostPatterns('api.x.com', ['api.twitter.com', 'api.x.com'])).toBe(true)
   })
+
+  it('matches any parsed hostname, so a block list still catches unusual ones', () => {
+    expect(matchesHostPatterns('a_b.evil.com', ['*.evil.com'])).toBe(true)
+  })
 })
 
 describe('isHostAllowed', () => {
@@ -141,6 +145,66 @@ describe('isHostAllowed', () => {
       expect(isHostAllowed('salesforce', 'evil.salesforce.com.evil.com')).toBe(
         false
       )
+    })
+  })
+
+  describe('host string validation', () => {
+    // Each ends in `.atlassian.net`, but `https://<host>/` does not name that
+    // host: the URL parser reads another host, or none at all.
+    it.each([
+      ['a fragment', 'evil.com#.atlassian.net'],
+      ['a query', 'evil.com?.atlassian.net'],
+      ['a backslash', 'evil.com\\.atlassian.net'],
+      ['a slash', 'evil.com/.atlassian.net'],
+      ['userinfo', 'user@evil.com.atlassian.net'],
+      ['a port', 'evil.com:1.atlassian.net'],
+      ['a tab', 'evil.com\t.atlassian.net'],
+      ['a newline', 'evil.com\n.atlassian.net'],
+      ['a space', 'evil.com .atlassian.net'],
+      ['a percent-escape', 'evil.com%23.atlassian.net'],
+      ['an escaped dot', 'evil%2ecom.atlassian.net'],
+      ['brackets', '[::1].atlassian.net'],
+      ['an empty label', 'acme..atlassian.net'],
+      ['invalid punycode', 'xn--a.atlassian.net'],
+    ])('rejects a host with %s', (_, host) => {
+      expect(isHostAllowed('jira', host)).toBe(false)
+    })
+
+    it('rejects a port on an otherwise allowed host', () => {
+      expect(isHostAllowed('github', 'api.github.com:443')).toBe(false)
+      expect(isHostAllowed('jira', 'acme.atlassian.net:8443')).toBe(false)
+    })
+
+    it('ignores case, as DNS does', () => {
+      expect(isHostAllowed('jira', 'Acme.atlassian.net')).toBe(true)
+      expect(isHostAllowed('jira', 'ACME.ATLASSIAN.NET')).toBe(true)
+      expect(isHostAllowed('github', 'API.GitHub.com')).toBe(true)
+      expect(isHostAllowed('github', 'Evil-GitHub.com')).toBe(false)
+      expect(isHostAllowed('jira', 'EVIL.COM#.ATLASSIAN.NET')).toBe(false)
+    })
+
+    it('rejects a non-ASCII letter that lowercases to an ASCII one', () => {
+      // U+212A KELVIN SIGN lowercases to `k`.
+      expect(isHostAllowed('jira', 'Kacme.atlassian.net')).toBe(false)
+    })
+
+    it('rejects a trailing dot', () => {
+      expect(isHostAllowed('jira', 'acme.atlassian.net.')).toBe(false)
+    })
+
+    it('allows real subdomains with digits and inner hyphens', () => {
+      expect(isHostAllowed('salesforce', 'acme--dev.sandbox.my.salesforce.com')).toBe(true)
+      expect(isHostAllowed('mailchimp', 'us21.api.mailchimp.com')).toBe(true)
+      expect(isHostAllowed('shopify', 'my-store-2.myshopify.com')).toBe(true)
+    })
+
+    it('allows every listed host and a subdomain of every wildcard', () => {
+      for (const [toolkit, patterns] of Object.entries(TOOLKIT_ALLOWED_HOSTS)) {
+        for (const pattern of patterns) {
+          const host = pattern.startsWith('*.') ? `acme-1${pattern.slice(1)}` : pattern
+          expect(isHostAllowed(toolkit, host), `${toolkit}: ${host}`).toBe(true)
+        }
+      }
     })
   })
 

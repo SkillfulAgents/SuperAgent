@@ -740,6 +740,64 @@ describe('proxy route', () => {
   })
 
   // =========================================================================
+  // Target host validation, against the real allowlist
+  // =========================================================================
+  describe('target host validation', () => {
+    async function useRealAllowlist() {
+      const actual = await vi.importActual<typeof import('@shared/lib/proxy/allowed-hosts')>(
+        '@shared/lib/proxy/allowed-hosts'
+      )
+      mockIsHostAllowed.mockImplementation(actual.isHostAllowed)
+    }
+
+    // The route param arrives percent-decoded: `%23` reaches the route as `#`.
+    it.each([
+      'evil.com%23.atlassian.net',
+      'evil.com%3F.atlassian.net',
+      'evil.com%5C.atlassian.net',
+      'evil.com%23%40acme.atlassian.net',
+      'evil.com%09.atlassian.net',
+      'evil.com%2523.atlassian.net',
+      'Evil.com%23.Atlassian.net',
+    ])('rejects %s before policy or forwarding', async (host) => {
+      setupSuccessPath({ toolkit: 'jira' })
+      await useRealAllowlist()
+
+      const res = await makeRequest(
+        `/api/proxy/my-agent/acc-123/${host}/rest/api/3/myself`,
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(403)
+      expect((await res.json()).error).toContain('not allowed')
+      expect(mockResolveApiPolicy).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).not.toHaveBeenCalled()
+      expect(mockInsertValues).toHaveBeenCalledOnce()
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.toolkit).toBe('jira')
+      expect(entry.errorMessage).toContain('not allowed')
+    })
+
+    it.each([
+      ['jira', 'acme.atlassian.net', 'acme.atlassian.net'],
+      ['jira', 'Acme.atlassian.net', 'acme.atlassian.net'],
+      ['github', 'API.GitHub.com', 'api.github.com'],
+    ])('forwards %s at %s to %s', async (toolkit, host, expectedHost) => {
+      setupSuccessPath({ toolkit })
+      await useRealAllowlist()
+
+      const res = await makeRequest(
+        `/api/proxy/my-agent/acc-123/${host}/rest/api/3/myself`,
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
+      expect(new URL(targetUrl).hostname).toBe(expectedHost)
+    })
+  })
+
+  // =========================================================================
   // Account status checks
   // =========================================================================
   describe('account status checks', () => {
