@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
   sessionError: null as Error | null,
   refetchSession: vi.fn(),
-  providerError: null as object | null,
+  providerErrorWithholds: false,
   canUseAgent: true,
 }))
 vi.mock('@tanstack/react-router', () => ({
@@ -29,7 +29,7 @@ vi.mock('@renderer/hooks/use-sessions', async (importOriginal) => ({
   useSession: () => ({ data: { name: 'Plan the launch' }, error: mocks.sessionError, refetch: mocks.refetchSession }),
 }))
 vi.mock('@renderer/components/provider-error/provider-error-placement', () => ({
-  useShownProviderError: () => mocks.providerError,
+  useProviderErrorWithholdsComposer: () => mocks.providerErrorWithholds,
 }))
 vi.mock('@shared/lib/tools/requests/use-pending-requests', () => ({
   usePendingRequests: () => ({ items: mocks.requests, count: mocks.requests.length }),
@@ -110,7 +110,7 @@ describe('VoiceModeOrb', () => {
     mocks.routeSessionId = undefined
     mocks.requests = []
     mocks.sessionError = null
-    mocks.providerError = null
+    mocks.providerErrorWithholds = false
     mocks.canUseAgent = true
     const saved = new Map<string, string>()
     vi.stubGlobal('localStorage', {
@@ -206,9 +206,9 @@ describe('VoiceModeOrb', () => {
     expect(isAnyVoiceModeActive()).toBe(false)
   })
 
-  it('pauses the conversation while a provider error waits at the composer', () => {
+  it('pauses the conversation while a blocked paywall withholds the composer', () => {
     mocks.routeSessionId = 'session-b'
-    mocks.providerError = { current: {}, resolved: {} }
+    mocks.providerErrorWithholds = true
     renderOrb()
     expect(screen.getByTestId('voice-mode-orb-notice')).toHaveTextContent('Needs your input')
     expect(mocks.useVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))

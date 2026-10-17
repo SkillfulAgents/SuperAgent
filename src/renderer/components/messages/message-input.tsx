@@ -429,9 +429,14 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   // optimistic copy and the selected model.
   const { submitMessage } = composer
   const voiceSubmitRef = useRef<((text: string) => Promise<boolean>) | undefined>(undefined)
-  voiceSubmitRef.current = (text) => {
-    voiceSendRef.current = true
-    return submitMessage(text).finally(() => { voiceSendRef.current = false })
+  // Set only for the voice session's own render: switching to another session
+  // re-renders this composer before its view unregisters, and an utterance in
+  // between must not go to the newly opened session.
+  if (voiceModeOn) {
+    voiceSubmitRef.current = (text) => {
+      voiceSendRef.current = true
+      return submitMessage(text).finally(() => { voiceSendRef.current = false })
+    }
   }
   const voiceFrameRef = useRef<HTMLDivElement>(null)
   useEffect(() => {

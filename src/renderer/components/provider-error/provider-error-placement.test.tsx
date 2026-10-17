@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react'
-import { useEffect, useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
+import { PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT, PLATFORM_PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { createAssistantMessage, createCompactBoundary, createUserMessage } from '@renderer/test/factories'
 
-import { currentProviderError, currentRoutedProviderError, ProviderErrorPlacement } from './provider-error-placement'
+import { currentProviderError, currentRoutedProviderError, ProviderErrorPlacement, useProviderErrorWithholdsComposer } from './provider-error-placement'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 
 const mockedRegistry = vi.hoisted(() => vi.fn())
@@ -35,6 +37,16 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: { connected: false, platformBaseUrl: null, orgId: null } }),
+}))
+
+const mockBillingInfo = {
+  isLoading: false,
+  data: undefined as { billing: { access?: { allowed: boolean }; subscription: { paymentStatus: string } } } | undefined,
+  dataUpdatedAt: 0,
+  error: null,
+}
+vi.mock('@renderer/hooks/use-billing-info', () => ({
+  useBillingInfo: () => mockBillingInfo,
 }))
 
 const composerError: ProviderErrorPresentation = {
@@ -312,5 +324,49 @@ describe('ProviderErrorPlacement', () => {
     mockMessages.push(errorMessage(inlineError))
     mount('inline')
     expect(screen.getByTestId('provider-error-placement-inline')).toBeInTheDocument()
+  })
+})
+
+describe('useProviderErrorWithholdsComposer', () => {
+  const paywall: ProviderErrorPresentation = {
+    severity: 'error',
+    icon: 'circle-dollar-sign',
+    message: '**You need more usage credit to continue** Subscribe or top up.',
+    component: PLATFORM_PAYWALL_COMPONENT,
+    placement: 'composer',
+  }
+  const notInPlan: ProviderErrorPresentation = {
+    severity: 'warning',
+    icon: 'lock',
+    message: 'Claude Opus is not in your plan.',
+    component: PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT,
+    placement: 'composer',
+  }
+  const billingAccess = (allowed: boolean) => ({ billing: { access: { allowed }, subscription: { paymentStatus: 'current' } } })
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
+  )
+  const withholds = () => renderHook(() => useProviderErrorWithholdsComposer('s', 'a'), { wrapper }).result.current
+
+  beforeEach(() => {
+    Object.assign(mockStreamState, idle, { activeStartTime: null })
+    mockMessages.length = 0
+    mockBillingInfo.data = billingAccess(false)
+  })
+
+  it('withholds the composer for a paywall while billing still denies access', () => {
+    mockMessages.push(errorMessage(paywall))
+    expect(withholds()).toBe(true)
+  })
+
+  it('lets go once billing allows access, though the paywall row is still the current error', () => {
+    mockMessages.push(errorMessage(paywall))
+    mockBillingInfo.data = billingAccess(true)
+    expect(withholds()).toBe(false)
+  })
+
+  it('does not withhold the composer for a composer error that is not a paywall', () => {
+    mockMessages.push(errorMessage(notInPlan))
+    expect(withholds()).toBe(false)
   })
 })

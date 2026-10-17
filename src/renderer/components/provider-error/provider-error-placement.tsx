@@ -7,8 +7,10 @@ import type {
 import { isProviderFacingError, type ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
+import { extractSubscriptionRequired, PLATFORM_PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
 
 import { resolveProviderError } from './provider-error-registry'
+import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
 
 export interface CurrentProviderError {
   message: string
@@ -93,7 +95,7 @@ export interface ProviderErrorSlot {
 }
 
 /** The session's current provider error, when its presentation targets `placement`. */
-export function useShownProviderError(placement: Placement, sessionId: string | null, agentSlug: string) {
+function useShownProviderError(placement: Placement, sessionId: string | null, agentSlug: string) {
   const { isActive, activeStartTime, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
   // A turn that starts on top of a persisted error answers it. A short turn can go idle
@@ -112,6 +114,23 @@ export function useShownProviderError(placement: Placement, sessionId: string | 
   }, [isActive, error, apiErrorCode, errorPresentation, messages, turn.answeredErrorId])
   const resolved = current ? resolveProviderError(current.presentation) : null
   return current && resolved && resolved.placement === placement ? { current, resolved } : null
+}
+
+/**
+ * Whether the session's error withholds its composer, as the card itself decides: a
+ * paywall while billing still denies access. A cleared paywall's row stays current
+ * until the next turn answers it, so the shown error alone would hold voice forever.
+ */
+export function useProviderErrorWithholdsComposer(sessionId: string | null, agentSlug: string): boolean {
+  const shown = useShownProviderError('composer', sessionId, agentSlug)
+  const paywall = shown?.current.presentation?.component === PLATFORM_PAYWALL_COMPONENT ? shown.current : null
+  const billing = usePlatformPaywallBilling(
+    paywall ? extractSubscriptionRequired(paywall.message) : undefined,
+    paywall?.presentation?.href ?? null,
+    paywall?.live ?? false,
+    paywall !== null,
+  )
+  return paywall !== null && billing.blocked
 }
 
 // Renders the session's current provider error above children when its presentation

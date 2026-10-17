@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, act, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, waitFor, act, fireEvent, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
 import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
@@ -187,6 +187,12 @@ vi.mock('@renderer/hooks/use-agents', async (importOriginal) => ({
 }))
 
 describe('MessageInput', () => {
+  // A test that ends in voice mode sends the exit notice a tick after unmount: let it land here, not in the next test.
+  afterEach(async () => {
+    cleanup()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockCreateSession.mutateAsync.mockReset().mockResolvedValue({ id: 'new-123', initialMessageUuid: 'initial-uuid' })
@@ -639,6 +645,21 @@ describe('MessageInput', () => {
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       await userEvent.click(screen.getByTestId('voice-mode-exit'))
       await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+    })
+
+    it('sends an utterance finished while another session opens to the voice session', async () => {
+      mockCanUseVoiceMode = true
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      const before = mockUseVoiceMode.mock.calls.length
+
+      rerender(<MessageInput sessionId="s-2" agentSlug="agent-1" />)
+      // The first render on s-2 still holds s-1's composer view: its effects have not unregistered it yet.
+      const { send } = mockUseVoiceMode.mock.calls[before]?.[0] as { send(text: string): Promise<boolean> }
+      mockSendMessage.mutateAsync.mockClear()
+      await act(async () => { await send('Check my calendar') })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's-1', content: 'Check my calendar' }))
+      expect(mockSendMessage.mutateAsync).not.toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's-2' }))
     })
 
     it('stops a read-aloud when its session is left, but not the voice conversation\'s', async () => {

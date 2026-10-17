@@ -10,7 +10,7 @@ import { cn } from '@shared/lib/utils'
 import { VoiceOrb } from './voice-orb'
 import { orbStateFor } from './voice-mode-composer'
 import { VoiceToggleButton } from './voice-mode-controls'
-import { useShownProviderError } from '@renderer/components/provider-error/provider-error-placement'
+import { useProviderErrorWithholdsComposer } from '@renderer/components/provider-error/provider-error-placement'
 import { useVoiceModeHost, useVoiceModeState, type VoiceSession } from './voice-mode-host'
 
 const ORB_SIZE = 48
@@ -57,9 +57,9 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
 
   const { items: requests } = usePendingRequests({ sessionId: session.sessionId, agentSlug: session.agentSlug })
   const inputRequests = useMemo(() => requests.map(describeVoiceInputRequest), [requests])
-  // A provider error (a paywall) shows its card at the composer: it waits there too.
-  const providerError = useShownProviderError('composer', session.sessionId, session.agentSlug)
-  const needsInput = requests.length > 0 || providerError !== null
+  // A blocked paywall withholds the composer, so voice waits for it too.
+  const withheld = useProviderErrorWithholdsComposer(session.sessionId, session.agentSlug)
+  const needsInput = requests.length > 0 || withheld
   useEffect(
     () => registerView({ kind: 'orb', sessionId: session.sessionId, suspended: needsInput, inputRequests, frameRef }),
     [registerView, session.sessionId, needsInput, inputRequests],
