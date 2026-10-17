@@ -221,6 +221,7 @@ const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
 const mockClientWarmSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
+const mockRestartContainer = vi.fn()
 // The actor reaches the client through getClient after start(), so the
 // create-session fake lives here rather than on ensureRunning's resolved value.
 const mockClientCreateSession = vi.fn()
@@ -242,6 +243,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
     }),
     ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
     getCachedInfo: () => mockGetCachedInfo(),
+    restartContainer: (...args: unknown[]) => mockRestartContainer(...args),
     removeClient: vi.fn(),
     clearClients: vi.fn(),
     keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
@@ -471,6 +473,15 @@ vi.mock('@shared/lib/utils/path-safety', async (importOriginal) => {
 })
 
 const mockLoadSessionUsageTotals = vi.fn()
+vi.mock('@shared/lib/services/mount-service', () => ({
+  getMountsWithHealth: vi.fn(async () => []),
+  addMount: vi.fn(),
+  attachMount: vi.fn(async () => ({ id: 'm1', volumeId: 'v1', volumeName: 'code' })),
+  removeMount: vi.fn(async () => {}),
+  setMountReadOnly: vi.fn(async () => true),
+  volumeSummary: () => ({ type: 'local', name: 'code' }),
+}))
+
 vi.mock('@shared/lib/services/usage-service', () => ({
   loadSessionUsageTotals: (...args: unknown[]) => mockLoadSessionUsageTotals(...args),
 }))
@@ -10569,5 +10580,34 @@ describe('PUT /api/agents/:id/avatar', () => {
     expect(response.status).toBe(400)
     expect(updateAgentAvatar).not.toHaveBeenCalled()
     expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+})
+
+describe('drive changes on a running agent', () => {
+  const changes = [
+    ['attach', (app: Hono, slug: string, restart?: boolean) => postJson(app, `/api/agents/${slug}/mounts`, { volumeId: 'v1', ...(restart ? { restart } : {}) })],
+    ['read-only toggle', (app: Hono, slug: string) => patchJson(app, `/api/agents/${slug}/mounts/m1`, { readOnly: true })],
+    ['remove', (app: Hono, slug: string, restart?: boolean) => deleteReq(app, `/api/agents/${slug}/mounts/m1${restart ? '?restart=true' : ''}`)],
+  ] as const
+
+  beforeEach(() => mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 }))
+
+  it.each(changes)('%s marks a running agent stale', async (name, change) => {
+    const slug = `drives-running-${name}`
+    expect((await change(createApp(), slug)).ok).toBe(true)
+    expect(agentRegistry.get(slug).container.stale()).toBe(true)
+  })
+
+  it.each(changes)('%s leaves a stopped agent unmarked', async (name, change) => {
+    mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: 0 })
+    const slug = `drives-stopped-${name}`
+    expect((await change(createApp(), slug)).ok).toBe(true)
+    expect(agentRegistry.get(slug).container.stale()).toBe(false)
+  })
+
+  it('restarts instead of marking when the change asks for a restart', async () => {
+    expect((await changes[0][1](createApp(), 'drives-restart', true)).ok).toBe(true)
+    expect(mockRestartContainer).toHaveBeenCalledOnce()
+    expect(agentRegistry.get('drives-restart').container.stale()).toBe(false)
   })
 })

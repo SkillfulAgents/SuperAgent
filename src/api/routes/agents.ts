@@ -6399,6 +6399,14 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
   }
 })
 
+// A running container keeps the drives it started with until it restarts.
+async function afterMountChange(agentSlug: string, restart?: boolean) {
+  const container = agentRegistry.get(agentSlug).container
+  if (container.status().status !== 'running') return
+  if (restart) await container.restart()
+  else container.markStale()
+}
+
 // POST /api/agents/:id/mounts - Add a mount
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
@@ -6418,12 +6426,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
     }
     const summary = { ...volumeSummary(mount), volumeId: mount.volumeId, volumeName: mount.volumeName }
 
-    if (restart) {
-      const cachedInfo = agentRegistry.get(agentSlug).container.status()
-      if (cachedInfo.status === 'running') {
-        await agentRegistry.get(agentSlug).container.restart()
-      }
-    }
+    await afterMountChange(agentSlug, restart)
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
     return c.json(summary, 201)
@@ -6443,6 +6446,7 @@ agents.patch('/:id/mounts/:mountId', AgentUser(), async (c) => {
     if (!(await setMountReadOnly(agentSlug, mountId, parsed.data.readOnly))) {
       return c.json({ error: 'Drive not found' }, 404)
     }
+    await afterMountChange(agentSlug)
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'updated', details: { readOnly: parsed.data.readOnly } })
     return c.json({ success: true })
@@ -6461,12 +6465,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
 
     await removeMount(agentSlug, mountId)
 
-    if (restart) {
-      const cachedInfo = agentRegistry.get(agentSlug).container.status()
-      if (cachedInfo.status === 'running') {
-        await agentRegistry.get(agentSlug).container.restart()
-      }
-    }
+    await afterMountChange(agentSlug, restart)
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'deleted' })
     return c.json({ success: true })
