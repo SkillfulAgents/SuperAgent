@@ -8,8 +8,12 @@ const { mockApiFetch } = vi.hoisted(() => ({
   mockApiFetch: vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ id: 'v1', name: 'code', type: 'local' }), { status: 201 })),
 }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mockApiFetch }))
+let mockAgent = { slug: 'a1', status: 'running', stale: false }
+vi.mock('./use-agents', () => ({ useAgent: () => ({ data: mockAgent }) }))
+vi.mock('./use-volume-definitions', () => ({ useVolumeDefinitions: () => ({ data: [], isLoading: false, error: null }) }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ canUseAgent: () => true }) }))
 
-import { useAddMount } from './use-mounts'
+import { useAddMount, useVolumesManager } from './use-mounts'
 
 function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
@@ -39,4 +43,27 @@ describe('useAddMount', () => {
     expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ type: 'local', config: { path: '/srv/reports' }, name: 'Reports', visibility: 'private' })
   })
 
+})
+
+describe('useVolumesManager', () => {
+  it('asks for a restart while the agent is marked stale', () => {
+    mockAgent = { slug: 'a1', status: 'running', stale: true }
+    expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.pendingRestart).toBe(true)
+
+    mockAgent = { slug: 'a1', status: 'running', stale: false }
+    expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.pendingRestart).toBe(false)
+    mockAgent = { slug: 'a1', status: 'stopped', stale: true }
+    expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.pendingRestart).toBe(false)
+  })
+
+  it('reports a failed restart as an operation error', async () => {
+    const original = mockApiFetch.getMockImplementation()!
+    mockApiFetch.mockImplementation(async (url: string) => url.endsWith('/start')
+      ? new Response(JSON.stringify({ error: 'No room for the agent' }), { status: 500 })
+      : new Response('[]', { status: 200 }))
+    const { result } = renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper })
+    await act(() => result.current.handleRestart())
+    expect(result.current.operationError).toBe('No room for the agent')
+    mockApiFetch.mockImplementation(original)
+  })
 })

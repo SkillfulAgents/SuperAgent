@@ -192,8 +192,10 @@ export interface ContainerOps {
   syncStatus(): Promise<ContainerInfo>
   /** `containerManager.getHealthWarnings` */
   health(): HealthCheckResult[]
-  /** `ContainerRuntime.isStale` — running on a container env that a setting change replaced. */
+  /** `ContainerRuntime.isStale` — running on a container env or drives that a change replaced. */
   stale(): boolean
+  /** `ContainerRuntime.markStale` */
+  markStale(): void
   /**
    * When this agent last stopped being busy, as epoch ms, or `null` while it
    * is busy or its idleness is unknown. Busy is any session active or

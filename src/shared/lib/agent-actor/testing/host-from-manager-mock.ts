@@ -40,6 +40,7 @@ const PER_AGENT_METHODS = [
   'syncAgentStatus',
   'getHealthWarnings',
   'isStale',
+  'markStale',
   'keepAlive',
   'noteSessionActivity',
   'lastActivityAt',
@@ -93,12 +94,14 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
     // the actor makes marks it; a manager-shaped mock predates the clock, so
     // the runtime gets a real one unless the mock spells its own.
     const activity = new ActivityClock()
+    let stale = false
     runtime = {
       slug,
       hasClient: () => true,
       isStopping: () => false,
       isStarting: () => false,
-      isStale: () => false,
+      isStale: () => stale,
+      markStale: () => { stale = true },
       keepAlive: () => activity.keepAlive(),
       noteSessionActivity: (at?: number) => activity.sessionActivity(at),
       lastActivityAt: () => activity.lastActivityAt(),

@@ -23,7 +23,6 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
   const assignment = useVolumeAgents(volume.id)
   const add = useAddMount()
   const remove = useRemoveMount()
-  const [changedWhileRunning, setChangedWhileRunning] = useState<Set<string>>(new Set())
   return <section className="min-w-0 space-y-3" aria-label="Drive agents">
     <p className="text-xs text-muted-foreground">Running agents pick up drive changes after a restart.</p>
     <AgentAssignmentList
@@ -40,11 +39,8 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
           const mount = assignment.data?.attachments.find(item => item.agentSlug === slug)
           if (mount) await remove.mutateAsync({ agentSlug: slug, mountId: mount.mountId })
         }
-        if (agents.data?.find(agent => agent.slug === slug)?.status === 'running') {
-          setChangedWhileRunning(current => new Set(current).add(slug))
-        }
       }}
-      rowDescription={agent => changedWhileRunning.has(agent.slug) && agents.data?.find(item => item.slug === agent.slug)?.status === 'running'
+      rowDescription={agent => agents.data?.some(item => item.slug === agent.slug && item.status === 'running' && item.stale)
         ? <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }} className="text-[11px] text-orange-600 dark:text-orange-400 hover:underline">Restart agent to apply changes</AppLink> : null}
     />
   </section>
