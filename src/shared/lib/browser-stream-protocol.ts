@@ -6,4 +6,5 @@ export type {
   BrowserTabListMessage,
   BrowserNavigateAction,
   BrowserNavigateCommand,
+  BrowserViewportCommand,
 } from '../../../agent-container/src/browser-stream-protocol'
