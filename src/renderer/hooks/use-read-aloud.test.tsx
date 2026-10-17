@@ -815,6 +815,16 @@ describe('readAloud unlocked audio output', () => {
     expect(contexts[0].close).toHaveBeenCalledOnce()
   })
 
+  it('releaseUnlockedAudio(since) keeps an output a later gesture unlocked', () => {
+    const sessionA = readAloud.unlockCount()
+    readAloud.unlockAudio()
+    readAloud.releaseUnlockedAudio(sessionA)
+    expect(contexts[0].close).not.toHaveBeenCalled()
+    const sessionB = readAloud.unlockCount()
+    readAloud.releaseUnlockedAudio(sessionB)
+    expect(contexts[0].close).toHaveBeenCalledOnce()
+  })
+
   it('Live taking the audio closes the unlocked context', () => {
     readAloud.unlockAudio()
     const release = readAloud.suspend()

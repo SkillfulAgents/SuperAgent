@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
+import { setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { VoiceInputButton } from './voice-input-button'
 
 vi.mock('@renderer/context/dialog-context', () => ({
@@ -44,5 +45,31 @@ describe('VoiceInputButton', () => {
     expect(button).toHaveClass('bg-primary/10', 'text-foreground', 'dark:bg-primary/15')
     expect(button).not.toHaveClass('bg-background', 'hover:bg-zinc-100')
     expect(screen.getByTestId('mini-waveform')).toHaveAttribute('data-color', 'currentColor')
+  })
+
+  it('turns dictation off while voice mode holds the microphone in any session', () => {
+    render(
+      <VoiceInputButton
+        message=""
+        voiceInput={{
+          state: 'idle',
+          isRecording: false,
+          isConnecting: false,
+          isFinalizing: false,
+          error: null,
+          clearError: vi.fn(),
+          isSupported: true,
+          analyserRef: { current: null },
+          startRecording: vi.fn(),
+          stopRecording: vi.fn(),
+        }}
+      />,
+    )
+    const button = screen.getByTestId('voice-input-button')
+    expect(button).toBeEnabled()
+    act(() => setVoiceModeActive('session-a', true))
+    expect(button).toBeDisabled()
+    act(() => setVoiceModeActive('session-a', false))
+    expect(button).toBeEnabled()
   })
 })

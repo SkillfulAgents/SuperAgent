@@ -10,7 +10,8 @@ import { cn } from '@shared/lib/utils'
 import { VoiceOrb } from './voice-orb'
 import { orbStateFor } from './voice-mode-composer'
 import { VoiceToggleButton } from './voice-mode-controls'
-import { useVoiceModeHost, type VoiceSession } from './voice-mode-host'
+import { useShownProviderError } from '@renderer/components/provider-error/provider-error-placement'
+import { useVoiceModeHost, useVoiceModeState, type VoiceSession } from './voice-mode-host'
 
 const ORB_SIZE = 48
 const EDGE = 16
@@ -48,22 +49,27 @@ export function VoiceModeOrb() {
 }
 
 function FloatingOrb({ session }: { session: VoiceSession }) {
-  const { voice, exit, registerView } = useVoiceModeHost()
+  const { exit, registerView } = useVoiceModeHost()
+  const voice = useVoiceModeState()
   const navigate = useNavigate()
   const { data: sessionInfo } = useSession(session.sessionId, session.agentSlug)
   const frameRef = useRef<HTMLDivElement>(null)
 
   const { items: requests } = usePendingRequests({ sessionId: session.sessionId, agentSlug: session.agentSlug })
   const inputRequests = useMemo(() => requests.map(describeVoiceInputRequest), [requests])
-  const needsInput = requests.length > 0
+  // A provider error (a paywall) shows its card at the composer: it waits there too.
+  const providerError = useShownProviderError('composer', session.sessionId, session.agentSlug)
+  const needsInput = requests.length > 0 || providerError !== null
   useEffect(
-    () => registerView({ kind: 'orb', suspended: needsInput, inputRequests, frameRef }),
-    [registerView, needsInput, inputRequests],
+    () => registerView({ kind: 'orb', sessionId: session.sessionId, suspended: needsInput, inputRequests, frameRef }),
+    [registerView, session.sessionId, needsInput, inputRequests],
   )
 
   const [position, setPosition] = useState(loadPosition)
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null)
   const dragStart = useRef<{ pointerX: number; pointerY: number; left: number; top: number; moved: boolean } | null>(null)
+  // The click that ends a drag is not a request to open the session.
+  const draggedRef = useRef(false)
 
   const open = () => void navigate({
     to: '/agents/$slug/sessions/$sessionId',
@@ -71,6 +77,8 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
   })
 
   const onPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    draggedRef.current = false
     const rect = event.currentTarget.getBoundingClientRect()
     dragStart.current = { pointerX: event.clientX, pointerY: event.clientY, left: rect.left, top: rect.top, moved: false }
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -84,20 +92,31 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
     start.moved = true
     setDrag({ x: start.left + dx, y: start.top + dy })
   }
-  const onPointerUp = () => {
+  const onPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const start = dragStart.current
     dragStart.current = null
-    if (!start?.moved || !drag) {
-      open()
-      return
-    }
+    if (!start?.moved) return
+    draggedRef.current = true
+    const x = start.left + event.clientX - start.pointerX
+    const y = start.top + event.clientY - start.pointerY
     const next: OrbPosition = {
-      side: drag.x + ORB_SIZE / 2 < window.innerWidth / 2 ? 'left' : 'right',
-      bottom: clampBottom(window.innerHeight - drag.y - ORB_SIZE),
+      side: x + ORB_SIZE / 2 < window.innerWidth / 2 ? 'left' : 'right',
+      bottom: clampBottom(window.innerHeight - y - ORB_SIZE),
     }
     setDrag(null)
     setPosition(next)
     localStorage.setItem(POSITION_KEY, JSON.stringify(next))
+  }
+  const cancelDrag = () => {
+    dragStart.current = null
+    setDrag(null)
+  }
+  const onClick = () => {
+    if (draggedRef.current) {
+      draggedRef.current = false
+      return
+    }
+    open()
   }
 
   const name = sessionInfo?.name ?? 'Voice mode'
@@ -106,20 +125,24 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
     ? { left: drag.x, top: drag.y }
     : { [position.side]: EDGE, bottom: position.bottom }
 
+  // Only the orb and its shown controls take the pointer, not the box around them.
   return (
     <div
       ref={frameRef}
-      className={cn('group fixed z-50 flex items-center gap-2', position.side === 'right' && 'flex-row-reverse')}
+      className={cn('group pointer-events-none fixed z-50 flex items-center', position.side === 'right' && 'flex-row-reverse')}
       style={style}
       data-testid="voice-mode-orb"
       data-phase={voice.phase}
     >
-      <div className="relative shrink-0">
+      <div className="pointer-events-auto relative shrink-0">
         <button
           type="button"
+          onClick={onClick}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onPointerCancel={cancelDrag}
+          onLostPointerCapture={cancelDrag}
           aria-label={`Open ${name}`}
           title={name}
           className={cn(
@@ -160,7 +183,9 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
         )}
       </div>
       {!drag && (
-        <div className="pointer-events-none flex items-center gap-1 rounded-full border bg-background p-1 shadow-sm opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+        // Its padding is the gap from the orb, so the hover holds on the way across.
+        <div className="px-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+        <div className="flex items-center gap-1 rounded-full border bg-background p-1 shadow-sm">
           <span className="max-w-40 truncate px-2 text-xs text-muted-foreground">{name}</span>
           <VoiceToggleButton
             label={voice.outputMuted ? 'Unmute agent speech' : 'Mute agent speech'}
@@ -191,6 +216,7 @@ function FloatingOrb({ session }: { session: VoiceSession }) {
           >
             <X className="h-3.5 w-3.5" />
           </Button>
+        </div>
         </div>
       )}
     </div>

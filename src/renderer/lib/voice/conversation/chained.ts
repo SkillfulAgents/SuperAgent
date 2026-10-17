@@ -49,6 +49,9 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
   private segment: number | null = null
   private state: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
 
+  // Starting voice in another session unlocks its output just before this one closes.
+  private readonly unlocksAtStart = readAloud.unlockCount()
+
   constructor(context: VoiceConversationContext, private events: VoiceConversationEvents) {
     this.streamId = voiceStreamId(context.sessionId)
   }
@@ -287,6 +290,6 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
     this.stopListener()
     this.stopReader()
     // Left before the first reply opened it: release the output unlocked for it.
-    readAloud.releaseUnlockedAudio()
+    readAloud.releaseUnlockedAudio(this.unlocksAtStart)
   }
 }

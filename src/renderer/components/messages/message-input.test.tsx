@@ -9,7 +9,8 @@ import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/l
 import { renderWithProviders as renderWithAppProviders } from '@renderer/test/test-utils'
 import { VoiceModeHost } from './voice-mode-host'
 import { useDraft } from '@renderer/context/drafts-context'
-import { useEffect, useState, type ReactElement } from 'react'
+import { useEffect, useLayoutEffect, useState, type ReactElement } from 'react'
+import { readAloud, voiceStreamId } from '@renderer/lib/voice/services/read-aloud'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
@@ -29,6 +30,7 @@ const mockRenameUntitled = vi.fn()
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useCreateSession: () => mockCreateSession,
   useSessions: () => ({ data: mockSessions }),
+  useSession: () => ({ data: undefined, error: null, refetch: vi.fn() }),
 }))
 vi.mock('@renderer/hooks/use-rename-untitled-agent', () => ({
   useRenameUntitledAgent: () => ({ mutate: mockRenameUntitled }),
@@ -293,6 +295,21 @@ describe('MessageInput', () => {
       await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledWith(
         expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything(),
       ))
+    })
+
+    it('draws a session opened from the home voice button in voice mode from its first commit', () => {
+      mockCanUseVoiceMode = true
+      requestVoiceMode('s-home')
+      const firstCommit: boolean[] = []
+      function FirstCommit() {
+        useLayoutEffect(() => {
+          firstCommit.push(document.querySelector('[data-testid="voice-mode-composer"]') !== null)
+        }, [])
+        return null
+      }
+      renderWithProviders(<><MessageInput sessionId="s-home" agentSlug="agent-1" /><FirstCommit /></>)
+      expect(firstCommit).toEqual([true])
+      expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
     })
 
     it('starts voice mode through the normal session handoff', async () => {
@@ -622,6 +639,31 @@ describe('MessageInput', () => {
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       await userEvent.click(screen.getByTestId('voice-mode-exit'))
       await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+    })
+
+    it('stops a read-aloud when its session is left, but not the voice conversation\'s', async () => {
+      mockCanUseVoiceMode = true
+      const stop = vi.spyOn(readAloud, 'stop')
+      const snapshot = vi.spyOn(readAloud, 'getSnapshot')
+      try {
+        const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        await userEvent.click(screen.getByTestId('voice-mode-button'))
+
+        rerender(<MessageInput sessionId="s-2" agentSlug="agent-1" />)
+        snapshot.mockReturnValue({ activeId: 'message-9', status: 'speaking', error: null, errorId: null })
+        stop.mockClear()
+        rerender(<div />)
+        expect(stop).toHaveBeenCalledOnce()
+
+        rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        snapshot.mockReturnValue({ activeId: voiceStreamId('s-1'), status: 'speaking', error: null, errorId: null })
+        stop.mockClear()
+        rerender(<div />)
+        expect(stop).not.toHaveBeenCalled()
+      } finally {
+        stop.mockRestore()
+        snapshot.mockRestore()
+      }
     })
 
     it('ends the other session\'s voice mode when it starts in this one', async () => {

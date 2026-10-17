@@ -82,6 +82,7 @@ const reader = vi.hoisted(() => {
     setMuted: vi.fn(),
     stop: vi.fn(() => api.set({ activeId: null, status: 'idle' })),
     unlockAudio: vi.fn(),
+    unlockCount: vi.fn(() => 0),
     releaseUnlockedAudio: vi.fn(),
   }
   return api

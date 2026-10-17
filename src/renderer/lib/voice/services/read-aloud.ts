@@ -102,6 +102,7 @@ class ReadAloudController {
   private credentialsGeneration = 0
   /** An audio context created inside a user gesture, for the next player to adopt. */
   private unlockedContext: AudioContext | null = null
+  private unlocks = 0
   // Bumped by every speak()/stop() so a token round-trip that resolves after
   // the user moved on doesn't start a stale player.
   private generation = 0
@@ -292,6 +293,7 @@ class ReadAloudController {
    * later (when the reply arrives, with no gesture in sight) stays silent.
    */
   unlockAudio(): void {
+    this.unlocks++
     if (this.unlockedContext && this.unlockedContext.state !== 'closed') return
     this.unlockedContext = createUnlockedAudioContext()
   }
@@ -301,7 +303,14 @@ class ReadAloudController {
    * Safari, the media element behind it) keeps the tab marked as playing
    * audio for as long as it is open.
    */
-  releaseUnlockedAudio(): void {
+  /** Counts unlockAudio() calls, so a releaser can tell a newer gesture's output from its own. */
+  unlockCount(): number {
+    return this.unlocks
+  }
+
+  /** With `since` (an earlier unlockCount()), keeps an output a later gesture unlocked. */
+  releaseUnlockedAudio(since?: number): void {
+    if (since !== undefined && since !== this.unlocks) return
     const ctx = this.unlockedContext
     this.unlockedContext = null
     if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})

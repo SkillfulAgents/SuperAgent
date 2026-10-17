@@ -12,7 +12,7 @@ import type { VoiceModePhase } from '@renderer/hooks/use-voice-mode'
 import { VoiceOrb } from './voice-orb'
 import type { DotOrbState } from '@renderer/lib/voice/orb/dot-orb'
 
-interface VoiceModeComposerProps {
+export interface VoiceModeComposerProps {
   phase: VoiceModePhase
   /** The voice connection is up; until then the orb assembles, grey, over "Initializing…". */
   ready: boolean

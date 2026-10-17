@@ -6,6 +6,7 @@ import { Loader2, Mic, MicOff, Square, X } from 'lucide-react'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
 import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
+import { useIsAnyVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { cn } from '@shared/lib/utils'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
@@ -39,6 +40,8 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
   const { isAuthMode, isAdmin } = useUser()
   const hasVoiceConfigured = useIsVoiceConfigured()
   const config = SIZE_CONFIG[size]
+  // Voice mode holds the microphone, wherever its session is.
+  const voiceModeOn = useIsAnyVoiceModeActive()
 
   // In auth mode, only admins can configure voice settings
   const canConfigureVoice = !isAuthMode || isAdmin
@@ -95,7 +98,7 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
     <button
       type="button"
       onClick={handleToggle}
-      disabled={disabled && !active}
+      disabled={(disabled || voiceModeOn) && !active}
       data-testid="voice-input-button"
       className={cn(
         buttonVariants({ variant: 'outline', size: 'icon' }),

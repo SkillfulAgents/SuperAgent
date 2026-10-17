@@ -60,7 +60,7 @@ own settings (`voice.holdSound`, `voice.userMusic`, default on).
 | --- | --- | --- |
 | Renderer | `src/renderer/lib/voice/shared/speech/user-music.ts` | `UserMusic`, a `HoldSource` like `HoldSound`, owns the session: which player, whether voice mode holds it, serialized intents |
 | Renderer | `src/renderer/hooks/use-user-music.ts` | `useUserMusicSession(enabled)` begins/ends the takeover; `userMusicSupported()` is the gate |
-| Renderer | `src/renderer/components/messages/message-input.tsx` | picks the hold source per session |
+| Renderer | `src/renderer/components/messages/voice-mode-host.tsx` | runs `useHoldSound` and the music session for the voice conversation, and picks the hold source |
 | Preload | `src/preload/index.ts` | `musicProbe`, `musicPause`, `musicResume` |
 | Main | `src/main/music-control/index.ts` | service over one backend per platform; remembers each window's held player and releases it on close, reload and quit |
 | Main | `src/main/music-control/darwin-mediaremote.ts` | macOS: the MediaRemote adapter |

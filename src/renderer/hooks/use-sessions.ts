@@ -12,7 +12,6 @@ import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
 import { TODOS_QUERY_KEY } from './todos-query-key'
-import { exitSessionVoiceMode } from '@renderer/lib/voice-mode-handoff'
 
 // Re-export for convenience
 export type { ApiSession }
@@ -175,8 +174,8 @@ export function useDeleteSession() {
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
-      // Its voice mode, possibly running from the floating orb, ends with it.
-      exitSessionVoiceMode(variables.id)
+      // Whatever still watches it (voice mode from the floating orb) sees the 404.
+      queryClient.invalidateQueries({ queryKey: ['session', variables.id] })
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })

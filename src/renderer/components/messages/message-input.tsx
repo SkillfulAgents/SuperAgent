@@ -10,8 +10,8 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
-import { VoiceModeComposer } from './voice-mode-composer'
-import { useVoiceModeHost } from './voice-mode-host'
+import { VoiceModeComposer, type VoiceModeComposerProps } from './voice-mode-composer'
+import { useVoiceModeHost, useVoiceModeState } from './voice-mode-host'
 import { AnimatedHeight } from './animated-height'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
@@ -20,8 +20,8 @@ import { useIsMobile } from '@renderer/hooks/use-mobile'
 import type { PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { VoiceModeControls } from './voice-mode-controls'
-import { readAloud } from '@renderer/lib/voice/services/read-aloud'
-import { clearVoiceModeRequest, isAnyVoiceModeActive, isVoiceModeRequested } from '@renderer/lib/voice-mode-handoff'
+import { readAloud, voiceStreamId } from '@renderer/lib/voice/services/read-aloud'
+import { clearVoiceModeRequest, isVoiceModeRequested } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
@@ -75,6 +75,36 @@ interface MessageInputProps {
 }
 
 const NO_INPUT_REQUESTS: readonly VoiceInputRequest[] = []
+
+type HostedVoiceModeComposerProps = Omit<VoiceModeComposerProps,
+  | 'phase' | 'ready' | 'userSpeaking' | 'utterance' | 'transcript' | 'error' | 'onClearError' | 'onPressMic'
+  | 'micMuted' | 'onToggleMicMuted' | 'outputMuted' | 'onToggleOutputMuted' | 'getAnalyser' | 'getOutputAnalyser'
+  | 'voiceControls'>
+
+// Reads the live conversation itself, so its ticks re-render only the voice composer.
+function HostedVoiceModeComposer(props: HostedVoiceModeComposerProps) {
+  const voice = useVoiceModeState()
+  return (
+    <VoiceModeComposer
+      {...props}
+      phase={voice.phase}
+      ready={voice.ready}
+      userSpeaking={voice.userSpeaking}
+      utterance={voice.utterance}
+      transcript={voice.transcript}
+      error={voice.error}
+      onClearError={voice.clearError}
+      onPressMic={voice.pressMic}
+      micMuted={voice.micMuted}
+      onToggleMicMuted={() => voice.setMicMuted(!voice.micMuted)}
+      outputMuted={voice.outputMuted}
+      onToggleOutputMuted={() => voice.setOutputMuted(!voice.outputMuted)}
+      getAnalyser={voice.getAnalyser}
+      getOutputAnalyser={voice.getOutputAnalyser}
+      voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
+    />
+  )
+}
 
 export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
   useRenderTracker('MessageInput')
@@ -368,14 +398,15 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   // arrives with the request already made (its first message already is the
   // entry notice).
   const voiceHost = useVoiceModeHost()
-  const { start: startVoiceMode, exit: exitVoiceMode, registerView: registerVoiceView, voice } = voiceHost
-  const voiceModeOn = !!sessionId && voiceHost.session?.sessionId === sessionId
-  // Another session's conversation holds the microphone: no dictation here meanwhile.
-  const otherVoiceModeOn = !!voiceHost.session && !voiceModeOn
+  const { start: startVoiceMode, exit: exitVoiceMode, registerView: registerVoiceView } = voiceHost
+  // Drawn in voice mode from the first render, before the host has taken it up.
+  const [voiceRequested, setVoiceRequested] = useState(() => !!sessionId && isVoiceModeRequested(sessionId))
+  const voiceModeOn = !!sessionId && (voiceRequested || voiceHost.session?.sessionId === sessionId)
   useEffect(() => {
     if (!sessionId) return
     if (isVoiceModeRequested(sessionId)) startVoiceMode({ sessionId, agentSlug, openedByVoice: true })
     clearVoiceModeRequest(sessionId)
+    setVoiceRequested(false)
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   const enterVoiceMode = useCallback(() => {
     if (isDisabled) return
@@ -404,18 +435,24 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   }
   const voiceFrameRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (!voiceModeOn || isViewOnly) return
+    if (!voiceModeOn || isViewOnly || !sessionId) return
     return registerVoiceView({
       kind: 'composer',
+      sessionId,
       suspended,
       inputRequests: inputRequests ?? NO_INPUT_REQUESTS,
       frameRef: voiceFrameRef,
       submitRef: voiceSubmitRef,
     })
-  }, [voiceModeOn, isViewOnly, suspended, inputRequests, registerVoiceView])
-  // Whatever is being read stops with the session view, unless voice mode
-  // is talking through the same reader.
-  useEffect(() => () => { if (!isAnyVoiceModeActive()) readAloud.stop() }, [])
+  }, [voiceModeOn, isViewOnly, sessionId, suspended, inputRequests, registerVoiceView])
+  // Whatever is being read stops with the session view, unless it is the
+  // voice conversation talking through the same reader.
+  const voiceSessionIdRef = useRef<string | null>(null)
+  voiceSessionIdRef.current = voiceHost.session?.sessionId ?? null
+  useEffect(() => () => {
+    const voiceSessionId = voiceSessionIdRef.current
+    if (!voiceSessionId || readAloud.getSnapshot().activeId !== voiceStreamId(voiceSessionId)) readAloud.stop()
+  }, [])
 
   if (isViewOnly) {
     return null
@@ -432,22 +469,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
-      <VoiceModeComposer
-        phase={voice.phase}
-        ready={voice.ready}
+      <HostedVoiceModeComposer
         agentName={voiceAgent?.name}
-        userSpeaking={voice.userSpeaking}
-        utterance={voice.utterance}
-        transcript={voice.transcript}
-        error={voice.error}
-        onClearError={voice.clearError}
-        onPressMic={voice.pressMic}
-        micMuted={voice.micMuted}
-        onToggleMicMuted={() => voice.setMicMuted(!voice.micMuted)}
-        outputMuted={voice.outputMuted}
-        onToggleOutputMuted={() => voice.setOutputMuted(!voice.outputMuted)}
-        getAnalyser={voice.getAnalyser}
-        getOutputAnalyser={voice.getOutputAnalyser}
         onExit={exitVoiceMode}
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
@@ -467,7 +490,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
             footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
           />
         )}
-        voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
         footer={(
           <>
             {isOffline && (
@@ -565,7 +587,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
             <VoiceInputButton
               voiceInput={composer.voiceInput}
               message={composer.message}
-              disabled={isDisabled || otherVoiceModeOn}
+              disabled={isDisabled}
             />
             {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
             <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />

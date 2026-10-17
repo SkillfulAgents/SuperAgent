@@ -92,14 +92,10 @@ export interface ProviderErrorSlot {
   displaced: boolean
 }
 
-// Renders the session's current provider error above children when its presentation
-// targets this placement. Children keep one tree position whether or not an error is
-// showing: the composer hosts voice mode, and a remount would drop it (SUP-890). A card
-// that must withhold children (paywall while blocked) hides the slot instead.
-export function ProviderErrorPlacement({ placement, sessionId, agentSlug, children }: ProviderErrorPlacementProps) {
+/** The session's current provider error, when its presentation targets `placement`. */
+export function useShownProviderError(placement: Placement, sessionId: string | null, agentSlug: string) {
   const { isActive, activeStartTime, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
-  const [displaced, setDisplaced] = useState(false)
   // A turn that starts on top of a persisted error answers it. A short turn can go idle
   // before the refetch with its rows lands, so without this the answered row would
   // briefly become current again and remount the card.
@@ -115,16 +111,25 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
     return found && !found.live && found.messageId === turn.answeredErrorId ? null : found
   }, [isActive, error, apiErrorCode, errorPresentation, messages, turn.answeredErrorId])
   const resolved = current ? resolveProviderError(current.presentation) : null
-  const showing = current !== null && resolved !== null && resolved.placement === placement
-  const slot: ProviderErrorSlot = { displaced: showing && displaced }
+  return current && resolved && resolved.placement === placement ? { current, resolved } : null
+}
+
+// Renders the session's current provider error above children when its presentation
+// targets this placement. Children keep one tree position whether or not an error is
+// showing: the composer hosts voice mode, and a remount would drop it (SUP-890). A card
+// that must withhold children (paywall while blocked) hides the slot instead.
+export function ProviderErrorPlacement({ placement, sessionId, agentSlug, children }: ProviderErrorPlacementProps) {
+  const shown = useShownProviderError(placement, sessionId, agentSlug)
+  const [displaced, setDisplaced] = useState(false)
+  const slot: ProviderErrorSlot = { displaced: !!shown && displaced }
   return (
-    <div data-testid={showing ? `provider-error-placement-${placement}` : undefined}>
-      {showing && sessionId && (
-        <resolved.Component
+    <div data-testid={shown ? `provider-error-placement-${placement}` : undefined}>
+      {shown && sessionId && (
+        <shown.resolved.Component
           key={`${agentSlug}:${sessionId}`}
-          message={current.message}
-          presentation={current.presentation}
-          live={current.live}
+          message={shown.current.message}
+          presentation={shown.current.presentation}
+          live={shown.current.live}
           onDisplaceChildren={setDisplaced}
           dismissible
           session={{ sessionId, agentSlug }}

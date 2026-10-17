@@ -142,6 +142,8 @@ export function useDeleteAgent() {
       // 404s the agent, so this only removes a brief stale name/description flash.
       queryClient.removeQueries({ queryKey: ['agents', slug] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      // Its sessions went with it; whatever still watches one sees the 404.
+      queryClient.invalidateQueries({ queryKey: ['session'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })

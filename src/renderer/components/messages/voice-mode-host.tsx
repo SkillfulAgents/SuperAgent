@@ -5,7 +5,8 @@ import { useHoldSound } from '@renderer/hooks/use-hold-sound'
 import { useUserMusicPreference, useUserMusicSession, userMusicSupported } from '@renderer/hooks/use-user-music'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUser } from '@renderer/context/user-context'
-import { resolveRouteAgentId, useAgents } from '@renderer/hooks/use-agents'
+import { useSession } from '@renderer/hooks/use-sessions'
+import { HttpError } from '@renderer/lib/http-error'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
 import { registerVoiceModeExit, setVoiceModeActive, setVoiceModeTakesSpace } from '@renderer/lib/voice-mode-handoff'
@@ -29,6 +30,7 @@ export interface VoiceSession {
  */
 export interface VoiceModeView {
   kind: 'composer' | 'orb'
+  sessionId: string
   suspended: boolean
   inputRequests: readonly VoiceInputRequest[]
   frameRef: RefObject<HTMLElement | null>
@@ -37,7 +39,6 @@ export interface VoiceModeView {
 
 interface VoiceModeHostValue {
   session: VoiceSession | null
-  voice: VoiceModeResult
   /** One voice conversation at a time: starting one ends the other, with its exit notice. */
   start(session: VoiceSession): void
   exit(): void
@@ -45,10 +46,18 @@ interface VoiceModeHostValue {
 }
 
 const VoiceModeHostContext = createContext<VoiceModeHostValue | null>(null)
+// Apart from the controls: it changes on every phase tick and partial transcript.
+const VoiceModeStateContext = createContext<VoiceModeResult | null>(null)
 
 export function useVoiceModeHost(): VoiceModeHostValue {
   const value = useContext(VoiceModeHostContext)
   if (!value) throw new Error('useVoiceModeHost must be used within a VoiceModeHost')
+  return value
+}
+
+export function useVoiceModeState(): VoiceModeResult {
+  const value = useContext(VoiceModeStateContext)
+  if (!value) throw new Error('useVoiceModeState must be used within a VoiceModeHost')
   return value
 }
 
@@ -75,14 +84,17 @@ const NO_INPUT_REQUESTS: readonly VoiceInputRequest[] = []
  */
 export function VoiceModeHost({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<VoiceSession | null>(null)
-  const [view, setView] = useState<VoiceModeView | null>(null)
+  const [registeredView, setView] = useState<VoiceModeView | null>(null)
   const sessionId = session?.sessionId ?? null
   const agentSlug = session?.agentSlug ?? ''
+  // A view registered for the previous session is not this conversation's.
+  const view = registeredView?.sessionId === sessionId ? registeredView : null
   const { track } = useAnalyticsTracking()
   const trackRef = useRef(track)
   trackRef.current = track
   const { canUseAgent } = useUser()
   const active = !!session && canUseAgent(session.agentSlug)
+  const activeSession = active ? session : null
 
   // Its own mutation: a pending send must not hold up an utterance. A notice
   // that fails (the session was deleted, the app is offline as the person
@@ -114,32 +126,31 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
   // remount does not send it for a conversation that is still on.
   const exitTimerRef = useRef<{ sessionId: string; timer: ReturnType<typeof setTimeout> } | null>(null)
   useEffect(() => {
-    if (!session) return
-    if (exitTimerRef.current?.sessionId === session.sessionId) {
+    if (!activeSession) return
+    if (exitTimerRef.current?.sessionId === activeSession.sessionId) {
       clearTimeout(exitTimerRef.current.timer)
       exitTimerRef.current = null
     }
-    setVoiceModeActive(session.sessionId, true)
-    const unregisterExit = registerVoiceModeExit(session.sessionId, exit)
+    setVoiceModeActive(activeSession.sessionId, true)
+    const unregisterExit = registerVoiceModeExit(activeSession.sessionId, exit)
     return () => {
       unregisterExit()
-      setVoiceModeActive(session.sessionId, false)
+      setVoiceModeActive(activeSession.sessionId, false)
       const timer = setTimeout(() => {
-        notify(session, VOICE_MODE_EXITED_MESSAGE)
-        trackRef.current('voice_mode_exited', { origin: session.openedByVoice ? 'home' : 'session' })
+        notify(activeSession, VOICE_MODE_EXITED_MESSAGE)
+        trackRef.current('voice_mode_exited', { origin: activeSession.openedByVoice ? 'home' : 'session' })
       }, 0)
-      exitTimerRef.current = { sessionId: session.sessionId, timer }
+      exitTimerRef.current = { sessionId: activeSession.sessionId, timer }
     }
-  }, [session, exit, notify])
+  }, [activeSession, exit, notify])
 
-  // Deleting the agent deletes the session too: end voice mode with it. The
-  // session may name the agent by its display slug, so resolve it first.
-  const { data: agents } = useAgents()
-  const agentDeleted = !!session && !!agents
-    && !agents.some((agent) => agent.slug === resolveRouteAgentId(session.agentSlug, agents))
+  // The session (or its agent) was deleted, here or anywhere else: end voice
+  // mode with it. A failed send refetches it, so a deletion is seen by then.
+  const { error: sessionError, refetch: refetchSession } = useSession(sessionId, session?.agentSlug ?? null)
+  const sessionGone = sessionError instanceof HttpError && sessionError.status === 404
   useEffect(() => {
-    if (agentDeleted) exit()
-  }, [agentDeleted, exit])
+    if (sessionGone) exit()
+  }, [sessionGone, exit])
 
   const { data: messages } = useMessages(sessionId, agentSlug)
   // Transport bound only; the host trims to the voice model's token budget.
@@ -150,6 +161,18 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
   )), [messages])
 
   const suspended = view?.suspended ?? false
+  const sendUtterance = async (text: string): Promise<boolean> => {
+    const submit = view?.submitRef?.current
+    if (submit) return submit(text)
+    if (!sessionId) return false
+    try {
+      await sendMessage.mutateAsync({ sessionId, agentSlug, content: text })
+    } catch {
+      return false
+    }
+    track('message_sent', { origin: 'user', input_mode: 'voice' })
+    return true
+  }
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
@@ -157,16 +180,9 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
     paused: suspended,
     inputRequests: view?.inputRequests ?? NO_INPUT_REQUESTS,
     send: async (text) => {
-      const submit = view?.submitRef?.current
-      if (submit) return submit(text)
-      if (!sessionId) return false
-      try {
-        await sendMessage.mutateAsync({ sessionId, agentSlug, content: text })
-      } catch {
-        return false
-      }
-      track('message_sent', { origin: 'user', input_mode: 'voice' })
-      return true
+      const sent = await sendUtterance(text)
+      if (!sent) void refetchSession()
+      return sent
     },
     startWithAgentTurn: session?.openedByVoice ?? false,
     history,
@@ -223,8 +239,12 @@ export function VoiceModeHost({ children }: { children: ReactNode }) {
   })
 
   const value = useMemo<VoiceModeHostValue>(
-    () => ({ session: active ? session : null, voice, start, exit, registerView }),
-    [active, session, voice, start, exit, registerView],
+    () => ({ session: activeSession, start, exit, registerView }),
+    [activeSession, start, exit, registerView],
   )
-  return <VoiceModeHostContext.Provider value={value}>{children}</VoiceModeHostContext.Provider>
+  return (
+    <VoiceModeHostContext.Provider value={value}>
+      <VoiceModeStateContext.Provider value={voice}>{children}</VoiceModeStateContext.Provider>
+    </VoiceModeHostContext.Provider>
+  )
 }
