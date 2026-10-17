@@ -50,6 +50,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
+import { keptAcrossTabSwitch, screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -2475,7 +2476,63 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
+  /** Pixel ratio this connection forced on the page; null means Chrome's own. */
+  renderOverride: number | null;
+  /** Chrome's own devicePixelRatio, read before any override; 1 until known. */
+  nativeScale: number;
+  nativeScaleRequestId: number | null;
+  screencastStarted: boolean;
 } | null = null;
+
+/** Canvas width in device pixels each viewer last reported. */
+const viewerWidths = new WeakMap<WebSocket, number>();
+
+/** CDP can't resize a running screencast, so a new viewer width restarts it. */
+function setViewerWidth(ws: WebSocket, value: unknown): void {
+  const width = Math.round(Number(value));
+  if (!(width > 0) || width === viewerWidths.get(ws)) return;
+  viewerWidths.set(ws, width);
+  const state = cdpScreencast;
+  // Not started yet (e.g. a remote session still attaching): startScreencast reads the width.
+  if (!state || state.clientWs !== ws || !state.screencastStarted || state.cdpWs.readyState !== WebSocket.OPEN) return;
+  state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
+  startScreencast(state);
+}
+
+function currentScreencastSize(state: NonNullable<typeof cdpScreencast>) {
+  return screencastSize(
+    viewerWidths.get(state.clientWs),
+    state.lastDeviceWidth || 1280,
+    state.lastDeviceHeight || 720,
+    state.nativeScale,
+  );
+}
+
+function applyRenderOverride(state: NonNullable<typeof cdpScreencast>, override: number | null): void {
+  if (override === state.renderOverride) return;
+  // width/height 0 keep the window's own size; Chrome drops the override when this connection closes.
+  state.cdpWs.send(override === null
+    ? cdpMsg(state, 'Emulation.clearDeviceMetricsOverride')
+    : cdpMsg(state, 'Emulation.setDeviceMetricsOverride', {
+      width: 0, height: 0, deviceScaleFactor: override, mobile: false,
+    }));
+  state.renderOverride = override;
+}
+
+/** Render the page sharp enough for the viewer's canvas (up to 2x), then stream frames no wider than it. */
+function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
+  if (!state.screencastStarted) {
+    // Sent before any override on this connection, so it reports Chrome's own ratio.
+    state.cdpWs.send(cdpMsg(state, 'Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true }));
+    state.nativeScaleRequestId = state.msgId;
+  }
+  const size = currentScreencastSize(state);
+  applyRenderOverride(state, size.override);
+  state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
+    format: 'jpeg', quality: 80, maxWidth: size.maxWidth, maxHeight: size.maxHeight, everyNthFrame: 1,
+  }));
+  state.screencastStarted = true;
+}
 
 /** Derive the CDP HTTP endpoint from the current browser state */
 function getCdpHttpEndpoint(): string {
@@ -2819,10 +2876,12 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
+  const kept = keptAcrossTabSwitch(cdpScreencast?.clientWs === clientWs ? cdpScreencast : null);
   const state: NonNullable<typeof cdpScreencast> = {
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
-    lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
+    ...kept, cdpSessionId: null,
     autoFollow: prevAutoFollow, pendingSelections: new Set(),
+    renderOverride: null, nativeScaleRequestId: null, screencastStarted: false,
     navigation: createBrowserNavigation({
       targetId,
       sendCommand(method, params) {
@@ -2850,9 +2909,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-        format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-      }));
+      startScreencast(state);
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
       // Discover the main frame ID so we only forward loading events for the
@@ -2871,9 +2928,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
         state.cdpSessionId = msg.result.sessionId;
-        cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-          format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-        }));
+        startScreencast(state);
         // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
         cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
@@ -2911,6 +2966,11 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
             loading: msg.method === 'Page.frameStartedLoading',
           }));
         }
+      } else if (msg.id && msg.id === state.nativeScaleRequestId) {
+        state.nativeScaleRequestId = null;
+        const ratio = Number(msg.result?.result?.value);
+        if (ratio > 0) state.nativeScale = ratio;
+        applyRenderOverride(state, currentScreencastSize(state).override);
       } else if (msg.id && state.pendingSelections.has(msg.id)) {
         state.pendingSelections.delete(msg.id);
         const text = msg.result?.result?.value;
@@ -3179,6 +3239,10 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   ws.on('message', async (rawData) => {
     try {
       const data = JSON.parse(rawData.toString());
+      if (data.type === 'viewport') {
+        setViewerWidth(ws, data.width);
+        return;
+      }
       if (!cdpScreencast) return;
 
       if (data.type === 'switch_tab' && data.targetId) {

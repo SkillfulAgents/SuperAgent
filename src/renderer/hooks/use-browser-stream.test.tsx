@@ -413,3 +413,49 @@ describe('useBrowserStream ordered history', () => {
     expect(hook.result.current.canGoBack).toBe(false)
   })
 })
+
+describe('useBrowserStream viewport width', () => {
+  let observed: Array<{ target: Element; options?: ResizeObserverOptions; fire: (entry: object) => void }>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    FakeWebSocket.instances = []
+    observed = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: (entries: object[]) => void) {}
+      observe(target: Element, options?: ResizeObserverOptions) {
+        observed.push({ target, options, fire: (entry) => this.callback([entry]) })
+      }
+      disconnect() {}
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('reports the canvas width in device pixels once the socket opens, and again when it changes', async () => {
+    const canvasRef = { current: document.createElement('canvas') }
+    renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    expect(observed).toHaveLength(0)
+
+    act(() => ws.completeHandshake())
+    expect(observed[0].target).toBe(canvasRef.current)
+    expect(observed[0].options).toEqual({ box: 'device-pixel-content-box' })
+
+    // 420 CSS px on a 2x screen = 840 device px, rounded up to a 64 px step.
+    act(() => observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: 840 }], contentRect: { width: 420 } }))
+    act(() => observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: 846 }], contentRect: { width: 423 } }))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 896 }])
+
+    act(() => observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: 3400 }], contentRect: { width: 1700 } }))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent.at(-1)).toEqual({ type: 'viewport', width: 3456 })
+  })
+})

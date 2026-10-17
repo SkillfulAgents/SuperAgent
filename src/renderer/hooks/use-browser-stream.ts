@@ -16,6 +16,9 @@ const RECONNECT_BASE_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 8000
 const MAX_FAILED_RECONNECTS = 5
 
+const VIEWPORT_WIDTH_STEP = 64
+const VIEWPORT_DEBOUNCE_MS = 200
+
 interface UseBrowserStreamOptions {
   agentSlug: string
   sessionId: string
@@ -347,6 +350,32 @@ export function useBrowserStream({
     },
     []
   )
+
+  // Tell the container the canvas width in device pixels so it never streams wider frames.
+  // Re-runs on each connect: the first observation reports the size to the new socket.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!connected || !canvas || typeof ResizeObserver === 'undefined') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const observer = new ResizeObserver(([entry]) => {
+      const devicePixels = entry.devicePixelContentBoxSize?.[0]?.inlineSize
+        ?? entry.contentRect.width * window.devicePixelRatio
+      // Steps of 64 px so dragging a panel edge doesn't restart the screencast every pixel.
+      const width = Math.ceil(devicePixels / VIEWPORT_WIDTH_STEP) * VIEWPORT_WIDTH_STEP
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => sendMessage({ type: 'viewport', width }), VIEWPORT_DEBOUNCE_MS)
+    })
+    try {
+      // This box also fires when the window moves to a screen with another pixel ratio.
+      observer.observe(canvas, { box: 'device-pixel-content-box' })
+    } catch {
+      observer.observe(canvas) // Safari has no device-pixel-content-box
+    }
+    return () => {
+      if (timer) clearTimeout(timer)
+      observer.disconnect()
+    }
+  }, [connected, canvasRef, sendMessage])
 
   const buttonName = useCallback((button: number): string => {
     switch (button) {
