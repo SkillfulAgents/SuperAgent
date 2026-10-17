@@ -22,6 +22,10 @@ vi.mock('./session-persistence', () => ({
     getSession(id: string) { return persistedSessions.get(id) ?? null }
     deleteSession(id: string) { persistedSessions.delete(id) }
     updateLastActivity() {}
+    updateSession(id: string, update: Record<string, unknown>) {
+      const existing = persistedSessions.get(id)
+      if (existing) persistedSessions.set(id, { ...existing, ...update })
+    }
     updateEffort() {}
     updateModel() {}
     updateMetadata(id: string, metadata: Record<string, unknown>) {
