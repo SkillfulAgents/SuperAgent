@@ -101,6 +101,7 @@ vi.mock('./mcp-server', () => ({
   createAgentsMcpServer: () => ({ type: 'sdk', name: 'agents' }),
   createChatMcpServer: () => ({ type: 'sdk', name: 'chat' }),
   createMeetingsMcpServer: () => ({ type: 'sdk', name: 'meetings' }),
+  createRulesMcpServer: () => ({ type: 'sdk', name: 'rules' }),
 }))
 
 vi.mock('./tools/browser', () => ({

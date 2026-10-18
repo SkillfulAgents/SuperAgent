@@ -42,7 +42,7 @@ export function BrowserTrayContent({
   isExpanded = false,
   onToggleExpand,
 }: BrowserTrayContentProps) {
-  const { browserActive, isActive } = useMessageStream(sessionId, agentSlug)
+  const { browserActive, isActive } = useMessageStream(sessionId, agentSlug, ['browserActive', 'isActive'])
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
 

@@ -340,6 +340,8 @@ export type ResolvedConnection = NonNullable<Awaited<ReturnType<typeof resolveCo
 
 const legacySelections = new WeakSet<StoredModelSelection>()
 
+type SelectionCandidate = StoredModelSelection | null | undefined
+
 /** Undefined ID is legacy data. Explicit NULL is a cleared/deleted binding. */
 export function storedSelection(
   model?: string | null,
@@ -401,12 +403,16 @@ async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent'
  * says cannot run now counts as unset, like a retired one, so the list keeps
  * going. With nothing runnable the global default stands, and the provider's
  * refusal says why.
+ *
+ * A candidate may be a function, called only when every candidate before it
+ * fell through: one that costs a read (the agent's preferences) is then paid
+ * for only by the runs that need it.
  */
 export async function resolveSelectionHierarchy(
-  ...candidates: (StoredModelSelection | null | undefined)[]
+  ...candidates: (SelectionCandidate | (() => Promise<SelectionCandidate>))[]
 ): Promise<ResolvedConnection> {
   for (const candidate of candidates) {
-    const resolved = await resolveConnectionSelection(candidate, true)
+    const resolved = await resolveConnectionSelection(typeof candidate === 'function' ? await candidate() : candidate, true)
     if (resolved && await isRunnable(resolved)) return resolved
   }
   const root = await resolveGlobalSelection()

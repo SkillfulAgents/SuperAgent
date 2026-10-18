@@ -470,8 +470,10 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
-  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout, allowed_by_rule
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
+  ruleVersionId: text('rule_version_id'), // proxy rule version that allowed the request
+  ruleOutcomes: text('rule_outcomes'), // JSON RuleEvaluation[] for every rule that ran
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
@@ -533,8 +535,10 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
-  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout, allowed_by_rule
   matchedTool: text('matched_tool'), // tool name for tools/call requests
+  ruleVersionId: text('rule_version_id'), // proxy rule version that allowed the request
+  ruleOutcomes: text('rule_outcomes'), // JSON RuleEvaluation[] for every rule that ran
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('mcp_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
@@ -689,6 +693,49 @@ export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   mcpToolUnique: uniqueIndex('mcp_tool_policies_unique').on(table.mcpId, table.toolName),
+}))
+
+// Proxy rules - JS predicates that can move a request the scope/tool policy
+// sends to review to allow. A rule targets one connected account (kind 'api')
+// or one remote MCP server (kind 'mcp'), optionally only one agent's calls.
+// Deleting a rule is soft so audit rows keep resolving its versions.
+export const proxyRules = sqliteTable('proxy_rules', {
+  id: text('id').primaryKey(),
+  kind: text('kind', { enum: ['api', 'mcp'] }).notNull(),
+  accountId: text('account_id').references(() => connectedAccounts.id, { onDelete: 'cascade' }),
+  mcpId: text('mcp_id').references(() => remoteMcpServers.id, { onDelete: 'cascade' }),
+  agentSlug: text('agent_slug'), // null = every agent mapped to the account/MCP
+  createdBy: text('created_by', { enum: ['user', 'agent'] }).notNull(),
+  createdByAgentSlug: text('created_by_agent_slug'),
+  currentVersionId: text('current_version_id').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  accountIdx: index('proxy_rules_account_idx').on(table.accountId),
+  mcpIdx: index('proxy_rules_mcp_idx').on(table.mcpId),
+  targetCheck: check('proxy_rules_target_check', sql`(${table.kind} = 'api' and ${table.accountId} is not null and ${table.mcpId} is null) or (${table.kind} = 'mcp' and ${table.mcpId} is not null and ${table.accountId} is null)`),
+}))
+
+// Proxy rule versions - immutable; an edit writes a new version. Audit rows
+// point at the version that ran.
+export const proxyRuleVersions = sqliteTable('proxy_rule_versions', {
+  id: text('id').primaryKey(),
+  ruleId: text('rule_id').notNull()
+    .references(() => proxyRules.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  name: text('name').notNull(), // short label, written with the restatement
+  effect: text('effect', { enum: ['allow', 'require'] }).notNull(), // allow: can lift review; require: can force it
+  description: text('description').notNull(), // the request the rule was written from
+  restatement: text('restatement').notNull(), // what the code does, written from the code alone
+  patterns: text('patterns').notNull(), // JSON string[]: 'METHOD /path' (api) or tool-name globs (mcp)
+  code: text('code').notNull(),
+  tests: text('tests').notNull(), // JSON RuleTestCase[]
+  warnings: text('warnings').notNull(), // JSON string[]
+  toolSchemaHash: text('tool_schema_hash'), // mcp: hash of matched tools' input schemas at authoring time
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  ruleVersionUnique: uniqueIndex('proxy_rule_versions_unique').on(table.ruleId, table.version),
 }))
 
 // Webhook triggers - Composio trigger subscriptions and custom webhook
@@ -1007,6 +1054,10 @@ export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
 export type NewApiScopePolicy = typeof apiScopePolicies.$inferInsert
 export type McpToolPolicy = typeof mcpToolPolicies.$inferSelect
 export type NewMcpToolPolicy = typeof mcpToolPolicies.$inferInsert
+export type ProxyRule = typeof proxyRules.$inferSelect
+export type NewProxyRule = typeof proxyRules.$inferInsert
+export type ProxyRuleVersion = typeof proxyRuleVersions.$inferSelect
+export type NewProxyRuleVersion = typeof proxyRuleVersions.$inferInsert
 export type XAgentPolicy = typeof xAgentPolicies.$inferSelect
 export type NewXAgentPolicy = typeof xAgentPolicies.$inferInsert
 export type WebhookTrigger = typeof webhookTriggers.$inferSelect

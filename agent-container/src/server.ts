@@ -268,6 +268,25 @@ app.post('/sessions/:id/fork', async (c) => {
   }
 });
 
+// Pre-resume a session's CLI before its next message (the host asks when a
+// person starts typing into the session), so the send skips the CLI spawn and
+// `--resume`. Answers at once — the resume runs in the background, and a send
+// that arrives first waits for it instead of racing a second restart. A JSON
+// 404 is an unknown session; the host reads a plain 404 as an older image.
+app.post('/sessions/:id/warm', (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessionManager.hasSession(sessionId)) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+  void sessionManager.warmSession(sessionId).then(
+    (outcome) => {
+      if (outcome === 'resumed') console.log(`[Session ${sessionId}] Pre-resumed ahead of the next message`);
+    },
+    (error) => console.error(`[Session ${sessionId}] Pre-resume failed (the next send restarts it):`, error),
+  );
+  return c.json({ accepted: true }, 202);
+});
+
 // Message endpoints
 app.post('/sessions/:id/messages', async (c) => {
   const sessionId = c.req.param('id');

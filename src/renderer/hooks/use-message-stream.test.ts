@@ -351,6 +351,46 @@ describe('useMessageStream', () => {
     expect(result.current.streamingMessage).toBe('Hello world!')
   })
 
+  it('re-renders a caller that selects fields only when one of them changes', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    let fullRenders = 0
+    let selectedRenders = 0
+    const full = renderHook(() => {
+      fullRenders++
+      return useMessageStream('session-1', 'agent-1')
+    }, { wrapper })
+    const selected = renderHook(() => {
+      selectedRenders++
+      return useMessageStream('session-1', 'agent-1', ['isStreaming', 'slashCommands'])
+    }, { wrapper })
+    const es = MockEventSource.instances[0]
+
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'session_active' })
+      es.simulateMessage({ type: 'stream_start' })
+    })
+    expect(selected.result.current.isStreaming).toBe(true)
+    const fullBefore = fullRenders
+    const selectedBefore = selectedRenders
+
+    for (const text of ['Hello ', 'there, ', 'world!']) {
+      act(() => {
+        es.simulateMessage({ type: 'stream_delta', text })
+      })
+    }
+    expect(full.result.current.streamingMessage).toBe('Hello there, world!')
+    expect(fullRenders - fullBefore).toBe(3)
+    expect(selectedRenders).toBe(selectedBefore)
+
+    act(() => {
+      es.simulateMessage({ type: 'stream_end' })
+    })
+    expect(selected.result.current.isStreaming).toBe(false)
+    expect(selectedRenders).toBe(selectedBefore + 1)
+  })
+
   it('handles session_idle event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -1098,6 +1138,102 @@ describe('useMessageStream', () => {
       spy.mockClear()
       act(() => {
         MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, turnOutcome: completedOutcome })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A quick turn that launched a background task ends into waiting on it: the
+  // session stays active, no session_idle follows, and the turn records no
+  // outcome, so there is no reply text to reconcile against.
+  const backgroundTasks = [{ taskId: 'bg-1', startedAt: 1 }]
+  const launchedTurn = {
+    messages: [
+      { id: 'u1', type: 'user', content: { text: 'run background slowly' }, createdAt: '2026-01-01T00:00:00Z' },
+      {
+        id: 'a1', type: 'assistant', content: { text: 'Started background task bg-1.' }, createdAt: '2026-01-01T00:00:01Z',
+        toolCalls: [{ id: 'tool-1', name: 'Bash', input: { command: 'sleep 10 && echo done', run_in_background: true }, backgroundTaskId: 'bg-1' }],
+      },
+    ],
+    nextCursor: null,
+  }
+
+  it('a late join to a turn that ended into waiting on background reconciles until the transcript has the turn', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      // The connect-time refetch read the transcript before the turn's lines landed.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [launchedTurn.messages[0]],
+        nextCursor: null,
+      })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'connected', isActive: true, isWaitingBackground: true, turnOutcome: null, backgroundTasks,
+        })
+      })
+      expect(result.current.isWaitingBackground).toBe(true)
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBe(2)
+
+      // The next retry brings the turn in, and the loop stops there.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], launchedTurn)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a late join to a session waiting on background does not reconcile once the turn is persisted, or while a turn streams beside the task', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], launchedTurn)
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'connected', isActive: true, isWaitingBackground: true, turnOutcome: null, backgroundTasks,
+        })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // A task in the list while the turn is still streaming — even with an
+      // earlier turn's completed outcome on the frame: the turn's own events
+      // drive its refetches.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], {
+        messages: [launchedTurn.messages[0]],
+        nextCursor: null,
+      })
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'connected', isActive: true, isWaitingBackground: false, turnOutcome: completedOutcome, backgroundTasks,
+        })
       })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000)
@@ -2607,17 +2743,18 @@ describe('useMessageStream', () => {
       return { mod, result, es, queryClient: wrapper.queryClient }
     }
 
-    it('accumulates terminal-dead command uuids (discarded/cancelled), deduped', async () => {
+    it('accumulates discarded command uuids, deduped, and treats cancelled as no answer', async () => {
       const { result, es } = await setupHook('cmd-s1')
 
       act(() => {
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+        // Stop cancels the running command too, so cancelled proves nothing
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'cancelled' })
         // Redelivery must not double up
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
       })
 
-      expect(result.current.discardedCommandUuids).toEqual(['u1', 'u2'])
+      expect(result.current.discardedCommandUuids).toEqual(['u1'])
     })
 
     it('does not treat non-terminal states or malformed frames as discarded', async () => {

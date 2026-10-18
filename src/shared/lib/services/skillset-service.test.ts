@@ -143,6 +143,7 @@ import {
   getAgentSkillsWithStatus,
   refreshSkillset,
   refreshAgentSkills,
+  removeSkillsetCache,
   publishSkillToSkillset,
   getSkillPublishInfo,
   validateSkillsetUrl,
@@ -874,6 +875,41 @@ Instructions here`
 
       await expect(refreshSkillset(ref)).resolves.toEqual(index)
       expect(setUrlCalls).toBe(2)
+    })
+
+    it('background refresh reuses a cache refreshed within the window; a forced refresh still pulls', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let setUrlCalls = 0
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') setUrlCalls += 1
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshSkillset(ref)).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(1)
+
+      await expect(refreshSkillset(ref, { maxAgeMs: 60_000 })).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(1)
+
+      await expect(refreshSkillset(ref)).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(2)
+
+      await removeSkillsetCache(ref)
+      await createSkillsetCache(config.id, index)
+      await expect(refreshSkillset(ref, { maxAgeMs: 60_000 })).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(3)
     })
 
     it('coalesces concurrent first-time cache builds for the same cache directory', async () => {

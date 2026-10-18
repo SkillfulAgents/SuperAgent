@@ -38,6 +38,7 @@ import {
   type SessionActivityFields,
 } from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
+import { sessionMetadataHolds } from './session-metadata-holds'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
   SessionInfo,
@@ -99,6 +100,22 @@ export async function sessionFileRealPathWithinAgent(store: SessionStore, sessio
   try {
     await store.files.resolve(transcriptPath(store, sessionId))
     return true
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return false
+    throw error
+  }
+}
+
+/**
+ * Whether something is at the session's transcript path, by the same rules as
+ * {@link sessionFileRealPathWithinAgent}. `resolve` answers null for a path
+ * that is not there, so the containment check is the existence check as well:
+ * one realpath, where a resolve and then a stat would be two round trips.
+ */
+async function transcriptResolves(store: SessionStore, sessionId: string): Promise<boolean> {
+  if (!isSessionIdWellFormed(sessionId)) return false
+  try {
+    return (await store.files.resolve(transcriptPath(store, sessionId))) !== null
   } catch (error) {
     if (error instanceof WorkspaceFileError) return false
     throw error
@@ -192,6 +209,10 @@ async function mutateSessionMetadata(
  * metadata entry (undefined when it had none), captured under the same
  * serialization as the write, so callers can tell whether an update actually
  * changed a value without racing a concurrent update.
+ *
+ * An update whose every value is already stored writes nothing: the document
+ * is rewritten whole (temp file, fsync, rename, directory fsync), which on a
+ * network volume costs a round trip per step.
  */
 export async function updateSessionMetadata(
   store: SessionStore,
@@ -200,9 +221,10 @@ export async function updateSessionMetadata(
 ): Promise<SessionMetadata | undefined> {
   let previous: SessionMetadata | undefined
   await mutateSessionMetadata(store, (metadata) => {
-    previous = metadata[sessionId]
+    previous = Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : undefined
+    if (previous && sessionMetadataHolds(previous, updates)) return false
     metadata[sessionId] = {
-      ...metadata[sessionId],
+      ...previous,
       ...updates,
     }
   })
@@ -1968,9 +1990,12 @@ export async function sessionExists(
 /**
  * Whether `sessionId` names a session OF THIS AGENT — a written transcript, or a
  * registration for one whose agent hasn't streamed its first message yet. This
- * is exactly the rule getSession returns non-null on, but it costs a stat and a
- * metadata read instead of a full transcript pass. Use it for 404 guards that
- * don't go on to read any SessionInfo field.
+ * is the rule getSession returns non-null on, but it costs one realpath (plus a
+ * metadata read while there is no transcript) instead of a full transcript
+ * pass. Use it for 404 guards that don't go on to read any SessionInfo field.
+ * Unlike getSession it does not stat what is at the transcript path, so a
+ * directory the agent put there counts; the agent owns that directory, and the
+ * id is its own either way.
  *
  * Both halves are needed: the transcript lands only once the first turn writes,
  * and the metadata entry covers the window from `registerSession` up to then.
@@ -1992,7 +2017,7 @@ export async function sessionIsKnown(
 ): Promise<boolean> {
   if (!isSessionIdWellFormed(sessionId)) return false
   try {
-    if (await sessionExists(store, sessionId)) return true
+    if (await transcriptResolves(store, sessionId)) return true
     const metadata = await getSessionMetadata(store, sessionId)
     return metadata !== null && metadataOnlySession(metadata, Date.now()) === 'new'
   } catch {

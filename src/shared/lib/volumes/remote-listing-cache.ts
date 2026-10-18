@@ -17,8 +17,9 @@ const expired = (listing: Listing<unknown>) => listing.readAt + TTL_MS <= Date.n
  * cache. Callers check account access even on a cache hit. No bytes or credentials
  * are retained here. */
 export class RemoteListingCache<T> {
-  /** `retainMs` keeps an expired listing that long after its read, for a source that can vouch for it again. */
-  constructor(private readonly retainMs = TTL_MS) {}
+  /** `retainMs` keeps an expired listing that long after its read, for a source that can vouch for it again.
+   * `limits` caps what is retained, for a source whose workloads span more folders than the default. */
+  constructor(private readonly retainMs = TTL_MS, private readonly limits = { maxDirectories: MAX_DIRECTORIES, maxEntries: MAX_ENTRIES }) {}
 
   private readonly directories = new Map<string, Listing<T>>()
   private readonly pending = new Map<string, { accountId: string; token: symbol; promise: Promise<T[]> }>()
@@ -96,12 +97,12 @@ export class RemoteListingCache<T> {
 
   private store(accountId: string, key: string, entries: T[], readAt: number, checkedAt = readAt): void {
     // Oversized directories are not retained.
-    if (entries.length > MAX_ENTRIES) { this.remove(key); return }
+    if (entries.length > this.limits.maxEntries) { this.remove(key); return }
     for (const [key, listing] of this.directories) if (this.gone(listing)) this.remove(key)
     this.remove(key)
     this.directories.set(key, { accountId, entries, readAt, checkedAt })
     this.entryCount += entries.length
-    while (this.directories.size > MAX_DIRECTORIES || this.entryCount > MAX_ENTRIES) this.remove(this.directories.keys().next().value!)
+    while (this.directories.size > this.limits.maxDirectories || this.entryCount > this.limits.maxEntries) this.remove(this.directories.keys().next().value!)
   }
 
   async list(accountId: string, key: string, read: () => Promise<T[]>): Promise<T[]> {

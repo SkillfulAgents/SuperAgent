@@ -214,6 +214,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
     deleteLive: (sessionId) => client().deleteSession(sessionId),
+    warm: (sessionId) => client().warmSession(sessionId),
 
     activity: (sessionId) => deps.messagePersister.getSessionActivity(slug, sessionId),
     isActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
@@ -241,7 +242,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     broadcastUpdate: (sessionId) => deps.messagePersister.broadcastSessionUpdate(slug, sessionId),
     recoverAwaitingInput: (sessionId, unresolved) =>
       deps.messagePersister.recoverSessionAwaitingInput(slug, sessionId, unresolved),
-    promoteAutomated: (sessionId) => deps.messagePersister.promoteAutomatedSession(slug, sessionId),
+    promoteAutomated: (...args) => deps.messagePersister.promoteAutomatedSession(slug, ...args),
     grantCapability: (sessionId, capability) =>
       deps.messagePersister.grantSessionCapability(slug, sessionId, capability),
     slashCommands: (sessionId) => deps.messagePersister.getSlashCommands(slug, sessionId),
@@ -249,8 +250,8 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     backgroundTasks: (sessionId) => deps.messagePersister.getActiveBackgroundTasks(slug, sessionId),
     activeSubagents: (sessionId) => deps.messagePersister.getActiveSubagents(slug, sessionId),
 
-    subscribeStream: (sessionId, containerSessionId) =>
-      deps.messagePersister.subscribeToSession(slug, sessionId, client(), containerSessionId),
+    subscribeStream: (sessionId, containerSessionId, ...metadata) =>
+      deps.messagePersister.subscribeToSession(slug, sessionId, client(), containerSessionId, ...metadata),
     unsubscribeStream: (sessionId) => deps.messagePersister.unsubscribeFromSession(slug, sessionId),
     isStreamSubscribed: (sessionId) => deps.messagePersister.isSubscribed(slug, sessionId),
   }

@@ -856,6 +856,8 @@ describe('usePendingRequests', () => {
           matchedScopes: ['repo:write'],
           scopeDescriptions: { 'repo:write': 'Write to repos' },
           displayText: 'Push to private repo',
+          endpointDescription: 'Push to a repository',
+          requestBody: '{"ref":"main"}',
         },
         { agentScoped: true },
       ),
@@ -870,6 +872,8 @@ describe('usePendingRequests', () => {
     expect(matches[0].reviewType).toBe('api')
     expect(matches[0].displayText).toBe('Push to private repo')
     expect(matches[0].scopeDescriptions).toEqual({ 'repo:write': 'Write to repos' })
+    expect(matches[0].endpointDescription).toBe('Push to a repository')
+    expect(matches[0].requestBody).toBe('{"ref":"main"}')
   })
 
   it('carries the mcp review stamp through to the card and drops an unknown one', () => {
