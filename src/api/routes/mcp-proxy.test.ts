@@ -45,6 +45,9 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: {},
 }))
 
+// No proxy rules exist in these tests; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
+
 vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
@@ -2021,6 +2024,7 @@ describe('mcp-proxy route', () => {
       expect(mockRequestReview).toHaveBeenCalledWith(
         expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'tools/call: search' }),
         expect.anything(),
+        expect.objectContaining({ reevaluate: expect.any(Function) }),
       )
     })
 
@@ -2049,6 +2053,7 @@ describe('mcp-proxy route', () => {
       expect(mockRequestReview).toHaveBeenCalledWith(
         expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'resources/read', matchedScopes: [] }),
         expect.anything(),
+        expect.objectContaining({ reevaluate: expect.any(Function) }),
       )
     })
 

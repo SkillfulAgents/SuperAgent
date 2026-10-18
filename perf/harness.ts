@@ -113,18 +113,50 @@ export interface Measurement {
   bytesRead: number
 }
 
+export interface MeasureOptions {
+  /**
+   * Keep counting after `fn` resolves until no operation has started for a
+   * while, so the fire-and-forget work a request leaves running (a session
+   * rename, a background read) is in the counts in full instead of in part.
+   * `wallMs` still ends when `fn` resolves.
+   */
+  settle?: boolean
+}
+
 /** Run `fn` with the shim enabled; everything outside runs at native speed. */
-export async function measure<T>(fn: () => Promise<T>): Promise<{ result: T; measurement: Measurement }> {
+export async function measure<T>(
+  fn: () => Promise<T>,
+  options: MeasureOptions = {},
+): Promise<{ result: T; measurement: Measurement }> {
   resetNfsShimCounters()
   enableNfsShim()
   const started = performance.now()
   try {
     const result = await fn()
     const wallMs = performance.now() - started
+    if (options.settle) await settle()
     const snapshot = nfsShimSnapshot()
     return { result, measurement: { wallMs, ...snapshot } }
   } finally {
     disableNfsShim()
+  }
+}
+
+/**
+ * Wait until two quiet intervals pass without a new operation. A chain of
+ * awaited operations starts its next one within one simulated latency of the
+ * last, so an interval several latencies long with nothing new means none is
+ * running.
+ */
+async function settle(): Promise<void> {
+  const intervalMs = Math.max(25, nfsShimLatencyMs() * 5)
+  let quiet = 0
+  let seen = nfsShimSnapshot().totalOps
+  while (quiet < 2) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    const now = nfsShimSnapshot().totalOps
+    quiet = now === seen ? quiet + 1 : 0
+    seen = now
   }
 }
 

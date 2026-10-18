@@ -241,7 +241,15 @@ export function useUpdateAgentAvatar() {
   })
 }
 
-export type StartAgentVars = string | { slug: string; source?: 'user' | 'warm-start' }
+export type StartAgentVars = string | {
+  slug: string
+  source?: 'user' | 'warm-start'
+  /**
+   * The session the caller is typing into. The server then also resumes that
+   * session's agent process if it went idle, so the next send starts sooner.
+   */
+  sessionId?: string
+}
 
 function resolveStartAgentSlug(vars: StartAgentVars): string {
   return typeof vars === 'string' ? vars : vars.slug
@@ -255,7 +263,13 @@ export function useStartAgent() {
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (vars: StartAgentVars) => {
       const slug = resolveStartAgentSlug(vars)
-      const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
+      const sessionId = typeof vars === 'string' ? undefined : vars.sessionId
+      const res = await apiFetch(
+        `/api/agents/${slug}/start`,
+        sessionId
+          ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) }
+          : { method: 'POST' },
+      )
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || 'Failed to start agent')

@@ -33,6 +33,7 @@ import type {
   InterruptSessionOptions,
   InterruptSessionResult,
   SendMessageOptions,
+  SendMessageResult,
   SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
@@ -334,6 +335,8 @@ export interface SessionOps {
   fork(sessionId: string): Promise<{ id: string } | null>
   /** `client.deleteSession` — the container's copy, not the stored files. */
   deleteLive(sessionId: string): Promise<boolean>
+  /** `client.warmSession` — resume the session's CLI ahead of its next message. Best-effort; never throws. */
+  warm(sessionId: string): Promise<boolean>
 
   // Activity — messagePersister. Synchronous reads of in-memory state.
 
@@ -384,8 +387,11 @@ export interface SessionOps {
   broadcastUpdate(sessionId: string): void
   /** `messagePersister.recoverSessionAwaitingInput` */
   recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
-  /** `messagePersister.promoteAutomatedSession` */
-  promoteAutomated(sessionId: string): Promise<void>
+  /**
+   * `messagePersister.promoteAutomatedSession`. `metadata` is the session's
+   * entry as the caller just read it; resolves to the entry as it now stands.
+   */
+  promoteAutomated(sessionId: string, metadata?: SessionMetadata | null): Promise<SessionMetadata | null>
   /** `messagePersister.grantSessionCapability` */
   grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): void
   /** `messagePersister.getSlashCommands` */
@@ -400,8 +406,11 @@ export interface SessionOps {
   // Container stream attachment — messagePersister follows the container's
   // stream for a session and persists what arrives.
 
-  /** `messagePersister.subscribeToSession` with this agent's client. */
-  subscribeStream(sessionId: string, containerSessionId: string): Promise<void>
+  /**
+   * `messagePersister.subscribeToSession` with this agent's client. `metadata`
+   * is the session's entry as the caller just read it (null: none).
+   */
+  subscribeStream(sessionId: string, containerSessionId: string, metadata?: SessionMetadata | null): Promise<void>
   /** `messagePersister.unsubscribeFromSession` */
   unsubscribeStream(sessionId: string): void
   /** `messagePersister.isSubscribed` */
@@ -412,7 +421,7 @@ export interface MessageOps {
   // Live — ContainerClient.
 
   /** `client.sendMessage` */
-  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
+  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
   /** `client.cancelQueuedMessage` */
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
   /** `client.interruptSession` */
@@ -526,7 +535,11 @@ export interface ReviewOps {
   /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
   /** `AgentReviews.request` — the review is this agent's. */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, signal?: AbortSignal): Promise<'allow' | 'deny'>
+  request(
+    details: Omit<ReviewDetails, 'agentSlug'>,
+    signal?: AbortSignal,
+    options?: { reevaluate?: () => Promise<'allow' | 'deny' | 'review'> },
+  ): Promise<'allow' | 'deny'>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     targetAgentSlug: string,

@@ -13,6 +13,10 @@ export interface RequestLogEntry {
   durationMs: number | null
   policyDecision: string | null
   matchedScopes: string | null
+  /** Proxy rule version that decided the request (allowed or held it); absent when no rule did. */
+  ruleVersionId?: string | null
+  /** JSON outcomes of every rule that ran (with names added by the logs API); absent when none ran. */
+  ruleOutcomes?: string | null
   /** Date on the server; ISO string after JSON transport. */
   createdAt: Date | string
 }
@@ -34,6 +38,8 @@ export const requestLogEntrySchema = z.object({
   durationMs: z.number().nullable(),
   policyDecision: z.string().nullable(),
   matchedScopes: z.string().nullable(),
+  ruleVersionId: z.string().nullable().optional(),
+  ruleOutcomes: z.string().nullable().optional(),
   createdAt: z.string(),
 }) satisfies z.ZodType<RequestLogEntry>
 
@@ -55,6 +61,8 @@ export function normalizeProxyRequestLog(entry: ProxyAuditLogEntry): RequestLogE
     durationMs: entry.durationMs ?? null,
     policyDecision: entry.policyDecision ?? null,
     matchedScopes: entry.matchedScopes ?? null,
+    ...(entry.ruleVersionId ? { ruleVersionId: entry.ruleVersionId } : {}),
+    ...(entry.ruleOutcomes ? { ruleOutcomes: entry.ruleOutcomes } : {}),
     createdAt: entry.createdAt,
   }
 }
@@ -72,6 +80,8 @@ export function normalizeMcpRequestLog(entry: McpAuditLogEntry): RequestLogEntry
     durationMs: entry.durationMs ?? null,
     policyDecision: entry.policyDecision ?? null,
     matchedScopes: entry.matchedTool ? JSON.stringify([entry.matchedTool]) : null,
+    ...(entry.ruleVersionId ? { ruleVersionId: entry.ruleVersionId } : {}),
+    ...(entry.ruleOutcomes ? { ruleOutcomes: entry.ruleOutcomes } : {}),
     createdAt: entry.createdAt,
   }
 }

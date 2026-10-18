@@ -52,6 +52,8 @@ vi.mock('@shared/lib/db', () => ({
   },
 }))
 
+// No proxy rules exist in this test; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
 vi.mock('@shared/lib/db/schema', () => ({
   remoteMcpServers: { id: 'id' },
   agentRemoteMcps: { agentSlug: 'agent_slug', remoteMcpId: 'remote_mcp_id' },

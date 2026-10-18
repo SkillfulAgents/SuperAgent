@@ -1,9 +1,12 @@
-import { assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, markSessionSelection, selectionUnchangedSince, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
+import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
+import type { SendMessageResult } from '@shared/lib/container/types'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
+import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
@@ -31,6 +34,7 @@ import {
 import { parsePagination } from '../pagination'
 import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
+import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -53,6 +57,7 @@ import {
   decodeMediaRef,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
+  type AgentActor,
   type FileStat,
   type SessionSortBy,
 } from '@shared/lib/agent-actor'
@@ -122,6 +127,8 @@ import {
   type LoginSaveOutcome,
 } from '@shared/lib/browser/browser-login-save'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
+import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
+import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -1735,12 +1742,47 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/start - Start an agent's container
+// POST /api/agents/:id/start - Start an agent's container.
+// Optional JSON body `{ sessionId }`: the session the caller is typing into.
+// Once the container is up, that session's CLI — evicted after a few idle
+// minutes — is resumed in the background, so the next send skips the CLI
+// spawn and `--resume`. Clients call this on the first keystroke. Older ones
+// send no body, and any body this route cannot use is a plain start.
+const startAgentBodySchema = z.object({
+  sessionId: z.string().min(1).max(256).optional(),
+})
+// A `{ sessionId }` body is tiny. Reject a declared oversize without reading,
+// and also bound actual bytes: chunked requests need not declare their size.
+const START_AGENT_BODY_MAX_BYTES = 16 * 1024
+
+async function sessionToPreResume(c: Context): Promise<string | null> {
+  if (Number(c.req.header('content-length')) > START_AGENT_BODY_MAX_BYTES) return null
+  // An oversized or unreadable optional hint must not prevent a plain start.
+  const json = await readLimitedJsonBody(c.req.raw, START_AGENT_BODY_MAX_BYTES).catch(() => null)
+  const parsed = startAgentBodySchema.safeParse(json)
+  return parsed.success ? parsed.data.sessionId ?? null : null
+}
+
+// Never delays or fails the start. The id is the caller's, so it is acted on
+// only when it names one of this agent's sessions — the containment check
+// every session route makes. Any other id is dropped without a trace.
+async function preResumeSession(actor: AgentActor, sessionId: string): Promise<void> {
+  try {
+    if (!(await actor.sessions.isKnown(sessionId))) return
+    await actor.sessions.warm(sessionId)
+  } catch (error) {
+    console.debug(`[Agents] Pre-resume of session ${sessionId} skipped:`, error)
+  }
+}
+
 agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const sessionId = await sessionToPreResume(c)
+    const actor = agentRegistry.get(slug)
 
-    await agentRegistry.get(slug).container.start()
+    await actor.container.start()
+    if (sessionId) void preResumeSession(actor, sessionId)
 
     // Skip the session-summary enrichment: it stats every transcript, and every
     // caller of this command discards the body and refetches agent data anyway.
@@ -2007,7 +2049,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       dashboardDispatch = parsed.data
     }
 
-    const agent = await getAgent(slug)
+    // The agent's name is all this route needs of it, and the catalog has it.
+    const agent = await getAgentRecord(slug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -2090,6 +2133,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       if (deviceId) initialMetadata.createdByDeviceId = deviceId
     }
 
+    // Slash commands from the container's init event (captured during session
+    // creation) go in the registration write rather than a second one.
+    if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+      initialMetadata.slashCommands = containerSession.slashCommands
+    }
+
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
@@ -2098,7 +2147,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     try {
       agentRegistry.get(slug).sessions.markActive(sessionId)
       lifecycleStarted = true
-      await actor.sessions.subscribeStream(sessionId, sessionId)
+      // The session's metadata is the registration below: nothing to read.
+      await actor.sessions.subscribeStream(sessionId, sessionId, initialMetadata)
 
       // Record author for initial message after we know the sessionId
       if (isAuthMode()) {
@@ -2119,10 +2169,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       }
       throw error
     }
-    // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
       agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
-      actor.sessions.updateMetadata(sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
 
     if (isSystemMessageText(message.trim())) {
@@ -2132,7 +2180,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         slug,
         sessionId,
         message.trim(),
-        agent.frontmatter.name
+        agent.name
       ).catch(console.error)
     }
 
@@ -2723,17 +2771,26 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const agent = await getAgent(agentSlug)
+    // The agent's name is all this route needs of it, and the catalog has it.
+    const agent = await getAgentRecord(agentSlug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
+
+    // The session's metadata, read once for the whole send: the promotion
+    // check, the stream's lifecycle, the runtime selection and the container's
+    // provider binding all work from it. Marked first, so the selection turn
+    // below can tell whether another send of this session finished since and
+    // may have stored newer values.
+    const selectionMark = markSessionSelection(agentSlug, sessionId)
+    let metadata = await actor.sessions.metadata(sessionId)
 
     // A message through this AgentUser route is human-originated. Promote any
     // hidden automation before delivery so the host and container agree that
     // a person has joined the session. This must precede sendMessage: a fast
     // turn can settle immediately, and completion notification visibility is
     // decided from the host-side promotedToInteractive marker.
-    await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
+    metadata = await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId, metadata)
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2770,7 +2827,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     if (!agentRegistry.get(agentSlug).sessions.isStreamSubscribed(sessionId)) {
-      await actor.sessions.subscribeStream(sessionId, sessionId)
+      await actor.sessions.subscribeStream(sessionId, sessionId, metadata)
     }
 
     // A transcript-only append (the voice-mode notices): the message enters
@@ -2794,7 +2851,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     return await withSessionSelection(agentSlug, sessionId, async () => {
-      const currentSelection = await actor.sessions.metadata(sessionId)
+      const currentSelection = selectionUnchangedSince(selectionMark) ? metadata : await actor.sessions.metadata(sessionId)
       // Authorize before mutating activity or persisting the user's message.
       await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, currentSelection?.llmProviderId)
       // If the session is awaiting user input (an open AskUserQuestion / secret / file
@@ -2834,26 +2891,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      try {
-        await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
-      } catch (error) {
-        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
-        throw error
-      }
-      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
-      const updates: Partial<SessionMetadata> = {}
-      if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
-      if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
-      // The container client stores the resolved pair, including inherited
-      // fallback after deletion. Do not overwrite it with a stale request pair.
-      const effectiveMetadata = getSettings().llmDefault ? await actor.sessions.metadata(sessionId) : null
-      if (!wasQueued && effectiveMetadata?.model) {
-        updates.model = effectiveMetadata.model
-        updates.llmProviderId = effectiveMetadata.llmProviderId
-      } else {
-        if (runtimeOptions.model) updates.model = runtimeOptions.model
-        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
-      }
+      // What this send stores about the session besides its provider binding.
+      // Handed to the container client too: a send whose binding changed
+      // stores it before its POST, and these then go in that same write.
+      const fields: Partial<SessionMetadata> = {}
+      if (runtimeOptions.effort) fields.effort = runtimeOptions.effort
+      if (runtimeOptions.speed) fields.speed = runtimeOptions.speed
       if (isAuthMode()) {
         // Alert claim: the device that spoke last in a session is the one
         // awaiting its outcome, so visible pushes follow it. A send with no
@@ -2862,32 +2905,58 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         // covers them there). Explicit null ≠ absent: absent falls back to the
         // creation stamp in ApnsRelayChannel. Awaited via the metadata write
         // below so a fast turn can't complete ahead of its own claim.
-        updates.alertDeviceId = getRequestDeviceId(c)
+        fields.alertDeviceId = getRequestDeviceId(c)
       }
-      if (Object.keys(updates).length > 0) {
-        try {
-          const previous = await actor.sessions.updateMetadata(sessionId, updates)
-          // The composer re-sends its whole selection on every fresh turn, so
-          // option presence alone doesn't mean anything changed. Compare against
-          // the previous metadata (captured under the update's lock) — otherwise
-          // every send would make every open window refetch the session list and
-          // detail for a no-op. A failed metadata write skips the broadcast too:
-          // peers would only refetch the stale values.
-          const runtimeSelectionChanged =
-            (updates.effort !== undefined && previous?.effort !== updates.effort) ||
-            (updates.speed !== undefined && previous?.speed !== updates.speed) ||
-            (updates.model !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.model !== updates.model) ||
-            (updates.llmProviderId !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.llmProviderId !== updates.llmProviderId)
-          if (runtimeSelectionChanged) {
-            // Other windows/devices may already have seeded their composer from
-            // the previous session metadata. Tell both the local session stream
-            // and the global event stream to refresh before their next send.
-            agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
-            messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
-          }
-        } catch (error) {
-          console.error(error)
+
+      let sent: SendMessageResult
+      try {
+        sent = await actor.messages.send(sessionId, agentText, messageUuid, {
+          ...runtimeOptions,
+          ...(wasQueued ? { preserveRuntime: true } : {}),
+          sessionMetadata: currentSelection,
+          metadataUpdates: fields,
+        })
+      } catch (error) {
+        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
+        throw error
+      }
+      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
+      const updates: Partial<SessionMetadata> = { ...fields }
+      // The container client resolves the pair, including inherited fallback
+      // after deletion. Do not overwrite it with a stale request pair.
+      const effective = getSettings().llmDefault ? (sent.selection ?? currentSelection) : null
+      if (!wasQueued && effective?.model) {
+        updates.model = effective.model
+        updates.llmProviderId = effective.llmProviderId
+      } else {
+        if (runtimeOptions.model) updates.model = runtimeOptions.model
+        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
+      }
+
+      // What the session holds now, as far as this send knows. Only a value it
+      // does not hold yet costs a write: an unchanged send writes nothing, and
+      // nothing is left over after the client stored a changed binding.
+      const stored = sent.metadataWritten ? { ...currentSelection, ...fields, ...sent.selection } : currentSelection
+      try {
+        if (!sessionMetadataHolds(stored, updates)) await actor.sessions.updateMetadata(sessionId, updates)
+        // The composer re-sends its whole selection on every fresh turn, so
+        // option presence alone doesn't mean anything changed. Compare against
+        // the metadata the send started from — otherwise every send would make
+        // every open window refetch the session list and detail for a no-op.
+        // A failed metadata write skips the broadcast too: peers would only
+        // refetch the stale values.
+        const runtimeSelectionChanged = (['effort', 'speed', 'model', 'llmProviderId'] as const).some(
+          (key) => updates[key] !== undefined && currentSelection?.[key] !== updates[key],
+        )
+        if (runtimeSelectionChanged) {
+          // Other windows/devices may already have seeded their composer from
+          // the previous session metadata. Tell both the local session stream
+          // and the global event stream to refresh before their next send.
+          agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
+          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
         }
+      } catch (error) {
+        console.error(error)
       }
 
       return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
@@ -5820,7 +5889,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
 agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
     const skillsets = getConfiguredSkillsets()
-    await refreshAgentTemplates(skillsets)
+    await refreshAgentTemplates(skillsets, { background: c.req.query('background') === '1' })
     const slug = getAgentId(c)
     const status = await getAgentTemplateStatus(slug, skillsets)
     return c.json(status)
@@ -5836,7 +5905,7 @@ agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const skillsets = getConfiguredSkillsets()
-    await refreshAgentSkills(agentSlug, skillsets)
+    await refreshAgentSkills(agentSlug, skillsets, { background: c.req.query('background') === '1' })
     const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
     return c.json({ skills })
   } catch (error) {
@@ -6090,7 +6159,7 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
     // Sort by time descending, then paginate
     normalized.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     const total = (proxyTotal[0]?.count ?? 0) + (mcpTotal[0]?.count ?? 0)
-    const entries = normalized.slice(offset, offset + limit)
+    const entries = await withRuleNames(normalized.slice(offset, offset + limit))
 
     return c.json({ entries, total })
   } catch (error) {
@@ -7587,12 +7656,26 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
   }
 
+  // Approving an agent's proxy rule persists access on the account or MCP
+  // server, so (like "always allow") only its owner may approve it.
+  const proposal = agentRegistry.get(slug).inputs.reviews.pending()
+    .find((review) => review.id === reviewId)?.ruleProposal
+  if (proposal && body.decision === 'allow' && isAuthMode()) {
+    const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
+    if (!context || context.userId !== getCurrentUserId(c)) {
+      return c.json({ error: 'Forbidden: only the owner of this connection can approve its rules' }, 403)
+    }
+  }
+
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
   const success = agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
+  }
+  if (proposal) {
+    await auditRuleDecision({ proposal, approved: body.decision === 'allow', agentSlug: slug, via: 'app', userId: getCurrentUserId(c) })
   }
 
   return c.json({ ok: true })
@@ -7618,6 +7701,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const pendingReview = agentRegistry.get(slug).inputs.reviews.pending().find((review) => review.id === reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
     return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
+  }
+  // An unnamed call's scopes union every action on its path: a policy on one of them can allow a delete.
+  if (body.decision === 'allow' && body.scope !== '*' && pendingReview?.endpointAmbiguous) {
+    return c.json({ error: 'This request can only be allowed once or for every request to this account' }, 400)
+  }
+  if (pendingReview?.ruleProposal) {
+    return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'

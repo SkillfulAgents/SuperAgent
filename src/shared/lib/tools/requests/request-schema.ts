@@ -149,6 +149,21 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       matchedScopes: z.array(z.string()).optional().catch(undefined),
       scopeDescriptions: z.record(z.string(), z.string()).optional().catch(undefined),
       endpointDescription: lenientString,
+      endpointAmbiguous: z.boolean().optional().catch(undefined),
+      requestBody: lenientString,
+      ruleOutcomes: z
+        .array(z.looseObject({
+          ruleId: z.string(),
+          version: z.number(),
+          effect: lenientString,
+          name: lenientString,
+          restatement: z.string(),
+          result: z.string(),
+          detail: lenientString,
+        }))
+        .optional()
+        .catch(undefined),
+      ruleProposal: z.looseObject({}).optional().catch(undefined),
     }),
   }),
   baseRequest.extend({
