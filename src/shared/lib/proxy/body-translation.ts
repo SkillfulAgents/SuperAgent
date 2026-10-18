@@ -20,22 +20,34 @@ export type ProxyBodyResult =
 
 export const MAX_PROXY_BINARY_BYTES = 4 * 1024 * 1024
 
+/** The media type alone, lowercased: parameters such as `name=data.json` never decide the class. */
+function mediaTypeOf(contentType: string | null | undefined): string {
+  return contentType?.split(';')[0].trim().toLowerCase() ?? ''
+}
+
 export function isJsonContentType(contentType: string | null): boolean {
-  if (!contentType) return false
-  const ct = contentType.toLowerCase()
-  return ct.includes('application/json') || /\+json(\s*;|\s*$)/.test(ct)
+  const mediaType = mediaTypeOf(contentType)
+  return mediaType === 'application/json' || mediaType.endsWith('+json')
 }
 
 export function isBinaryContentType(contentType: string | null): boolean {
-  if (!contentType) return false
-  const ct = contentType.toLowerCase()
-  if (ct.startsWith('text/')) return false
-  if (isJsonContentType(ct)) return false
-  if (ct.startsWith('application/x-www-form-urlencoded')) return false
+  const mediaType = mediaTypeOf(contentType)
+  if (!mediaType) return false
+  if (mediaType.startsWith('text/')) return false
+  if (isJsonContentType(mediaType)) return false
+  if (mediaType === 'application/x-www-form-urlencoded') return false
   // Drive's single-request upload is an opaque multipart/related byte stream.
-  if (/^multipart\/related(?:\s*;|$)/.test(ct)) return true
-  if (ct.startsWith('multipart/')) return false
+  if (mediaType === 'multipart/related') return true
+  if (mediaType.startsWith('multipart/')) return false
   return true
+}
+
+const TEXT_MEDIA_TYPE = /^(text\/.+|application\/(x-www-form-urlencoded|x-ndjson|graphql|xml)|[a-z]+\/.+\+xml)$/
+
+/** Whether the approval card can show a body of this content type as text. */
+export function isPreviewableContentType(contentType: string | null | undefined): boolean {
+  const mediaType = mediaTypeOf(contentType)
+  return isJsonContentType(mediaType) || TEXT_MEDIA_TYPE.test(mediaType)
 }
 
 export function translateProxyBody(

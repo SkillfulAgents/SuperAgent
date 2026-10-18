@@ -109,7 +109,7 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
   const { user, isAuthMode } = useUser()
   const { data: settings } = useModelSettings()
   const { refetch } = useLlmConnections()
-  const { isActive } = useMessageStream(session.sessionId, session.agentSlug)
+  const { isActive } = useMessageStream(session.sessionId, session.agentSlug, ['isActive'])
   const { mutateAsync: sendMessage } = useSendMessage({ quiet: true })
   const [connectionId, setConnectionId] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)

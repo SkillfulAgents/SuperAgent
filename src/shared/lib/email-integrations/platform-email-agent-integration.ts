@@ -51,6 +51,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     if (identity.orgId !== this.config.platformOrgId || identity.memberId !== this.config.platformMemberId) throw new Error('Reconnect the Platform account that owns this inbox')
     const mailbox = await this.client.json(this.base, mailboxSchema)
     if (mailbox.status === 'disabled') throw new Error('This inbox has been disabled')
+    if (mailbox.domain?.status === 'failed') throw new Error(`Email domain setup failed${mailbox.domain.error ? ` (${mailbox.domain.error})` : ''}. Contact support.`)
     // Webhooks whenever the host has a relay as this connection starts; the
     // stream otherwise, or if webhooks can't be set up right now.
     const webhook = this.host.relay ? await this.registerWebhook() : null

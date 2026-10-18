@@ -1,4 +1,5 @@
 import { getToolDefinition } from '../registry'
+import { parseRuleOutcomes, parseRuleProposal, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
 import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -233,7 +234,11 @@ export interface PendingReview {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  endpointDescription?: string
+  requestBody?: string
   xAgent?: XAgentReview
+  ruleOutcomes?: ReviewRuleOutcomeView[]
+  ruleProposal?: RuleProposalReview
 }
 
 export interface PendingAccountReauth {
@@ -357,7 +362,11 @@ export function reviewFromEnvelope(
         ? (payload.scopeDescriptions as Record<string, string>)
         : {},
     displayText: typeof payload.displayText === 'string' ? payload.displayText : undefined,
+    ...(typeof payload.endpointDescription === 'string' ? { endpointDescription: payload.endpointDescription } : {}),
+    ...(typeof payload.requestBody === 'string' ? { requestBody: payload.requestBody } : {}),
     ...(xAgent ? { xAgent } : {}),
+    ...(parseRuleOutcomes(payload.ruleOutcomes) ? { ruleOutcomes: parseRuleOutcomes(payload.ruleOutcomes) } : {}),
+    ...(parseRuleProposal(payload.ruleProposal) ? { ruleProposal: parseRuleProposal(payload.ruleProposal) } : {}),
   }
 }
 
@@ -564,7 +573,7 @@ export function usePendingRequests({
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
-  } = useMessageStream(sessionId, agentSlug)
+  } = useMessageStream(sessionId, agentSlug, ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
 
   // The snapshot is the only source for reviews and capability reviews, and
   // the primary one for every other kind. The streaming/message-history
@@ -895,6 +904,10 @@ export function usePendingRequests({
           matchedScopes: review.matchedScopes,
           scopeDescriptions: review.scopeDescriptions,
           displayText: review.displayText,
+          endpointDescription: review.endpointDescription,
+          requestBody: review.requestBody,
+          ruleOutcomes: review.ruleOutcomes,
+          ruleProposal: review.ruleProposal,
           onComplete: handleProxyReviewComplete,
         })
       }

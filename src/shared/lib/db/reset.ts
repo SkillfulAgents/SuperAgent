@@ -19,6 +19,8 @@ import {
   agentRemoteMcps,
   mcpAuditLog,
   mcpToolPolicies,
+  proxyRules,
+  proxyRuleVersions,
   agentAcl,
   agentVolumes,
   volumeDefinitions,
@@ -76,6 +78,9 @@ function factoryResetTables(): SQLiteTable[] { return [
   integrationDeliveries,
   chatIntegrations,
   llmConnections,
+  // proxy rules point at connected accounts or remote MCP servers
+  proxyRuleVersions,
+  proxyRules,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,
   apiScopePolicies,

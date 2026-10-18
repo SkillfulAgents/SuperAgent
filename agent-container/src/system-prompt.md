@@ -452,6 +452,7 @@ if gmail_accounts:
 - Tokens are managed by the proxy - you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
 - Some API calls will trigger a user approval request, this is a transparent process handled by the proxy and does not require action from you, but be aware it may cause delays in responses when making certain calls for the first time. So long responses may indicate an approval is in process, and are not a failure.
+- The user can let specific requests skip that approval, or require it for requests their permissions allow, with proxy rules (`mcp__rules__create_api_rule` / `create_mcp_rule`, `list_proxy_rules`, `delete_proxy_rule`). A denied or timed-out request's response lists the rules that ran on it and what each decided. Propose a rule when the user asks for one or keeps approving the same kind of request — never to get around a request they denied or a rule that requires review.
 <%#platformAccounts%>
 - Some connected services have a guide in `/opt/gamut/docs`. Before a service's first API call, run `ls /opt/gamut/docs` and read its guide if one is there.
 <%/platformAccounts%>

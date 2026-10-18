@@ -54,7 +54,7 @@ describe('S3 definition, scope and WebDAV integration', () => {
     expect((await app.request(`/api/volume-definitions/${id}/folders`, { headers: asUser('bob') })).status).toBe(404)
     const mount = await attachMount('agent-a', id, viewer)
     const listed = await listVolumes('agent-a')
-    expect(listed.volumes).toEqual([{ volumeId: mount.id, name: 'Bucket', volumeName: 'Bucket', cacheMode: 'remote', dirCacheSeconds: 30 }])
+    expect(listed.volumes).toEqual([{ volumeId: mount.id, name: 'Bucket', volumeName: 'Bucket', cacheMode: 'remote' }])
     expect(JSON.stringify(listed)).not.toContain('credentials')
     const url = `/api/volumes/${mount.id}/hello.txt`
     expect((await app.request(url, { method: 'PUT', body: 'secret', headers: { 'Test-Agent': 'agent-b' } })).status).toBe(403)

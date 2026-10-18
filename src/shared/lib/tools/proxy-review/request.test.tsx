@@ -44,6 +44,20 @@ function sentBody(): Record<string, unknown> {
   return JSON.parse(init.body as string)
 }
 
+describe('ProxyReviewRequestItem title', () => {
+  it('renders the endpoint description as inline Markdown', () => {
+    renderCard({
+      displayText: 'Allow sends the specified message to the recipients in the `To`, `Cc`, and `Bcc` headers. For example usage, see [Sending email](https://developers.google.com/workspace/gmail/api/guides/sending)?',
+    })
+    const link = screen.getByRole('link', { name: 'Sending email' })
+    expect(link.getAttribute('href')).toBe('https://developers.google.com/workspace/gmail/api/guides/sending')
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(screen.getByText('To').tagName).toBe('CODE')
+    expect(document.body.textContent).not.toContain('](')
+    expect(document.body.textContent).not.toContain('`')
+  })
+})
+
 describe('ProxyReviewRequestItem "always" policy routing', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
@@ -89,5 +103,51 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     expect(await screen.findByText(/MCP server no longer exists/)).toBeInTheDocument()
     expect(screen.getByTestId('proxy-review-request')).toBeInTheDocument()
     expect(screen.queryByTestId('proxy-review-completed')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProxyReviewRequestItem request body', () => {
+  const body = 'mutation { issueDelete(id: "LIN-1") { success } }'
+
+  it('opens what the call sends when the headline cannot name the call, and folds it when it can', () => {
+    const { unmount } = renderCard({ toolkit: 'linear', targetPath: 'graphql', requestBody: body })
+    expect(screen.getByTestId('proxy-review-body')).toHaveTextContent(body)
+    unmount()
+    renderCard({ toolkit: 'gmail', targetPath: 'gmail/v1/users/me/messages/send', requestBody: '{}', endpointDescription: 'Send an email' })
+    expect(screen.queryByTestId('proxy-review-body')).toBeNull()
+  })
+
+  it('offers label and scope allows on an API card only when the headline names the call', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read', 'write'] })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-allow-label-read')).toBeNull()
+    expect(screen.queryByTestId('proxy-review-specific-scope-toggle')).toBeNull()
+    await user.click(screen.getByTestId('proxy-review-deny-btn-chevron'))
+    expect(await screen.findByTestId('proxy-review-deny-reason-input')).toBeInTheDocument()
+    expect(screen.getByTestId('proxy-review-always-deny-read')).toBeInTheDocument()
+    unmount()
+    renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(await screen.findByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
+    expect(screen.getByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
+  })
+
+  it('keeps per-tool policies on an MCP card, which never carries an endpoint description', async () => {
+    const user = userEvent.setup()
+    renderCard({ reviewType: 'mcp', matchedScopes: ['create_issue'] })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(await screen.findByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
+  })
+
+  it('opens a folded body on click, and has nothing to open without one', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderCard({ requestBody: '{"to":"a@b.co"}', endpointDescription: 'Send an email' })
+    await user.click(screen.getByTestId('proxy-review-body-toggle'))
+    expect(screen.getByTestId('proxy-review-body')).toHaveTextContent('a@b.co')
+    unmount()
+    renderCard({})
+    expect(screen.queryByTestId('proxy-review-body-toggle')).toBeNull()
   })
 })

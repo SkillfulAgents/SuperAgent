@@ -33,7 +33,7 @@ export function useAgentSkills(agentSlug: string | null) {
     agentSkillAutoRefreshAt.set(agentSlug, Date.now())
 
     let cancelled = false
-    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/refresh`, { method: 'POST' })
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/refresh?background=1`, { method: 'POST' })
       .then(async (res) => {
         if (cancelled || !res.ok) return
         const fresh = await res.json() as { skills: ApiSkillWithStatus[] }

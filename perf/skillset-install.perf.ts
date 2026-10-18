@@ -100,7 +100,8 @@ describe('skillset install', () => {
       // Includes one source-directory read to distinguish a real second
       // instructions file from the AGENTS.md created with the new agent.
       // Legacy templates additionally read, write and remove CLAUDE.md.
-      totalOps: instructionsFile === 'AGENTS.md' ? 114 : 118,
+      // Each atomic write counts its data write and its two fsyncs.
+      totalOps: instructionsFile === 'AGENTS.md' ? 123 : 130,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.

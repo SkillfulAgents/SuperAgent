@@ -609,5 +609,21 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1792093164911,
     "hash": "3a227888890cbbc01667d8ecaed1a7604e1830fb29d0148e6e92dc5a5ba5b3de"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `proxy_rule_versions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`rule_id` text NOT NULL,\n\t`version` integer NOT NULL,\n\t`name` text NOT NULL,\n\t`effect` text NOT NULL,\n\t`description` text NOT NULL,\n\t`restatement` text NOT NULL,\n\t`patterns` text NOT NULL,\n\t`code` text NOT NULL,\n\t`tests` text NOT NULL,\n\t`warnings` text NOT NULL,\n\t`tool_schema_hash` text,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`rule_id`) REFERENCES `proxy_rules`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `proxy_rule_versions_unique` ON `proxy_rule_versions` (`rule_id`,`version`);",
+      "\nCREATE TABLE `proxy_rules` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`kind` text NOT NULL,\n\t`account_id` text,\n\t`mcp_id` text,\n\t`agent_slug` text,\n\t`created_by` text NOT NULL,\n\t`created_by_agent_slug` text,\n\t`current_version_id` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`deleted_at` integer,\n\tFOREIGN KEY (`account_id`) REFERENCES `connected_accounts`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`mcp_id`) REFERENCES `remote_mcp_servers`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"proxy_rules_target_check\" CHECK((\"proxy_rules\".\"kind\" = 'api' and \"proxy_rules\".\"account_id\" is not null and \"proxy_rules\".\"mcp_id\" is null) or (\"proxy_rules\".\"kind\" = 'mcp' and \"proxy_rules\".\"mcp_id\" is not null and \"proxy_rules\".\"account_id\" is null))\n);\n",
+      "\nCREATE INDEX `proxy_rules_account_idx` ON `proxy_rules` (`account_id`);",
+      "\nCREATE INDEX `proxy_rules_mcp_idx` ON `proxy_rules` (`mcp_id`);",
+      "\nALTER TABLE `mcp_audit_log` ADD `rule_version_id` text;",
+      "\nALTER TABLE `mcp_audit_log` ADD `rule_outcomes` text;",
+      "\nALTER TABLE `proxy_audit_log` ADD `rule_version_id` text;",
+      "\nALTER TABLE `proxy_audit_log` ADD `rule_outcomes` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1792098812435,
+    "hash": "e5fea3fe1d8a068040f3db42f3826bc027eef61e032a262fbdfe88b8f05c3c36"
   }
 ]
