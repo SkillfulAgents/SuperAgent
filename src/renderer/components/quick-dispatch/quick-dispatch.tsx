@@ -402,6 +402,7 @@ export function QuickDispatch() {
             value={composer.message}
             onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
+            chipContext={composer.chipContext}
             placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
             minRows={1}

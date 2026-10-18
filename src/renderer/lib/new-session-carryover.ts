@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
-import type { SecuredSecret } from '@renderer/lib/secret-detection'
 
 export interface ComposerSnapshot {
   text: string
@@ -10,7 +9,6 @@ export interface ComposerSnapshot {
   model: string | undefined
   effort: EffortLevel
   speed: SpeedLevel
-  securedSecrets?: SecuredSecret[]
 }
 
 export interface NewSessionCarryover {
@@ -18,7 +16,6 @@ export interface NewSessionCarryover {
   model: string | undefined
   effort: EffortLevel
   speed: SpeedLevel
-  securedSecrets?: SecuredSecret[]
 }
 
 export const newSessionCarryoverKey = (agentSlug: string) => `new-session-carryover:${agentSlug}`
@@ -44,7 +41,6 @@ export function splitComposerSnapshot(snapshot: ComposerSnapshot | undefined): {
       model: snapshot.model,
       effort: snapshot.effort,
       speed: snapshot.speed,
-      ...(snapshot.securedSecrets?.length ? { securedSecrets: snapshot.securedSecrets } : {}),
     },
   }
 }

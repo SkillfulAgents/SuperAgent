@@ -255,7 +255,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     model: undefined,
     effort: composerOptions.effort,
     speed: composerOptions.speed,
-    securedSecrets: [],
   })
   snapshotRef.current = {
     text: composer.message,
@@ -263,7 +262,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     model: composerOptions.model,
     effort: composerOptions.effort,
     speed: composerOptions.speed,
-    securedSecrets: composer.securedSecrets,
   }
   useEffect(() => {
     if (!registerSnapshot) return
@@ -641,11 +639,10 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         secureSecrets={{
           agentSlug,
           potentialSecrets: composer.potentialSecrets,
-          securedSecrets: composer.securedSecrets,
           onDismiss: composer.dismissPotentialSecret,
           onSecure: composer.securePotentialSecret,
-          onRemove: composer.removeSecuredSecrets,
         }}
+        chipContext={composer.chipContext}
         leftActions={(
           <>
             <AttachmentPicker

@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
+import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { mockRecorder } from '../helpers/mock-recorder'
 
 interface MockRecord {
@@ -11,6 +11,19 @@ interface MockRecord {
 }
 
 const recorder = mockRecorder<MockRecord>()
+
+async function paste(input: Locator, content: string, mimeType = 'text/plain') {
+  await input.evaluate((element, { content, mimeType }) => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData(mimeType, content)
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
+  }, { content, mimeType })
+}
+
+async function saveKey(page: Page, key = 'API Key', value = 'synthetic-test-value') {
+  const saved = await page.request.post(`/api/agents/${getCurrentAgentSlug(page)}/secrets`, { data: { key, value } })
+  expect(saved.ok()).toBeTruthy()
+}
 
 test.describe('composer secret detection', () => {
   let agentPage: AgentPage
@@ -23,11 +36,11 @@ test.describe('composer secret detection', () => {
     await agentPage.createAgent(`Composer Secret ${testInfo.workerIndex}-${Date.now()}`)
   })
 
-  test('saves a detected key, masks the draft, and sends only the .env placeholder', async ({ page }, testInfo) => {
+  test('saves a detected key, paints a masked pill, and starts the session with only the .env placeholder', async ({ page }, testInfo) => {
     const tag = `W${testInfo.workerIndex}T${Date.now()}`
     const rawKey = ['sk-', `proj-${tag}-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z`].join('')
-    const keyName = `Deploy Key ${tag}`
-    const envVar = `DEPLOY_KEY_${tag.toUpperCase()}`
+    const keyName = 'sk-openai-production-key'
+    const envVar = 'SK_OPENAI_PRODUCTION_KEY'
     const input = page.locator('[data-testid="home-message-input"]')
 
     await input.fill('Use this credential:')
@@ -75,30 +88,62 @@ test.describe('composer secret detection', () => {
     await expect(input).toHaveText(rawKey)
   })
 
-  test('removes a saved key pill atomically with Backspace', async ({ page }) => {
+  test('removes a pill as one unit with Backspace', async ({ page }) => {
     const rawKey = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
     const input = page.locator('[data-testid="home-message-input"]')
 
-    await input.fill(`Before ${rawKey} after`)
+    await input.fill(`Before ${rawKey}`)
     await page.getByRole('button', { name: 'Send securely to the agent' }).click()
     const dialog = page.getByRole('dialog', { name: 'Send key securely' })
     await dialog.getByLabel('Key name').fill('GitHub Token')
     await dialog.getByRole('button', { name: 'Save securely' }).click()
 
-    const pill = page.locator('[data-testid="secured-secret"]')
+    const pill = input.getByTestId('secured-secret')
     await expect(pill).toHaveText('[GitHub Token | *********]')
-    await expect(pill).toHaveClass(/outline-amber-500\/70/)
     await input.focus()
-    await pill.evaluate((element) => {
-      const selection = window.getSelection()
-      const range = document.createRange()
-      range.selectNodeContents(element)
-      selection?.removeAllRanges()
-      selection?.addRange(range)
-    })
+    await input.press('End')
     await input.press('Backspace')
 
-    await expect(input).toHaveText('Before  after')
     await expect(pill).toHaveCount(0)
+    await expect(input).toHaveText('Before ')
+  })
+
+  test('paints a pasted marker inside a heading and a link, and sends the placeholders', async ({ page }) => {
+    await saveKey(page)
+    await page.reload()
+    const marker = '[[secret:API_KEY|API%20Key]]'
+    const input = page.getByTestId('home-message-input')
+
+    await paste(input, `## Deploy ${marker}\n\n[see ${marker}](https://x.com)`)
+
+    await expect(input.locator('h2 [data-testid="secured-secret"]')).toHaveText('[API Key | *********]')
+    await expect(input.locator('a [data-testid="secured-secret"]')).toHaveText('[API Key | *********]')
+    await expect(input.locator('a')).toHaveAttribute('href', 'https://x.com')
+
+    await page.getByTestId('home-send-button').click()
+    const expectedMessage = '## Deploy [Key saved to .env - API_KEY]\n\n[see [Key saved to .env - API_KEY]](https://x.com)'
+    await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === expectedMessage)
+  })
+
+  test('flags a pill once its key is deleted and sends its marker instead of the placeholder', async ({ page }) => {
+    await saveKey(page)
+    await page.reload()
+    const prefix = `Deleted ${Date.now()}`
+    const marker = '[[secret:API_KEY|API%20Key]]'
+    const input = page.getByTestId('home-message-input')
+
+    await paste(input, `${prefix} ${marker}`)
+    await expect(input.locator('[data-unbacked]')).toHaveCount(0)
+
+    await page.getByTestId('home-secrets-open-page').click()
+    await page.getByTestId('secret-menu-API_KEY').click()
+    await page.getByTestId('delete-secret-API_KEY').click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click()
+    await expect(page.getByTestId('secret-row-API_KEY')).toHaveCount(0)
+    await page.getByTestId('secrets-back-button').click()
+
+    await expect(input.locator('[data-unbacked="true"] [data-testid="secured-secret"]')).toBeVisible()
+    await page.getByTestId('home-send-button').click()
+    await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === `${prefix} ${marker}`)
   })
 })

@@ -1,5 +1,6 @@
+import { CHIP_MARKER } from './chip-marker'
+
 const MIN_SECRET_LENGTH = 20
-const MASK = '*********'
 
 export interface PotentialSecret {
   id: string
@@ -8,17 +9,9 @@ export interface PotentialSecret {
   end: number
 }
 
-export interface SecuredSecret {
-  id: string
-  key: string
-  envVar: string
-  displayText: string
-}
-
 const KNOWN_SECRET_PREFIX = /^(?:sk[-_]|pk[-_]|gh[pousr]_|github_pat_|xox[baprs]-|AIza|AKIA|ASIA|eyJ|SG\.|sq0atp-|npm_)/i
 const HEX_SECRET = /^[a-f0-9]{32,}$/i
 const TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9_+=./-]{18,}[A-Za-z0-9_+=/-]/g
-const SECURED_DISPLAY_PATTERN = /\[[^\]\n]*\|\s*\*{4,}\]/g
 
 function shannonEntropy(value: string): number {
   const counts = new Map<string, number>()
@@ -67,9 +60,9 @@ function looksLikeSecret(value: string, precedingText: string): boolean {
  */
 export function findPotentialSecrets(text: string): PotentialSecret[] {
   const protectedRanges: Array<{ start: number; end: number }> = []
-  for (const match of text.matchAll(SECURED_DISPLAY_PATTERN)) {
-    const start = match.index
-    protectedRanges.push({ start, end: start + match[0].length })
+  // A chip's marker names a key, it does not hold one.
+  for (const match of text.matchAll(CHIP_MARKER)) {
+    protectedRanges.push({ start: match.index, end: match.index + match[0].length })
   }
 
   const candidates: PotentialSecret[] = []
@@ -87,8 +80,7 @@ export function findPotentialSecrets(text: string): PotentialSecret[] {
     if (overlaps(start, end, protectedRanges)) continue
     if (!looksLikeSecret(value, text.slice(Math.max(0, start - 3), start))) continue
     candidates.push({
-      // IDs are persisted alongside secured draft pills, so they must never
-      // contain the credential itself. The range is unique within a draft.
+      // IDs must never contain the credential. The range is unique within a draft.
       id: `${start}:${end}`,
       value,
       start,
@@ -96,20 +88,4 @@ export function findPotentialSecrets(text: string): PotentialSecret[] {
     })
   }
   return candidates
-}
-
-export function secretDisplayText(key: string): string {
-  return `[${key} | ${MASK}]`
-}
-
-/** Replace only pills created by this composer; arbitrary bracketed text is untouched. */
-export function replaceSecuredSecrets(message: string, securedSecrets: SecuredSecret[]): string {
-  let result = message
-  for (const secret of securedSecrets) {
-    const index = result.indexOf(secret.displayText)
-    if (index === -1) continue
-    const placeholder = `[Key saved to .env - ${secret.envVar}]`
-    result = `${result.slice(0, index)}${placeholder}${result.slice(index + secret.displayText.length)}`
-  }
-  return result
 }

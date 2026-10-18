@@ -48,7 +48,12 @@ export function useCreateSecret() {
       }
       return res.json() as Promise<ApiSecretDisplay>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (saved, variables) => {
+      // A composer chip for this key reads the list, so it is current before the refetch lands.
+      queryClient.setQueryData<ApiSecretDisplay[]>(['agent-secrets', variables.agentSlug], (previous) => previous && [
+        ...previous.filter((secret) => secret.envVar !== saved.envVar),
+        saved,
+      ])
       track('secret_added', { location: variables.location ?? 'settings' })
       queryClient.invalidateQueries({
         queryKey: ['agent-secrets', variables.agentSlug],
