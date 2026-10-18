@@ -1466,6 +1466,56 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'authorized-agent' }), 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
+
+  it('cleans up when the client aborts during the initial connection write', async () => {
+    const actor = agentRegistry.get('authorized-agent')
+    const unsubscribe = vi.fn()
+    vi.spyOn(actor.messages, 'subscribe').mockReturnValue(unsubscribe)
+    vi.spyOn(actor.sessions, 'slashCommands').mockReturnValue([])
+    vi.spyOn(actor.sessions, 'metadata').mockResolvedValue(null)
+    vi.spyOn(actor.sessions, 'backgroundTasks').mockReturnValue([])
+    vi.spyOn(actor.sessions, 'activeSubagents').mockReturnValue([])
+    vi.spyOn(actor.sessions, 'isWaitingBackground').mockReturnValue(false)
+    vi.spyOn(actor.sessions, 'isActive').mockReturnValue(false)
+    vi.spyOn(actor.sessions, 'turnOutcome').mockReturnValue(null)
+    vi.spyOn(actor.inputs.computerUse, 'grabbedApp').mockReturnValue(undefined)
+
+    const timer = {} as ReturnType<typeof setInterval>
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockReturnValue(timer)
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined)
+    const stream = {
+      aborted: false,
+      writeSSE: vi.fn(async () => {
+        stream.aborted = true
+      }),
+      onAbort: vi.fn((_callback: () => void) => undefined),
+    }
+    let handlerPromise: Promise<void> | undefined
+
+    mockStreamSSE.mockImplementationOnce((...args: unknown[]) => {
+      const handler = args[1] as (value: typeof stream) => Promise<void>
+      handlerPromise = handler(stream)
+      return new Response(null, { status: 200 })
+    })
+
+    try {
+      const res = await getReq(app, '/api/agents/authorized-agent/sessions/new-session/stream')
+      expect(res.status).toBe(200)
+      expect(handlerPromise).toBeDefined()
+
+      const settled = await Promise.race([
+        handlerPromise!.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
+      ])
+
+      expect(settled).toBe(true)
+      expect(unsubscribe).toHaveBeenCalledOnce()
+      expect(clearIntervalSpy).toHaveBeenCalledWith(timer)
+    } finally {
+      setIntervalSpy.mockRestore()
+      clearIntervalSpy.mockRestore()
+    }
+  })
 })
 
 // ============================================================================

@@ -3353,6 +3353,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         stream.onAbort(() => {
           resolve()
         })
+        if (stream.aborted) resolve()
       })
     } finally {
       if (pingInterval) clearInterval(pingInterval)
