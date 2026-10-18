@@ -207,6 +207,7 @@ vi.mock('./container-host', async () => {
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput, sessionKeyOf, WaitForIdleTimeoutError } from './message-persister'
+import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 
 // The registry attaches the real stores; these tests drive the persister
@@ -1958,6 +1959,32 @@ describe('MessagePersister', () => {
         parentToolId: 'send-tool',
         agentId: 'agent-resumed',
       }))
+    })
+
+    it('stops a running workflow journal tailer when the session is unsubscribed', () => {
+      const stop = vi.spyOn(WorkflowJournalTailer.prototype, 'stop')
+      try {
+        mockClient._sendMessage({
+          type: 'system', subtype: 'task_started', task_type: 'local_workflow',
+          task_id: 'wf-unsubscribe', tool_use_id: 'wf-tool-unsubscribe', workflow_name: 'demo',
+        })
+        mockClient._sendMessage({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'wf-tool-unsubscribe', content: 'Run ID: wf_unsubscribe' }],
+          },
+          tool_use_result: {
+            status: 'async_launched', taskType: 'local_workflow', taskId: 'wf-unsubscribe', runId: 'wf_unsubscribe',
+          },
+        })
+
+        expect(stop).not.toHaveBeenCalled()
+        messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+        expect(stop).toHaveBeenCalledOnce()
+      } finally {
+        stop.mockRestore()
+      }
     })
 
     // A dynamic workflow (task_type 'local_workflow') must get the same treatment as a

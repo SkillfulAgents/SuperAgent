@@ -811,6 +811,7 @@ class MessagePersister {
       this.subscriptions.delete(key)
     }
     this.streamingStates.delete(key)
+    this.stopAllWorkflowTailers(agentSlug, sessionId)
     // Shadow registry (Phase 2): every session-scoped entry dies with the state.
     userInputRequestManager.dropSessionRequests(agentSlug, sessionId, 'invalidated')
     this.containerClients.delete(key)
