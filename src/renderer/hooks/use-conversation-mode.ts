@@ -48,7 +48,11 @@ const NO_INPUT_REQUESTS: readonly VoiceInputRequest[] = []
 /** One React integration, one stream subscription, and one selected voice engine. */
 export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConversationEngine | null): VoiceModeResult {
   const { sessionId, agentSlug, active, paused = false, inputRequests = NO_INPUT_REQUESTS } = args
-  const stream = useMessageStream(active && engine ? sessionId : null, active && engine ? agentSlug : null)
+  const stream = useMessageStream(
+    active && engine ? sessionId : null,
+    active && engine ? agentSlug : null,
+    ['isActive', 'isWaitingBackground', 'streamingMessage', 'activeStartTime', 'streamingToolUses', 'error', 'turnOutcome'],
+  )
   const interrupt = useInterruptSession()
   const latest = useRef({ args, stream, interrupt })
   latest.current = { args, stream, interrupt }

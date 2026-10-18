@@ -147,7 +147,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug, ['isActive', 'slashCommands', 'isWaitingBackground', 'backgroundTasks'])
   // The Stop dialog names what is running; the launching tool calls in the
   // transcript carry the names.
   const { data: messages } = useMessages(sessionId, agentSlug)
@@ -243,6 +243,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { warmStart } = useWarmStartOnType({
     agentSlug,
+    // Also resumes this session's agent process if it went idle.
+    sessionId,
     message: composer.message,
     enabled: warmStartEnabled && !isViewOnly && !isOffline,
   })

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useWarmStartOnType } from './use-warm-start-on-type'
+import { useWarmStartOnType, WARM_START_SESSION_REFIRE_MS } from './use-warm-start-on-type'
 
 const mutate = vi.fn()
 const ensureAgent = vi.fn()
@@ -257,5 +257,104 @@ describe('useWarmStartOnType', () => {
 
     rerender({ message: 'hi', enabled: false })
     await expect(result.current.awaitWarmStart()).resolves.toBe('agent-warm')
+  })
+})
+
+describe('useWarmStartOnType with a session-bound composer', () => {
+  let now: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    runtimeStatus.mockReturnValue({ data: { runtimeReadiness: { status: 'READY' } } })
+    now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+  })
+
+  afterEach(() => {
+    now.mockRestore()
+  })
+
+  function renderSessionComposer(initial: { message: string; sessionId: string | null }) {
+    return renderHook(
+      ({ message, sessionId }) =>
+        useWarmStartOnType({ agentSlug: 'agent-1', sessionId, message, enabled: true }),
+      { wrapper, initialProps: initial },
+    )
+  }
+
+  it('names the session so the server can resume its agent process', async () => {
+    const { rerender } = renderSessionComposer({ message: '', sessionId: 'session-1' })
+
+    rerender({ message: 'h', sessionId: 'session-1' })
+
+    await waitFor(() =>
+      expect(mutate).toHaveBeenCalledWith(
+        { slug: 'agent-1', source: 'warm-start', sessionId: 'session-1' },
+        expect.any(Object),
+      ),
+    )
+  })
+
+  it('warms again on an edit after the cooldown, and not before', async () => {
+    const { rerender } = renderSessionComposer({ message: '', sessionId: 'session-1' })
+    rerender({ message: 'h', sessionId: 'session-1' })
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
+
+    now.mockReturnValue(1_000_000 + WARM_START_SESSION_REFIRE_MS - 1)
+    rerender({ message: 'he', sessionId: 'session-1' })
+    await act(async () => {})
+    expect(mutate).toHaveBeenCalledTimes(1)
+
+    // A reply typed after a pause: the agent process may have been evicted since.
+    now.mockReturnValue(1_000_000 + WARM_START_SESSION_REFIRE_MS)
+    rerender({ message: 'hel', sessionId: 'session-1' })
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2))
+    expect(mutate).toHaveBeenLastCalledWith(
+      { slug: 'agent-1', source: 'warm-start', sessionId: 'session-1' },
+      expect.any(Object),
+    )
+
+    rerender({ message: 'hell', sessionId: 'session-1' })
+    await act(async () => {})
+    expect(mutate).toHaveBeenCalledTimes(2)
+  })
+
+  it('warms a different session right away', async () => {
+    const { rerender } = renderSessionComposer({ message: '', sessionId: 'session-1' })
+    rerender({ message: 'h', sessionId: 'session-1' })
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
+
+    rerender({ message: 'hi', sessionId: 'session-2' })
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2))
+    expect(mutate).toHaveBeenLastCalledWith(
+      { slug: 'agent-1', source: 'warm-start', sessionId: 'session-2' },
+      expect.any(Object),
+    )
+  })
+
+  it('stays one-shot for a new session', async () => {
+    const { rerender } = renderSessionComposer({ message: '', sessionId: null })
+    rerender({ message: 'h', sessionId: null })
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
+    expect(mutate.mock.calls[0][0]).not.toHaveProperty('sessionId')
+
+    now.mockReturnValue(1_000_000 + WARM_START_SESSION_REFIRE_MS * 10)
+    rerender({ message: 'hi', sessionId: null })
+    await act(async () => {})
+    expect(mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-warms on composer focus after the cooldown, too', async () => {
+    const { result, rerender } = renderSessionComposer({ message: '', sessionId: 'session-1' })
+    await act(async () => result.current.warmStart())
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
+
+    await act(async () => result.current.warmStart())
+    expect(mutate).toHaveBeenCalledTimes(1)
+
+    now.mockReturnValue(1_000_000 + WARM_START_SESSION_REFIRE_MS)
+    rerender({ message: '', sessionId: 'session-1' })
+    await act(async () => result.current.warmStart())
+    expect(mutate).toHaveBeenCalledTimes(2)
   })
 })

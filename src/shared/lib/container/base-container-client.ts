@@ -21,6 +21,7 @@ import type {
   CreateSessionOptions,
   HostPortProbeResult,
   SendMessageOptions,
+  SendMessageResult,
   StartOptions,
   StopOptions,
   StopResult,
@@ -270,6 +271,9 @@ const BASE_PORT = (() => {
 // Max time for a single /health probe (isHealthy). Kept short because it gates
 // the request hot path via ensureRunning's stale-cache liveness check.
 const HEALTH_PROBE_TIMEOUT_MS = 2000
+// Max wait for the container to accept a pre-resume (warmSession). It answers
+// before resuming anything, so only a struggling container takes this long.
+const WARM_SESSION_TIMEOUT_MS = 5000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
@@ -1472,7 +1476,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     const port = await this.getPortOrThrow().catch(error => {
       throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
     })
@@ -1483,22 +1487,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // deleted connection, rotate credentials, or rebuild the active query.
     const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
     let llmRuntime: ConnectionRuntime | undefined
+    const result: SendMessageResult = {}
     if (!preserveRuntime) {
       try {
         const { agentRegistry } = await import('@shared/lib/agent-actor')
         const actor = agentRegistry.get(this.config.agentId)
-        const metadata = await actor.sessions.metadata(sessionId)
-        const prefs = await actor.config.get('preferences')
+        const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
         const selected = await resolveExecutionSelection(
           options?.model || options?.llmProviderId !== undefined
             ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
             : null,
           storedSelection(metadata?.model, metadata?.llmProviderId),
-          storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
+          async () => {
+            const prefs = await actor.config.get('preferences')
+            return storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId)
+          },
         )
         llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
         rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
-        await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
+        result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
+        // The container checks its credentials back through llm-runtime/resolve,
+        // which serves the STORED binding and refuses another, so a changed
+        // binding is stored before the container has the message. An unchanged
+        // one has nothing to store.
+        if (metadata?.llmProviderId !== selected.llmProviderId || metadata?.model !== selected.model) {
+          await actor.sessions.updateMetadata(sessionId, { ...options?.metadataUpdates, ...result.selection })
+          result.metadataWritten = true
+        }
       } catch (error) {
         // Provider preparation happens before HTTP, so durable delivery can
         // retry it without risking a second copy of the user's message.
@@ -1577,6 +1592,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       throw err
     }
+    return result
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
@@ -1667,6 +1683,31 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       throw new Error(`Failed to fork session: ${response.status} ${text}`)
     }
     return (await response.json()) as { id: string }
+  }
+
+  async warmSession(sessionId: string): Promise<boolean> {
+    let response: Response
+    try {
+      response = await this.fetch(`/sessions/${encodeURIComponent(sessionId)}/warm`, {
+        method: 'POST',
+        // The container answers before it resumes anything; a slow answer is
+        // not worth holding a socket for — the next send resumes as before.
+        signal: AbortSignal.timeout(WARM_SESSION_TIMEOUT_MS),
+      })
+    } catch (error) {
+      console.debug(`[ContainerClient] warmSession: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+    if (response.ok) return true
+    const text = await response.text().catch(() => '')
+    // A plain 404 is the router's: an agent container from before this
+    // endpoint. Nothing to do — its next send pays the cold resume, as before.
+    console.debug(
+      response.status === 404 && !text.trim().startsWith('{')
+        ? '[ContainerClient] warmSession: the agent container predates the warm endpoint'
+        : `[ContainerClient] warmSession: container returned ${response.status}`
+    )
+    return false
   }
 
   // Drop listeners before close so a deliberate teardown cannot fire

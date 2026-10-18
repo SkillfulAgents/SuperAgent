@@ -67,6 +67,27 @@ describe('resolveApiPolicy', () => {
     expect(result.resolvedFrom).toBe('scope_policy')
   })
 
+  it('carries the matcher\'s endpoint ambiguity to the review', async () => {
+    setupPolicies([])
+    const result = await resolveApiPolicy(
+      'acc-1',
+      { ...makeMatchResult(true, ['read']), endpointAmbiguous: true },
+      'user-1'
+    )
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
+  it('lets a decision stand on disagreeing endpoints only when every scope shares it', async () => {
+    const tie = { ...makeMatchResult(true, ['read', 'write']), endpointAmbiguous: true }
+    setupPolicies([{ scope: 'read', decision: 'allow' }])
+    expect((await resolveApiPolicy('acc-1', makeMatchResult(true, ['read', 'write']), 'user-1')).decision).toBe('allow')
+    expect((await resolveApiPolicy('acc-1', tie, 'user-1')).decision).toBe('review')
+    setupPolicies([{ scope: 'read', decision: 'allow' }, { scope: 'write', decision: 'block' }])
+    expect((await resolveApiPolicy('acc-1', tie, 'user-1')).decision).toBe('review')
+    setupPolicies([{ scope: 'read', decision: 'allow' }, { scope: 'write', decision: 'allow' }])
+    expect((await resolveApiPolicy('acc-1', tie, 'user-1')).decision).toBe('allow')
+  })
+
   it('explicit scope policy "block" returns "block"', async () => {
     setupPolicies([{ scope: 'gmail.full', decision: 'block' }])
     const result = await resolveApiPolicy(

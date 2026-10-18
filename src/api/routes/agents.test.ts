@@ -13,6 +13,9 @@ const mockNotifyAgentMembersChanged = vi.fn()
 const mockChangeMemberRole = vi.fn()
 const mockRemoveMember = vi.fn()
 import { Hono } from 'hono'
+import { getRequestListener } from '@hono/node-server'
+import { createServer, request as httpRequest, type ClientRequest } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
@@ -213,7 +216,7 @@ vi.mock('../middleware/auth', () => ({
 // Container host — a manager-shaped mock (slug as first argument) adapted into
 // the per-agent runtime shape the actor reads through containerHost.runtime(slug).
 const mockContainerFetch = vi.fn()
-const mockSendMessage = vi.fn()
+const mockSendMessage = vi.fn(async (..._args: unknown[]): Promise<unknown> => ({}))
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
 const mockEnsureRunning = vi.fn()
@@ -221,6 +224,7 @@ const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
+const mockClientWarmSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 // The actor reaches the client through getClient after start(), so the
 // create-session fake lives here rather than on ensureRunning's resolved value.
@@ -237,6 +241,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       stopTask: (...args: unknown[]) => mockStopTask(...args),
       forkSession: (...args: unknown[]) => mockForkSession(...args),
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
+      warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -268,7 +273,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
-    promoteAutomatedSession: vi.fn(),
+    promoteAutomatedSession: vi.fn(async (_slug: string, _sessionId: string, metadata?: unknown) => metadata ?? null),
     coalesceIfRecovering: vi.fn(() => false),
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
@@ -576,11 +581,12 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
+const mockSubmitDecision = vi.fn((..._args: unknown[]) => false)
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
     denyAllForAgent: vi.fn(),
-    submitDecision: vi.fn(),
+    submitDecision: (...args: unknown[]) => mockSubmitDecision(...args),
     resolveMatchingPending: vi.fn(),
     resolveMatchingPendingByLabel: vi.fn(),
     resolveMatchingXAgentByOperation: vi.fn(),
@@ -761,7 +767,7 @@ import {
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
-import { getAgent, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
@@ -1536,6 +1542,290 @@ describe('agent startup — POST /:id/start', () => {
 
     expect(response.status).toBe(500)
     expect(await response.json()).toEqual({ error: 'Container failed to become healthy' })
+  })
+
+  // Clients send `{ sessionId }` from a composer bound to an existing session,
+  // so the host can pre-resume that session's CLI while the person types.
+  describe('optional { sessionId } body (pre-resume)', () => {
+    const startRequest = (init: RequestInit = {}) =>
+      Promise.resolve(createApp().request('http://localhost/api/agents/test-agent/start', { method: 'POST', ...init }))
+    const jsonBody = (body: unknown): RequestInit => ({
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const streamedBody = (body: ReadableStream<Uint8Array>, headers: Record<string, string> = {}): RequestInit & { duplex: 'half' } => ({
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body,
+      duplex: 'half',
+    })
+    // Lets the fire-and-forget pre-resume run (or provably not run).
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+    beforeEach(() => {
+      mockClientWarmSession.mockReset()
+      mockClientWarmSession.mockResolvedValue(true)
+      vi.mocked(sessionIsKnown).mockResolvedValue(true)
+    })
+
+    it.each<[string, RequestInit]>([
+      ['no body (older clients)', {}],
+      ['an empty JSON body', { headers: { 'Content-Type': 'application/json' }, body: '' }],
+      ['a non-JSON content type', { headers: { 'Content-Type': 'text/plain' }, body: 'hello' }],
+      ['malformed JSON', { headers: { 'Content-Type': 'application/json' }, body: '{"sessionId":' }],
+      ['a session id of the wrong type', jsonBody({ sessionId: 42 })],
+      ['an empty session id', jsonBody({ sessionId: '' })],
+      ['a body without a session id', jsonBody({ unrelated: true })],
+    ])('a start with %s is a plain start, exactly as before', async (_label, init) => {
+      const response = await startRequest(init)
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ slug: 'test-agent', status: 'running', containerPort: 3456 })
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      await settle()
+      expect(sessionIsKnown).not.toHaveBeenCalled()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('pre-resumes one of this agent\'s sessions once the container is up, with the response unchanged', async () => {
+      const plain = await (await startRequest()).json()
+      let resolveStart!: (value: unknown) => void
+      mockEnsureRunning.mockReturnValue(new Promise((resolve) => { resolveStart = resolve }) as never)
+
+      const pending = startRequest(jsonBody({ sessionId: 'session-1' }))
+      await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledTimes(2))
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled() // never ahead of the container start
+
+      resolveStart({})
+      const response = await pending
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(plain)
+      await vi.waitFor(() => expect(mockClientWarmSession).toHaveBeenCalledWith('session-1'))
+      expect(mockClientWarmSession).toHaveBeenCalledOnce()
+      expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-1')
+    })
+
+    it('answers without waiting for the pre-resume', async () => {
+      mockClientWarmSession.mockReturnValue(new Promise(() => {})) // a container that never answers
+
+      const response = await startRequest(jsonBody({ sessionId: 'session-1' }))
+
+      expect(response.status).toBe(200)
+      await vi.waitFor(() => expect(mockClientWarmSession).toHaveBeenCalledWith('session-1'))
+    })
+
+    it.each<[string, () => void]>([
+      ['the container predates the warm endpoint', () => mockClientWarmSession.mockResolvedValue(false)],
+      ['the pre-resume throws', () => mockClientWarmSession.mockRejectedValue(new Error('socket hang up'))],
+      ['the session check throws', () => vi.mocked(sessionIsKnown).mockRejectedValue(new Error('EIO'))],
+    ])('still starts when %s', async (_label, arrange) => {
+      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+      arrange()
+
+      const response = await startRequest(jsonBody({ sessionId: 'session-1' }))
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ slug: 'test-agent', status: 'running' })
+      await settle()
+      debug.mockRestore()
+    })
+
+    it('ignores a session that is not this agent\'s, without a trace in the response', async () => {
+      const plain = await (await startRequest()).json()
+      vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+      const response = await startRequest(jsonBody({ sessionId: 'another-agents-session' }))
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(plain)
+      await vi.waitFor(() =>
+        expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'another-agents-session'),
+      )
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('does not pre-resume when the container fails to start', async () => {
+      mockEnsureRunning.mockRejectedValue(new Error('Container failed to become healthy'))
+
+      const response = await startRequest(jsonBody({ sessionId: 'session-1' }))
+
+      expect(response.status).toBe(500)
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('leaves a body too large to be a session hint unread', async () => {
+      const body = JSON.stringify({ sessionId: 'session-1', padding: 'x'.repeat(20_000) })
+
+      const response = await startRequest({
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(body.length) },
+        body,
+      })
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it.each([16 * 1024 - 1, 16 * 1024, 16 * 1024 + 1])('bounds a body without Content-Length at %i bytes', async (bytes) => {
+      const empty = JSON.stringify({ sessionId: 'session-1', padding: '' })
+      const body = JSON.stringify({ sessionId: 'session-1', padding: 'x'.repeat(bytes - Buffer.byteLength(empty)) })
+      expect(Buffer.byteLength(body)).toBe(bytes)
+
+      const response = await startRequest({ headers: { 'Content-Type': 'application/json' }, body })
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(mockClientWarmSession).toHaveBeenCalledTimes(bytes <= 16 * 1024 ? 1 : 0)
+    })
+
+    it('counts UTF-8 bytes rather than characters', async () => {
+      const body = JSON.stringify({ sessionId: 'session-1', padding: 'é'.repeat(9000) })
+      expect(body.length).toBeLessThan(16 * 1024)
+      expect(Buffer.byteLength(body)).toBeGreaterThan(16 * 1024)
+
+      const response = await startRequest({ body })
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(sessionIsKnown).not.toHaveBeenCalled()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('decodes JSON split inside multibyte characters', async () => {
+      const sessionId = 'session-é-😀'
+      const bytes = Buffer.from(JSON.stringify({ sessionId }))
+      let offset = 0
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (offset === bytes.length) controller.close()
+          else controller.enqueue(bytes.subarray(offset, ++offset))
+        },
+      }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body))
+
+      expect(response.status).toBe(200)
+      await vi.waitFor(() => expect(mockClientWarmSession).toHaveBeenCalledWith(sessionId))
+      expect(body.locked).toBe(false)
+    })
+
+    it.each(['absent', 'understated'])('stops an oversized stream with %s Content-Length before the sender finishes', async (length) => {
+      const cancel = vi.fn(() => new Promise<void>(() => {}))
+      const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+        controller.enqueue(new Uint8Array(8193))
+        // Deliberately never close: the route must stop after two chunks,
+        // including when the sender's cancellation hook never resolves.
+      })
+      const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body, length === 'understated' ? { 'Content-Length': '2' } : {}))
+
+      expect(response.status).toBe(200)
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      expect(pull).toHaveBeenCalledTimes(2)
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(body.locked).toBe(false)
+      expect(sessionIsKnown).not.toHaveBeenCalled()
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('ignores cancellation errors after the byte limit is crossed', async () => {
+      const cancel = vi.fn(async () => { throw new Error('sender disconnected') })
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(new Uint8Array(16 * 1024 + 1)) },
+        cancel,
+      }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body))
+
+      expect(response.status).toBe(200)
+      await settle()
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(body.locked).toBe(false)
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('still starts when reading the request stream fails', async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) { controller.error(new Error('sender disconnected')) },
+      }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body))
+
+      expect(response.status).toBe(200)
+      expect(body.locked).toBe(false)
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('still starts when the adapter cannot initialize the request body', async () => {
+      const request = new Request('http://localhost/api/agents/test-agent/start', { method: 'POST' })
+      Object.defineProperty(request, 'body', { get() { throw new Error('body unavailable') } })
+
+      const response = await createApp().request(request)
+
+      expect(response.status).toBe(200)
+      expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it('does not pull a stream whose declared size is already too large', async () => {
+      const pull = vi.fn()
+      const body = new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 })
+
+      const response = await startRequest(streamedBody(body, { 'Content-Length': String(16 * 1024 + 1) }))
+
+      expect(response.status).toBe(200)
+      expect(pull).not.toHaveBeenCalled()
+      expect(body.locked).toBe(false)
+      expect(mockClientWarmSession).not.toHaveBeenCalled()
+    })
+
+    it.each(['valid chunked', 'oversized chunked', 'oversized declared'])('answers a real HTTP request with a %s body', async (kind) => {
+      const listener = getRequestListener(createApp().fetch, { overrideGlobalObjects: false })
+      const server = createServer(listener)
+      let outgoing: ClientRequest | undefined
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      try {
+        const port = (server.address() as AddressInfo).port
+        const response = await new Promise<{ status: number | undefined; text: string }>((resolve, reject) => {
+          outgoing = httpRequest({
+            hostname: '127.0.0.1', port, path: '/api/agents/test-agent/start', method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(kind === 'oversized declared' ? { 'Content-Length': String(20_000) } : {}),
+            },
+          }, (incoming) => {
+            let text = ''
+            incoming.setEncoding('utf8')
+            incoming.on('data', (chunk: string) => { text += chunk })
+            incoming.on('end', () => resolve({ status: incoming.statusCode, text }))
+            incoming.on('error', reject)
+          })
+          outgoing.on('error', reject)
+          outgoing.setTimeout(5000, () => outgoing?.destroy(new Error('start waited for the oversized sender')))
+          if (kind === 'valid chunked') {
+            outgoing.write('{"sessionId":')
+            outgoing.end('"session-1"}')
+          } else {
+            outgoing.write('{"sessionId":"session-1","padding":"')
+            outgoing.write('x'.repeat(20_000))
+            // Do not end the request: oversized input must not hold /start
+            // open, and cancelling its stream must not destroy the response.
+          }
+        })
+        expect(response.status).toBe(200)
+        expect(JSON.parse(response.text)).toMatchObject({ slug: 'test-agent', status: 'running' })
+        await settle()
+        expect(mockClientWarmSession).toHaveBeenCalledTimes(kind === 'valid chunked' ? 1 : 0)
+      } finally {
+        outgoing?.destroy()
+        server.closeAllConnections()
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+      }
+    })
   })
 })
 
@@ -3803,9 +4093,15 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     vi.clearAllMocks()
     vi.mocked(countMembersWithMinRole).mockReset()
     app = createApp()
-    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
-    mockSendMessage.mockResolvedValue(undefined)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(getSessionMetadata).mockResolvedValue(null)
+    mockSendMessage.mockResolvedValue({})
   })
+
+  // What the route hands the container client besides the runtime options:
+  // the metadata it read (none here) and the fields it is about to store.
+  const sent = (options: Record<string, unknown> = {}, metadataUpdates: Record<string, unknown> = {}) =>
+    ({ ...options, sessionMetadata: null, metadataUpdates })
 
   it('generates a server uuid, returns it, and skips messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
@@ -3817,7 +4113,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(typeof body.uuid).toBe('string')
     expect(body.queued).toBe(false)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, sent())
 
     // No DB insert for message author outside auth mode
     expect(mockDbInsertValues).not.toHaveBeenCalled()
@@ -3857,7 +4153,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(typeof insertedValues.id).toBe('string')
 
     // sendMessage and the response both carry the same server uuid
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, sent({}, { alertDeviceId: null }))
     const body = await res.json()
     expect(body.uuid).toBe(insertedValues.id)
   })
@@ -3868,16 +4164,16 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const solo = await (await postJson(app, URL, { content: 'hello' })).json()
     expect(countMembersWithMinRole).toHaveBeenLastCalledWith('test-agent', 'user')
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', solo.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', solo.uuid, sent({}, { alertDeviceId: null }))
 
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
     const command = await (await postJson(app, URL, { content: '/compact' })).json()
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '/compact', command.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '/compact', command.uuid, sent({}, { alertDeviceId: null }))
     const notice = await (await postJson(app, URL, { content: '[SYSTEM] note' })).json()
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '[SYSTEM] note', notice.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '[SYSTEM] note', notice.uuid, sent({}, { alertDeviceId: null }))
 
     const shared = await (await postJson(app, URL, { content: 'hello' })).json()
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, sent({}, { alertDeviceId: null }))
   })
 
   it('sends the message unattributed when the member count fails', async () => {
@@ -3886,7 +4182,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', (await res.json()).uuid, {})
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', (await res.json()).uuid, sent({}, { alertDeviceId: null }))
   })
 
   it('ignores a client-supplied uuid — the attribution PK is always server-generated', async () => {
@@ -3901,7 +4197,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockDbInsertValues.mock.calls[0][0].id).not.toBe(clientUuid)
     const body = await res.json()
     expect(body.uuid).not.toBe(clientUuid)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, sent({}, { alertDeviceId: null }))
   })
 
   // ---- Runtime options forwarding ----
@@ -3925,7 +4221,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello', effort: 'low' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { effort: 'low' })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ effort: 'low' }, { effort: 'low' }))
   })
 
   it('forwards model to sendMessage when present in body', async () => {
@@ -3933,7 +4229,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ model: 'claude-haiku-4-5' }))
     expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       model: 'claude-haiku-4-5',
     })
@@ -3961,28 +4257,27 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(updateSessionMetadata).not.toHaveBeenCalled()
   })
 
-  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+  it('neither writes nor broadcasts when the accepted selection matches the stored metadata', async () => {
     mockIsAuthMode.mockReturnValue(false)
     // Seeded composers re-send their whole selection on every fresh turn; a
-    // value the metadata already records must not fan out list/detail
-    // refetches to every open window.
-    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+    // value the metadata already records must not rewrite the document or
+    // fan out list/detail refetches to every open window.
+    vi.mocked(getSessionMetadata).mockResolvedValue({ model: 'claude-haiku-4-5', effort: 'low' })
 
-    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5', effort: 'low' })
     expect(res.status).toBe(201)
-    expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
-      model: 'claude-haiku-4-5',
-    })
+    expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
     expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
   })
 
   it('broadcasts when any one option differs from the stored metadata', async () => {
     mockIsAuthMode.mockReturnValue(false)
-    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+    vi.mocked(getSessionMetadata).mockResolvedValue({
       model: 'claude-haiku-4-5',
       effort: 'medium',
-    } as never)
+    })
 
     const res = await postJson(app, URL, {
       content: 'hello',
@@ -3990,6 +4285,12 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       effort: 'high',
     })
     expect(res.status).toBe(201)
+    expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(updateSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
     expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
     expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
       type: 'session_updated',
@@ -4007,10 +4308,10 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-opus-4-7',
     })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({
       effort: 'medium',
       model: 'claude-opus-4-7',
-    })
+    }, { effort: 'medium' }))
   })
 
   it('drops invalid effort silently and forwards only the valid model', async () => {
@@ -4022,9 +4323,9 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-sonnet-4-6',
     })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({
       model: 'claude-sonnet-4-6',
-    })
+    }))
   })
 
   it('cancels any awaiting-input request before forwarding the message to the container', async () => {
@@ -4045,12 +4346,12 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     mockIsAuthMode.mockReturnValue(false)
     let finishPromotion!: () => void
     vi.mocked(messagePersister.promoteAutomatedSession).mockImplementationOnce(
-      () => new Promise<void>((resolve) => { finishPromotion = resolve }),
+      () => new Promise((resolve) => { finishPromotion = () => resolve(null) }),
     )
 
     const response = postJson(app, URL, { content: 'take it from here' })
     await vi.waitFor(() => {
-      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1')
+      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1', null)
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
 
@@ -4062,7 +4363,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       'sess-1',
       'take it from here',
       expect.any(String),
-      {},
+      sent(),
     )
   })
 
@@ -4081,9 +4382,110 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { preserveRuntime: true })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ preserveRuntime: true }))
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+  })
+
+  describe('session metadata cost of one send (with a default connection)', () => {
+    const bound = { model: 'model-a', llmProviderId: 'conn-1' }
+
+    beforeEach(() => {
+      mockIsAuthMode.mockReturnValue(false)
+      mockRuntimeSettings.mockReturnValue({
+        container: {},
+        skillsets: [],
+        app: { configuredPasswordManagers: ['apple-passwords'] },
+        llmDefault: bound,
+      } as never)
+    })
+
+    afterEach(() => {
+      mockRuntimeSettings.mockReset()
+      mockRuntimeSettings.mockReturnValue({ container: {}, skillsets: [], app: { configuredPasswordManagers: ['apple-passwords'] } })
+    })
+
+    it('reads the metadata once, hands that read to the client, and writes nothing when nothing changed', async () => {
+      const stored = { ...bound, effort: 'low' as const, name: 'Kept' }
+      vi.mocked(getSessionMetadata).mockResolvedValue(stored)
+      mockSendMessage.mockResolvedValue({ selection: bound })
+
+      const res = await postJson(app, URL, { content: 'again', effort: 'low' })
+      expect(res.status).toBe(201)
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1', stored)
+      expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'again', expect.any(String), {
+        effort: 'low',
+        sessionMetadata: stored,
+        metadataUpdates: { effort: 'low' },
+      })
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+      expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    })
+
+    it('writes once, after the POST, when only a per-send field changed', async () => {
+      mockIsAuthMode.mockReturnValue(true)
+      mockRequestDevice.value = 'phone-1'
+      vi.mocked(getSessionMetadata).mockResolvedValue({ ...bound, alertDeviceId: null })
+      mockSendMessage.mockResolvedValue({ selection: bound })
+      try {
+        const res = await postJson(app, URL, { content: 'from the phone' })
+        expect(res.status).toBe(201)
+      } finally {
+        mockRequestDevice.value = null
+      }
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(updateSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
+        alertDeviceId: 'phone-1',
+        ...bound,
+      })
+      expect(mockSendMessage.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(updateSessionMetadata).mock.invocationCallOrder[0])
+      // The alert claim is not a runtime selection: no composer refresh.
+      expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    })
+
+    it('leaves nothing to write once the client stored a changed binding with the send’s fields', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValue({ ...bound, effort: 'low' })
+      const switched = { model: 'model-b', llmProviderId: 'conn-1' }
+      mockSendMessage.mockResolvedValue({ selection: switched, metadataWritten: true })
+
+      const res = await postJson(app, URL, { content: 'switch', model: 'model-b', effort: 'high' })
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'switch', expect.any(String), expect.objectContaining({
+        metadataUpdates: { effort: 'high' },
+      }))
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+      // Peers still learn the selection moved.
+      expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
+    })
+
+    it('reads again in its selection turn when another send of the session finished after its read', async () => {
+      const first = { ...bound, effort: 'low' as const }
+      const staleRead = { ...bound, effort: 'low' as const }
+      const afterFirst = { model: 'model-b', llmProviderId: 'conn-1', effort: 'low' as const }
+      vi.mocked(getSessionMetadata)
+        .mockResolvedValueOnce(first)
+        .mockResolvedValueOnce(staleRead)
+        .mockResolvedValueOnce(afterFirst)
+      let releaseFirst!: () => void
+      mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({}) }))
+
+      const firstSend = postJson(app, URL, { content: 'first', model: 'model-b' })
+      await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
+      // The second send reads while the first is still in its selection turn.
+      const secondSend = postJson(app, URL, { content: 'second' })
+      await vi.waitFor(() => expect(getSessionMetadata).toHaveBeenCalledTimes(2))
+      releaseFirst()
+      expect((await firstSend).status).toBe(201)
+      expect((await secondSend).status).toBe(201)
+
+      expect(getSessionMetadata).toHaveBeenCalledTimes(3)
+      expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'second', expect.any(String), expect.objectContaining({
+        sessionMetadata: afterFirst,
+      }))
+    })
   })
 })
 
@@ -6182,8 +6584,8 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     vi.clearAllMocks()
     vi.mocked(countMembersWithMinRole).mockReset()
     app = createApp()
-    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
-    mockSendMessage.mockResolvedValue(undefined)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockSendMessage.mockResolvedValue({})
   })
 
   it('broadcasts user_message via SSE in auth mode', async () => {
@@ -6277,7 +6679,7 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
     vi.mocked(messagePersister.markSessionProvisionallyActive).mockReturnValue(undoFreshTurn)
   })
 
@@ -7610,6 +8012,48 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
 // Proxy Review "Always" Policy Tests
 // ============================================================================
 
+describe('POST /api/agents/:id/proxy-review/:reviewId (agent rule requests)', () => {
+  const app = createApp()
+  const proposal = {
+    ruleKind: 'api', targetId: 'acct-1', targetName: 'me@acme.com', appliesTo: 'agent', effect: 'require',
+    description: 'd', name: 'Review external sends', restatement: 'r', patterns: ['POST /x'], code: '() => true',
+    tests: [], coverage: [], warnings: [],
+  }
+
+  beforeEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockSubmitDecision.mockReturnValue(true)
+    vi.mocked(logAuditEvent).mockClear()
+  })
+
+  afterEach(() => {
+    mockSubmitDecision.mockReturnValue(false)
+    mockGetPendingReviewsForAgent.mockReturnValue([])
+  })
+
+  it.each([
+    { decision: 'allow', action: 'approved', ruleProposal: proposal, request: 'create' },
+    { decision: 'deny', action: 'rejected', ruleProposal: { ...proposal, deletesRuleId: 'rule-9' }, request: 'delete' },
+  ])('audits who decided ($action, $request)', async ({ decision, action, ruleProposal, request }) => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'RULE', targetPath: 'proxy-rules', matchedScopes: [], scopeDescriptions: {}, ruleProposal }])
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision })
+    expect(res.status).toBe(200)
+    expect(logAuditEvent).toHaveBeenCalledWith({
+      userId: expect.anything(),
+      object: 'proxy_rule',
+      objectId: 'acct-1',
+      action,
+      details: expect.objectContaining({ request, name: 'Review external sends', effect: 'require', agentSlug: 'my-agent', via: 'app' }),
+    })
+  })
+
+  it('does not audit ordinary proxy reviews as rule decisions', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'POST', targetPath: 'x', matchedScopes: [], scopeDescriptions: {} }])
+    expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow' })).status).toBe(200)
+    expect(vi.mocked(logAuditEvent).mock.calls.some(([event]) => event.object === 'proxy_rule')).toBe(false)
+  })
+})
+
 describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
   const app = createApp()
 
@@ -7650,6 +8094,21 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
       xAgent: { operation: details.operation, targetSlug: 'target' },
     })
     expect(res.status).toBe(400)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('rejects a scope or label allow on an unnamed API review', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'acc-1', toolkit: 'linear', method: 'POST',
+      targetPath: '/graphql', matchedScopes: ['read', 'write'], endpointAmbiguous: true,
+    }])
+    for (const scope of ['read', '*read']) {
+      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+        decision: 'allow', scope, accountId: 'acc-1', reviewType: 'api',
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'This request can only be allowed once or for every request to this account' })
+    }
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
@@ -8906,7 +9365,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(updateSessionName).not.toHaveBeenCalled()
 
     // A later notice does not name it either.
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     const MESSAGES_URL = '/api/agents/test-agent/sessions/session-123/messages'
     expect((await postJson(app, MESSAGES_URL, { content: '[SYSTEM] The user left voice mode.', shouldQuery: false })).status).toBe(201)
     await new Promise((r) => setTimeout(r, 0))
@@ -9830,7 +10289,7 @@ describe('cross-agent session scoping', () => {
     mockIsAuthMode.mockReturnValue(true)
     mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
     mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: true })
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     mockContainerFetch.mockResolvedValue({ ok: true, json: async () => ({}) })
 
     // The attacker owns exactly one session; the victim's id belongs to another

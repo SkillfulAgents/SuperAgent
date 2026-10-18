@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f5080247-b89f-4db5-95bf-c8d79261c1b1",
+  "id": "762f52da-5d7e-44fa-aba1-8210be87bcc0",
   "prevId": "eb8cb9b7-e689-4086-89c6-cc66aec2262d",
   "tables": {
     "agent_acl": {
@@ -76,88 +76,6 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "agent_browser_credentials": {
-      "name": "agent_browser_credentials",
-      "columns": {
-        "agent_slug": {
-          "name": "agent_slug",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "credential_id": {
-          "name": "credential_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "site": {
-          "name": "site",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "applied_version": {
-          "name": "applied_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "agent_browser_credentials_credential_idx": {
-          "name": "agent_browser_credentials_credential_idx",
-          "columns": [
-            "credential_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "agent_browser_credentials_credential_id_browser_credentials_id_fk": {
-          "name": "agent_browser_credentials_credential_id_browser_credentials_id_fk",
-          "tableFrom": "agent_browser_credentials",
-          "tableTo": "browser_credentials",
-          "columnsFrom": [
-            "credential_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "agent_browser_credentials_agent_slug_site_pk": {
-          "columns": [
-            "agent_slug",
-            "site"
-          ],
-          "name": "agent_browser_credentials_agent_slug_site_pk"
-        }
-      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -1183,119 +1101,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "browser_credentials": {
-      "name": "browser_credentials",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "site": {
-          "name": "site",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "browser_type": {
-          "name": "browser_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "bundle": {
-          "name": "bundle",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 1
-        },
-        "captured_at": {
-          "name": "captured_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "browser_credentials_user_site_idx": {
-          "name": "browser_credentials_user_site_idx",
-          "columns": [
-            "user_id",
-            "site"
-          ],
-          "isUnique": false
-        },
-        "browser_credentials_owner_site_type_unique": {
-          "name": "browser_credentials_owner_site_type_unique",
-          "columns": [
-            "coalesce(user_id, '')",
-            "site",
-            "browser_type"
-          ],
-          "isUnique": true
-        }
-      },
-      "foreignKeys": {
-        "browser_credentials_user_id_user_id_fk": {
-          "name": "browser_credentials_user_id_user_id_fk",
-          "tableFrom": "browser_credentials",
-          "tableTo": "user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "chat_integration_access": {
       "name": "chat_integration_access",
       "columns": {
@@ -2213,6 +2018,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "rule_version_id": {
+          "name": "rule_version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "rule_outcomes": {
+          "name": "rule_outcomes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -2760,6 +2579,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "rule_version_id": {
+          "name": "rule_version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "rule_outcomes": {
+          "name": "rule_outcomes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -2798,6 +2631,264 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "proxy_rule_versions": {
+      "name": "proxy_rule_versions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "rule_id": {
+          "name": "rule_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "effect": {
+          "name": "effect",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "restatement": {
+          "name": "restatement",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "patterns": {
+          "name": "patterns",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "code": {
+          "name": "code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tests": {
+          "name": "tests",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "warnings": {
+          "name": "warnings",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tool_schema_hash": {
+          "name": "tool_schema_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "proxy_rule_versions_unique": {
+          "name": "proxy_rule_versions_unique",
+          "columns": [
+            "rule_id",
+            "version"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "proxy_rule_versions_rule_id_proxy_rules_id_fk": {
+          "name": "proxy_rule_versions_rule_id_proxy_rules_id_fk",
+          "tableFrom": "proxy_rule_versions",
+          "tableTo": "proxy_rules",
+          "columnsFrom": [
+            "rule_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "proxy_rules": {
+      "name": "proxy_rules",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "mcp_id": {
+          "name": "mcp_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "agent_slug": {
+          "name": "agent_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by_agent_slug": {
+          "name": "created_by_agent_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "current_version_id": {
+          "name": "current_version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "proxy_rules_account_idx": {
+          "name": "proxy_rules_account_idx",
+          "columns": [
+            "account_id"
+          ],
+          "isUnique": false
+        },
+        "proxy_rules_mcp_idx": {
+          "name": "proxy_rules_mcp_idx",
+          "columns": [
+            "mcp_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "proxy_rules_account_id_connected_accounts_id_fk": {
+          "name": "proxy_rules_account_id_connected_accounts_id_fk",
+          "tableFrom": "proxy_rules",
+          "tableTo": "connected_accounts",
+          "columnsFrom": [
+            "account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "proxy_rules_mcp_id_remote_mcp_servers_id_fk": {
+          "name": "proxy_rules_mcp_id_remote_mcp_servers_id_fk",
+          "tableFrom": "proxy_rules",
+          "tableTo": "remote_mcp_servers",
+          "columnsFrom": [
+            "mcp_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "proxy_rules_target_check": {
+          "name": "proxy_rules_target_check",
+          "value": "(\"proxy_rules\".\"kind\" = 'api' and \"proxy_rules\".\"account_id\" is not null and \"proxy_rules\".\"mcp_id\" is null) or (\"proxy_rules\".\"kind\" = 'mcp' and \"proxy_rules\".\"mcp_id\" is not null and \"proxy_rules\".\"account_id\" is null)"
+        }
+      }
     },
     "proxy_tokens": {
       "name": "proxy_tokens",
@@ -4264,13 +4355,6 @@
   },
   "internal": {
     "indexes": {
-      "browser_credentials_owner_site_type_unique": {
-        "columns": {
-          "coalesce(user_id, '')": {
-            "isExpression": true
-          }
-        }
-      },
       "x_agent_policies_null_safe_unique": {
         "columns": {
           "coalesce(target_agent_slug, '')": {

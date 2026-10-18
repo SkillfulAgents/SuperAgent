@@ -97,7 +97,7 @@ export interface ProviderErrorSlot {
 // showing: the composer hosts voice mode, and a remount would drop it (SUP-890). A card
 // that must withhold children (paywall while blocked) hides the slot instead.
 export function ProviderErrorPlacement({ placement, sessionId, agentSlug, children }: ProviderErrorPlacementProps) {
-  const { isActive, activeStartTime, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
+  const { isActive, activeStartTime, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug, ['isActive', 'activeStartTime', 'error', 'apiErrorCode', 'errorPresentation'])
   const { data: messages } = useMessages(sessionId, agentSlug)
   const [displaced, setDisplaced] = useState(false)
   // A turn that starts on top of a persisted error answers it. A short turn can go idle

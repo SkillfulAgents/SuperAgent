@@ -19,6 +19,7 @@ export const AUDIT_EVENT_MAP = {
   volume:           ['created', 'updated', 'deleted'],
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
+  proxy_rule:       ['created', 'updated', 'deleted', 'approved', 'rejected'],
   user:             ['invited', 'reset_password'],
   // Authentication events. Every path that mints a session records `created`
   // with a `method` detail — see auth/session-audit.ts. `revoked` currently

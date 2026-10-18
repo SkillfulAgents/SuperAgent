@@ -1,7 +1,11 @@
 import { Hono } from 'hono'
+import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { requestBodyPreview } from '@shared/lib/proxy/review-display'
+import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
+import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
@@ -9,6 +13,16 @@ import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
+import { hasDotSegment } from '@shared/lib/proxy/rules/patterns'
+import { buildApiRuleInput } from '@shared/lib/proxy/rules/input'
+import {
+  auditRuleOutcomes,
+  decidingRuleVersionId,
+  evaluateRulesForRequest,
+  reportedRules,
+  reviewRuleOutcomes,
+  type GateResult,
+} from '@shared/lib/proxy/rules/gate'
 import { db } from '@shared/lib/db'
 import {
   connectedAccounts,
@@ -32,12 +46,29 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // Parse target host and path from rest: <host>/<path...>
   const firstSlash = rest.indexOf('/')
   const targetHost = firstSlash === -1 ? rest : rest.slice(0, firstSlash)
-  const targetPath = firstSlash === -1 ? '' : rest.slice(firstSlash + 1)
+  // The path is read from the raw request URL and canonicalised once: policy
+  // matching, review, audit and the forwarded URL all use this one value.
+  const target = canonicalizeTargetPath(rawRouteTail(c.req.url, routePath(c), 'rest'), targetHost)
+  const targetPath = target.ok ? target.path : target.rawPath
 
   const method = c.req.method
 
   if (!targetHost) {
     return c.json({ error: 'Missing target host in proxy URL' }, 400)
+  }
+
+  if (!target.ok) {
+    const message = `Invalid target path: ${target.error}`
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: '',
+      targetHost,
+      targetPath,
+      method,
+      errorMessage: message,
+    })
+    return c.json({ error: 'invalid_target_path', message }, 400)
   }
 
   // 1. Validate synthetic token
@@ -209,16 +240,43 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     )
   }
 
-  // 3.5 Policy enforcement
-  let policyResult
-  try {
-    const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost)
-    const userId = account.userId ?? 'local'
-    policyResult = await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
-  } catch (policyError) {
-    console.error('[proxy] Policy enforcement failed, defaulting to review:', policyError)
-    policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+  // 3.2 Reject dot segments. Hono decodes %2F before the scope matcher sees
+  // the path, and the forwarded URL then resolves `..`, so
+  // `drafts%2F..%2Fmessages/send` would be matched as one endpoint and sent
+  // to another.
+  if (hasDotSegment('/' + targetPath)) {
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method,
+      errorMessage: 'Path contains dot segments',
+    })
+    return c.json({ error: 'invalid_path', message: 'The request path must not contain "." or ".." segments.' }, 400)
   }
+
+  // The body is read at most once, shared by the matcher, the card, rules and the
+  // forwarder: text bodies before matching, others only when a rule or the forward needs them.
+  let bodyRead: Promise<ArrayBuffer | null> | null = null
+  const readBody = () => bodyRead ??= (method === 'GET' || method === 'HEAD')
+    ? Promise.resolve(null)
+    : c.req.arrayBuffer()
+  const textBody = isPreviewableContentType(c.req.header('content-type')) ? await readBody() : null
+
+  // 3.5 Policy enforcement
+  const resolvePolicy = async () => {
+    try {
+      const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost, textBody)
+      const userId = account.userId ?? 'local'
+      return await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
+    } catch (policyError) {
+      console.error('[proxy] Policy enforcement failed, defaulting to review:', policyError)
+      return { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+    }
+  }
+  const policyResult = await resolvePolicy()
 
   if (policyResult.decision === 'block') {
     await logAuditEntry({
@@ -243,7 +301,52 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // Track the precise outcome for audit logging
   let resolvedPolicyDecision: string = policyResult.decision // 'allow' or 'review'
 
-  if (policyResult.decision === 'review') {
+  // 3.6 Proxy rules: a require rule can send an allowed request to review; an
+  // allow rule can move a reviewed request to allow.
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const search = new URL(c.req.url).search
+  const runRules = (policy: 'allow' | 'review'): Promise<GateResult> => evaluateRulesForRequest(
+    { kind: 'api', targetId: accountId },
+    agentSlug,
+    policy,
+    { kind: 'api', method, path: '/' + targetPath },
+    async () => buildApiRuleInput({
+      method,
+      host: targetHost,
+      path: '/' + targetPath,
+      search,
+      headers: c.req.raw.headers,
+      body: await readBody(),
+    }),
+  )
+  const ruleGate = await runRules(policyResult.decision)
+  const ruleAudit = {
+    ruleVersionId: decidingRuleVersionId(ruleGate),
+    ruleOutcomes: auditRuleOutcomes(ruleGate.evaluations),
+  }
+  if (ruleGate.unavailable && policyResult.decision === 'allow') {
+    // No one can tell whether a require rule would hold this request. Answer
+    // now so the agent can retry, rather than parking an allowed request on
+    // a review card for minutes.
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method,
+      policyDecision: 'rules_unavailable',
+      matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      errorMessage: 'Proxy rules could not be checked',
+    })
+    return c.json({ error: 'rules_unavailable', message: 'Proxy rules could not be checked. Try again shortly.' }, 503)
+  }
+  if (ruleGate.allowedBy) resolvedPolicyDecision = 'allowed_by_rule'
+  else if (ruleGate.decision === 'review') resolvedPolicyDecision = 'review'
+
+  if (resolvedPolicyDecision === 'review') {
+    const ruleOutcomes = reviewRuleOutcomes(ruleGate.evaluations)
+    const rules = reportedRules(ruleGate)
     try {
       const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
         accountId,
@@ -254,7 +357,19 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
         endpointDescription: policyResult.endpointDescription,
-      }, c.req.raw.signal)
+        endpointAmbiguous: policyResult.endpointAmbiguous,
+        requestBody: requestBodyPreview(textBody),
+        ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
+      }, c.req.raw.signal, {
+        // When an "always" decision on another card changes the policy, this
+        // request is decided again rather than released.
+        reevaluate: async () => {
+          const policy = await resolvePolicy()
+          if (policy.decision === 'block') return 'deny'
+          const gate = await runRules(policy.decision)
+          return gate.unavailable ? 'review' : gate.decision
+        },
+      })
       if (decision === 'deny') {
         await logAuditEntry({
           agentSlug,
@@ -265,8 +380,9 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
           method,
           policyDecision: 'denied_by_user',
           matchedScopes: JSON.stringify(policyResult.matchedScopes),
+          ...ruleAudit,
         })
-        return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+        return c.json({ error: 'denied_by_user', message: 'Request denied by user.', rules }, 403)
       }
       resolvedPolicyDecision = 'approved_by_user'
     } catch {
@@ -279,12 +395,14 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         method,
         policyDecision: 'review_timeout',
         matchedScopes: JSON.stringify(policyResult.matchedScopes),
+        ...ruleAudit,
       })
-      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
+      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.', rules }, 408)
     }
   }
 
-  // resolvedPolicyDecision is now 'allow' (auto) or 'approved_by_user' (manual)
+  // resolvedPolicyDecision is now 'allow' (auto), 'allowed_by_rule' or
+  // 'approved_by_user' (manual)
 
   // Audit helper: curried with all the context fields shared by every
   // post-policy audit entry. Caller supplies only what varies (statusCode,
@@ -302,6 +420,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       method,
       policyDecision: resolvedPolicyDecision,
       matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      ...ruleAudit,
       ...extras,
     })
 
@@ -321,7 +440,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // 4. Build target URL
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
-  const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
+  const targetUrl = `https://${targetHost}/${target.encodedPath}${queryString}`
 
   // 5. Verify remote connection status before forwarding
   let provider = getAccountProviderByName(account.providerName)
@@ -355,9 +474,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   }
 
   // 6. Forward via account provider (handles token retrieval/proxy internally)
-  const requestBody = (method === 'GET' || method === 'HEAD')
-    ? null
-    : await c.req.arrayBuffer()
+  const requestBody = await readBody()
 
   const forwardRequest = async () => runWithAttribution(
       await attribution.fromResourceCreator(account.userId),

@@ -8,6 +8,7 @@ import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { generateReviewDisplayText, type ReviewDetails } from './review-display'
+import { heldByRequireRule, parseRuleProposal } from './rules/proposal-schema'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
@@ -16,6 +17,18 @@ interface ReviewSettler {
   resolve: (decision: 'allow' | 'deny') => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
+  reevaluate?: ReviewReevaluator
+}
+
+/**
+ * Decide the parked request again from scratch (policy and proxy rules), for
+ * when a sibling's "always" decision changed the policy: 'allow' or 'deny'
+ * settles it, 'review' leaves it for the person.
+ */
+export type ReviewReevaluator = () => Promise<'allow' | 'deny' | 'review'>
+
+export interface ReviewRequestOptions {
+  reevaluate?: ReviewReevaluator
 }
 
 type ReviewRegistryEntry = Extract<
@@ -47,10 +60,11 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
       : {}
   const endpointDescription =
     typeof p.endpointDescription === 'string' ? p.endpointDescription : undefined
+  const endpointAmbiguous = p.endpointAmbiguous === true
   const displayText =
     typeof p.displayText === 'string' && p.displayText.length > 0
       ? p.displayText
-      : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription)
+      : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription, endpointAmbiguous)
   return {
     agentSlug: entry.scope.agentSlug ?? '',
     accountId: typeof p.accountId === 'string' ? p.accountId : '',
@@ -61,6 +75,12 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
     matchedScopes: Array.isArray(p.matchedScopes) ? (p.matchedScopes as string[]) : [],
     scopeDescriptions,
     ...(endpointDescription !== undefined ? { endpointDescription } : {}),
+    ...(endpointAmbiguous ? { endpointAmbiguous } : {}),
+    ...(typeof p.requestBody === 'string' ? { requestBody: p.requestBody } : {}),
+    ...(Array.isArray(p.ruleOutcomes) && p.ruleOutcomes.length > 0
+      ? { ruleOutcomes: p.ruleOutcomes as ReviewDetails['ruleOutcomes'] }
+      : {}),
+    ...(parseRuleProposal(p.ruleProposal) ? { ruleProposal: parseRuleProposal(p.ruleProposal) } : {}),
     ...(p.xAgent && typeof p.xAgent === 'object'
       ? { xAgent: p.xAgent as ReviewDetails['xAgent'] }
       : {}),
@@ -127,7 +147,41 @@ export class AgentReviews {
     this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', { type: 'resolve', decision })
   }
 
-  request(details: ReviewRequest, signal?: AbortSignal): Promise<ReviewDecision> {
+  /**
+   * Settle a sibling review swept by an "always" decision on another one. A
+   * deny sweep denies. An allow sweep doesn't release the request outright:
+   * the request is decided again under the new policy (a require rule may
+   * still hold it), and stays pending if it still needs review. A review
+   * without a re-evaluator (nothing parked behind it) is released unless a
+   * require rule held it.
+   */
+  private settleSwept(entry: ReviewRegistryEntry, decision: ReviewDecision): void {
+    if (decision === 'deny') {
+      this.settleDecided(entry, 'deny')
+      return
+    }
+    const reevaluate = this.settlers.get(entry.id)?.reevaluate
+    if (!reevaluate) {
+      if (!heldByRequireRule(detailsOf(entry).ruleOutcomes)) this.settleDecided(entry, 'allow')
+      return
+    }
+    const id = entry.id
+    void reevaluate().then((result) => {
+      if (result === 'review' || !this.settlers.has(id)) return
+      const current = this.inputs.getOpenRequest(id)
+      if (!current || !isReviewEntry(current)) return
+      this.settleDecided(current, result)
+      this.shadowSettlerCheck('reevaluatedAfterSweep')
+      this.syncAwaiting()
+    }, (error: unknown) => {
+      console.warn('[reviews] Re-evaluating a swept review failed; it stays pending:', error)
+    })
+  }
+
+  request(details: ReviewRequest, signal?: AbortSignal, options: ReviewRequestOptions = {}): Promise<ReviewDecision> {
+    // The caller is already gone (abort listeners never fire for a signal
+    // aborted before they were added): raise no card nobody waits on.
+    if (signal?.aborted) return Promise.reject(new Error('Request aborted'))
     const id = crypto.randomUUID()
 
     return new Promise<ReviewDecision>((resolve, reject) => {
@@ -159,7 +213,7 @@ export class AgentReviews {
         }, { once: true })
       }
 
-      this.settlers.set(id, { resolve, reject, timer })
+      this.settlers.set(id, { resolve, reject, timer, reevaluate: options.reevaluate })
 
       const displayText = generateReviewDisplayText(
         details.toolkit,
@@ -167,6 +221,7 @@ export class AgentReviews {
         details.targetPath,
         details.scopeDescriptions,
         details.endpointDescription,
+        details.endpointAmbiguous,
       )
 
       // Reviews are agent-scoped — no sessionId in the proxied call, so the
@@ -233,7 +288,7 @@ export class AgentReviews {
       const details = detailsOf(entry)
       if (decision === 'allow' && requiresOneTimeXAgentReview(details.xAgent)) continue
       if (!details.matchedScopes.includes(scope)) continue
-      this.settleDecided(entry, decision)
+      this.settleSwept(entry, decision)
     }
     this.shadowSettlerCheck('resolveMatchingPending')
     this.syncAwaiting()
@@ -252,7 +307,7 @@ export class AgentReviews {
       if (decision === 'allow' && requiresOneTimeXAgentReview(details.xAgent)) continue
       const hasLabel = details.matchedScopes.some((s) => getScopeLabel(details.toolkit, s) === label)
       if (!hasLabel) continue
-      this.settleDecided(entry, decision)
+      this.settleSwept(entry, decision)
     }
     this.shadowSettlerCheck('resolveMatchingPendingByLabel')
     this.syncAwaiting()

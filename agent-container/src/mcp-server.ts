@@ -6,6 +6,7 @@
  */
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
+import { createApiRuleTool, createMcpRuleTool, deleteProxyRuleTool, listProxyRulesTool } from './tools/rules/proxy-rules'
 import { webSearchTool } from './tools/web/web-search'
 import { webFetchTool } from './tools/web/web-fetch'
 import { requestSecretTool } from './tools/request-secret'
@@ -195,6 +196,18 @@ export function createMeetingsMcpServer() {
     name: 'meetings',
     version: '1.0.0',
     tools: meetingTools,
+  })
+}
+
+/**
+ * Proxy rules: propose (with user approval), list and delete the rules that
+ * let specific API / MCP requests skip the user's review.
+ */
+export function createRulesMcpServer() {
+  return createSdkMcpServer({
+    name: 'rules',
+    version: '1.0.0',
+    tools: [createApiRuleTool, createMcpRuleTool, listProxyRulesTool, deleteProxyRuleTool],
   })
 }
 

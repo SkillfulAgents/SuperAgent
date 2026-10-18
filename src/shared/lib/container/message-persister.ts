@@ -4,7 +4,7 @@ import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { z } from 'zod'
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import { mergeCanonicalSlashCommands } from './slash-commands'
-import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
+import type { SessionUsage, SessionActivity, SessionMetadata } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tools/ask-user-question/definition'
 import type { RequestSecretInput } from '@shared/lib/tools/request-secret/definition'
 import type { RequestFileInput } from '@shared/lib/tools/request-file/definition'
@@ -627,16 +627,20 @@ class MessagePersister {
   // Idempotent: concurrent calls for the same sessionId await the same in-flight
   // subscription instead of racing each other (which would re-init state and
   // leak listeners).
+  //
+  // `metadata` is the session's entry as the caller just read it (null: it has
+  // none), so working out the stream's lifecycle reads nothing.
   async subscribeToSession(
     agentSlug: string,
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
+    metadata?: SessionMetadata | null,
   ): Promise<void> {
     const ctx = sessionCtx(agentSlug, sessionId)
     const inFlight = this.subscribingNow.get(ctx.key)
     if (inFlight) return inFlight
-    return this.trackSubscription(ctx, this.doSubscribeToSession(ctx, client, containerSessionId))
+    return this.trackSubscription(ctx, this.doSubscribeToSession(ctx, client, containerSessionId, metadata))
   }
 
   private trackSubscription(ctx: SessionCtx, ready: Promise<void>): Promise<void> {
@@ -657,6 +661,7 @@ class MessagePersister {
     ctx: SessionCtx,
     client: ContainerClient,
     containerSessionId: string,
+    metadata?: SessionMetadata | null,
   ): Promise<void> {
     const { agentSlug, sessionId } = ctx
     // Preserve session-lifecycle state across (re-)subscribe so callers that
@@ -745,7 +750,7 @@ class MessagePersister {
       promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
 
-    this.resolveStreamReleasePolicy(ctx)
+    this.resolveStreamReleasePolicy(ctx, metadata)
 
     // Store container client for reconnection checks
     this.containerClients.set(ctx.key, client)
@@ -775,10 +780,10 @@ class MessagePersister {
   }
 
   // An unresolved metadata read keeps the transport rather than guessing its lifecycle.
-  private resolveStreamReleasePolicy(ctx: SessionCtx): void {
+  private resolveStreamReleasePolicy(ctx: SessionCtx, known?: SessionMetadata | null): void {
     const { agentSlug, sessionId } = ctx
     const stateRef = this.streamingStates.get(ctx.key)
-    void getSessionMetadata(this.storeOf(agentSlug), sessionId)
+    void (known !== undefined ? Promise.resolve(known) : getSessionMetadata(this.storeOf(agentSlug), sessionId))
       .then((meta) => {
         // A resubscribe replaced the state and kicked off its own resolution.
         const current = this.streamingStates.get(ctx.key)
@@ -2069,9 +2074,16 @@ class MessagePersister {
   // Public: the notification manager promotes on session_waiting so blocked
   // automations surface in session lists instead of accruing unread rows
   // nothing displays.
-  async promoteAutomatedSession(agentSlug: string, sessionId: string): Promise<void> {
-    const meta = await getSessionMetadata(this.storeOf(agentSlug), sessionId)
-    if (!isHiddenAutomatedSession(meta)) return
+  //
+  // `metadata` is the session's entry as the caller just read it, so the check
+  // costs no read of its own. Resolves to the entry as it stands afterwards.
+  async promoteAutomatedSession(
+    agentSlug: string,
+    sessionId: string,
+    metadata?: SessionMetadata | null,
+  ): Promise<SessionMetadata | null> {
+    const meta = metadata !== undefined ? metadata : await getSessionMetadata(this.storeOf(agentSlug), sessionId)
+    if (!isHiddenAutomatedSession(meta)) return meta
 
     await updateSessionMetadata(this.storeOf(agentSlug), sessionId, {
       promotedToInteractive: true,
@@ -2109,6 +2121,7 @@ class MessagePersister {
         agentSlug,
       })
     }
+    return { ...meta, promotedToInteractive: true }
   }
 
   private persistAutomationStatus(

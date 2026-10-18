@@ -1,7 +1,7 @@
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import type { AgentReviews, ReviewDecision, XAgentOperation } from './agent-reviews'
+import type { AgentReviews, ReviewDecision, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
 import type { ScopeLabel } from './scope-metadata'
 
@@ -22,8 +22,8 @@ export class ReviewManager {
     this.agents.attach(directory)
   }
 
-  requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<ReviewDecision> {
-    return this.agents.get(details.agentSlug).request(details, signal)
+  requestReview(details: ReviewDetails, signal?: AbortSignal, options?: ReviewRequestOptions): Promise<ReviewDecision> {
+    return this.agents.get(details.agentSlug).request(details, signal, options)
   }
 
   /**
