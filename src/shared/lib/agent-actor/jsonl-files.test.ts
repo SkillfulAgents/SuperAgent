@@ -8,6 +8,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { LocalFileOps } from './local-file-ops'
+import { prng } from './testing/prng'
 import { iterateLinesBackward, readChunkFor, readTailLines, READ_CHUNK_MAX, READ_CHUNK_MIN, streamLines } from './jsonl-files'
 
 let testDir: string
@@ -444,11 +445,7 @@ describe('read sizes', () => {
 
   /** Deterministic rows of mixed sizes, a few larger than the largest read. */
   function mixedRows(count: number, seed: number): string[] {
-    let state = seed
-    const random = () => {
-      state = (state * 1664525 + 1013904223) >>> 0
-      return state / 0x100000000
-    }
+    const random = prng(seed)
     return Array.from({ length: count }, (_, i) => {
       const roll = random()
       const pad = roll < 0.02 ? 1.2 * MiB : roll < 0.2 ? 40_000 + Math.floor(random() * 90_000) : Math.floor(random() * 3000)
@@ -466,11 +463,9 @@ describe('read sizes', () => {
   it('clamps a requested chunk into [64 KiB, 1 MiB]', () => {
     expect(READ_CHUNK_MIN).toBe(64 * 1024)
     expect(READ_CHUNK_MAX).toBe(MiB)
-    expect(readChunkFor(undefined)).toBe(READ_CHUNK_MIN)
     expect(readChunkFor(0)).toBe(READ_CHUNK_MIN)
     expect(readChunkFor(300_000)).toBe(300_000)
     expect(readChunkFor(10 * MiB)).toBe(READ_CHUNK_MAX)
-    expect(readChunkFor(Number.POSITIVE_INFINITY)).toBe(READ_CHUNK_MIN)
   })
 
   it('walks backward in reads that double from 64 KiB to 1 MiB', async () => {
@@ -562,5 +557,19 @@ describe('read sizes', () => {
     expect(sized.lengths.slice(0, -1).every((n) => n === MiB)).toBe(true)
     expect(sized.lengths.length).toBe(Math.ceil((end - start) / MiB))
     expect(Math.max(...unsized.lengths)).toBe(64 * 1024)
+  })
+
+  it('serves the whole range for a chunk hint of zero or a fraction', async () => {
+    // A high-water mark of 0 would read 0 bytes per call, which fs treats as
+    // EOF: the stream would end at once with no lines and no error.
+    const { filePath } = await writeRows('ranged-degenerate.jsonl', Array.from({ length: 50 }, (_, i) => JSON.stringify({ i })))
+    const expected = Array.from({ length: 50 }, (_, i) => JSON.stringify({ i }))
+    for (const chunkBytes of [0, 0.5, 1]) {
+      const out: string[] = []
+      for await (const line of streamLines(files, rel(filePath), undefined, undefined, chunkBytes)) {
+        out.push(line.toString('utf-8'))
+      }
+      expect(out).toEqual(expected)
+    }
   })
 })

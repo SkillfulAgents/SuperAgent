@@ -1173,9 +1173,17 @@ function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): bool
   return true
 }
 
-interface PageWindowScan {
+/** Pass 1 found no window: the cursor's id vanished, or lies deeper than the
+ * line cap. Nothing is read; the page terminates. */
+interface PageWindowNotFound {
+  found: false
+  /** The scan ran to the file start (so the id is truly gone, not just deep). */
+  reachedStart: boolean
+}
+
+interface PageWindowFound {
   /** Cursor located (always true for the no-cursor trailing page). */
-  found: boolean
+  found: true
   /** Byte offset of the window's first line. */
   startOffset: number
   /** Exclusive end of the window; undefined = read to EOF (trailing page). */
@@ -1193,6 +1201,8 @@ interface PageWindowScan {
    * scan when `endOffset` is undefined. Sizes that read's chunks. */
   readBytes: number
 }
+
+type PageWindowScan = PageWindowFound | PageWindowNotFound
 
 /** Smallest recorded line-start offset at or past the grace distance, so the
  * window end lands on a line boundary: any row BEGINNING inside the grace
@@ -1465,14 +1475,7 @@ async function scanMessagesPageWindow(
 
   if (!anchored) {
     // Cursor never found: vanished id, or deeper than the line cap.
-    return {
-      found: false,
-      startOffset: 0,
-      endOffset: undefined,
-      reachedStart: !hitLineCap,
-      dropHead: true,
-      readBytes: 0,
-    }
+    return { found: false, reachedStart: !hitLineCap }
   }
   return {
     found: true,

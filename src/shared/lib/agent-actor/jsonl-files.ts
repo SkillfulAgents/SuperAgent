@@ -33,8 +33,7 @@ export const READ_CHUNK_MIN = 64 * 1024
 export const READ_CHUNK_MAX = 1024 * 1024
 
 /** A read size for `bytes` of expected data, clamped into [READ_CHUNK_MIN, READ_CHUNK_MAX]. */
-export function readChunkFor(bytes: number | undefined): number {
-  if (bytes === undefined || !Number.isFinite(bytes)) return READ_CHUNK_MIN
+export function readChunkFor(bytes: number): number {
   return Math.min(READ_CHUNK_MAX, Math.max(READ_CHUNK_MIN, Math.ceil(bytes)))
 }
 
