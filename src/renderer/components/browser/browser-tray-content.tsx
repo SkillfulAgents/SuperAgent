@@ -8,10 +8,11 @@ import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import { DeclineButton } from '@shared/lib/tools/requests/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useBrowserInputActions } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
+import { useBrowserInputActions, useCanSaveBrowserLogin } from '@shared/lib/tools/request-browser-input/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -80,6 +81,11 @@ export function BrowserTrayContent({
     toolUseId: latestRequest?.toolUseId ?? null,
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
+
+  // Unchecking applies to one request; the next sign-in starts checked again.
+  const [saveLoginOffFor, setSaveLoginOffFor] = useState<string | null>(null)
+  const saveLogin = saveLoginOffFor !== latestRequest?.toolUseId
+  const canSaveLogin = useCanSaveBrowserLogin(agentSlug, latestRequest?.login === true)
 
   // History is authoritative once received; older containers only provide tab URLs.
   const viewingTab = stream.tabs.find((tab) => tab.targetId === stream.viewingTargetId)
@@ -157,6 +163,17 @@ export function BrowserTrayContent({
                 <span className="text-xs font-medium text-foreground flex-1 truncate">
                   {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
                 </span>
+                {latestRequest.login && canSaveLogin && (
+                  <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                    <Checkbox
+                      checked={saveLogin}
+                      onCheckedChange={(checked) => setSaveLoginOffFor(checked === true ? null : latestRequest.toolUseId)}
+                      disabled={status !== 'pending'}
+                      data-testid="browser-tray-save-login"
+                    />
+                    Save login
+                  </label>
+                )}
                 <DeclineButton
                   onDecline={decline}
                   disabled={status !== 'pending'}
@@ -170,7 +187,7 @@ export function BrowserTrayContent({
                   data-testid="browser-tray-decline-btn"
                 />
                 <Button
-                  onClick={() => complete()}
+                  onClick={() => complete({ saveLogin: latestRequest.login === true && canSaveLogin && saveLogin })}
                   loading={submittingAction === 'completing'}
                   disabled={status !== 'pending'}
                   size="sm"

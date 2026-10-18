@@ -1,10 +1,27 @@
 import { useEffect, useRef } from 'react'
 import { useMutation, useMutationState, useQueryClient, type MutationState } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import type { LoginSaveOutcome } from '@shared/lib/browser/browser-login-save'
 import { apiFetch } from '@renderer/lib/api'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { useUser } from '@renderer/context/user-context'
+import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 
 export type BrowserInputStatus = 'pending' | 'submitting' | 'completed' | 'declined'
 type SubmittingAction = 'completing' | 'declining'
+
+const LOGIN_SAVE_TOASTS: Record<LoginSaveOutcome, [kind: 'success' | 'info' | 'error', message: string]> = {
+  saved: ['success', 'Login saved to your vault'],
+  updated: ['success', 'Saved login updated'],
+  failed: ['error', 'Login not saved'],
+}
+
+/** Saving a login is offered only on single-member agents; the host enforces the same rule. */
+export function useCanSaveBrowserLogin(agentSlug: string, enabled: boolean): boolean {
+  const { isAuthMode } = useUser()
+  const members = useAgentMembers(agentSlug, enabled)
+  return !isAuthMode || members.data?.length === 1
+}
 
 interface UseBrowserInputActionsArgs {
   agentSlug: string
@@ -22,6 +39,7 @@ interface BrowserInputAction {
   toolUseId: string
   action: SubmittingAction
   reason?: string
+  saveLogin?: boolean
 }
 
 interface BrowserInputResult {
@@ -51,20 +69,27 @@ export function useBrowserInputActions({ agentSlug, sessionId, toolUseId, onReso
     // Local API requests still work when the browser reports no internet.
     networkMode: 'always',
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async ({ agentSlug, sessionId, toolUseId, action, reason }) => {
+    mutationFn: async ({ agentSlug, sessionId, toolUseId, action, reason, saveLogin }) => {
       const response = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/complete-browser-input`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toolUseId, ...(action === 'declining' ? { decline: true } : {}) }),
+          body: JSON.stringify({
+            toolUseId,
+            ...(action === 'declining' ? { decline: true } : {}),
+            ...(saveLogin !== undefined ? { saveLogin } : {}),
+          }),
         }
       )
 
+      const data = await response.json().catch(() => ({}))
       if (!response.ok) {
-        const data = await response.json()
         throw new Error(data.error || 'Request failed')
       }
+
+      const loginSaveToast = LOGIN_SAVE_TOASTS[data.loginSave as LoginSaveOutcome]
+      if (loginSaveToast) toast[loginSaveToast[0]](loginSaveToast[1])
 
       let error: string | null = null
       if (action === 'declining' && reason) {
@@ -110,7 +135,7 @@ export function useBrowserInputActions({ agentSlug, sessionId, toolUseId, onReso
     if (isResolved && toolUseId) onResolvedRef.current(toolUseId)
   }, [isResolved, agentSlug, sessionId, toolUseId])
 
-  const submit = async (action: SubmittingAction, reason?: string): Promise<boolean> => {
+  const submit = async (action: SubmittingAction, reason?: string, saveLogin?: boolean): Promise<boolean> => {
     if (!toolUseId) return false
     // Read the cache synchronously: another surface can click before React has
     // rendered its disabled button. A settled request also cannot be sent twice.
@@ -121,7 +146,7 @@ export function useBrowserInputActions({ agentSlug, sessionId, toolUseId, onReso
     if (latest?.state.status === 'pending' || latest?.state.status === 'success') return false
 
     try {
-      await mutation.mutateAsync({ agentSlug, sessionId, toolUseId, action, reason })
+      await mutation.mutateAsync({ agentSlug, sessionId, toolUseId, action, reason, saveLogin })
       return true
     } catch {
       // The shared mutation state exposes the error and makes both surfaces retryable.
@@ -129,7 +154,7 @@ export function useBrowserInputActions({ agentSlug, sessionId, toolUseId, onReso
     }
   }
 
-  const complete = () => submit('completing')
+  const complete = (options: { saveLogin?: boolean } = {}) => submit('completing', undefined, options.saveLogin)
   const decline = (reason?: string) => submit('declining', reason)
 
   return { status, submittingAction, error, complete, decline }
