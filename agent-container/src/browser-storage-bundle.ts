@@ -29,6 +29,9 @@ const cookieSchema = z.object({
   partitionKey: z.object({ topLevelSite: z.string(), hasCrossSiteAncestor: z.boolean() }).optional(),
 }).strict()
 
+/** What identifies a cookie in the browser's jar, without its value. */
+export const cookieKeySchema = cookieSchema.pick({ name: true, domain: true, path: true, partitionKey: true })
+
 const keyPathSchema = z.union([z.string(), z.array(z.string())])
 
 const indexedDbDatabaseSchema = z.object({
@@ -69,5 +72,6 @@ export const siteStorageBundleSchema = z.object({
 }).strict()
 
 export type StorageCookie = z.infer<typeof cookieSchema>
+export type StorageCookieKey = z.infer<typeof cookieKeySchema>
 export type OriginStorage = z.infer<typeof originStorageSchema>
 export type SiteStorageBundle = z.infer<typeof siteStorageBundleSchema>

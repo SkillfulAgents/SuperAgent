@@ -8,12 +8,14 @@ import {
   WRITE_SESSION_STORAGE_FUNCTION,
 } from './browser-storage-script'
 import {
+  cookieKeySchema,
   originSchema,
   siteSchema,
   siteStorageBundleSchema,
   type OriginStorage,
   type SiteStorageBundle,
   type StorageCookie,
+  type StorageCookieKey,
 } from './browser-storage-bundle'
 
 const CDP_TIMEOUT_MS = 15_000
@@ -107,7 +109,7 @@ export function toStorageCookie(cookie: CdpCookie): StorageCookie {
 }
 
 /** What identifies a cookie in the browser's jar; setting a cookie with the same key replaces it. */
-function cookieKey(cookie: Pick<StorageCookie, 'name' | 'domain' | 'path' | 'partitionKey'>): string {
+function cookieKey(cookie: StorageCookieKey): string {
   return JSON.stringify([cookie.domain, cookie.path, cookie.name, cookie.partitionKey?.topLevelSite ?? null, cookie.partitionKey?.hasCrossSiteAncestor ?? null])
 }
 
@@ -395,16 +397,69 @@ export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrig
   return siteStorageBundleSchema.parse({ version: 1, site, capturedAt: new Date().toISOString(), cookies, origins })
 }
 
-/** Empty localStorage, IndexedDB and open tabs' sessionStorage of `origins`. */
-async function clearOrigins(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>, origins: string[]): Promise<void> {
-  if (origins.length === 0) return
+// sessionStorage lives in a tab, so a restore with no open tab of an origin
+// keeps its entries here until the agent's browser shows that origin.
+const pendingSessionStorage = new Map<string, Array<[string, string]>>()
+
+function pendingSessionStorageOf(site: string): Array<[string, Array<[string, string]>]> {
+  return [...pendingSessionStorage].filter(([origin]) => hostBelongsToSite(new URL(origin).hostname, site))
+}
+
+function forgetPendingSessionStorage(site: string): void {
+  for (const origin of pendingSessionStorage.keys()) {
+    if (hostBelongsToSite(new URL(origin).hostname, site)) pendingSessionStorage.delete(origin)
+  }
+}
+
+export function hasPendingSessionStorage(): boolean {
+  return pendingSessionStorage.size > 0
+}
+
+/** Pending entries belong to one browser; call when it closes. */
+export function clearPendingSessionStorage(): void {
+  pendingSessionStorage.clear()
+}
+
+/**
+ * Write pending sessionStorage into open tabs that now show its origin and
+ * reload each once so the page reads it. Returns the origins applied.
+ */
+export async function applyPendingSessionStorage(cdp: CdpClient): Promise<string[]> {
+  const applied: string[] = []
+  for (const page of await listPages(cdp)) {
+    const origin = originOf(page.url)
+    const entries = origin && !page.url.endsWith(STUB_PATH) ? pendingSessionStorage.get(origin) : undefined
+    if (!origin || !entries) continue
+    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+    try {
+      if (await callInPage<number | null>(cdp, sessionId, WRITE_SESSION_STORAGE_FUNCTION, [origin, entries]) === null) continue
+      await cdp.send('Page.reload', {}, sessionId)
+      pendingSessionStorage.delete(origin)
+      applied.push(origin)
+    } finally {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+    }
+  }
+  return applied
+}
+
+/**
+ * Empty localStorage, IndexedDB and open tabs' sessionStorage of `origins`.
+ * Returns the origins with an open tab whose sessionStorage was emptied.
+ */
+async function clearOrigins(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>, origins: string[]): Promise<string[]> {
+  if (origins.length === 0) return []
   // One stub tab's session reaches the agent's browser context, which remote providers keep out of the default one.
   await withStubPage(cdp, origins[0], async (sessionId) => {
     for (const origin of origins) {
       await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage,indexeddb' }, sessionId)
     }
   })
-  for (const origin of origins) await inOpenTabs(cdp, pages, origin, WRITE_SESSION_STORAGE_FUNCTION, [[]])
+  const cleared: string[] = []
+  for (const origin of origins) {
+    if ((await inOpenTabs(cdp, pages, origin, WRITE_SESSION_STORAGE_FUNCTION, [[]])).length > 0) cleared.push(origin)
+  }
+  return cleared
 }
 
 /**
@@ -415,6 +470,7 @@ async function clearOrigins(cdp: CdpClient, pages: Array<{ targetId: string; url
  * emptied, so no state of a previous login survives beside the new one.
  */
 async function writeSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle, extraOrigins: string[] = []): Promise<RestoreResult> {
+  forgetPendingSessionStorage(bundle.site)
   const existing = await siteCookies(cdp, bundle.site)
   const pages = await listPages(cdp)
   const incoming = new Set(bundle.origins.map((origin) => origin.origin))
@@ -445,7 +501,10 @@ async function writeSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle, extra
     origins.push({ origin: origin.origin, ...written })
     // Tabs without saved entries are emptied too, so they keep nothing from the previous login.
     const restored = await inOpenTabs<number>(cdp, pages, origin.origin, WRITE_SESSION_STORAGE_FUNCTION, [origin.sessionStorage ?? []])
-    if (origin.sessionStorage && restored.length === 0) sessionStorageSkipped.push(origin.origin)
+    if (origin.sessionStorage && restored.length === 0) {
+      sessionStorageSkipped.push(origin.origin)
+      pendingSessionStorage.set(origin.origin, origin.sessionStorage)
+    }
   }
   return { cookies: bundle.cookies.length, origins, sessionStorageSkipped }
 }
@@ -454,6 +513,8 @@ interface Rollback {
   backup: SiteStorageBundle
   /** Each open tab's own sessionStorage; the bundle keeps only one tab's per origin. */
   tabs: Array<{ targetId: string; origin: string; entries: Array<[string, string]> }>
+  /** sessionStorage of the previous login still waiting for a tab of its origin. */
+  pending: Array<[string, Array<[string, string]>]>
   /** The bundle's cookies outside the site, and the cookies they replace. */
   crossSiteCookies: StorageCookie[]
   replacedCookies: StorageCookie[]
@@ -468,6 +529,7 @@ interface Rollback {
  */
 export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle): Promise<RestoreResult> {
   const backup = await captureSiteStorage(cdp, bundle.site, bundle.origins.map((origin) => origin.origin))
+  const pending = pendingSessionStorageOf(bundle.site)
   const scope = new Set(backup.origins.map((origin) => origin.origin))
   const tabs: Rollback['tabs'] = []
   for (const page of await listPages(cdp)) {
@@ -485,7 +547,7 @@ export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBund
     return await writeSiteStorage(cdp, bundle)
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'unknown error'
-    throw new Error(`${reason}; ${await recover(cdp, { backup, tabs, crossSiteCookies, replacedCookies })}`)
+    throw new Error(`${reason}; ${await recover(cdp, { backup, tabs, pending, crossSiteCookies, replacedCookies })}`)
   }
 }
 
@@ -495,7 +557,7 @@ function isLossy(backup: SiteStorageBundle): boolean {
 }
 
 async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
-  const { backup, tabs, crossSiteCookies, replacedCookies } = rollback
+  const { backup, tabs, pending, crossSiteCookies, replacedCookies } = rollback
   const scope = backup.origins.map((origin) => origin.origin)
   const putBackCrossSiteCookies = async () => {
     if (crossSiteCookies.length > 0) await cdp.send('Storage.setCookies', { cookies: crossSiteCookies.map(expiredCookie) })
@@ -507,6 +569,7 @@ async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
     await writeSiteStorage(cdp, backup, scope)
     for (const tab of tabs) await inTab(cdp, tab.targetId, tab.origin, WRITE_SESSION_STORAGE_FUNCTION, [tab.entries])
     await putBackCrossSiteCookies()
+    for (const [origin, entries] of pending) pendingSessionStorage.set(origin, entries)
   })) return 'the previous state was put back'
   if (await succeeded(async () => {
     await writeSiteStorage(cdp, { ...backup, cookies: [], origins: [] }, scope)
@@ -517,6 +580,36 @@ async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
       : 'the previous state could not be put back, so the site was cleared'
   }
   return 'the previous state could not be put back or cleared'
+}
+
+/**
+ * Sign the browser out of a saved login: the site's cookies and web storage,
+ * plus the login's cookies on other sites (e.g. an identity provider's).
+ */
+export async function clearSiteStorage(cdp: CdpClient, site: string, storedOrigins: string[], storedCookies: StorageCookieKey[] = []): Promise<{ skipped: string[] }> {
+  forgetPendingSessionStorage(site)
+  const storedKeys = new Set(storedCookies.map(cookieKey))
+  const existing = (await allCookies(cdp)).filter((cookie) => hostBelongsToSite(cookie.domain, site) || storedKeys.has(cookieKey(cookie)))
+  const pages = await listPages(cdp)
+  const candidates = candidateOrigins(site, existing, await visitedUrls(cdp, pages), storedOrigins)
+  if (existing.length > 0) await cdp.send('Storage.setCookies', { cookies: existing.map(expiredCookie) })
+  const clearedSessionOrigins = await clearOrigins(cdp, pages, candidates)
+
+  // Reload so open pages stop showing the signed-in state they still hold in memory.
+  for (const page of pages) {
+    const origin = originOf(page.url)
+    if (!origin || !clearedSessionOrigins.includes(origin)) continue
+    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+    try {
+      await cdp.send('Page.reload', {}, sessionId)
+    } finally {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+    }
+  }
+  // Session storage lives only in open tabs, so a stored origin with no open tab has none left to clear.
+  const openOrigins = [...new Set(pages.map((page) => originOf(page.url)))]
+    .filter((origin): origin is string => origin !== null && hostBelongsToSite(new URL(origin).hostname, site))
+  return { skipped: openOrigins.filter((origin) => !clearedSessionOrigins.includes(origin)) }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +627,12 @@ const restoreRequestSchema = z.object({
   bundle: siteStorageBundleSchema,
 }).strict()
 
-export type BrowserStorageAction = 'baseline' | 'capture' | 'restore'
+const clearRequestSchema = siteRequestSchema.extend({
+  origins: z.array(originSchema).max(100),
+  cookies: z.array(cookieKeySchema).max(5000),
+}).refine(({ site, origins }) => origins.every((origin) => hostBelongsToSite(new URL(origin).hostname, site)))
+
+export type BrowserStorageAction = 'baseline' | 'capture' | 'restore' | 'clear'
 
 export interface BrowserStorageOptions {
   validateSession: (sessionId: string) => string | null
@@ -568,6 +666,11 @@ export async function runBrowserStorage(
     const parsed = restoreRequestSchema.safeParse(rawBody)
     if (!parsed.success) return invalid
     return run(parsed.data.sessionId, (cdp) => restoreSiteStorage(cdp, parsed.data.bundle))
+  }
+  if (action === 'clear') {
+    const parsed = clearRequestSchema.safeParse(rawBody)
+    if (!parsed.success) return invalid
+    return run(parsed.data.sessionId, (cdp) => clearSiteStorage(cdp, parsed.data.site, parsed.data.origins, parsed.data.cookies))
   }
   const parsed = siteRequestSchema.safeParse(rawBody)
   if (!parsed.success) return invalid
