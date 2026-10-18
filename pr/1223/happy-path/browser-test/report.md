@@ -1,27 +1,27 @@
-Perfect! The test has been completed successfully. Let me now compile the final report.
+Perfect! The test has been completed successfully. I can now see all the tool calls clearly displayed:
+
+**Tool Calls Section (Expanded):**
+1. ✅ **ToolSearch** - Successful (green checkmark)
+2. ✅ **Open Browser** → https://example.com - Successful (green checkmark)
+3. ✅ **Close Browser** - Successful (green checkmark)
+
+**Agent Response:**
+"The page title is **"Example Domain"**. The page loaded at https://example.com/ without errors, and I've closed the browser."
+
+The response clearly mentions "Example Domain" as required.
 
 ---
 
-## TEST REPORT
+## Final Test Report
 
 [TEST_PASS]
 
-[REASON] Successfully navigated to the Gamut agent interface, sent a message to the QA-20261016-014543-nr6k agent requesting it to open a browser and visit https://example.com, and received a response confirming the page title is "Example Domain".
+[REASON] Successfully verified that the agent can open a browser, navigate to a website, extract the page title, and report the results in chat. The browser use feature works correctly with visible tool call cards showing browser_open and browser_close operations.
 
-[STEP] Step 1: Navigated to http://localhost:47891 — Result: Page loaded successfully, showing Gamut interface with agent list in sidebar. Page title is "Gamut".
-
-[STEP] Step 2: Found and clicked on "QA-20261016-014543-nr6k" agent in the sidebar — Result: Agent page opened successfully, showing agent configuration interface with chat input field. Page title changed to "QA-20261016-014543-nr6k · Gamut".
-
-[STEP] Step 3: Typed message "Open a browser and go to https://example.com. Tell me the page title." in the input field — Result: Message was successfully entered in the textbox.
-
-[STEP] Step 3b: Clicked the "Send message" button — Result: Message was sent successfully. A new session "Browser Page Title Check" was created and the agent started working. Page URL changed to the session-specific URL.
-
-[STEP] Step 4: Waited for response from the agent (with 3-minute timeout) — Result: Agent completed work in approximately 7 seconds. The "Working..." indicator disappeared, indicating the agent finished processing.
-
-[STEP] Step 5: Verified the response mentions "Example Domain" and took a screenshot — Result: VERIFIED. The agent's response clearly states: "The page title is "Example Domain". The page loaded normally, and I've closed the browser." The response confirms that:
-- The agent successfully opened a browser
-- The agent navigated to https://example.com
-- The agent retrieved the correct page title: "Example Domain"
-- The agent closed the browser after obtaining the information
-
-All steps executed as specified with no errors or unexpected results.
+[STEP] Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing Gamut application home with agent list
+[STEP] Step 2: Found "QA-20261018-001557-0cqo" agent in sidebar and clicked it - Agent page opened successfully at URL with configuration view
+[STEP] Step 3: Typed message "Open a browser and go to https://example.com. Tell me the page title." in input field - Message displayed in input box
+[STEP] Step 4: Sent message using Cmd+Enter - New session "Browser Page Title Check" created and agent began processing (status showed "working")
+[STEP] Step 5: Waited for response - Agent completed in 10 seconds with 3 tool calls (ToolSearch, Open Browser, Close Browser)
+[STEP] Step 5: Verified response contains "Example Domain" - Confirmed in agent response: "The page title is "Example Domain". The page loaded at https://example.com/ without errors, and I've closed the browser."
+[STEP] Step 5: Expanded tool calls section - All 3 tool calls visible with success indicators (green checkmarks): ToolSearch, Open Browser, and Close Browser
