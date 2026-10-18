@@ -31,6 +31,7 @@ if (process.platform !== 'win32') {
 }
 
 import { EventSource } from 'eventsource'
+import { createNotificationEventSourceController } from './notification-listener'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands } from './app-menu'
 import { getSettings } from '@shared/lib/config/settings'
@@ -149,7 +150,6 @@ const DEFAULT_API_PORT = 47891
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
 let apiServer: ReturnType<typeof serve> | null = null
-let notificationEventSource: EventSource | null = null
 let apiReady = false
 const pendingDashboardLinks: { agentSlug: string; dashboardSlug: string }[] = []
 const pendingProtocolUrls: string[] = []
@@ -208,6 +208,13 @@ const liveNotifications = new Set<Notification>()
 // timeout). Without this, stale "API Request Review" notifications linger
 // in Notification Center and clicking Approve/Deny on them 404s. (Review S8.)
 const reviewNotifications = new Map<string, Notification>()
+function clearTargetScopedNotificationState(): void {
+  for (const notification of liveNotifications) notification.close()
+  liveNotifications.clear()
+  reviewNotifications.clear()
+  pendingNotificationEvents.length = 0
+  pendingNotificationNavigations.length = 0
+}
 function trackLiveNotification(notification: Notification, reviewId?: string): void {
   liveNotifications.add(notification)
   if (reviewId) reviewNotifications.set(reviewId, notification)
@@ -499,6 +506,11 @@ function activeApiTarget() {
   return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudEndpoint())
 }
 
+const notificationEventSourceController = createNotificationEventSourceController(
+  () => activeApiTarget().baseUrl,
+  (url) => new EventSource(url),
+)
+
 /** Open a popout where the dashboard lives: the cloud workspace's own address, or the local API. */
 function openDashboard(agentSlug: string, dashboardSlug: string) {
   const { baseUrl, deploymentUrl } = activeApiTarget()
@@ -512,7 +524,10 @@ function openDashboard(agentSlug: string, dashboardSlug: string) {
 ipcMain.handle('get-api-target', () => activeApiTarget())
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
-  applyPreferredApiTarget(target)
+  applyPreferredApiTarget(target, () => {
+    clearTargetScopedNotificationState()
+    startNotificationListener()
+  })
 })
 
 // The switch animation, which cannot live in the document the switch reloads.
@@ -1349,13 +1364,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
 // Start listening for global notifications via SSE
 // This handles notifications when the window is closed
 function startNotificationListener(): void {
-  if (notificationEventSource) {
-    notificationEventSource.close()
-  }
-
-  const url = `http://localhost:${actualApiPort}/api/notifications/stream`
-  const es = new EventSource(url)
-  notificationEventSource = es
+  const es = notificationEventSourceController.restart()
 
   es.onmessage = async (event) => {
     try {
@@ -1479,10 +1488,7 @@ function startNotificationListener(): void {
 
 // Stop the notification listener
 function stopNotificationListener(): void {
-  if (notificationEventSource) {
-    notificationEventSource.close()
-    notificationEventSource = null
-  }
+  notificationEventSourceController.stop()
 }
 
 // Start the API server and app

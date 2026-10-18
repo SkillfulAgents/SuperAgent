@@ -43,9 +43,11 @@ const LOCAL = 'http://localhost:3000'
 const CLOUD_BASE = 'http://localhost:3000/cloud/KEY123'
 const DEPLOYMENT = 'https://acme.gamut.example'
 const CLOUD = { baseUrl: CLOUD_BASE, deploymentUrl: DEPLOYMENT }
+const onTargetApplied = vi.fn()
 
 beforeEach(() => {
   settings.value = {}
+  onTargetApplied.mockReset()
   closeQuickDispatchWindow.mockClear()
   closeAllDashboardWindows.mockClear()
   startCloudBootPrefetch.mockClear()
@@ -94,18 +96,39 @@ describe('resolveApiTargetForRenderer', () => {
 
 describe('applyPreferredApiTarget', () => {
   it('records the choice for subsequent boots', () => {
-    applyPreferredApiTarget('cloud')
+    applyPreferredApiTarget('cloud', onTargetApplied)
     expect(resolveApiTargetForRenderer(LOCAL, CLOUD).target).toBe('cloud')
   })
 
+  it('notifies process-owned clients after storing the new target', () => {
+    onTargetApplied.mockImplementationOnce(
+      () => resolveApiTargetForRenderer(LOCAL, CLOUD).baseUrl,
+    )
+
+    applyPreferredApiTarget('cloud', onTargetApplied)
+
+    expect(onTargetApplied).toHaveReturnedWith(CLOUD_BASE)
+  })
+
+  it('notifies process-owned clients when switching back to local', () => {
+    settings.value.apiTarget = 'cloud'
+    onTargetApplied.mockImplementationOnce(
+      () => resolveApiTargetForRenderer(LOCAL, CLOUD).baseUrl,
+    )
+
+    applyPreferredApiTarget('local', onTargetApplied)
+
+    expect(onTargetApplied).toHaveReturnedWith(LOCAL)
+  })
+
   it('tears down the launcher so it cannot keep driving the old target', () => {
-    applyPreferredApiTarget('cloud')
+    applyPreferredApiTarget('cloud', onTargetApplied)
     expect(closeQuickDispatchWindow).toHaveBeenCalled()
   })
 
   it('tears the launcher down when switching back to local too', () => {
     settings.value.apiTarget = 'cloud'
-    applyPreferredApiTarget('local')
+    applyPreferredApiTarget('local', onTargetApplied)
 
     expect(resolveApiTargetForRenderer(LOCAL, CLOUD).target).toBe('local')
     expect(closeQuickDispatchWindow).toHaveBeenCalled()
@@ -115,32 +138,32 @@ describe('applyPreferredApiTarget', () => {
     // They would otherwise sit there showing the previous deployment's
     // dashboard, and a later request for the same agent/dashboard would focus
     // that stale window instead of opening one on the new target.
-    applyPreferredApiTarget('cloud')
+    applyPreferredApiTarget('cloud', onTargetApplied)
     expect(closeAllDashboardWindows).toHaveBeenCalled()
   })
 
   it('closes them switching back to local too', () => {
     settings.value.apiTarget = 'cloud'
-    applyPreferredApiTarget('local')
+    applyPreferredApiTarget('local', onTargetApplied)
     expect(closeAllDashboardWindows).toHaveBeenCalled()
   })
 
   it('refuses to store an unrecognized target', () => {
-    applyPreferredApiTarget('somewhere-else')
+    applyPreferredApiTarget('somewhere-else', onTargetApplied)
     expect(settings.value.apiTarget).toBe('local')
   })
 
   it('rebuilds the tray and app menu now, instead of waiting out their poll', () => {
     // Both list agents from the effective target; on their 30s interval the
     // previous Superagent's agents would sit in the menus for up to that long.
-    applyPreferredApiTarget('cloud')
+    applyPreferredApiTarget('cloud', onTargetApplied)
     expect(refreshTrayMenu).toHaveBeenCalled()
     expect(refreshAppMenu).toHaveBeenCalled()
   })
 
   it('rebuilds them switching back to local too', () => {
     settings.value.apiTarget = 'cloud'
-    applyPreferredApiTarget('local')
+    applyPreferredApiTarget('local', onTargetApplied)
     expect(refreshTrayMenu).toHaveBeenCalled()
     expect(refreshAppMenu).toHaveBeenCalled()
   })
@@ -148,18 +171,18 @@ describe('applyPreferredApiTarget', () => {
   it('starts the workspace round trips here, before the reload', () => {
     // This is the earliest anyone knows a cloud boot is coming. Waiting for the
     // renderer to mount and ask would put the reload and the network in series.
-    applyPreferredApiTarget('cloud')
+    applyPreferredApiTarget('cloud', onTargetApplied)
     expect(startCloudBootPrefetch).toHaveBeenCalled()
   })
 
   it('does not call out to a workspace when switching to this computer', () => {
     settings.value.apiTarget = 'cloud'
-    applyPreferredApiTarget('local')
+    applyPreferredApiTarget('local', onTargetApplied)
     expect(startCloudBootPrefetch).not.toHaveBeenCalled()
   })
 
   it('does not call out for a target it refused to store', () => {
-    applyPreferredApiTarget('somewhere-else')
+    applyPreferredApiTarget('somewhere-else', onTargetApplied)
     expect(startCloudBootPrefetch).not.toHaveBeenCalled()
   })
 })
