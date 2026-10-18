@@ -1046,6 +1046,51 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
   return hasOlder && messages[0] ? messages[0].id : null
 }
 
+/** A cursor that names a row the window merged into another item.
+ *
+ * On resume the CLI can re-append a few rows of earlier history verbatim
+ * (same uuids, same message ids). The whole-file transform dedupes the copy;
+ * a page window holding only the copy cannot, and renders a re-appended
+ * tool-call row of a split assistant response as an item of its own, under
+ * its own uuid — a phantom. Served as a page's first item, that uuid becomes
+ * the next cursor. The scan anchors it at the deepest copy, the original row,
+ * whose window merges it into its response under the head row's uuid: the
+ * cursor names no item, though its row is right there. Only a phantom can
+ * produce such a cursor (a real item's id is its head row's uuid). */
+function isPhantomCursor(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  transformed: TransformedItem[],
+  cursor: string
+): boolean {
+  const row = entries.find((e) => e.uuid === cursor)
+  if (row?.type !== 'assistant' || !row.message.id) return false
+  const itemIds = new Set(transformed.map((item) => item.id))
+  return entries.some((e) => e.type === 'assistant' && e.message.id === row.message.id && itemIds.has(e.uuid))
+}
+
+/** Number of leading items whose head row lies at or before the newest copy
+ * of `cursor` in `entries` — the items older than that copy, when the copy
+ * itself merged into one of them. */
+function countItemsThrough(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  transformed: TransformedItem[],
+  cursor: string
+): number {
+  const headPos = new Map<string, number>()
+  let cursorPos = -1
+  for (const [i, e] of entries.entries()) {
+    if (!headPos.has(e.uuid)) headPos.set(e.uuid, i)
+    if (e.uuid === cursor) cursorPos = i
+  }
+  if (cursorPos === -1) return -1
+  let count = 0
+  for (const [i, item] of transformed.entries()) {
+    const pos = headPos.get(item.id)
+    if (pos !== undefined && pos <= cursorPos) count = i + 1
+  }
+  return count
+}
+
 /** Tail-window read + parse + transform shared by the page and delta readers.
  *
  * `signal` aborts the read/parse work mid-flight (throws AbortError): the
@@ -1281,9 +1326,20 @@ function classifyExtensionRow(
 async function scanMessagesPageWindow(
   store: SessionStore,
   jsonlPath: string,
-  opts: { limit: number; cursor?: string; byteBudget: number; signal?: AbortSignal }
+  opts: {
+    limit: number
+    cursor?: string
+    byteBudget: number
+    signal?: AbortSignal
+    /** `'shallowest'`: anchor at the newest verified occurrence of the cursor
+     * and treat deeper copies as ordinary rows. For a phantom cursor (see
+     * `isPhantomCursor`), where the copy nearest EOF is the row the client
+     * saw. Default: the deepest occurrence, the transform's canonical one. */
+    anchor?: 'deepest' | 'shallowest'
+  }
 ): Promise<PageWindowScan> {
   const { limit, cursor, byteBudget, signal } = opts
+  const anchorShallowest = opts.anchor === 'shallowest'
   const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
   const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
   // Items needed below the cursor (or below EOF): the page plus the head
@@ -1341,7 +1397,11 @@ async function scanMessagesPageWindow(
     if (cursorNeedle && line.includes(cursorNeedle)) {
       const parsed = parseJsonlLine<JsonlEntry>(line)
       const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
-      if (normalized !== undefined && (normalized as { uuid?: string }).uuid === cursor) {
+      if (
+        normalized !== undefined &&
+        (normalized as { uuid?: string }).uuid === cursor &&
+        !(anchored && anchorShallowest)
+      ) {
         // (Re-)anchor at this occurrence — the deepest seen so far wins.
         mode = 'counting'
         anchored = true
@@ -1600,17 +1660,53 @@ export async function getSessionMessagesPage(
     throw error
   }
   signal?.throwIfAborted()
-  const transformed = transformMessages(entries)
-  const reachedStart = scan.reachedStart
-  const dropHead = scan.dropHead && !reachedStart
+  let transformed = transformMessages(entries)
+  let reachedStart = scan.reachedStart
+  let dropHead = scan.dropHead && !reachedStart
 
   if (cursor) {
-    const idx = transformed.findIndex((item) => item.id === cursor)
+    let idx = transformed.findIndex((item) => item.id === cursor)
+    if (idx === -1 && isPhantomCursor(entries, transformed, cursor)) {
+      // The client saw the cursor's row as an item of its own: the copy
+      // nearest EOF, which the deepest-anchored window merges away. Re-anchor
+      // at that copy and page from there, so the history between the original
+      // and the copy is served rather than skipped.
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} is a replayed row of a merged ` +
+        `response in session ${sessionId}; paging from its newest copy`
+      )
+      try {
+        scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal, anchor: 'shallowest' })
+        signal?.throwIfAborted()
+        if (!scan.found) return { messages: [], nextCursor: null }
+        entries = await readEntriesRange(
+          store,
+          jsonlPath,
+          scan.startOffset,
+          scan.endOffset,
+          signal,
+          opts.media === 'ref',
+          readChunkFor(scan.readBytes)
+        )
+      } catch (error) {
+        if (isAbsentFile(error)) return { messages: [], nextCursor: null }
+        throw error
+      }
+      signal?.throwIfAborted()
+      transformed = transformMessages(entries)
+      reachedStart = scan.reachedStart
+      dropHead = scan.dropHead && !reachedStart
+      idx = transformed.findIndex((item) => item.id === cursor)
+      // The copy renders as the phantom when its original lies outside this
+      // window; when the original is inside, the copy merges into it and the
+      // page is everything up to the copy's position instead.
+      if (idx === -1) idx = countItemsThrough(entries, transformed, cursor)
+    }
     if (idx === -1) {
       // The index scan located the cursor's line but the transform of the
       // materialized window disagrees — a concurrent rewrite between the two
-      // passes, or a replayed duplicate id. Terminate like a vanished cursor
-      // rather than serving a mislabeled page.
+      // passes. Terminate like a vanished cursor rather than serving a
+      // mislabeled page.
       console.warn(
         `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
         `read for session ${sessionId}; ending pagination`
