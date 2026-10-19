@@ -48,8 +48,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const { data: savedSecrets } = useAgentSecrets(agentSlug)
   const chipContext = useMemo<ChipContext>(
-    () => ({ secretEnvVars: savedSecrets && new Set(savedSecrets.map((secret) => secret.envVar)) }),
-    [savedSecrets]
+    () => ({ agentSlug, secretEnvVars: savedSecrets && new Set(savedSecrets.map((secret) => secret.envVar)) }),
+    [agentSlug, savedSecrets]
   )
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)

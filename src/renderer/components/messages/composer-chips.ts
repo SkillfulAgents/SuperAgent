@@ -1,11 +1,26 @@
+import type { ComponentType } from 'react'
 import type { DOMOutputSpec } from 'prosemirror-model'
 import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
 
 /** What the composer knows about its agent, for kinds whose referent can go away. */
 export interface ChipContext {
+  /** The agent the draft is for. */
+  agentSlug?: string
   /** Env vars of the agent's saved secrets; undefined until they load. */
   secretEnvVars?: ReadonlySet<string>
+}
+
+/** What a kind's right-click menu receives. It stays mounted until it calls `onClose`. */
+export interface ChipMenuProps {
+  chip: Chip
+  context: ChipContext
+  backed: boolean
+  /** Where the chip was right-clicked, in viewport pixels. */
+  anchor: { x: number; y: number }
+  /** Swaps the right-clicked chip for another in the draft. */
+  replace: (chip: Chip) => void
+  onClose: () => void
 }
 
 /**
@@ -26,6 +41,8 @@ export interface ComposerChipKind {
    * and send keeps its marker rather than claim something that is not there.
    */
   isBacked?: (chip: Chip, context: ChipContext) => boolean
+  /** The chip's right-click menu, built on `ChipMenuAt`. Omitted, the browser's own. */
+  Menu?: ComponentType<ChipMenuProps>
 }
 
 export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind[] = [secretChip]

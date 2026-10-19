@@ -1,5 +1,6 @@
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import type { ComposerChipKind } from './composer-chips'
+import { SecretChipMenu } from './secret-chip-menu'
 
 /** A key saved to the agent's `.env`: the referent is its env var, the label its name. */
 export const secretChip: ComposerChipKind = {
@@ -12,6 +13,7 @@ export const secretChip: ComposerChipKind = {
   }, `[${chip.label} | *********]`],
   toAgentText: (chip) => `[Key saved to .env - ${chip.referent}]`,
   isBacked: (chip, { secretEnvVars }) => !secretEnvVars || secretEnvVars.has(chip.referent),
+  Menu: SecretChipMenu,
 }
 
 export function secretMarker(secret: { key: string; envVar: string }): string {

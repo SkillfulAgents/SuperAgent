@@ -89,7 +89,11 @@ export function useUpdateSecret() {
       }
       return res.json() as Promise<ApiSecretDisplay>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (saved, variables) => {
+      // A renamed key's composer chip points at the new env var, so publish it before the refetch.
+      queryClient.setQueryData<ApiSecretDisplay[]>(['agent-secrets', variables.agentSlug], (previous) => previous?.map((secret) => (
+        secret.envVar === variables.secretId ? saved : secret
+      )))
       queryClient.invalidateQueries({
         queryKey: ['agent-secrets', variables.agentSlug],
       })

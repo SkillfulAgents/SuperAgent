@@ -700,13 +700,40 @@ function buildComposerDecorations(
   )
   doc.descendants((node, pos) => {
     if (node.type !== markdownSchema.nodes.chip || isChipBacked(chipOf(node), chipContext)) return
+    const fix = getChipKind(chipOf(node))?.Menu ? '. Right-click to fix it' : ''
     decorations.push(Decoration.node(pos, pos + node.nodeSize, {
       'data-unbacked': 'true',
       class: 'opacity-60 line-through',
-      title: 'Not found for this agent, so it sends as plain text',
+      title: `Not found for this agent, so it sends as plain text${fix}`,
     }))
   })
   return DecorationSet.create(doc, decorations)
+}
+
+interface ChipTarget { chip: Chip; pos: number }
+
+const sameChip = (a: Chip, b: Chip) => a.kind === b.kind && a.referent === b.referent && a.label === b.label
+
+/** The chip node painted as `dom`. */
+function chipForDOM(view: EditorView, dom: Element): ChipTarget | null {
+  let target: ChipTarget | null = null
+  view.state.doc.descendants((node, pos) => {
+    if (target) return false
+    if (node.type === markdownSchema.nodes.chip && view.nodeDOM(pos) === dom) target = { chip: chipOf(node), pos }
+  })
+  return target
+}
+
+/** Where a chip is now: its old position if nothing moved it, else the first chip like it. */
+function locateChip(doc: ProseMirrorNode, { chip, pos }: ChipTarget): number | null {
+  const at = pos < doc.content.size ? doc.nodeAt(pos) : null
+  if (at?.type === markdownSchema.nodes.chip && sameChip(chipOf(at), chip)) return pos
+  let found: number | null = null
+  doc.descendants((node, nodePos) => {
+    if (found !== null) return false
+    if (node.type === markdownSchema.nodes.chip && sameChip(chipOf(node), chip)) found = nodePos
+  })
+  return found
 }
 
 const composerDecorationsKey = new PluginKey<DecorationSet>('composer-decorations')
@@ -817,6 +844,8 @@ export function MarkdownComposerEditor({
   })
   const lastMarkdownRef = useRef(value)
   const [linkCard, setLinkCard] = useState<{ href: string; anchor: { current: Element } } | null>(null)
+  const [chipMenu, setChipMenu] = useState<(ChipTarget & { anchor: { x: number; y: number } }) | null>(null)
+  const hadChipMenuRef = useRef(false)
 
   latestRef.current = {
     onChange,
@@ -865,6 +894,14 @@ export function MarkdownComposerEditor({
       },
       handleDOMEvents: {
         mousedown: () => typeof document.elementFromPoint !== 'function',
+        contextmenu: (editorView, event) => {
+          const dom = editorView.editable && event.target instanceof Element ? event.target.closest('[data-chip]') : null
+          const target = dom && chipForDOM(editorView, dom)
+          if (!target || !getChipKind(target.chip)?.Menu) return false
+          event.preventDefault()
+          setChipMenu({ ...target, anchor: { x: event.clientX, y: event.clientY } })
+          return true
+        },
         keydown: (editorView, event) => {
           if (event.isComposing) return false
 
@@ -1000,9 +1037,33 @@ export function MarkdownComposerEditor({
     view.dispatch(view.state.tr.setMeta(composerDecorationsMeta, true).setMeta('addToHistory', false))
   }, [potentialSecrets, chipContext])
 
+  useEffect(() => {
+    // Once the menu, and any dialog it opened, has unmounted and let go of focus.
+    if (!chipMenu && hadChipMenuRef.current) viewRef.current?.focus()
+    hadChipMenuRef.current = chipMenu !== null
+  }, [chipMenu])
+
+  const replaceChip = (target: ChipTarget, next: Chip) => {
+    const view = viewRef.current
+    if (!view) return
+    const pos = locateChip(view.state.doc, target)
+    if (pos !== null) view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, next))
+  }
+  const ChipMenu = chipMenu && getChipKind(chipMenu.chip)?.Menu
+
   return (
     <>
       <div ref={hostRef} className="contents" />
+      {chipMenu && ChipMenu && (
+        <ChipMenu
+          chip={chipMenu.chip}
+          context={chipContext}
+          backed={isChipBacked(chipMenu.chip, chipContext)}
+          anchor={chipMenu.anchor}
+          replace={(next) => replaceChip(chipMenu, next)}
+          onClose={() => setChipMenu(null)}
+        />
+      )}
       <Popover open={linkCard !== null} onOpenChange={(open) => { if (!open) setLinkCard(null) }}>
         {linkCard && <PopoverAnchor virtualRef={linkCard.anchor} />}
         <PopoverContent

@@ -146,4 +146,47 @@ test.describe('composer secret detection', () => {
     await page.getByTestId('home-send-button').click()
     await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === `${prefix} ${marker}`)
   })
+
+  test('renames a saved key from its pill menu and sends the new env var', async ({ page }) => {
+    await saveKey(page)
+    await page.reload()
+    const prefix = `Renamed ${Date.now()}`
+    const input = page.getByTestId('home-message-input')
+
+    await paste(input, `${prefix} [[secret:API_KEY|API%20Key]]`)
+    await input.getByTestId('secured-secret').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Edit key' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Edit key' })
+    await expect(dialog.getByLabel('Key name')).toHaveValue('API Key')
+    await expect(dialog.getByLabel('Secret value')).toHaveValue('')
+    await dialog.getByLabel('Key name').fill('Deploy Key')
+    await dialog.getByRole('button', { name: 'Save' }).click()
+
+    await expect(dialog).not.toBeVisible()
+    await expect(input.getByTestId('secured-secret')).toHaveText('[Deploy Key | *********]')
+    await expect(input.locator('[data-unbacked]')).toHaveCount(0)
+    await expect(input).toBeFocused()
+
+    await page.getByTestId('home-send-button').click()
+    await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === `${prefix} [Key saved to .env - DEPLOY_KEY]`)
+  })
+
+  test('saves a value for a pill whose key is missing, so it sends as a key', async ({ page }) => {
+    const prefix = `Missing ${Date.now()}`
+    const input = page.getByTestId('home-message-input')
+
+    await paste(input, `${prefix} [[secret:API_KEY|API%20Key]]`)
+    await expect(input.locator('[data-unbacked="true"]')).toBeVisible()
+    await input.getByTestId('secured-secret').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Edit key' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Edit key' })
+    await dialog.getByLabel('Secret value').fill('synthetic-test-value')
+    await dialog.getByRole('button', { name: 'Save' }).click()
+
+    await expect(dialog).not.toBeVisible()
+    await expect(input.locator('[data-unbacked]')).toHaveCount(0)
+    await page.getByTestId('home-send-button').click()
+    const record = await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === `${prefix} [Key saved to .env - API_KEY]`)
+    expect(record.availableEnvVars ?? []).toContain('API_KEY')
+  })
 })
