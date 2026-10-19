@@ -514,11 +514,20 @@ describe('agent rule tools', () => {
   })
 
   it('withdraws the card of a proposal its agent stopped waiting for', async () => {
-    _setProposalTimingForTest({ leaseMs: 30 })
-    expect((await call('agent-a', 'create', draft)).status).toBe(202)
-    await waitForReview('agent-a')
-    await new Promise((resolve) => setTimeout(resolve, 60))
-    expect(pendingReviews('agent-a')).toHaveLength(0)
+    // The agent polls until its card is up, then stops. Polling is what holds
+    // the lease, so the card comes up however long preparing it takes; a bare
+    // 30 ms lease lapsed first on a loaded runner, and the proposal was
+    // abandoned before any card existed (the next test's case, not this one).
+    _setProposalTimingForTest({ leaseMs: 200, waitMs: 10 })
+    const res = await call('agent-a', 'create', draft)
+    expect(res.status).toBe(202)
+    const { proposalId } = await res.json() as { proposalId: string }
+    await vi.waitFor(async () => {
+      expect((await call('agent-a', 'wait', { proposalId })).status).toBe(202)
+      expect(pendingReviews('agent-a')).toHaveLength(1)
+    }, { timeout: 10_000, interval: 20 })
+
+    await vi.waitFor(() => expect(pendingReviews('agent-a')).toHaveLength(0), { timeout: 10_000 })
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toEqual([])
   })
 
