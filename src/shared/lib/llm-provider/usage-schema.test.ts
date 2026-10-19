@@ -155,9 +155,9 @@ describe('provider exhaustion', () => {
   it('uses the selected MiniMax model buckets when usage reports multiple models', () => {
     const usage = usageSnapshot([
       { kind: 'window', id: '0-weekly', label: 'MiniMax-M3 · Weekly', usedPercent: 100 },
-      { kind: 'window', id: '1-weekly', label: 'MiniMax-M3.1-Flash-Preview · Weekly', usedPercent: 20 },
+      { kind: 'window', id: '1-weekly', label: 'MiniMax-M3.1-Flash · Weekly', usedPercent: 20 },
     ])
-    expect(isProviderUsageExhausted(usage, 'minimax-subscription', 'MiniMax-M3.1-Flash-Preview')).toBe(false)
+    expect(isProviderUsageExhausted(usage, 'minimax-subscription', 'MiniMax-M3.1-Flash')).toBe(false)
     expect(isProviderUsageExhausted(usage, 'minimax-subscription', 'MiniMax-M3')).toBe(true)
   })
 
