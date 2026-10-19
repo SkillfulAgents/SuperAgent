@@ -150,7 +150,7 @@ function PaywallActions({
         </Button>
       )}
       {retry && !checking && (
-        <span className="self-center text-xs text-muted-foreground">Didn't finish? Open billing again.</span>
+        <span className="self-center text-xs text-muted-foreground">Didn&apos;t finish? Open billing again.</span>
       )}
       {checking ? (
         <div className="flex h-8 items-center gap-1.5 self-center text-xs text-muted-foreground" role="status" data-testid="paywall-handoff-checking">
