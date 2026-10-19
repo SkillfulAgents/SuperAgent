@@ -559,6 +559,8 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
 }))
@@ -785,7 +787,7 @@ import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -7985,6 +7987,25 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+    expect(body[0].hasUnreadMention).toBe(false)
+  })
+
+  it('raises hasUnreadMention when the unread one tags the viewer (auth mode)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadMentionsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(getUnreadMentionsByAgents).toHaveBeenCalledWith(['agent-1'], 'test-user-id')
+    expect(body[0].hasUnreadMention).toBe(true)
   })
 
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
@@ -10187,6 +10208,20 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it("marks a session where the viewer was mentioned, in both session lists", async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+      { id: 'sess-1', agentSlug: 'test-agent', name: 'One', createdAt: new Date(), lastActivityAt: new Date() },
+      { id: 'sess-2', agentSlug: 'test-agent', name: 'Two', createdAt: new Date(), lastActivityAt: new Date() },
+    ])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['sess-1', 'sess-2']))
+    vi.mocked(getSessionIdsWithUnreadMentions).mockResolvedValue(new Set(['sess-1']))
+
+    const body = await (await getReq(app, '/api/agents/test-agent/sessions')).json()
+    expect(body.map((session: { hasUnreadMention: boolean }) => session.hasUnreadMention)).toEqual([true, false])
+    expect(getSessionIdsWithUnreadMentions).toHaveBeenCalledWith('test-agent', 'test-user-id')
   })
 
   // Marks are per-user, so the projections must ask for the acting user's —

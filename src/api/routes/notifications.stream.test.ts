@@ -90,6 +90,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   markSessionNotificationsRead: vi.fn(),
   deleteNotification: vi.fn(),
   getAccessibleAgentSlugs: vi.fn().mockResolvedValue([]),
+  getUnreadMentionCount: vi.fn(),
 }))
 
 import notificationsRouter from './notifications'

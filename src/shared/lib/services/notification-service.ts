@@ -205,6 +205,54 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[], viewe
   return result
 }
 
+/** A viewer's own unread mentions: the rows that draw an @ instead of a dot. */
+function unreadMentionsOf(viewerId: string) {
+  return and(
+    eq(notifications.recipientUserId, viewerId),
+    eq(notifications.type, 'session_mention'),
+    eq(notifications.isRead, false),
+  )
+}
+
+/** Sessions of an agent where the viewer was mentioned and has not looked yet. */
+export async function getSessionIdsWithUnreadMentions(agentSlug: string, viewerId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(and(eq(notifications.agentSlug, agentSlug), unreadMentionsOf(viewerId)))
+  return new Set(rows.map((row) => row.sessionId))
+}
+
+/** Batch version of getSessionIdsWithUnreadMentions, one query for many agents. */
+export async function getUnreadMentionsByAgents(agentSlugs: string[], viewerId: string): Promise<Map<string, Set<string>>> {
+  if (agentSlugs.length === 0) return new Map()
+  const rows = await db
+    .select({ agentSlug: notifications.agentSlug, sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(and(inArray(notifications.agentSlug, agentSlugs), unreadMentionsOf(viewerId)))
+  const result = new Map<string, Set<string>>()
+  for (const row of rows) {
+    let set = result.get(row.agentSlug)
+    if (!set) { set = new Set(); result.set(row.agentSlug, set) }
+    set.add(row.sessionId)
+  }
+  return result
+}
+
+/**
+ * The viewer's unread mentions, on agents they can still open (a lost share
+ * hides them like any other row).
+ */
+export async function getUnreadMentionCount(userId: string): Promise<number> {
+  const slugs = await getAccessibleAgentSlugs(userId)
+  if (slugs.length === 0) return 0
+  const result = await db
+    .select({ count: count() })
+    .from(notifications)
+    .where(and(inArray(notifications.agentSlug, slugs), unreadMentionsOf(userId)))
+  return result[0]?.count ?? 0
+}
+
 /**
  * List unread notifications.
  * When userId is provided, only returns notifications for agents the user has access to.

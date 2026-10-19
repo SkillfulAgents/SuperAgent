@@ -24,6 +24,9 @@ import {
   getUnreadCount,
   getSessionIdsWithUnreadNotifications,
   getUnreadNotificationsByAgents,
+  getSessionIdsWithUnreadMentions,
+  getUnreadMentionsByAgents,
+  getUnreadMentionCount,
   markSessionNotificationsRead,
   markAllAsRead,
 } from './notification-service'
@@ -93,6 +96,21 @@ describe('targeted mention notifications', () => {
     await markAllAsRead(SARA)
     const [mikeRow] = await testDb.select().from(notifications).where(eq(notifications.recipientUserId, MIKE))
     expect(mikeRow.isRead).toBe(false)
+  })
+
+  it("finds a viewer's unread mentions for the @ marker, and drops them once read", async () => {
+    await mention(MIKE)
+    await createNotification({ type: 'session_complete', sessionId: 'session-2', agentSlug: AGENT, title: 'Done', body: '' })
+
+    expect(await getSessionIdsWithUnreadMentions(AGENT, MIKE)).toEqual(new Set([SESSION]))
+    expect(await getSessionIdsWithUnreadMentions(AGENT, SARA)).toEqual(new Set())
+    expect((await getUnreadMentionsByAgents([AGENT, 'other'], MIKE)).get(AGENT)).toEqual(new Set([SESSION]))
+    expect(await getUnreadMentionCount(MIKE)).toBe(1)
+    expect(await getUnreadMentionCount(SARA)).toBe(0)
+
+    await markSessionNotificationsRead(SESSION, MIKE)
+    expect(await getSessionIdsWithUnreadMentions(AGENT, MIKE)).toEqual(new Set())
+    expect(await getUnreadMentionCount(MIKE)).toBe(0)
   })
 
   it('holds one row per person per message', async () => {

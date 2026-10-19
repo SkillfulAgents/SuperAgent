@@ -17,6 +17,7 @@ import {
   markSessionNotificationsRead,
   deleteNotification,
   getAccessibleAgentSlugs,
+  getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
 import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -147,8 +148,12 @@ notificationsRouter.get('/', async (c) => {
 notificationsRouter.get('/unread-count', async (c) => {
   try {
     const userId = getScopedUserId(c)
-    const count = await getUnreadCount(userId)
-    return c.json({ count })
+    const [count, mentions] = await Promise.all([
+      getUnreadCount(userId),
+      // Mentions exist in auth mode only, for a signed-in recipient.
+      userId ? getUnreadMentionCount(userId) : 0,
+    ])
+    return c.json({ count, mentions })
   } catch (error) {
     console.error('Failed to fetch unread count:', error)
     return c.json({ error: 'Failed to fetch unread count' }, 500)

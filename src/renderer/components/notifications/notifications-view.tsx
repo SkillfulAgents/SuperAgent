@@ -1,4 +1,4 @@
-import { ArrowRight, AtSign, Bell, CheckCheck, ChevronLeft, ChevronRight, Loader2, Megaphone } from 'lucide-react'
+import { ArrowRight, Bell, CheckCheck, ChevronLeft, ChevronRight, Loader2, Megaphone } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { format, isToday, isYesterday, isThisYear } from 'date-fns'
 import { Button } from '@renderer/components/ui/button'
@@ -23,6 +23,7 @@ import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/se
 import { cn } from '@shared/lib/utils'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
+import { UnreadDot } from '@renderer/components/ui/unread-dot'
 
 function formatNotificationDate(date: Date): string {
   if (isToday(date)) return format(date, 'h:mm a').toLowerCase()
@@ -33,22 +34,24 @@ function formatNotificationDate(date: Date): string {
 
 const ROW_CLASS_NAME = 'group relative block w-full text-left focus-visible:outline-none'
 
-function RowChrome({ isRead }: { isRead: boolean }) {
+function RowChrome({ isRead, mention = false }: { isRead: boolean; mention?: boolean }) {
   return (
     <>
       <span
         aria-hidden
         className="absolute inset-y-0 -left-6 -right-2 rounded-md group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
       />
-      {/* Unread dot — sits in the bled gutter, left of the aligned content */}
-      <span
+      {/* Unread dot — sits in the bled gutter, left of the aligned content. A mention is an @. */}
+      {!isRead && mention ? (
+        <UnreadDot mention className="absolute -left-5 top-1/2 -translate-y-1/2" />
+      ) : <span
         role={!isRead ? 'status' : undefined}
         className={cn(
           'absolute -left-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full',
           !isRead ? 'bg-blue-500' : 'bg-transparent',
         )}
         aria-label={!isRead ? 'Unread' : undefined}
-      />
+      />}
     </>
   )
 }
@@ -102,7 +105,7 @@ function NotificationRow({
 
   const content = (
     <>
-      <RowChrome isRead={notification.isRead} />
+      <RowChrome isRead={notification.isRead} mention={notification.type === 'session_mention'} />
       {/* Content — no negative margins, so left/right edges match the page
           title and pagination exactly */}
       <span className="relative flex items-center gap-4 py-3">
@@ -131,9 +134,6 @@ function NotificationRow({
               !notification.isRead ? 'font-medium text-foreground' : 'text-foreground/90',
             )}
           >
-            {notification.type === 'session_mention' && (
-              <AtSign className="mr-1 inline h-3 w-3 align-[-2px] text-violet-500" aria-hidden />
-            )}
             {notification.title}
           </span>
           <span className="text-xs text-muted-foreground truncate">

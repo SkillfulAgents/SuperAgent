@@ -393,6 +393,7 @@ export function GlobalNotificationHandler() {
               ) {
                 applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                   hasUnreadNotifications: true,
+                  ...(notificationType === 'session_mention' ? { hasUnreadMention: true } : {}),
                 })
               }
               const { title, body } = data as { title: string; body: string }
@@ -452,6 +453,7 @@ export function GlobalNotificationHandler() {
                     if (agentSlug && notificationSessionId) {
                       applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                         hasUnreadNotifications: false,
+                        hasUnreadMention: false,
                       })
                       queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
                     }

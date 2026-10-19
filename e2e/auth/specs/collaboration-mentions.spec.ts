@@ -83,12 +83,18 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     expect(await mentionsFor(page.request)).toEqual([])
 
     // Sara finds it in her inbox and opens the chat it points at.
+    // Until she looks, the bell and the agent's row carry a purple @ rather than a dot.
     const saraPage = await sara.context.newPage()
     await saraPage.goto('/notifications')
+    const bellMention = saraPage.getByTestId('notifications-button').getByLabel('mentioned you')
+    await expect(bellMention).toBeVisible({ timeout: 30_000 })
+    const saraAgentRow = saraPage.locator('[data-sidebar="menu-button"]').filter({ has: saraPage.getByTestId(`agent-item-${agent.slug}`) })
+    await expect(saraAgentRow.getByLabel('mentioned you')).toBeVisible()
     await saraPage.getByText(`${owner.name} mentioned you`).click()
     await expect(saraPage).toHaveURL(new RegExp(`/sessions/${sessionId}`))
     await expect(saraPage.getByTestId('message-user').filter({ hasText: 'look at this plan' }).getByTestId('mention-notified')).toBeVisible()
-    await expect.poll(async () => (await (await sara.context.request.get('/api/notifications/unread-count')).json()).count).toBe(0)
+    await expect.poll(async () => (await (await sara.context.request.get('/api/notifications/unread-count')).json())).toEqual({ count: 0, mentions: 0 })
+    await expect(bellMention).toHaveCount(0, { timeout: 15_000 })
 
     // A tag mid-message is an ordinary turn, with the teammate's email for the agent.
     await input.click()

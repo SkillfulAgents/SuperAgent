@@ -247,6 +247,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(),
+  getSessionIdsWithUnreadMentions: vi.fn(),
+  getUnreadMentionsByAgents: vi.fn(),
   getUnreadNotificationsByAgents: vi.fn(),
   deleteNotificationsBySessionIds: vi.fn(),
 }))
