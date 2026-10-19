@@ -397,6 +397,25 @@ describe('HomePage AgentCard', () => {
     expect(screen.getByRole('button', { name: 'Open session' })).toBeVisible()
   })
 
+  it('marks a session where you were mentioned with an @ instead of the dot', () => {
+    mockUseNotableSessions.mockReturnValue({
+      data: [
+        { id: 'session-1', name: 'Launch plan', hasUnreadNotifications: true, hasUnreadMention: true },
+        { id: 'session-2', name: 'Weekly digest', hasUnreadNotifications: true },
+      ],
+    })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, hasUnreadMention: true })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    expect(screen.getByText('Mentioned you:')).toBeVisible()
+    expect(screen.getByRole('img', { name: 'mentioned you' })).toBeVisible()
+    expect(screen.getByText('New message:')).toBeVisible()
+    expect(screen.getAllByRole('button', { name: 'Mark as read' })).toHaveLength(2)
+  })
+
   it('uses the notable-session fast path for cards with live or unread work', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({ hasUnreadNotifications: true })],

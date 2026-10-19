@@ -23,7 +23,7 @@ import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/se
 import { cn } from '@shared/lib/utils'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
-import { UnreadDot } from '@renderer/components/ui/unread-dot'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
 
 function formatNotificationDate(date: Date): string {
   if (isToday(date)) return format(date, 'h:mm a').toLowerCase()

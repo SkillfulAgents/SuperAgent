@@ -15,7 +15,7 @@ import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useNavigate } from '@tanstack/react-router'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { sortSessionsByActivity, type SessionSortOrder } from '@shared/lib/session-ordering'
-import { UnreadDot } from '@renderer/components/ui/unread-dot'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
 
 interface SessionItem {
   id: string

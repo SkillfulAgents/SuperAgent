@@ -234,7 +234,8 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
   ),
 }))
 
-vi.mock('@renderer/components/agents/status-indicators', () => ({
+vi.mock('@renderer/components/agents/status-indicators', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/components/agents/status-indicators')>()),
   WorkingDots: () => <span data-testid="working-dots" />,
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
 }))
