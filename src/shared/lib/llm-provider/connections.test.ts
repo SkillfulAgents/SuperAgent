@@ -48,6 +48,7 @@ import {
   providerForConnection,
   deleteConnection,
   setGlobalSelection,
+  compareAndSetGlobalDefault,
   resolveExecutionSelection,
   resolveHelperSelection,
   resolveSelectionHierarchy,
@@ -162,6 +163,25 @@ describe('LLM connections', () => {
     expect(storedSelection('a', null)).toBeNull()
     expect(storedSelection('a')).toEqual({ llmProviderId: 'imported', model: 'a' })
   })
+  it('restores a global default only when neither the default nor the summarizer changed since the write', async () => {
+    const first = await add('First')
+    const second = await add('Second')
+    const third = await add('Third')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    const previous = { defaultSelection: { llmProviderId: first, model: 'a' }, summarizerSelection: null }
+    const written = await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+    expect(written).toEqual({ defaultSelection: { llmProviderId: second, model: 'a' }, summarizerSelection: null })
+    await expect(compareAndSetGlobalDefault(written, previous)).resolves.toBe(true)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: first, model: 'a' })
+    expect(state.settings.llmSummarizer).toBeNull()
+
+    const rewritten = await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+    await setGlobalSelection('summarizer', { llmProviderId: third, model: 'a' })
+    await expect(compareAndSetGlobalDefault(rewritten, previous)).resolves.toBe(false)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: second, model: 'a' })
+    expect(state.settings.llmSummarizer).toEqual({ llmProviderId: third, model: 'a' })
+  })
+
   it('rejects personal defaults and only exposes another owner through the attached session', async () => {
     await state
       .db!.insert(user)

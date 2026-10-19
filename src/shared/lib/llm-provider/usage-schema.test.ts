@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseCodexUsage, parseGrokUsage, parseKimiUsage, parseMinimaxUsage } from './usage-schema'
+import { isProviderUsageExhausted, parseCodexUsage, parseGrokUsage, parseKimiUsage, parseMinimaxUsage, usageSnapshot } from './usage-schema'
 
 describe('provider allowance normalization', () => {
   it('keeps concurrent Codex windows, reset times and credits with their own units', () => {
@@ -116,5 +116,52 @@ describe('partial allowance payloads', () => {
       { model_name: 'general', current_weekly_total_count: 100, current_weekly_usage_count: 100, current_weekly_remaining_percent: 100, current_weekly_status: 3 },
       { model_name: 'video', current_interval_total_count: 0, current_interval_usage_count: 0, current_interval_remaining_percent: 100, current_interval_status: 3, current_weekly_total_count: 0, current_weekly_usage_count: 0, current_weekly_remaining_percent: 100, current_weekly_status: 3 },
     ] }).limits).toEqual([])
+  })
+})
+
+describe('provider exhaustion', () => {
+  it.each([100, 101])('treats a %s%% usage window as exhausted', usedPercent => {
+    expect(isProviderUsageExhausted(usageSnapshot([
+      { kind: 'window', id: 'weekly', label: 'Weekly', usedPercent },
+    ]))).toBe(true)
+  })
+
+  it('keeps a connection active below the usage limit despite an empty optional balance', () => {
+    expect(isProviderUsageExhausted(usageSnapshot([
+      { kind: 'window', id: 'weekly', label: 'Weekly', usedPercent: 99.9 },
+      { kind: 'balance', id: 'credits', label: 'Credits', remaining: 0, unit: 'credits' },
+    ]))).toBe(false)
+  })
+
+  it('requires every balance to be empty when balances are the only signal', () => {
+    expect(isProviderUsageExhausted(usageSnapshot([
+      { kind: 'balance', id: 'seat', label: 'Seat', remaining: 0, unit: 'USD' },
+      { kind: 'balance', id: 'org', label: 'Organization', remaining: 1, unit: 'USD' },
+    ]))).toBe(false)
+    expect(isProviderUsageExhausted(usageSnapshot([
+      { kind: 'balance', id: 'seat', label: 'Seat', remaining: 0, unit: 'USD' },
+      { kind: 'balance', id: 'org', label: 'Organization', remaining: -1, unit: 'USD' },
+    ]))).toBe(true)
+  })
+
+  it('ignores exhausted Codex feature buckets that do not gate chat inference', () => {
+    const usage = usageSnapshot([
+      { kind: 'window', id: 'codex-primary', label: '5h', usedPercent: 40 },
+      { kind: 'window', id: 'review-primary', label: 'Code review · 5h', usedPercent: 100 },
+    ])
+    expect(isProviderUsageExhausted(usage, 'codex-subscription', 'gpt-5')).toBe(false)
+  })
+
+  it('uses the selected MiniMax model buckets when usage reports multiple models', () => {
+    const usage = usageSnapshot([
+      { kind: 'window', id: '0-weekly', label: 'MiniMax-M3 · Weekly', usedPercent: 100 },
+      { kind: 'window', id: '1-weekly', label: 'MiniMax-M3.1-Flash-Preview · Weekly', usedPercent: 20 },
+    ])
+    expect(isProviderUsageExhausted(usage, 'minimax-subscription', 'MiniMax-M3.1-Flash-Preview')).toBe(false)
+    expect(isProviderUsageExhausted(usage, 'minimax-subscription', 'MiniMax-M3')).toBe(true)
+  })
+
+  it('does not infer exhaustion from an unavailable snapshot', () => {
+    expect(isProviderUsageExhausted({ status: 'unavailable', observedAt: new Date().toISOString(), limits: [] })).toBe(false)
   })
 })

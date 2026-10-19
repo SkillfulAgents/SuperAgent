@@ -10,13 +10,12 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
   canSelectConnection,
-  isHelperSelection,
   listConnections,
-  resolveSummarizerSelection,
-  resolveGlobalSelection,
   saveConnection,
   deleteConnection,
   setGlobalSelection,
+  compareAndSetGlobalDefault,
+  globalSelectionState,
   getConnection,
   assertManageConnection,
   providerForConnection,
@@ -60,16 +59,10 @@ routes.post('/oauth/:id/poll', async c => {
 })
 routes.get('/', async (c) => {
   const connections = await listConnections(viewer(c))
-  const root = await resolveGlobalSelection()
-  const summarizer = await resolveSummarizerSelection()
   return c.json({
     connections,
     legacyLlmProviderId: getSettings().llmLegacyProviderId,
-    defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
-    summarizerSelection:
-      isHelperSelection(summarizer)
-        ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
-        : null,
+    ...await globalSelectionState(),
   })
 })
 routes.post('/', async (c) =>
@@ -84,8 +77,12 @@ routes.delete('/:id', async (c) => {
 })
 routes.put('/defaults/:purpose', IsAdmin(), async (c) => {
   const purpose = z.enum(['default', 'summarizer']).parse(c.req.param('purpose'))
-  await setGlobalSelection(purpose, await c.req.json())
-  return c.json({ success: true })
+  const state = await setGlobalSelection(purpose, await c.req.json())
+  return c.json({ success: true, ...state })
+})
+routes.put('/defaults/default/compare-and-set', IsAdmin(), async (c) => {
+  const body = z.object({ expected: z.unknown(), restore: z.unknown() }).parse(await c.req.json())
+  return c.json({ updated: await compareAndSetGlobalDefault(body.expected, body.restore) })
 })
 routes.post('/validate', async (c) => {
   const body = z

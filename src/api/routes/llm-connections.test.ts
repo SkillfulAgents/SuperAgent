@@ -146,6 +146,12 @@ describe('connection API ownership and root protection', () => {
       (await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' }, 'alice'))
         .status
     ).toBe(403)
+    const { defaultSelection, summarizerSelection } = await (await request('')).json()
+    const current = { defaultSelection, summarizerSelection }
+    const compare = await request('/defaults/default/compare-and-set', 'PUT', { expected: current, restore: current })
+    expect(compare.status).toBe(200)
+    expect(await compare.json()).toEqual({ updated: true })
+    expect((await request('/defaults/default/compare-and-set', 'PUT', { expected: current, restore: current }, 'alice')).status).toBe(403)
     const { id: personal } = await (await request('', 'POST', draft('alice'), 'alice')).json()
     expect(
       (await request('/defaults/summarizer', 'PUT', { llmProviderId: personal, model: 'model' }))

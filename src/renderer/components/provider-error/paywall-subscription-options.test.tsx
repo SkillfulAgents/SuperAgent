@@ -10,13 +10,14 @@ const state = vi.hoisted(() => ({
   fetch: vi.fn(),
   track: vi.fn(),
   isAuthMode: true,
+  isAdmin: false,
   canUseAgent: true,
   isActive: false,
 }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: state.fetch }))
 vi.mock('@renderer/context/analytics-context', () => ({ useAnalyticsTracking: () => ({ track: state.track }) }))
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ user: { id: 'me' }, isAuthMode: state.isAuthMode, canUseAgent: () => state.canUseAgent }),
+  useUser: () => ({ user: { id: 'me' }, isAuthMode: state.isAuthMode, isAdmin: state.isAdmin, canUseAgent: () => state.canUseAgent }),
 }))
 vi.mock('@renderer/hooks/use-message-stream', () => ({ useMessageStream: () => ({ isActive: state.isActive }) }))
 vi.mock('@renderer/hooks/use-settings', async importOriginal => ({
@@ -30,8 +31,11 @@ let createCount: number
 let sendCount: number
 let failSend: boolean
 let failSave: boolean
+let failAgentDefault: boolean
 let queued: boolean
+let queueCancelled: boolean
 let emptyCatalog: boolean
+let usageByConnection: Record<string, unknown>
 const onResumed = vi.fn()
 const session = { sessionId: 'chat', agentSlug: 'agent' }
 const analytics = { paywallId: 'wall', entryPoint: 'platform_paywall' as const, paywallType: 'subscription', ctaKind: 'subscribe', placement: 'composer' }
@@ -54,20 +58,35 @@ function openClaude() {
 function save() {
   fireEvent.click(screen.getByRole('button', { name: 'Save and resume chat' }))
 }
+function savedSubscription(overrides: Partial<ConnectionInfo> = {}): ConnectionInfo {
+  return {
+    id: 'saved-grok', name: 'Personal Grok', provider: 'grok-subscription',
+    userId: 'me', ownerName: 'Me', isConfigured: true, managed: false,
+    supportsUsage: true,
+    catalog: [{ id: 'grok-model', label: 'Grok', contextWindow: 200000, supportedEfforts: [] }],
+    defaultModel: 'grok-model', modelOverrides: [], browserModel: null, dashboardModel: null,
+    canManage: true, canDelete: true,
+    ...overrides,
+  }
+}
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   client.setQueryData(['session', 'chat', 'agent'], { id: 'chat', llmProviderId: 'platform', model: 'old-model' })
   state.isAuthMode = true
+  state.isAdmin = false
   state.canUseAgent = true
   state.isActive = false
   state.track.mockReset()
   saved = []
+  usageByConnection = {}
   createCount = 0
   sendCount = 0
   failSend = false
   failSave = false
+  failAgentDefault = false
   queued = false
+  queueCancelled = true
   emptyCatalog = false
   state.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     const data = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -86,6 +105,21 @@ beforeEach(() => {
       return Response.json({ id: 'new-connection' })
     }
     if (url === '/api/llm-connections') return Response.json({ connections: saved, defaultSelection: { llmProviderId: 'platform', model: 'old-model' }, summarizerSelection: null })
+    const usageMatch = url.match(/^\/api\/llm-connections\/([^/]+)\/usage$/)
+    if (usageMatch) {
+      const usage = usageByConnection[decodeURIComponent(usageMatch[1])]
+      if (usage === 'error') return Response.json({ error: 'Usage unavailable' }, { status: 503 })
+      return Response.json(usage ?? {
+        status: 'available', observedAt: new Date().toISOString(),
+        limits: [{ kind: 'window', id: 'weekly', label: 'Weekly', usedPercent: 50 }],
+      })
+    }
+    if (url === '/api/llm-connections/defaults/default' && init?.method === 'PUT') return Response.json({ success: true, defaultSelection: data, summarizerSelection: { llmProviderId: 'platform', model: 'old-model' } })
+    if (url === '/api/llm-connections/defaults/default/compare-and-set' && init?.method === 'PUT') return Response.json({ updated: true })
+    if (url === '/api/agents/agent/preferences' && init?.method === 'PUT') {
+      return failAgentDefault ? Response.json({ error: 'Could not update agent default' }, { status: 500 }) : Response.json(data)
+    }
+    if (url.includes('/queued-messages/') && init?.method === 'DELETE') return Response.json({ cancelled: queueCancelled })
     if (url.endsWith('/messages')) {
       sendCount++
       return failSend
@@ -99,6 +133,174 @@ beforeEach(() => {
 afterEach(async () => { cleanup(); await Promise.resolve(); client.clear(); vi.clearAllMocks() })
 
 describe('subscription paywall recovery', () => {
+  it('switches an active saved connection for only the blocked session', async () => {
+    saved = [savedSubscription()]
+    mount()
+    expect(await screen.findByText('Personal Grok')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Switch for this session' }))
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    const send = state.fetch.mock.calls.find(([url]) => url.endsWith('/messages'))
+    expect(JSON.parse(String(send?.[1].body))).toEqual({ content: 'Continue', llmProviderId: 'saved-grok', model: 'grok-model' })
+    expect(state.fetch.mock.calls.some(([url]) => url === '/api/llm-connections/defaults/default')).toBe(false)
+    expect(state.fetch.mock.calls.some(([url]) => url === '/api/agents/agent/preferences')).toBe(false)
+    expect(events('switched')).toEqual([expect.objectContaining({ ...analytics, provider: 'grok-subscription', scope: 'session' })])
+    expect(onResumed).toHaveBeenCalledWith(expect.objectContaining({ provider: 'grok-subscription', scope: 'session' }))
+  })
+
+  it('keeps the paywall and does not track a saved switch when the resume is queued', async () => {
+    queued = true
+    saved = [savedSubscription()]
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch for this session' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('chat is still busy')
+    expect(onResumed).not.toHaveBeenCalled()
+    expect(events('switched')).toHaveLength(0)
+    expect(state.fetch).toHaveBeenCalledWith('/api/agents/agent/sessions/chat/queued-messages/message', { method: 'DELETE' })
+  })
+
+  it('does not invite an immediate retry when a queued continuation already started', async () => {
+    queued = true
+    queueCancelled = false
+    saved = [savedSubscription()]
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch for this session' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('already started this continuation')
+    expect(onResumed).not.toHaveBeenCalled()
+    expect(events('switched')).toHaveLength(0)
+  })
+
+  it('writes both defaults before resuming when an authorized user always selects a saved connection', async () => {
+    state.isAuthMode = false
+    saved = [savedSubscription({ userId: null })]
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Always use Grok' }))
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    const defaultWrite = state.fetch.mock.calls.find(([url]) => url === '/api/llm-connections/defaults/default')
+    const preferenceWrite = state.fetch.mock.calls.find(([url]) => url === '/api/agents/agent/preferences')
+    expect(JSON.parse(String(defaultWrite?.[1].body))).toEqual({ llmProviderId: 'saved-grok', model: 'grok-model' })
+    expect(JSON.parse(String(preferenceWrite?.[1].body))).toEqual({ defaultLlmProviderId: 'saved-grok', defaultModel: 'grok-model' })
+    const urls = state.fetch.mock.calls.map(([url]) => url)
+    expect(urls.indexOf('/api/llm-connections/defaults/default')).toBeLessThan(urls.indexOf('/api/agents/agent/preferences'))
+    expect(urls.indexOf('/api/agents/agent/preferences')).toBeLessThan(urls.findIndex(url => url.endsWith('/messages')))
+    expect(events('switched')).toEqual([expect.objectContaining({ provider: 'grok-subscription', scope: 'always', paywallId: 'wall' })])
+    expect(onResumed).toHaveBeenCalledWith(expect.objectContaining({ provider: 'grok-subscription', scope: 'always' }))
+  })
+
+  it('offers Always use when the workspace has no app default yet', async () => {
+    state.isAuthMode = false
+    saved = [savedSubscription({ userId: null })]
+    const implementation = state.fetch.getMockImplementation()!
+    state.fetch.mockImplementation((url: string, init?: RequestInit) => url === '/api/llm-connections' && !init?.method
+      ? Promise.resolve(Response.json({ connections: saved, defaultSelection: null, summarizerSelection: null }))
+      : implementation(url, init))
+    mount()
+    const always = await screen.findByRole('button', { name: 'Always use Grok' })
+    expect(always).toBeEnabled()
+    fireEvent.click(always)
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    expect(events('switched')).toEqual([expect.objectContaining({ scope: 'always' })])
+  })
+
+  it('restores the previous app default when the agent-default write fails', async () => {
+    state.isAuthMode = false
+    failAgentDefault = true
+    saved = [savedSubscription({ userId: null })]
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Always use Grok' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not update agent default')
+    const defaultWrites = state.fetch.mock.calls.filter(([url]) => url.startsWith('/api/llm-connections/defaults/default'))
+    expect(defaultWrites.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
+      ['/api/llm-connections/defaults/default', { llmProviderId: 'saved-grok', model: 'grok-model' }],
+      ['/api/llm-connections/defaults/default/compare-and-set', {
+        expected: {
+          defaultSelection: { llmProviderId: 'saved-grok', model: 'grok-model' },
+          summarizerSelection: { llmProviderId: 'platform', model: 'old-model' },
+        },
+        restore: { defaultSelection: { llmProviderId: 'platform', model: 'old-model' }, summarizerSelection: null },
+      }],
+    ])
+    expect(sendCount).toBe(0)
+    expect(events('switched')).toHaveLength(0)
+  })
+
+  it('does not resume an abandoned session after default writes finish', async () => {
+    state.isAuthMode = false
+    saved = [savedSubscription({ userId: null })]
+    let release!: (response: Response) => void
+    const implementation = state.fetch.getMockImplementation()!
+    state.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/agents/agent/preferences' && init?.method === 'PUT') {
+        return new Promise<Response>(resolve => { release = resolve })
+      }
+      return implementation(url, init)
+    })
+    const view = mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Always use Grok' }))
+    await waitFor(() => expect(release).toBeDefined())
+    view.unmount()
+    await act(async () => { release(Response.json({ defaultLlmProviderId: 'saved-grok', defaultModel: 'grok-model' })) })
+    expect(sendCount).toBe(0)
+    expect(events('switched')).toHaveLength(0)
+  })
+
+  it('does not offer an explicitly exhausted saved connection', async () => {
+    saved = [savedSubscription()]
+    usageByConnection['saved-grok'] = {
+      status: 'available', observedAt: new Date().toISOString(),
+      limits: [{ kind: 'window', id: 'weekly', label: 'Weekly', usedPercent: 100 }],
+    }
+    mount()
+    await waitFor(() => expect(client.getQueryState(['llm-provider-usage', 'saved-grok', 'me', true])?.status).toBe('success'))
+    expect(screen.queryByText('Personal Grok')).not.toBeInTheDocument()
+    expect(screen.queryByText('Use an active subscription')).not.toBeInTheDocument()
+  })
+
+  it('uses the concrete MiniMax model when filtering model-specific usage windows', async () => {
+    saved = [savedSubscription({
+      id: 'saved-minimax', name: 'MiniMax Plan', provider: 'minimax-subscription', defaultModel: 'minimax',
+      catalog: [{ id: 'MiniMax-M3.1-Flash-Preview', label: 'MiniMax', family: 'minimax', isLatest: true, contextWindow: 200000, supportedEfforts: [] }],
+    })]
+    usageByConnection['saved-minimax'] = {
+      status: 'available', observedAt: new Date().toISOString(), limits: [
+        { kind: 'window', id: '0-weekly', label: 'MiniMax-M3 · Weekly', usedPercent: 100 },
+        { kind: 'window', id: '1-weekly', label: 'MiniMax-M3.1-Flash-Preview · Weekly', usedPercent: 20 },
+      ],
+    }
+    mount()
+    expect(await screen.findByText('MiniMax Plan')).toBeVisible()
+  })
+
+  it.each([
+    ['unavailable', { status: 'unavailable', observedAt: '2026-10-19T00:00:00.000Z', limits: [] }, 'success', false],
+    ['unsupported', { status: 'unsupported', observedAt: '2026-10-19T00:00:00.000Z', limits: [] }, 'success', true],
+    ['failed', 'error', 'error', false],
+  ] as const)('%s usage reads produce the expected saved-connection eligibility', async (_name, usage, status, shown) => {
+    saved = [savedSubscription()]
+    usageByConnection['saved-grok'] = usage
+    mount()
+    await waitFor(() => expect(client.getQueryState(['llm-provider-usage', 'saved-grok', 'me', true])?.status).toBe(status))
+    if (shown) expect(await screen.findByText('Personal Grok')).toBeVisible()
+    else expect(screen.queryByText('Personal Grok')).not.toBeInTheDocument()
+  })
+
+  it('offers configured subscriptions that do not support usage reads', async () => {
+    saved = [savedSubscription({
+      id: 'saved-claude', name: 'Claude Code', provider: 'claude-subscription', supportsUsage: false,
+      catalog: [{ id: 'claude-model', label: 'Claude', contextWindow: 200000, supportedEfforts: [] }],
+      defaultModel: 'claude-model',
+    })]
+    mount()
+    expect(await screen.findByTestId('active-subscription-connections')).toHaveTextContent('Claude Code')
+    expect(state.fetch.mock.calls.some(([url]) => url.includes('/saved-claude/usage'))).toBe(false)
+  })
+
+  it('keeps session switching available but protects app-wide defaults for personal cloud connections', async () => {
+    saved = [savedSubscription()]
+    mount()
+    expect(await screen.findByRole('button', { name: 'Switch for this session' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Always use Grok' })).toBeDisabled()
+  })
+
   it.each([
     ['Grok', 'grok', 'Grok'],
     ['OpenAI', 'codex', 'Codex'],
@@ -213,16 +415,18 @@ describe('subscription paywall recovery', () => {
     expect(sendCount).toBe(1)
   })
 
-  it('does not report a provider switch when another window causes the send to be queued', async () => {
+  it('does not report a provider switch when another window starts the queued continuation', async () => {
     queued = true
+    queueCancelled = false
     mount()
     openClaude()
     save()
-    expect(await screen.findByRole('alert')).toHaveTextContent('chat is still busy')
+    expect(await screen.findByRole('alert')).toHaveTextContent('already started this continuation')
     expect(onResumed).not.toHaveBeenCalled()
     expect(client.getQueryData(['session', 'chat', 'agent'])).toMatchObject({ llmProviderId: 'platform' })
     expect(events('resume_failed')[0]).toMatchObject({ failureReason: 'chat_busy' })
     expect(events('resumed')).toHaveLength(0)
+    expect(state.fetch).toHaveBeenCalledWith('/api/agents/agent/sessions/chat/queued-messages/message', { method: 'DELETE' })
   })
 
   it('cancels setup without saving or resuming', () => {

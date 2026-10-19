@@ -5,10 +5,19 @@ provider dropdown in both model pickers shows the same data as labeled mini-bars
 and balances. It remains hidden when there is only one connection. Fill always
 means **consumed**, in the effort slider's blue at every level (no warning colors).
 
-This is informational only. Exhaustion never disables a provider/model or changes
-request routing. Missing/failed/unsupported reporting has no UI placeholder;
-explicit zero balances remain visible. Historical token usage and API-equivalent
-session costs are separate and unchanged.
+In provider settings and model pickers this remains informational: exhaustion never
+disables a provider/model or changes request routing. The subscription paywall uses
+the same cached snapshot to avoid suggesting a connection that is known to be
+exhausted. Any applicable runtime window at 100% is exhausted; Codex review and
+additional-feature buckets do not gate chat inference, and MiniMax prefers buckets
+for the selected model. When there are only balances, every balance must be zero or
+negative. A nonexhausted window is not disqualified by an
+empty optional balance. Usage-capable connections are omitted while loading, on a
+failed read, or when the normalized status is `unavailable`; explicit `unsupported`
+and providers without usage support fall back to configured credentials plus a
+valid model. Missing reporting has no UI placeholder, and explicit zero balances
+remain visible. Historical token usage and API-equivalent session costs are separate
+and unchanged.
 
 ## Provider contract and endpoints
 

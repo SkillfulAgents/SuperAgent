@@ -4,9 +4,22 @@ import { SessionPage } from '../pages/session.page'
 import type { ApiMessage } from '../../src/shared/lib/types/api'
 import type { ConnectionInfo } from '../../src/shared/lib/llm-provider/connection-schema'
 
+test.describe.configure({ mode: 'serial' })
+test.setTimeout(60_000)
+
 type TrackedEvent = { event: string; properties: Record<string, unknown> }
 async function trackedEvents(page: Page): Promise<TrackedEvent[]> {
   return page.evaluate(() => (window as unknown as { paywallTestEvents?: TrackedEvent[] }).paywallTestEvents ?? [])
+}
+async function createSavedClaudeConnection(request: APIRequestContext, name: string): Promise<string> {
+  const response = await request.post('/api/llm-connections', { data: {
+    name,
+    provider: 'claude-subscription',
+    userId: null,
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-saved-e2e-placeholder' } },
+  } })
+  expect(response.status(), await response.text()).toBe(201)
+  return (await response.json() as { id: string }).id
 }
 
 // Billing and the exhausted response are mocked. Connection creation, message
@@ -78,11 +91,17 @@ for (const colorScheme of ['light', 'dark'] as const) {
   test(`connects from the subscription paywall and continues on the new provider (${colorScheme})`, async ({ page, request }, testInfo) => {
     await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' })
     const baseline = await (await request.get('/api/llm-connections')).json()
-    const { agent, endpoint, sends } = await openPaywall(page, request)
+    const savedName = `Existing Claude ${colorScheme} ${Date.now()}`
+    const savedConnectionId = await createSavedClaudeConnection(request, savedName)
+    const { agent, endpoint, sends } = await openPaywall(page, request).catch(async cause => {
+      await request.delete(`/api/llm-connections/${savedConnectionId}`)
+      throw cause
+    })
     let connectionId: string | undefined
     try {
       const options = page.getByTestId('paywall-subscriptions')
       await expect(options).toBeVisible()
+      await expect(page.getByTestId('active-subscription-connections')).toContainText(savedName)
       await expect(page.getByTestId('message-input')).not.toBeVisible()
       await page.getByTestId('paywall-card-frame').screenshot({ path: testInfo.outputPath(`paywall-${colorScheme}.png`), animations: 'disabled' })
 
@@ -150,9 +169,82 @@ for (const colorScheme of ['light', 'dark'] as const) {
     } finally {
       await request.delete(`/api/agents/${agent.slug}`)
       if (connectionId) await request.delete(`/api/llm-connections/${connectionId}`)
+      await request.delete(`/api/llm-connections/${savedConnectionId}`)
     }
   })
 }
+
+test('switches to an active saved subscription for only the blocked session', async ({ page, request }) => {
+  const baseline = await (await request.get('/api/llm-connections')).json()
+  const name = `Saved paywall session ${Date.now()}`
+  let connectionId: string | undefined
+  let agentSlug: string | undefined
+  try {
+    connectionId = await createSavedClaudeConnection(request, name)
+    const { agent, endpoint, sends } = await openPaywall(page, request)
+    agentSlug = agent.slug
+    const saved = page.getByTestId('active-subscription-connections')
+    const row = saved.getByTestId('active-subscription-connection').filter({ hasText: name })
+    await expect(row).toBeVisible()
+    await row.getByRole('button', { name: 'Switch for this session', exact: true }).click()
+    await expect(page.getByTestId('paywall-card')).not.toBeVisible()
+    await expect.poll(() => sends.length).toBe(1)
+    expect(sends[0]).toMatchObject({ content: 'Continue', llmProviderId: connectionId })
+    await expect.poll(async () => (await (await request.get(endpoint)).json()).llmProviderId).toBe(connectionId)
+    expect((await (await request.get('/api/llm-connections')).json()).defaultSelection).toEqual(baseline.defaultSelection)
+    await expect.poll(async () => (await trackedEvents(page)).filter(item => item.event === 'paywall_subscription_switched').length).toBe(1)
+    const event = (await trackedEvents(page)).find(item => item.event === 'paywall_subscription_switched')!
+    expect(event.properties).toMatchObject({ provider: 'claude-subscription', scope: 'session', paywallId: expect.any(String) })
+    expect(JSON.stringify(event)).not.toMatch(new RegExp(`${connectionId}|${name}`))
+  } finally {
+    if (agentSlug) await request.delete(`/api/agents/${agentSlug}`)
+    if (connectionId) await request.delete(`/api/llm-connections/${connectionId}`)
+  }
+})
+
+test('switches to an active saved subscription and requests both default writes', async ({ page, request }) => {
+  const baseline = await (await request.get('/api/llm-connections')).json()
+  const writes: Array<{ kind: 'global' | 'agent'; body: Record<string, string> }> = []
+  await page.route('**/api/llm-connections/defaults/default', async route => {
+    if (route.request().method() !== 'PUT') return route.continue()
+    const body = route.request().postDataJSON() as Record<string, string>
+    writes.push({ kind: 'global', body })
+    await route.fulfill({ json: { success: true, defaultSelection: body, summarizerSelection: null } })
+  })
+  await page.route('**/api/agents/*/preferences', async route => {
+    if (route.request().method() !== 'PUT') return route.continue()
+    const body = route.request().postDataJSON() as Record<string, string>
+    writes.push({ kind: 'agent', body })
+    await route.fulfill({ json: body })
+  })
+  const name = `Saved paywall always ${Date.now()}`
+  let connectionId: string | undefined
+  let agentSlug: string | undefined
+  try {
+    connectionId = await createSavedClaudeConnection(request, name)
+    const { agent, endpoint, sends } = await openPaywall(page, request)
+    agentSlug = agent.slug
+    const saved = page.getByTestId('active-subscription-connections')
+    const row = saved.getByTestId('active-subscription-connection').filter({ hasText: name })
+    await row.getByRole('button', { name: 'Always use Claude Code', exact: true }).click()
+    await expect(page.getByTestId('paywall-card')).not.toBeVisible()
+    await expect.poll(() => sends.length).toBe(1)
+    const session = await (await request.get(endpoint)).json()
+    const root = await (await request.get('/api/llm-connections')).json()
+    expect(session.llmProviderId).toBe(connectionId)
+    expect(root.defaultSelection).toEqual(baseline.defaultSelection)
+    expect(writes).toEqual([
+      { kind: 'global', body: { llmProviderId: connectionId, model: expect.any(String) } },
+      { kind: 'agent', body: { defaultLlmProviderId: connectionId, defaultModel: expect.any(String) } },
+    ])
+    await expect.poll(async () => (await trackedEvents(page)).find(item => item.event === 'paywall_subscription_switched')).toBeTruthy()
+    const switched = (await trackedEvents(page)).find(item => item.event === 'paywall_subscription_switched')!
+    expect(switched.properties).toMatchObject({ provider: 'claude-subscription', scope: 'always', paywallId: expect.any(String) })
+  } finally {
+    if (agentSlug) await request.delete(`/api/agents/${agentSlug}`)
+    if (connectionId) await request.delete(`/api/llm-connections/${connectionId}`)
+  }
+})
 
 test('does not offer subscription connections on a top-up paywall', async ({ page, request }) => {
   const { agent } = await openPaywall(page, request, true)
