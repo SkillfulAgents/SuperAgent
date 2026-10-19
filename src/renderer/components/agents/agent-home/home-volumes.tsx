@@ -83,7 +83,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
           <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
-                Restart your agent for drive changes to take effect.
+                Restart your agent to apply recent changes.
               </span>
               <Button
                 size="sm"
@@ -96,11 +96,6 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 {volumes.isRestarting ? 'Restarting...' : 'Restart'}
               </Button>
             </div>
-            {volumes.restartError && (
-              <span className="text-xs text-destructive" role="alert">
-                {volumes.restartError}
-              </span>
-            )}
           </div>
         ) : null}
         {volumes.canAddMount && (
