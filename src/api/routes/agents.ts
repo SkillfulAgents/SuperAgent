@@ -10,6 +10,7 @@ import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
+import { parseMentions } from '@shared/lib/utils/mentions'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -1296,9 +1297,11 @@ function nameSessionFromFirstHumanMessage(agentSlug: string, sessionId: string, 
 async function generateAndUpdateSessionNameAsync(
   agentSlug: string,
   sessionId: string,
-  message: string,
+  firstMessage: string,
   agentName: string
 ): Promise<void> {
+  // Named from what the person wrote, without the block that tells the agent who it tags.
+  const message = parseMentions(firstMessage).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip

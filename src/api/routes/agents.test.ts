@@ -9709,6 +9709,17 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     mockFsReadFile.mockReset()
   })
 
+  it('names a session from what was written, not the block that lists who it tags', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Launch Plan Review' }] })
+    const message = appendMentions('ask @Billing Agent about the launch plan', [{ kind: 'agent', slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }])
+
+    expect((await postJson(app, SESSIONS_URL, { message })).status).toBe(201)
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Launch Plan Review'))
+    const prompt = String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)
+    expect(prompt).toContain('ask @Billing Agent about the launch plan')
+    expect(prompt).not.toContain('[Mentioned:]')
+  })
+
   it('a session opened by a system notice is named by the first message a person sends, not the notice', async () => {
     mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Weather Chat' }] })
 
