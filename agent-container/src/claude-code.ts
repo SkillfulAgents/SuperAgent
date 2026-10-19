@@ -1232,6 +1232,13 @@ export class ClaudeCodeProcess extends EventEmitter {
         // above). Pinned here for the same reason: an agent's custom env vars
         // cannot turn it back on.
         CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+        // CLI 2.1.302+ turns on fork subagents by default in SDK sessions: an
+        // Agent `subagent_type: "fork"` that inherits the whole conversation and
+        // always runs in the background. The host's subagent views assume a
+        // subagent's context is its own, so off until they render a fork from
+        // its fork point.
+        // Pinned after the customEnvVars spread so an agent cannot turn it on.
+        CLAUDE_CODE_FORK_SUBAGENT: '0',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it

@@ -560,8 +560,8 @@ describe('sdk 0.3.206 capture replays', () => {
 //     parent_task_id, the subagent leaves the snapshot when its turn ends, and
 //     the child's completion re-runs the subagent under the same task_id.
 // SDK 0.3.300 / CLI 2.1.300 re-captured the same scenarios with no protocol
-// change (same task bookend, snapshot and idle order), so every assertion
-// below runs against both generations.
+// change (same task bookend, snapshot and idle order), and so did SDK 0.3.303 /
+// CLI 2.1.303, so every assertion below runs against all three generations.
 const SDK296_SCENARIOS = [
   'bg-bash-premature-idle',
   'bg-subagent-no-idle',
@@ -570,7 +570,7 @@ const SDK296_SCENARIOS = [
   'sendmessage-resumed-subagent',
 ]
 
-describe.each(['sdk296', 'sdk300'])('%s capture replays', (sdk) => {
+describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
   const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
 
   afterEach(() => {

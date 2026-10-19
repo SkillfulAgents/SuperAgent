@@ -161,6 +161,7 @@ async function capture(scenario) {
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+        CLAUDE_CODE_FORK_SUBAGENT: '0',
         DISABLE_AUTOUPDATER: '1',
       },
     },
