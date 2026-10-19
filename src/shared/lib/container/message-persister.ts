@@ -16,6 +16,7 @@ import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run
 import { getToolDefinition } from '@shared/lib/tools/registry'
 import { getBlockingUserInputRequestKind } from '@shared/lib/tools/user-input-tools'
 import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/tools/requests/request-manager'
+import { syncAgentBrowserLogins } from '@shared/lib/browser/browser-login-apply'
 import {
   isReplayableUserInputRequest,
   type PendingUserInputRequest,
@@ -3087,13 +3088,27 @@ class MessagePersister {
         break
       }
 
-      case 'browser_active':
+      case 'browser_active': {
         // Browser state changed — forward to SSE clients
         this.broadcastToSSE(agentSlug, sessionId, {
           type: 'browser_active',
           active: content.active,
         })
+        const client = content.active === true ? this.containerClients.get(ctx.key) : undefined
+        if (client) {
+          // browser_open waits for this reply, so send it whatever the sync did.
+          const loginSyncId = typeof content.loginSyncId === 'string' ? content.loginSyncId : null
+          void syncAgentBrowserLogins(client, agentSlug, sessionId).catch((error: unknown) => {
+            console.warn('[MessagePersister] Failed to sync saved browser logins:', error instanceof Error ? error.message : error)
+          }).finally(() => {
+            if (!loginSyncId) return
+            void client.fetch(`/browser/login-sync/${encodeURIComponent(loginSyncId)}/done`, { method: 'POST' }).catch((error: unknown) => {
+              console.warn('[MessagePersister] Failed to report saved login sync:', error instanceof Error ? error.message : error)
+            })
+          })
+        }
         break
+      }
 
       case 'capability_review_cancelled':
         // The container's gate hook stopped waiting for this review (the CLI

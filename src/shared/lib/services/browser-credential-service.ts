@@ -1,10 +1,15 @@
 import crypto from 'crypto'
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { batch } from '@shared/lib/db/batch'
-import { agentBrowserCredentials, browserCredentials, type BrowserCredential } from '@shared/lib/db/schema'
-import { encryptBrowserBundle } from '@shared/lib/browser/browser-vault-crypto'
-import type { SiteStorageBundle } from '../../../../agent-container/src/browser-storage-bundle'
+import { batch, changesOf } from '@shared/lib/db/batch'
+import {
+  agentBrowserCredentials,
+  agents,
+  browserCredentials,
+  type BrowserCredential,
+} from '@shared/lib/db/schema'
+import { decryptBrowserBundle, encryptBrowserBundle } from '@shared/lib/browser/browser-vault-crypto'
+import type { SiteStorageBundle, StorageCookieKey } from '../../../../agent-container/src/browser-storage-bundle'
 
 function ownedBy(userId: string | null) {
   return userId === null ? undefined : eq(browserCredentials.userId, userId)
@@ -127,4 +132,154 @@ export async function mapAgentToBrowserLogin(input: {
       set: { credentialId: input.credentialId, appliedVersion: input.version, updatedAt: now },
     })
     .run()
+}
+
+/**
+ * Record that a sync put `version` of the credential into the agent's browser,
+ * only while the agent is still mapped to that credential. Returns false when
+ * the mapping was removed or replaced meanwhile.
+ */
+export async function markAgentBrowserLoginSynced(input: {
+  agentSlug: string
+  credentialId: string
+  site: string
+  version: number
+}): Promise<boolean> {
+  const result = await db.update(agentBrowserCredentials)
+    .set({ appliedVersion: input.version, updatedAt: new Date() })
+    .where(and(
+      eq(agentBrowserCredentials.agentSlug, input.agentSlug),
+      eq(agentBrowserCredentials.site, input.site),
+      eq(agentBrowserCredentials.credentialId, input.credentialId),
+    ))
+    .run()
+  return changesOf(result) > 0
+}
+
+/** What to clear when signing agents out of a saved login. */
+export interface BrowserLoginClearScope {
+  site: string
+  origins: string[]
+  /** The login's cookies, including those on other sites; keys only. */
+  cookies: StorageCookieKey[]
+}
+
+/** A bundle that no longer decrypts must not block deletion; the site itself is still cleared. */
+function clearScopeOf(credential: BrowserCredential): BrowserLoginClearScope {
+  try {
+    const bundle = decryptBrowserBundle(credential.bundle, credential)
+    return {
+      site: credential.site,
+      origins: bundle.origins.map((entry) => entry.origin),
+      cookies: bundle.cookies.map(({ name, domain, path, partitionKey }) => ({ name, domain, path, partitionKey })),
+    }
+  } catch (error) {
+    console.error('[browser-vault] Could not decrypt saved login:', error instanceof Error ? error.message : 'unknown error')
+    return { site: credential.site, origins: [], cookies: [] }
+  }
+}
+
+export interface ManagedBrowserLogin {
+  id: string
+  name: string
+  site: string
+  browserType: BrowserCredential['browserType']
+  version: number
+  capturedAt: Date
+  agents: Array<{ slug: string; name: string }>
+}
+
+/** The caller's saved logins with the agents using each; metadata only. */
+export async function listManagedBrowserLogins(userId: string | null): Promise<ManagedBrowserLogin[]> {
+  const credentials = await db
+    .select({
+      id: browserCredentials.id,
+      name: browserCredentials.name,
+      site: browserCredentials.site,
+      browserType: browserCredentials.browserType,
+      version: browserCredentials.version,
+      capturedAt: browserCredentials.capturedAt,
+    })
+    .from(browserCredentials)
+    .where(ownedBy(userId))
+    .orderBy(browserCredentials.site, desc(browserCredentials.capturedAt))
+    .all()
+  if (credentials.length === 0) return []
+
+  const mappings = await db
+    .select({
+      credentialId: agentBrowserCredentials.credentialId,
+      slug: agentBrowserCredentials.agentSlug,
+      name: agents.name,
+    })
+    .from(agentBrowserCredentials)
+    .leftJoin(agents, eq(agents.slug, agentBrowserCredentials.agentSlug))
+    .where(inArray(agentBrowserCredentials.credentialId, credentials.map((credential) => credential.id)))
+    .all()
+
+  return credentials.map((credential) => ({
+    ...credential,
+    agents: mappings
+      .filter((mapping) => mapping.credentialId === credential.id)
+      .map((mapping) => ({ slug: mapping.slug, name: mapping.name ?? mapping.slug })),
+  }))
+}
+
+export async function renameBrowserLogin(userId: string | null, id: string, name: string): Promise<boolean> {
+  const result = await db
+    .update(browserCredentials)
+    .set({ name, updatedAt: new Date() })
+    .where(and(eq(browserCredentials.id, id), ownedBy(userId)))
+    .run()
+  return changesOf(result) > 0
+}
+
+/** Delete an owned credential (its agent mappings cascade). Returns the agents that were using it. */
+export async function deleteBrowserLogin(
+  userId: string | null,
+  id: string,
+): Promise<BrowserLoginClearScope & { agentSlugs: string[] } | null> {
+  const credential = await getOwnedBrowserLogin(userId, id)
+  if (!credential) return null
+  const scope = clearScopeOf(credential)
+  const mapped = await db
+    .select({ agentSlug: agentBrowserCredentials.agentSlug })
+    .from(agentBrowserCredentials)
+    .where(eq(agentBrowserCredentials.credentialId, id))
+    .all()
+  const result = await db.delete(browserCredentials).where(and(eq(browserCredentials.id, id), ownedBy(userId))).run()
+  if (changesOf(result) === 0) return null
+  return { ...scope, agentSlugs: mapped.map((row) => row.agentSlug) }
+}
+
+/** Stop an agent using an owned credential. Returns what to clear in its browser. */
+export async function unmapBrowserLogin(
+  userId: string | null, id: string, agentSlug: string,
+): Promise<BrowserLoginClearScope | null> {
+  const credential = await getOwnedBrowserLogin(userId, id)
+  if (!credential) return null
+  const scope = clearScopeOf(credential)
+  const result = await db
+    .delete(agentBrowserCredentials)
+    .where(and(eq(agentBrowserCredentials.agentSlug, agentSlug), eq(agentBrowserCredentials.credentialId, id)))
+    .run()
+  return changesOf(result) > 0 ? scope : null
+}
+
+/** Credentials mapped to the agent whose latest version is not yet in its browser. */
+export async function listOutdatedAgentBrowserLogins(
+  agentSlug: string,
+  browserType: BrowserCredential['browserType'],
+): Promise<BrowserCredential[]> {
+  const rows = await db
+    .select({ credential: browserCredentials })
+    .from(agentBrowserCredentials)
+    .innerJoin(browserCredentials, eq(browserCredentials.id, agentBrowserCredentials.credentialId))
+    .where(and(
+      eq(agentBrowserCredentials.agentSlug, agentSlug),
+      eq(browserCredentials.browserType, browserType),
+      gt(browserCredentials.version, agentBrowserCredentials.appliedVersion),
+    ))
+    .all()
+  return rows.map((row) => row.credential)
 }
