@@ -156,15 +156,4 @@ describe('ClaudeCodeProcess CLI feature opt-outs', () => {
     expect(options.disallowedTools).toContain('Artifact')
     expect((options.env as Record<string, string>).CLAUDE_CODE_DISABLE_ARTIFACT).toBe('1')
   })
-
-  it('turns off fork subagents, even against custom env vars', async () => {
-    const process = new ClaudeCodeProcess({
-      sessionId: 'opt-outs-fork',
-      workingDirectory: '/tmp',
-      customEnvVars: { CLAUDE_CODE_FORK_SUBAGENT: '1' },
-    })
-    await process.start()
-
-    expect((calls[0].options.env as Record<string, string>).CLAUDE_CODE_FORK_SUBAGENT).toBe('0')
-  })
 })

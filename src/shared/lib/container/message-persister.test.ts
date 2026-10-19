@@ -1827,6 +1827,32 @@ describe('MessagePersister', () => {
       ])
     })
 
+    it('treats a fork launch as background though it carries no run_in_background', () => {
+      // CLI 2.1.302+ forks always run in the background; their Agent input
+      // names subagent_type "fork" and nothing else marks them.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'fork-tool', name: 'Agent' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"subagent_type":"fork","description":"fork probe","prompt":"echo"}' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_started', task_id: 'forksub', tool_use_id: 'fork-tool',
+        task_type: 'local_agent', subagent_type: 'fork', description: 'fork probe',
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_notification', task_id: 'forksub', tool_use_id: 'fork-tool', status: 'completed',
+      })
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({ parentToolId: 'fork-tool', agentId: 'forksub' }),
+      ])
+    })
+
     it('completes an errored background launch instead of treating it as an async ack', () => {
       // The streamed run_in_background input is only a hint. If the launch is
       // rejected before it gets an async_launched result (for example by a

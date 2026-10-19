@@ -201,6 +201,7 @@ import {
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
+import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
@@ -2652,7 +2653,8 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       }
       throw error
     }
-    const messageEntries = entries.filter(
+    // A fork's transcript opens with what it inherited from the parent.
+    const messageEntries = subagentOwnEntries(entries).filter(
       (e): e is JsonlMessageEntry => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
