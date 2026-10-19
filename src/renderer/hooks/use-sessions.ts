@@ -8,6 +8,7 @@ import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@rendere
 import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
+import { isRetryableRequestError } from '@renderer/lib/http-error'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
@@ -82,8 +83,9 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
     // A 404 here means the session is genuinely missing: the backend's
     // getSession is metadata-authoritative, so a just-created session — which is
     // registered in metadata synchronously as part of the create response — is
-    // readable immediately, before its JSONL transcript is even written. The
-    // default retry is kept only as ordinary transient-error resilience.
+    // readable immediately, before its JSONL transcript is even written, so
+    // only transient errors are retried and a deletion shows at once.
+    retry: (failureCount, error) => isRetryableRequestError(error) && failureCount < 3,
   })
 }
 
