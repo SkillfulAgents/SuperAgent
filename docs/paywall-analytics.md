@@ -19,7 +19,6 @@ New-connection attempt events also include `provider` (`grok-subscription`, `cod
 | `paywall_shown` | Once per mounted wall after billing resolves; includes `blocked`, `live`, and workspace `role`. |
 | `paywall_cta_clicked` | External billing link (`surface: external`, `action: open_billing`), iframe fallback (`action: embed_fallback`), or trusted iframe panel open (`surface: embedded`, `action: open_panel`). |
 | `paywall_billing_closed` | Trusted iframe message closes the embedded panel. |
-| `paywall_recheck_clicked` | User requests a billing refresh. |
 | `paywall_dismissed` | User explicitly dismisses a dismissible wall. |
 | `paywall_cleared` | Once per wall, with `resolution: billing` or `subscription`. Subscription recovery includes its `attemptId` and `provider`. |
 
