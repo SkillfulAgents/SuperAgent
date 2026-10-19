@@ -197,11 +197,12 @@ export function TemplateDetailView({
 
         {/* ── Hero: the template's own sample use cases, as example prompts.
             Decorative and inert — the arrows are part of the picture, not
-            controls. The wash is the template's accent hue over the grey. ── */}
+            controls. The wash is the template's orb colours over the grey. ── */}
         {useCases.length > 0 && (
           <div className="relative mt-8 overflow-hidden rounded-2xl bg-muted/60">
             <div
-              className={`absolute inset-0 bg-gradient-to-tl ${getTemplateGradient(template.name)}`}
+              className="absolute inset-0"
+              style={{ backgroundImage: getTemplateGradient(template) }}
               aria-hidden
             />
             <div className="relative flex flex-col items-center gap-3 px-6 py-12" aria-hidden>

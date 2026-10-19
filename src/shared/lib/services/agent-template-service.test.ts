@@ -39,6 +39,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   createAgentFromExistingWorkspace: vi.fn(),
   deleteAgent: vi.fn(),
   getAgentWithStatus: vi.fn(),
+  updateAgentAvatar: vi.fn(),
   writeAgentIdentityProjection: vi.fn(),
 }))
 
@@ -96,7 +97,7 @@ import {
   publishAgentToSkillset,
   createAgentPR,
 } from './agent-template-service'
-import { adoptAgentIdentityFromWorkspace, createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
+import { adoptAgentIdentityFromWorkspace, createAgentFromExistingWorkspace, getAgentWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
 
 // ============================================================================
@@ -2823,6 +2824,35 @@ describe('installAgentFromSkillset', () => {
       expect(agentsMd).toContain(oldTemplateTime)
       expect(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md'))).toBe(false)
       expect(adoptAgentIdentityFromWorkspace).toHaveBeenCalledWith(slug, { name: 'My Agent' })
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['gives the agent the avatar its index entry names', { color: 'duo-pink-blue', shape: 'bloom' } as const],
+    ['keeps the random avatar when the index entry names none', undefined],
+  ])('%s', async (_, avatar) => {
+    const slug = 'install-avatar-agent'
+    const agent = { avatar: { color: 'tonal-blue', shape: 'circle' } as const, slug, displaySlug: slug, name: 'My Agent', createdAt: new Date(), status: 'stopped' as const, containerPort: null }
+    mockCreateAgent.mockResolvedValue(agent)
+    mockGetAgentWithStatus.mockResolvedValue(agent)
+    fs.mkdirSync(path.join(testDir, 'agents', slug, 'workspace'), { recursive: true })
+
+    const skillsetId = 'avatar-skillset'
+    const repoDir = `/tmp/mock-skillset-cache/${skillsetId}`
+    const agentPath = 'agents/my-template/'
+    fs.mkdirSync(path.join(repoDir, agentPath), { recursive: true })
+    fs.writeFileSync(path.join(repoDir, agentPath, 'AGENTS.md'), '---\nname: Template Agent\n---\n# Template\n')
+    vi.mocked(getSkillsetIndex).mockResolvedValue({
+      skillset_name: 'Test', description: '', version: '1', skills: [],
+      agents: [{ name: 'Template Agent', path: agentPath, description: '', version: '1', avatar }],
+    })
+
+    try {
+      await installAgentFromSkillset({ skillsetId, skillsetUrl: 'https://example.com', provider: 'github' }, agentPath, 'My Agent', '1.0.0')
+      if (avatar) expect(updateAgentAvatar).toHaveBeenCalledWith(slug, avatar)
+      else expect(updateAgentAvatar).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true })
     }
