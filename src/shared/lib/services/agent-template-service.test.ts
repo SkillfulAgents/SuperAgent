@@ -98,7 +98,7 @@ import {
   createAgentPR,
 } from './agent-template-service'
 import { adoptAgentIdentityFromWorkspace, createAgentFromExistingWorkspace, getAgentWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
-import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
+import { getSkillsetIndex, readIndexJson } from '@shared/lib/services/skillset-service'
 
 // ============================================================================
 // Shared Constants & Helpers
@@ -2844,7 +2844,7 @@ describe('installAgentFromSkillset', () => {
     const agentPath = 'agents/my-template/'
     fs.mkdirSync(path.join(repoDir, agentPath), { recursive: true })
     fs.writeFileSync(path.join(repoDir, agentPath, 'AGENTS.md'), '---\nname: Template Agent\n---\n# Template\n')
-    vi.mocked(getSkillsetIndex).mockResolvedValue({
+    vi.mocked(readIndexJson).mockResolvedValue({
       skillset_name: 'Test', description: '', version: '1', skills: [],
       agents: [{ name: 'Template Agent', path: agentPath, description: '', version: '1', avatar }],
     })

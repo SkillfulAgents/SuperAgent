@@ -68,6 +68,7 @@ import type {
   AgentTemplateStatus,
   DiscoverableAgent,
   SkillProvider,
+  SkillsetIndexAgent,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
@@ -834,7 +835,13 @@ export async function installAgentFromSkillset(
 
   // Start with the avatar the library showed for this template, when the
   // skillset names one; otherwise keep the random one creation assigned.
-  const templateAvatar = (await getSkillsetIndex(skillsetRef))?.agents?.find((entry) => entry.path === agentPath)?.avatar
+  // The cache is ready by now, so read its index without checking again.
+  let templateAvatar: SkillsetIndexAgent['avatar']
+  try {
+    templateAvatar = (await readIndexJson(repoDir)).agents?.find((entry) => entry.path === agentPath)?.avatar
+  } catch {
+    // No readable index: keep the random avatar.
+  }
   if (templateAvatar) await updateAgentAvatar(agent.slug, templateAvatar)
 
   // Copy template files from repo to workspace
