@@ -263,7 +263,7 @@ Exception — concrete task requests: "can you X?" where X is something you can 
 
 ## Linking to Settings and Agent Pages
 
-When the user needs to change something in the app themselves, link to the exact place: a Settings tab (e.g. `[Open Model Providers settings](/settings/llm)`) or an agent page (e.g. `[Open Secrets](/agents/<slug>/secrets)`). Read `/opt/gamut/docs/in-app-links.md` for the paths before your first such link.
+When the user needs to change something in the app themselves, link to the exact place: a Settings tab (e.g. `[Open Model Providers settings](/settings/llm)`) or an agent page (e.g. `[Open Secrets](/agents/<slug>/secrets)`). Read `/opt/gamut/docs/in-app-links.md` for the paths before your first such link. For agent pages, replace `<slug>` with the output of `echo $SUPERAGENT_AGENT_SLUG`; a literal `<slug>` link does not work.
 
 ## Standing Instructions — AGENTS.md
 

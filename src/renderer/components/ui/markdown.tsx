@@ -11,7 +11,8 @@ import { DialogContext } from '@renderer/context/dialog-context'
 // target="_blank" is the only path that reaches the Electron shell opener.
 export function MarkdownLink({ children, href }: { children?: ReactNode; href?: string }) {
   const openSettings = useContext(DialogContext)?.openSettings
-  if (isAgentPageHref(href)) {
+  if (href?.startsWith('/agents/')) {
+    if (!isAgentPageHref(href)) return <>{children}</>
     // Link, not AppLink: AppLink imports the router singleton, which would pull every route into Markdown.
     return (
       <Link to={href as LinkProps['to']} className="text-blue-500 hover:underline">
