@@ -1467,54 +1467,211 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
 
-  it('cleans up when the client aborts during the initial connection write', async () => {
-    const actor = agentRegistry.get('authorized-agent')
-    const unsubscribe = vi.fn()
-    vi.spyOn(actor.messages, 'subscribe').mockReturnValue(unsubscribe)
-    vi.spyOn(actor.sessions, 'slashCommands').mockReturnValue([])
-    vi.spyOn(actor.sessions, 'metadata').mockResolvedValue(null)
-    vi.spyOn(actor.sessions, 'backgroundTasks').mockReturnValue([])
-    vi.spyOn(actor.sessions, 'activeSubagents').mockReturnValue([])
-    vi.spyOn(actor.sessions, 'isWaitingBackground').mockReturnValue(false)
-    vi.spyOn(actor.sessions, 'isActive').mockReturnValue(false)
-    vi.spyOn(actor.sessions, 'turnOutcome').mockReturnValue(null)
-    vi.spyOn(actor.inputs.computerUse, 'grabbedApp').mockReturnValue(undefined)
-
+  describe('teardown', () => {
+    const STREAM_URL = 'http://localhost/api/agents/authorized-agent/sessions/new-session/stream'
     const timer = {} as ReturnType<typeof setInterval>
-    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockReturnValue(timer)
-    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined)
-    const stream = {
-      aborted: false,
-      writeSSE: vi.fn(async () => {
-        stream.aborted = true
-      }),
-      onAbort: vi.fn((_callback: () => void) => undefined),
+    let unsubscribe: ReturnType<typeof vi.fn<() => void>>
+    let pingTick: (() => Promise<void>) | undefined
+
+    /** Hono's StreamingApi abort semantics: `abort()` sets the flag, then runs each listener once; `onAbort` never replays. */
+    function fakeSSEStream() {
+      const listeners: Array<() => void> = []
+      const stream = {
+        aborted: false,
+        writeSSE: vi.fn(async (_message: { data: string; event?: string }) => undefined),
+        onAbort: vi.fn((listener: () => void) => {
+          listeners.push(listener)
+        }),
+        abort: vi.fn(() => {
+          if (stream.aborted) return
+          stream.aborted = true
+          listeners.forEach((listener) => listener())
+        }),
+      }
+      return stream
     }
-    let handlerPromise: Promise<void> | undefined
+    type FakeSSEStream = ReturnType<typeof fakeSSEStream>
 
-    mockStreamSSE.mockImplementationOnce((...args: unknown[]) => {
-      const handler = args[1] as (value: typeof stream) => Promise<void>
-      handlerPromise = handler(stream)
-      return new Response(null, { status: 200 })
-    })
-
-    try {
-      const res = await getReq(app, '/api/agents/authorized-agent/sessions/new-session/stream')
+    /** Open the stream; the route's stream callback runs against `stream`, and its promise is returned (boxed, so awaiting this does not await it). */
+    async function openStream(stream: FakeSSEStream, signal?: AbortSignal): Promise<{ handlerPromise: Promise<void> }> {
+      let handlerPromise: Promise<void> | undefined
+      mockStreamSSE.mockImplementationOnce((...args: unknown[]) => {
+        const handler = args[1] as (value: FakeSSEStream) => Promise<void>
+        handlerPromise = handler(stream)
+        return new Response(null, { status: 200 })
+      })
+      const res = await app.request(STREAM_URL, { method: 'GET', signal })
       expect(res.status).toBe(200)
       expect(handlerPromise).toBeDefined()
-
-      const settled = await Promise.race([
-        handlerPromise!.then(() => true),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
-      ])
-
-      expect(settled).toBe(true)
-      expect(unsubscribe).toHaveBeenCalledOnce()
-      expect(clearIntervalSpy).toHaveBeenCalledWith(timer)
-    } finally {
-      setIntervalSpy.mockRestore()
-      clearIntervalSpy.mockRestore()
+      return { handlerPromise: handlerPromise! }
     }
+
+    async function settles(promise: Promise<unknown>, ms = 25): Promise<boolean> {
+      return Promise.race([
+        promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), ms)),
+      ])
+    }
+
+    /** The stream is set up and waiting for the client to leave. */
+    async function waitingForClient(handlerPromise: Promise<void>): Promise<void> {
+      await vi.waitFor(() => expect(globalThis.setInterval).toHaveBeenCalledOnce())
+      expect(await settles(handlerPromise)).toBe(false)
+      expect(unsubscribe).not.toHaveBeenCalled()
+    }
+
+    function expectReleased() {
+      const actor = agentRegistry.get('authorized-agent')
+      expect(actor.messages.subscribe).toHaveBeenCalledOnce()
+      expect(unsubscribe).toHaveBeenCalledOnce()
+      expect(globalThis.clearInterval).toHaveBeenCalledWith(timer)
+    }
+
+    beforeEach(() => {
+      const actor = agentRegistry.get('authorized-agent')
+      unsubscribe = vi.fn()
+      vi.spyOn(actor.messages, 'subscribe').mockReturnValue(unsubscribe)
+      vi.spyOn(actor.sessions, 'slashCommands').mockReturnValue([])
+      vi.spyOn(actor.sessions, 'metadata').mockResolvedValue(null)
+      vi.spyOn(actor.sessions, 'backgroundTasks').mockReturnValue([])
+      vi.spyOn(actor.sessions, 'activeSubagents').mockReturnValue([])
+      vi.spyOn(actor.sessions, 'isWaitingBackground').mockReturnValue(false)
+      vi.spyOn(actor.sessions, 'isActive').mockReturnValue(false)
+      vi.spyOn(actor.sessions, 'turnOutcome').mockReturnValue(null)
+      vi.spyOn(actor.inputs.computerUse, 'grabbedApp').mockReturnValue(undefined)
+
+      pingTick = undefined
+      vi.spyOn(globalThis, 'setInterval').mockImplementation(((handler: () => Promise<void>) => {
+        pingTick = handler
+        return timer
+      }) as unknown as typeof setInterval)
+      vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined)
+    })
+
+    afterEach(() => {
+      vi.mocked(globalThis.setInterval).mockRestore()
+      vi.mocked(globalThis.clearInterval).mockRestore()
+    })
+
+    it('releases the subscription and the ping when the client disconnects', async () => {
+      const controller = new AbortController()
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream, controller.signal)
+      await waitingForClient(handlerPromise)
+
+      // The hangup as @hono/node-server reports it under a piped body: the
+      // stream aborts, and the request signal aborts too.
+      stream.abort()
+      controller.abort()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('releases them when the request signal alone reports the hangup', async () => {
+      const controller = new AbortController()
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream, controller.signal)
+      await waitingForClient(handlerPromise)
+
+      controller.abort()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expect(stream.aborted).toBe(true)
+      expectReleased()
+    })
+
+    it('releases them when the stream had already aborted as its callback started', async () => {
+      const stream = fakeSSEStream()
+      stream.abort()
+
+      const { handlerPromise } = await openStream(stream)
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('releases them when the client aborts during the initial connection write', async () => {
+      const stream = fakeSSEStream()
+      stream.writeSSE.mockImplementationOnce(async () => {
+        stream.abort()
+      })
+
+      const { handlerPromise } = await openStream(stream)
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('releases them when the hangup lands while a setup write waits for a reader that never comes', async () => {
+      const controller = new AbortController()
+      const stream = fakeSSEStream()
+      // A body @hono/node-server never piped: the write waits until the stream aborts.
+      stream.writeSSE.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+        stream.onAbort(() => resolve(undefined))
+      }))
+
+      const { handlerPromise } = await openStream(stream, controller.signal)
+      expect(await settles(handlerPromise)).toBe(false)
+      controller.abort()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('sets nothing up for a client that left before the stream started', async () => {
+      const controller = new AbortController()
+      // The hangup lands during the route's own await, before streamSSE runs
+      // its callback: hono's stream never hears of it, only the request signal.
+      vi.mocked(sessionIsKnown).mockImplementationOnce(async () => {
+        controller.abort()
+        return true
+      })
+      const stream = fakeSSEStream()
+
+      const { handlerPromise } = await openStream(stream, controller.signal)
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expect(agentRegistry.get('authorized-agent').messages.subscribe).not.toHaveBeenCalled()
+      expect(globalThis.setInterval).not.toHaveBeenCalled()
+      expect(stream.writeSSE).not.toHaveBeenCalled()
+    })
+
+    it('ends the stream through the same cleanup when a ping cannot be sent', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream)
+      await waitingForClient(handlerPromise)
+
+      vi.mocked(agentRegistry.get('authorized-agent').sessions.turnOutcome).mockImplementation(() => {
+        throw new Error('turn outcome unavailable')
+      })
+      await pingTick!()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expect(stream.abort).toHaveBeenCalled()
+      expectReleased()
+      consoleError.mockRestore()
+    })
+
+    it('pings through the actor it opened with', async () => {
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream)
+      await waitingForClient(handlerPromise)
+      vi.mocked(agentRegistry.get('authorized-agent').sessions.isActive).mockReturnValue(true)
+      const get = vi.spyOn(agentRegistry, 'get')
+
+      await pingTick!()
+
+      expect(get).not.toHaveBeenCalled()
+      get.mockRestore()
+      expect(stream.writeSSE).toHaveBeenLastCalledWith({
+        data: JSON.stringify({ type: 'ping', isActive: true, turnOutcome: null }),
+        event: 'message',
+      })
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
+    })
   })
 })
 

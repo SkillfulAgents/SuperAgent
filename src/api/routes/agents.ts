@@ -35,6 +35,7 @@ import { parsePagination } from '../pagination'
 import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
+import { waitForClientGone } from '../lib/wait-for-client-gone'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -3261,6 +3262,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 
 // GET /api/agents/:id/sessions/:sessionId/stream - SSE stream for real-time message updates
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
+  // Taken before the first await, so a hangup during it is heard (see waitForClientGone).
+  const clientSignal = c.req.raw.signal
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
   const actor = agentRegistry.get(agentSlug)
@@ -3269,6 +3272,9 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   }
 
   return streamSSE(c, async (stream) => {
+    // The client left during the awaits above: nothing to set up for it.
+    if (clientSignal.aborted) return
+    const clientGone = waitForClientGone(clientSignal, stream)
     let pingInterval: ReturnType<typeof setInterval> | null = null
     let unsubscribe: (() => void) | null = null
 
@@ -3335,26 +3341,25 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       // Keep-alive ping every 30 seconds
       pingInterval = setInterval(async () => {
         try {
-          const currentIsActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
           await stream.writeSSE({
             data: JSON.stringify({
-              type: 'ping', isActive: currentIsActive,
+              type: 'ping',
+              isActive: actor.sessions.isActive(sessionId),
               turnOutcome: actor.sessions.turnOutcome(sessionId),
             }),
             event: 'message',
           })
-        } catch {
-          if (pingInterval) clearInterval(pingInterval)
+        } catch (error) {
+          // Not a failed write: hono swallows those, and the hangup behind one
+          // aborts the stream, which clientGone hears. This is a ping that could
+          // not be built; end the stream (the client reconnects) through the
+          // same cleanup as a hangup rather than keep a broken ping running.
+          console.error('Error sending SSE ping:', error)
+          stream.abort()
         }
       }, 30000)
 
-      // Wait for abort signal
-      await new Promise<void>((resolve) => {
-        stream.onAbort(() => {
-          resolve()
-        })
-        if (stream.aborted) resolve()
-      })
+      await clientGone
     } finally {
       if (pingInterval) clearInterval(pingInterval)
       if (unsubscribe) unsubscribe()

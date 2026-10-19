@@ -20,13 +20,18 @@ import * as collaborationEvents from '@shared/lib/services/collaboration-events'
 
 // Observable stand-in for the persister's global-client registry, with the
 // exact semantics of the real one (Set membership + unsubscribe deletes).
-const { globalClients, abortBeforeHandler, authMode } = vi.hoisted(() => ({
+const { globalClients, abortBeforeHandler, authMode, authGate, streamCallbacks } = vi.hoisted(() => ({
   globalClients: new Set<(data: unknown) => void>(),
   // When true, the streamSSE wrapper below aborts the stream BEFORE the
   // route's handler body runs — deterministically reproducing a client that
   // disconnected during handler setup, i.e. before onAbort is registered.
   abortBeforeHandler: { value: false },
   authMode: { value: false },
+  // When set, the auth middleware waits on it, holding the request before the
+  // route runs; `signals` records each held request's AbortSignal.
+  authGate: { value: null as Promise<void> | null, signals: [] as AbortSignal[] },
+  // How many stream callbacks have returned.
+  streamCallbacks: { finished: 0 },
 }))
 
 // Transparent pass-through around streamSSE, except it can pre-abort the
@@ -44,6 +49,7 @@ vi.mock('hono/streaming', async (importOriginal) => {
       real.streamSSE(c, async (stream) => {
         if (abortBeforeHandler.value) stream.abort()
         await cb(stream)
+        streamCallbacks.finished++
       }),
   }
 })
@@ -63,7 +69,14 @@ vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => authMode.value }))
 
 // Auth middleware: no-op in tests
 vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (c: Context, next: () => Promise<void>) => { c.set('user', { id: c.req.header('x-test-user') }); return next() },
+  Authenticated: () => async (c: Context, next: () => Promise<void>) => {
+    c.set('user', { id: c.req.header('x-test-user') })
+    if (authGate.value) {
+      authGate.signals.push(c.req.raw.signal)
+      await authGate.value
+    }
+    return next()
+  },
   HasNotificationAccess: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
@@ -79,6 +92,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
 }))
 
 import notificationsRouter from './notifications'
+import { armAbortSignal } from '../middleware/arm-abort-signal'
 
 // Track the handler's keep-alive intervals by their signature (30s delay) so
 // we can prove each one created is also cleared.
@@ -107,6 +121,8 @@ beforeAll(async () => {
   }) as typeof clearInterval)
 
   const app = new Hono()
+  // As in the real app: armed ahead of every middleware that awaits.
+  app.use('*', armAbortSignal)
   app.route('/api/notifications', notificationsRouter)
   await new Promise<void>((resolve) => {
     server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info: AddressInfo) => {
@@ -125,6 +141,8 @@ afterEach(() => {
   globalClients.clear()
   abortBeforeHandler.value = false
   authMode.value = false
+  authGate.value = null
+  authGate.signals = []
 })
 
 /** Poll until `predicate` holds or `timeoutMs` elapses. */
@@ -213,6 +231,29 @@ describe('GET /api/notifications/stream teardown', () => {
       expect(await waitFor(() => globalClients.size === 0)).toBe(true)
       expect(await waitFor(() => clearedKeepAlives.size === createdKeepAlives.size)).toBe(true)
     }
+  })
+
+  it('sets nothing up for a client that left before the stream started', async () => {
+    let release!: () => void
+    authGate.value = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const created = createdKeepAlives.size
+    const finished = streamCallbacks.finished
+
+    const req = http.get({ host: '127.0.0.1', port, path: '/api/notifications/stream' }, () => {})
+    req.on('error', () => {})
+    expect(await waitFor(() => authGate.signals.length === 1)).toBe(true)
+    // The client leaves while the request is still in the middleware, before
+    // streamSSE has a body for @hono/node-server to pipe: hono's stream never
+    // hears of it, only the request signal does.
+    req.destroy()
+    expect(await waitFor(() => authGate.signals[0].aborted)).toBe(true)
+    release()
+
+    expect(await waitFor(() => streamCallbacks.finished === finished + 1)).toBe(true)
+    expect(globalClients.size).toBe(0)
+    expect(createdKeepAlives.size).toBe(created)
   })
 
   it('leaves no residue after repeated connect/disconnect cycles', async () => {

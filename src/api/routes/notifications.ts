@@ -21,6 +21,7 @@ import {
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
+import { waitForClientGone } from '../lib/wait-for-client-gone'
 
 const notificationsRouter = new Hono()
 
@@ -42,11 +43,15 @@ function getScopedUserId(c: { get: (key: never) => unknown }): string | undefine
 
 // GET /api/notifications/stream - SSE stream for global notifications (used by Electron main process)
 notificationsRouter.get('/stream', async (c) => {
+  const clientSignal = c.req.raw.signal
   const user = isAuthMode()
     ? (c.get('user' as never) as { id: string; role?: string } | undefined)
     : undefined
 
   return streamSSE(c, async (stream) => {
+    // The client left during the middleware: nothing to set up for it.
+    if (clientSignal.aborted) return
+    const clientGone = waitForClientGone(clientSignal, stream)
     let pingInterval: ReturnType<typeof setInterval> | null = null
     let unsubscribe: (() => void) | null = null
     let unsubscribeCollaboration: (() => void) | undefined
@@ -97,16 +102,7 @@ notificationsRouter.get('/stream', async (c) => {
         }
       }, 30000)
 
-      // Wait for abort signal. onAbort only registers a listener — it does
-      // not replay an abort that already happened (abort() sets `aborted`
-      // before notifying), so check the flag after registering to cover a
-      // client that vanished during the setup writes above.
-      await new Promise<void>((resolve) => {
-        stream.onAbort(() => {
-          resolve()
-        })
-        if (stream.aborted) resolve()
-      })
+      await clientGone
     } finally {
       if (pingInterval) clearInterval(pingInterval)
       if (unsubscribe) unsubscribe()
