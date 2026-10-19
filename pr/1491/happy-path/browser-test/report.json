@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ctionality is working correctly:\n- Agent successfully opened a browser\n- Agent navigated to the specified URL\n- Agent retrieved the correct page title (\"Example Domain\")\n- Agent reported back with the expected information\n- Browser preview and tool call tracking appear to be functioning as designed\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 78462,
+  "sessionId": "5079c03b-6b58-4e89-89e8-41225c6297d8",
+  "cost": {
+    "inputTokens": 424,
+    "outputTokens": 9886,
+    "cacheCreationTokens": 73245,
+    "cacheReadTokens": 1311160,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.272526
+  }
+}
