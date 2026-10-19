@@ -153,7 +153,7 @@ vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: vi.fn(), broadcastSessionUpdate: vi.fn(), persistMessage: vi.fn(),
+    broadcastSessionUpdate: vi.fn(), persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(), isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false), hasActiveSessionsForAgent: vi.fn(() => false),
     hasSessionsAwaitingInputForAgent: vi.fn(() => false), isSubscribed: vi.fn(() => true),

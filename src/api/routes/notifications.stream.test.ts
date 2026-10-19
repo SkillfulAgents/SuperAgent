@@ -5,6 +5,7 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Context } from 'hono'
 import * as collaborationEvents from '@shared/lib/services/collaboration-events'
+import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 
 /**
  * The notifications SSE stream over a real HTTP listener.
@@ -14,14 +15,14 @@ import * as collaborationEvents from '@shared/lib/services/collaboration-events'
  * ONLY disconnect notification the handler ever gets — Hono's StreamingApi
  * swallows write errors, so a failed ping can't surface a disconnect. These
  * tests connect through a real socket, kill it, and assert the handler
- * releases both resources it holds per connection: the global-notification
- * client callback and the 30-second keep-alive interval.
+ * releases both resources it holds per connection: its global-feed
+ * subscription and the 30-second keep-alive interval.
  */
 
-// Observable stand-in for the persister's global-client registry, with the
-// exact semantics of the real one (Set membership + unsubscribe deletes).
+// Observable stand-in for the global feed's subscriber set, with the exact
+// semantics of the real one (Set membership + unsubscribe deletes).
 const { globalClients, abortBeforeHandler, authMode, authGate, streamCallbacks } = vi.hoisted(() => ({
-  globalClients: new Set<(data: unknown) => void>(),
+  globalClients: new Set<(event: GlobalFeedEvent) => void>(),
   // When true, the streamSSE wrapper below aborts the stream BEFORE the
   // route's handler body runs — deterministically reproducing a client that
   // disconnected during handler setup, i.e. before onAbort is registered.
@@ -54,12 +55,12 @@ vi.mock('hono/streaming', async (importOriginal) => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    addGlobalNotificationClient: (callback: (data: unknown) => void) => {
-      globalClients.add(callback)
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: {
+    subscribe: (listener: (event: GlobalFeedEvent) => void) => {
+      globalClients.add(listener)
       return () => {
-        globalClients.delete(callback)
+        globalClients.delete(listener)
       }
     },
   },
@@ -92,6 +93,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
 }))
 
 import notificationsRouter from './notifications'
+import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
 import { armAbortSignal } from '../middleware/arm-abort-signal'
 
 // Track the handler's keep-alive intervals by their signature (30s delay) so
@@ -138,6 +140,7 @@ afterAll(async () => {
 })
 
 afterEach(() => {
+  vi.mocked(getAccessibleAgentSlugs).mockReset().mockResolvedValue([])
   globalClients.clear()
   abortBeforeHandler.value = false
   authMode.value = false
@@ -297,5 +300,124 @@ describe('collaboration hints over the existing stream', () => {
       expect(await waitFor(() => stops.length === 3 && stops.every((stop) => stop.mock.calls.length === 1))).toBe(true)
       spy.mockRestore()
     }
+  })
+})
+
+describe('auth-mode access over the global feed', () => {
+  const publish = (event: GlobalFeedEvent) => {
+    for (const listener of globalClients) listener(event)
+  }
+  /** The `data:` payloads the client has received so far, parsed, pings excluded. */
+  const payloads = (client: { received: () => string }) =>
+    client
+      .received()
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice('data: '.length)) as GlobalFeedEvent)
+      .filter((event) => event.type !== 'ping')
+
+  /** A load the test releases by hand, to hold the gate mid-load. */
+  function deferredLoad() {
+    let resolve!: (slugs: string[]) => void
+    const promise = new Promise<string[]>((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  it('carries only accessible agents, and keeps feed order across the first load', async () => {
+    authMode.value = true
+    const firstLoad = deferredLoad()
+    vi.mocked(getAccessibleAgentSlugs).mockReturnValueOnce(firstLoad.promise)
+    const client = await connectSSE('member')
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+
+    // Published while the user's agents are still loading: held, then judged in order.
+    publish({ type: 'session_active', agentSlug: 'mine', sessionId: 's1' })
+    publish({ type: 'session_active', agentSlug: 'theirs', sessionId: 's2' })
+    publish({ type: 'runtime_readiness_changed' })
+    publish({ type: 'session_idle', agentSlug: 'mine', sessionId: 's1' })
+    firstLoad.resolve(['mine'])
+
+    expect(await client.waitForData('"type":"session_idle"')).toBe(true)
+    expect(payloads(client).map((e) => [e.type, e.agentSlug])).toEqual([
+      ['connected', undefined],
+      ['session_active', 'mine'],
+      ['runtime_readiness_changed', undefined],
+      ['session_idle', 'mine'],
+    ])
+    expect(getAccessibleAgentSlugs).toHaveBeenCalledTimes(1)
+    client.destroy()
+  })
+
+  it('admits an agent shared with the user after the stream opened', async () => {
+    authMode.value = true
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue([])
+    const client = await connectSSE('invitee')
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue(['shared'])
+    collaborationEvents.publishCollaborationEvent(['invitee'], { type: 'agent_members_changed', agentSlug: 'shared' })
+    publish({ type: 'session_active', agentSlug: 'shared', sessionId: 's1' })
+
+    expect(await client.waitForData('"sessionId":"s1"')).toBe(true)
+    client.destroy()
+  })
+
+  it('stops carrying an agent once the user loses access to it', async () => {
+    authMode.value = true
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue(['shared'])
+    const client = await connectSSE('leaver')
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+    publish({ type: 'session_active', agentSlug: 'shared', sessionId: 'before' })
+    expect(await client.waitForData('"sessionId":"before"')).toBe(true)
+
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue([])
+    collaborationEvents.publishCollaborationEvent(['leaver'], { type: 'agent_access_revoked', agentSlug: 'shared' })
+    publish({ type: 'session_active', agentSlug: 'shared', sessionId: 'after' })
+    publish({ type: 'runtime_readiness_changed', marker: 'end' })
+
+    expect(await client.waitForData('"marker":"end"')).toBe(true)
+    expect(client.received()).not.toContain('"sessionId":"after"')
+    client.destroy()
+  })
+
+  it('carries a newly created agent to its creator', async () => {
+    authMode.value = true
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue([])
+    const client = await connectSSE('creator')
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+
+    // The create route writes the owner row, then publishes agent_created.
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue(['fresh'])
+    publish({ type: 'agent_created', agentSlug: 'fresh' })
+    publish({ type: 'session_active', agentSlug: 'fresh', sessionId: 'first' })
+
+    expect(await client.waitForData('"sessionId":"first"')).toBe(true)
+    expect(payloads(client).map((e) => e.type)).toEqual(['connected', 'agent_created', 'session_active'])
+    client.destroy()
+  })
+
+  it("ends the stream when the user's agents cannot be loaded", async () => {
+    authMode.value = true
+    vi.mocked(getAccessibleAgentSlugs).mockRejectedValue(new Error('database is locked'))
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await new Promise<void>((resolve, reject) => {
+      const req = http.get(
+        { host: '127.0.0.1', port, path: '/api/notifications/stream', headers: { 'x-test-user': 'unlucky' } },
+        (res) => {
+          res.resume()
+          res.on('close', () => resolve())
+        },
+      )
+      req.on('error', reject)
+    })
+
+    expect(await waitFor(() => globalClients.size === 0)).toBe(true)
+    expect(errors).toHaveBeenCalledWith(
+      'Failed to load accessible agents for the notifications stream:',
+      expect.any(Error),
+    )
+    errors.mockRestore()
   })
 })

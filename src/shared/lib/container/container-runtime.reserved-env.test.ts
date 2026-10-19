@@ -110,9 +110,12 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
+}))
+
 vi.mock('./message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: vi.fn(),
     setStopContainerCallback: vi.fn(),
     setUnexpectedDeathCallback: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
@@ -167,6 +170,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 
 import { containerHost } from './container-host'
 import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { createFakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 
 describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reserved runtime env vars', () => {
@@ -336,7 +340,7 @@ describe('ContainerHost.watchWebhookRelay', () => {
     relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
     stop()
 
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'webhook_relay_changed',
       status: { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null },
     })

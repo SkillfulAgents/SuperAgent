@@ -1,4 +1,4 @@
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import type { NotificationChannel } from './types'
 import type { NotificationEvent } from '../notification-event'
 
@@ -13,7 +13,7 @@ export class ClientBroadcastChannel implements NotificationChannel {
   readonly id = 'client_broadcast'
 
   async deliver(event: NotificationEvent): Promise<void> {
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'os_notification',
       notificationId: event.notificationId,
       notificationType: event.type,

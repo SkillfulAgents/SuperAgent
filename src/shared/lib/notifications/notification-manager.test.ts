@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
       sessionScheduled: true,
     },
   })),
-  broadcastGlobal: vi.fn(),
+  publishGlobal: vi.fn(),
   promoteAutomatedSession: vi.fn(async () => {}),
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
@@ -60,15 +60,18 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/services/agent-owner', () => ({
   getAgentOwnerUserId: mocks.getAgentOwnerUserId,
 }))
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: mocks.publishGlobal, subscribe: () => () => {} },
+}))
+
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: mocks.broadcastGlobal,
     promoteAutomatedSession: mocks.promoteAutomatedSession,
   },
 }))
 // The web-push channel reads real push-subscription rows on deliver; stub it
 // so these tests never open a database. The client-broadcast channel stays
-// real — the broadcastGlobal assertions below are its contract.
+// real — the global-feed publish assertions below are its contract.
 vi.mock('./channels/web-push-channel', () => ({
   WebPushChannel: class {
     id = 'web_push'
@@ -78,7 +81,7 @@ vi.mock('./channels/web-push-channel', () => ({
 
 const mockCreateNotification = mocks.createNotification
 const mockGetSessionMetadata = mocks.getSessionMetadata
-const mockBroadcastGlobal = mocks.broadcastGlobal
+const mockPublishGlobal = mocks.publishGlobal
 const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
 
 import { notificationManager } from './notification-manager'
@@ -114,7 +117,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
       title: 'Demo Agent finished',
       body: 'Done. The report is ready.',
     })
-    expect(mockBroadcastGlobal).toHaveBeenCalledWith(
+    expect(mockPublishGlobal).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'os_notification',
         title: 'Demo Agent finished',
@@ -310,7 +313,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
         agentSlug: 'agent-x',
       })
     )
-    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
+    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
   })
 
   it('creates a notification when no metadata exists (treat as user session)', async () => {
@@ -323,7 +326,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
     mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
     expect(mockCreateNotification).not.toHaveBeenCalled()
-    expect(mockBroadcastGlobal).not.toHaveBeenCalled()
+    expect(mockPublishGlobal).not.toHaveBeenCalled()
     expect(mocks.createSummarizerText).not.toHaveBeenCalled()
   })
 
@@ -485,8 +488,8 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       'Allow GET request to Gmail?',
     )
 
-    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload).toMatchObject({
       type: 'os_notification',
       notificationType: 'session_waiting',
@@ -515,7 +518,7 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       'review-1',
       'Allow?',
     )
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload.actionContext.notificationId).toBe('notif-abc')
   })
 
@@ -526,7 +529,7 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       'review-1',
       'Allow?',
     )
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload.title).toContain('API Request Review')
   })
 
@@ -542,7 +545,7 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       undefined,
       'agent_action',
     )
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload.title).toContain('Agent Action Review')
     expect(payload.title).not.toContain('API Request Review')
   })

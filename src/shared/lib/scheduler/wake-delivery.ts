@@ -13,7 +13,7 @@
  */
 
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
   getScheduledTask,
@@ -128,7 +128,7 @@ export async function deliverSessionWake(
 
     // The pending wake is session-level state (badges, resume banner) — nudge
     // session lists and the open session view to refetch.
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'session_updated',
       sessionId,
       agentSlug: task.agentSlug,

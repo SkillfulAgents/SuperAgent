@@ -2,6 +2,7 @@ vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testi
 import * as integrationStore from './store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { InterruptSessionResult } from '../container/types'
+import type { GlobalFeedEvent } from '../notifications/global-feed'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
@@ -13,7 +14,7 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
-  global: undefined as ((event: unknown) => void) | undefined, interrupt: vi.fn<(sessionId: string) => Promise<InterruptSessionResult>>(),
+  global: undefined as ((event: GlobalFeedEvent) => void) | undefined, interrupt: vi.fn<(sessionId: string) => Promise<InterruptSessionResult>>(),
   authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
   syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
@@ -66,7 +67,8 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: (callback: (event: unknown) => void) => { state.global = callback; return () => { state.global = undefined } } } }))
+vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: {} }))
+vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: { subscribe: (listener: (event: GlobalFeedEvent) => void) => { state.global = listener; return () => { state.global = undefined } } } }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 

@@ -35,7 +35,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from './store'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
@@ -1454,7 +1454,7 @@ export class AgentIntegrationManager {
    */
   private subscribeGlobalNotifications(): void {
     if (this.globalNotificationUnsubscribe) return
-    this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
+    this.globalNotificationUnsubscribe = globalFeed.subscribe((event) => {
       this.handleGlobalNotification(event).catch((err) => {
         console.error('[AgentIntegrationManager] Error handling global notification:', err)
         reportError(err, 'global-notification')

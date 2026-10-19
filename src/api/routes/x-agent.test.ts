@@ -185,7 +185,11 @@ const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
-const mockBroadcastGlobal = vi.fn()
+const mockPublishGlobal = vi.fn()
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
+}))
+
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
@@ -201,7 +205,6 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
     markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
     setSlashCommands: vi.fn(),
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
   },
 }))
 
@@ -548,7 +551,7 @@ describe('/create', () => {
     })
 
     let ownerAclAtBroadcast: Array<{ userId: string; role: string }> = []
-    mockBroadcastGlobal.mockImplementation(() => {
+    mockPublishGlobal.mockImplementation(() => {
       ownerAclAtBroadcast = testDb
         .select()
         .from(schema.agentAcl)
@@ -561,8 +564,8 @@ describe('/create', () => {
     expect(res.status).toBe(200)
 
     expect(ownerAclAtBroadcast).toEqual([{ userId: OWNER_USER_ID, role: 'owner' }])
-    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
-    expect(mockBroadcastGlobal).toHaveBeenCalledWith({
+    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
+    expect(mockPublishGlobal).toHaveBeenCalledWith({
       type: 'agent_created',
       agentSlug: 'a1b2c3d4e5',
     })

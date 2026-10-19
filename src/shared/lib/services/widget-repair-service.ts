@@ -1,6 +1,6 @@
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import type { SessionMetadata } from '@shared/lib/types/agent'
@@ -195,7 +195,7 @@ async function startRepairSession(
     await actor.sessions.subscribeStream(session.id, session.id)
     actor.sessions.markActive(session.id)
     // The home entry and inbound history may already be mounted.
-    messagePersister.broadcastGlobal({ type: 'session_updated', agentSlug, sessionId: session.id })
+    globalFeed.publish({ type: 'session_updated', agentSlug, sessionId: session.id })
     console.log(`[WidgetRepair] ${agentSlug}/${widgetSlug}: opened repair session ${session.id}`)
     return { started: true, sessionId: session.id }
   } catch (err) {

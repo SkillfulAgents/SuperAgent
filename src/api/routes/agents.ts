@@ -74,7 +74,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { servedRange } from '@shared/lib/utils/http-range'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -1216,6 +1216,9 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
     role: 'owner',
     createdAt: new Date(),
   })
+  // Notification streams load the user's agents when they open; this tells
+  // the creator's open streams to load again, so the new agent's events reach them.
+  globalFeed.publish({ type: 'agent_created', agentSlug })
 }
 
 // Insert the owner ACL for a just-created agent, rolling back the on-disk
@@ -1458,7 +1461,7 @@ agents.put('/:id/avatar', ResolveAgent(), AgentAdmin(), zValidator('json', agent
   const avatar = await updateAgentAvatar(slug, c.req.valid('json'))
   if (!avatar) return c.json({ error: 'Agent not found' }, 404)
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: ['avatar'] } })
-  messagePersister.broadcastGlobal({ type: 'agent_updated', agentSlug: slug })
+  globalFeed.publish({ type: 'agent_updated', agentSlug: slug })
   return c.json(avatar)
 })
 
@@ -2966,7 +2969,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
           // the previous session metadata. Tell both the local session stream
           // and the global event stream to refresh before their next send.
           agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
-          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+          globalFeed.publish({ type: 'session_updated', sessionId, agentSlug })
         }
       } catch (error) {
         console.error(error)
