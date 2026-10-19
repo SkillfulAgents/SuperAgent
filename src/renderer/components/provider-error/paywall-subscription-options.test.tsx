@@ -284,12 +284,12 @@ describe('subscription paywall recovery', () => {
   it('uses the concrete MiniMax model when filtering model-specific usage windows', async () => {
     saved = [savedSubscription({
       id: 'saved-minimax', name: 'MiniMax Plan', provider: 'minimax-subscription', defaultModel: 'minimax',
-      catalog: [{ id: 'MiniMax-M3.1-Flash-Preview', label: 'MiniMax', family: 'minimax', isLatest: true, contextWindow: 200000, supportedEfforts: [] }],
+      catalog: [{ id: 'MiniMax-M3.1-Flash', label: 'MiniMax', family: 'minimax', isLatest: true, contextWindow: 200000, supportedEfforts: [] }],
     })]
     usageByConnection['saved-minimax'] = {
       status: 'available', observedAt: new Date().toISOString(), limits: [
         { kind: 'window', id: '0-weekly', label: 'MiniMax-M3 · Weekly', usedPercent: 100 },
-        { kind: 'window', id: '1-weekly', label: 'MiniMax-M3.1-Flash-Preview · Weekly', usedPercent: 20 },
+        { kind: 'window', id: '1-weekly', label: 'MiniMax-M3.1-Flash · Weekly', usedPercent: 20 },
       ],
     }
     mount()
