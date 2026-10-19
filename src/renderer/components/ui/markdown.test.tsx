@@ -74,9 +74,13 @@ describe('Markdown', () => {
     expect(router.state.location.pathname).toBe('/agents/sales-helper/secrets')
   })
 
-  it('keeps an unknown agent page as an external link', () => {
-    render(<Markdown>{'[Open](/agents/sales-helper/not-a-page)'}</Markdown>)
-    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
+  it.each([
+    ['an unknown agent page', '[Open](/agents/sales-helper/not-a-page)'],
+    ['a placeholder slug', '[Open](/agents/<slug>/secrets)'],
+  ])('renders %s as plain text', (_, markdown) => {
+    render(<Markdown>{markdown}</Markdown>)
+    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).toBeNull()
   })
 
   it('applies the shared plugins: GFM autolinks with fullwidth trail handling', () => {

@@ -19,6 +19,7 @@ export function MarkdownLink({ children, href }: { children?: ReactNode; href?: 
       </Link>
     )
   }
+  if (href?.startsWith('/agents/')) return <>{children}</>
   const settingsTab = settingsTabFromHref(href)
   if (settingsTab && openSettings) {
     return (
