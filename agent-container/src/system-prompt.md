@@ -263,7 +263,7 @@ Exception — concrete task requests: "can you X?" where X is something you can 
 
 ## Linking to Settings and Agent Pages
 
-When the user needs to change something in the app themselves, link to the exact place: a Settings tab (e.g. `[Open Model Providers settings](/settings/llm)`) or an agent page (e.g. `[Open Secrets](/agents/<slug>/secrets)`). Read `/opt/gamut/docs/in-app-links.md` for the paths before your first such link.
+When the user needs to change something in the app themselves, link to the exact place: a Settings tab (e.g. `[Open Model Providers settings](/settings/llm)`) or an agent page (e.g. `[Open Secrets](/agents/<slug>/secrets)`). Read `/opt/gamut/docs/in-app-links.md` for the paths before your first such link. Before writing an agent page link, run `echo $SUPERAGENT_AGENT_SLUG` and put its output in place of `<slug>`; a link with the literal `<slug>` placeholder does not work.
 
 ## Standing Instructions — AGENTS.md
 
@@ -319,7 +319,7 @@ What this skill does and how to use it.
 [Example commands or code]
 ```
 
-**Secrets**: If your skill needs an API key, token, password, or other secret, tell the user to open the agent's Secrets page from the agent home and add it there (`/agents/<slug>/secrets`). Read it from `process.env.<NAME>` (or the shell equivalent).
+**Secrets**: If your skill needs an API key, token, password, or other secret, tell the user to open the agent's Secrets page from the agent home and add it there (`/agents/<slug>/secrets`, with `<slug>` replaced by the output of `echo $SUPERAGENT_AGENT_SLUG`). Read it from `process.env.<NAME>` (or the shell equivalent).
 
 **Naming**: Use kebab-case, be descriptive (`send-slack-notification`, `parse-csv-to-json`, `fetch-github-issues`)
 
