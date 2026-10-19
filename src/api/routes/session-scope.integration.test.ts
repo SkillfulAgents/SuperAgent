@@ -7,7 +7,7 @@
  * it were replaced with a broken one.
  *
  * This file closes that gap. The session service, the file-storage paths and
- * the message persister are all real, over a real temp data dir. Only the
+ * the agents' live sessions are all real, over a real temp data dir. Only the
  * container, the db and the auth middleware are stubbed.
  *
  * EVERY assertion here is phrased against an OBSERVABLE security property —
@@ -23,8 +23,8 @@ import * as path from 'path'
 import * as os from 'os'
 
 // ---------------------------------------------------------------------------
-// Stubs. Note what is NOT here: session-service, file-storage, fs and
-// message-persister are all REAL.
+// Stubs. Note what is NOT here: session-service, file-storage, fs and the
+// agents' live sessions are all REAL.
 // ---------------------------------------------------------------------------
 
 const mockInterruptSession = vi.fn((..._args: unknown[]) => Promise.resolve({ interrupted: true, processKept: true }))
@@ -193,11 +193,8 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 
 // Import after every mock is registered.
 import agents from './agents'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
-
-// The registry attaches the real stores; these tests drive the persister alone.
-messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
 import { registerSession, sessionExists } from '@shared/lib/services/session-service'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 
@@ -216,27 +213,6 @@ let victimEvents: unknown[]
 let attackerEvents: unknown[]
 let cleanupVictimSse: () => void
 let cleanupAttackerSse: () => void
-
-function makeMockClient() {
-  let onMessage: ((m: unknown) => void) | null = null
-  return {
-    _emit(content: unknown) {
-      onMessage?.({ type: 'message', content, timestamp: new Date(), sessionId: 'x' })
-    },
-    start: vi.fn(), stop: vi.fn(), stopSync: vi.fn(), getInfoFromRuntime: vi.fn(), getInfo: vi.fn(),
-    fetch: vi.fn(), waitForHealthy: vi.fn(), isHealthy: vi.fn(), getStats: vi.fn(),
-    createSession: vi.fn(), getSession: vi.fn(async () => null), deleteSession: vi.fn(),
-    sendMessage: vi.fn(), interruptSession: vi.fn(),
-    subscribeToStream: vi.fn((_id: string, cb: (m: unknown) => void) => {
-      onMessage = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    on: vi.fn(), off: vi.fn(), onFatalResult: vi.fn(() => 'settle'),
-    observeUnexpectedDeath: vi.fn(async () => ({ action: 'settle' })),
-    getRuntimeGenerationId: vi.fn(() => null),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any
-}
 
 function app(): Hono {
   const a = new Hono()
@@ -288,21 +264,21 @@ beforeEach(async () => {
   writeTranscript(ATTACKER, attackerSession)
 
   // The victim's session is LIVE: subscribed and streaming.
-  await messagePersister.subscribeToSession(VICTIM, victimSession, makeMockClient(), victimSession)
-  await messagePersister.subscribeToSession(ATTACKER, attackerSession, makeMockClient(), attackerSession)
-  messagePersister.markSessionActive(VICTIM, victimSession)
+  await agentRegistry.get(VICTIM).sessions.subscribeStream(victimSession, victimSession)
+  await agentRegistry.get(ATTACKER).sessions.subscribeStream(attackerSession, attackerSession)
+  agentRegistry.get(VICTIM).sessions.markActive(victimSession)
 
   victimEvents = []
   attackerEvents = []
-  cleanupVictimSse = messagePersister.addSSEClient(VICTIM, victimSession, (d) => { victimEvents.push(d) })
-  cleanupAttackerSse = messagePersister.addSSEClient(ATTACKER, attackerSession, (d) => { attackerEvents.push(d) })
+  cleanupVictimSse = agentRegistry.get(VICTIM).messages.subscribe(victimSession, (d) => { victimEvents.push(d) })
+  cleanupAttackerSse = agentRegistry.get(ATTACKER).messages.subscribe(attackerSession, (d) => { attackerEvents.push(d) })
 })
 
 afterEach(() => {
   cleanupVictimSse?.()
   cleanupAttackerSse?.()
-  messagePersister.unsubscribeFromSession(VICTIM, victimSession)
-  messagePersister.unsubscribeFromSession(ATTACKER, attackerSession)
+  agentRegistry.get(VICTIM).sessions.unsubscribeStream(victimSession)
+  agentRegistry.get(ATTACKER).sessions.unsubscribeStream(attackerSession)
   realFs.rmSync(tmpDir, { recursive: true, force: true })
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
@@ -313,8 +289,8 @@ afterEach(() => {
  * Note what it does NOT mention: status codes, ownership indexes, map keys.
  */
 function expectVictimUntouched(): void {
-  expect(messagePersister.isSessionActive(VICTIM, victimSession)).toBe(true)
-  expect(messagePersister.isSubscribed(VICTIM, victimSession)).toBe(true)
+  expect(agentRegistry.get(VICTIM).sessions.isActive(victimSession)).toBe(true)
+  expect(agentRegistry.get(VICTIM).sessions.isStreamSubscribed(victimSession)).toBe(true)
   expect(victimEvents).toEqual([])
 }
 

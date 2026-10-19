@@ -902,7 +902,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   onFatalResult(kind: MicrovmFatalResult): 'settle' | 'defer_for_recovery' {
-    // The persister records the fatal and runtime-recovery hands it back via
+    // The container runtime records the fatal and runtime-recovery hands it back via
     // ObserveUnexpectedDeathInput; keeping a second copy here would go stale.
     return kind === 'oom_sigkill' ? 'defer_for_recovery' : 'settle'
   }

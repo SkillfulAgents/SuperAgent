@@ -4,7 +4,7 @@
  * `agentRegistry.get(slug)` returns an `AgentActor`: a handle with typed method
  * groups (`container`, `sessions`, `messages`, `inputs`, `files`, `memories`). Consumers
  * outside `src/shared/lib/container/**` and this package talk to an agent only
- * through this handle; the container manager, message persister, and the
+ * through this handle; the container manager, the live sessions, and the
  * input/review/permission stores are internal to it.
  *
  * Runtime methods delegate to the underlying call named by their comments.
@@ -19,7 +19,7 @@
  *
  * Two methods are synchronous snapshots of in-memory state —
  * `container.status()` and `sessions.activity()` — alongside the other
- * synchronous persister reads. Everything that does I/O returns a Promise.
+ * synchronous live-session reads. Everything that does I/O returns a Promise.
  */
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
@@ -38,7 +38,8 @@ import type {
   StopOptions,
 } from '@shared/lib/container/types'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
-import type { ActiveBackgroundTaskSnapshot, ActiveSubagentSnapshot } from '@shared/lib/container/message-persister'
+import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
+import type { ActiveSubagentSnapshot } from './live/subagents'
 import type { WebSocket } from 'ws'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
@@ -341,82 +342,82 @@ export interface SessionOps {
   /** `client.warmSession` — resume the session's CLI ahead of its next message. Best-effort; never throws. */
   warm(sessionId: string): Promise<boolean>
 
-  // Activity — messagePersister. Synchronous reads of in-memory state.
+  // Activity — the agent's `LiveSessions`. Synchronous reads of in-memory state.
 
-  /** `messagePersister.getSessionActivity` — synchronous snapshot. */
+  /** `LiveSessions.activity` — synchronous snapshot. */
   activity(sessionId: string): SessionActivity
-  /** `messagePersister.isSessionActive` */
+  /** `LiveSessions.isActive` */
   isActive(sessionId: string): boolean
-  /** `messagePersister.isSessionAwaitingInput` */
+  /** `LiveSessions.isAwaitingInput` */
   isAwaitingInput(sessionId: string): boolean
-  /** `messagePersister.markSessionActive` */
+  /** `LiveSessions.markActive` */
   markActive(sessionId: string): void
   /** Mark active; the returned undo runs only if no new send, turn, or output took ownership. */
   markProvisionalActive(sessionId: string): () => void
-  /** `messagePersister.markSessionIdle` */
+  /** `LiveSessions.markIdle` */
   markIdle(sessionId: string): void
-  /** `messagePersister.markSessionInterrupted` */
-  markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): Promise<void>
-  /** `messagePersister.getTurnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
+  /** `LiveSessions.markInterrupted` */
+  markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): void
+  /** `LiveSessions.turnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
   turnGeneration(sessionId: string): number
   /** Last emitted backend outcome, replayed on renderer reconnect and heartbeat. */
   turnOutcome(sessionId: string): import('../container/session-turn-outcome-schema').SessionTurnOutcome | null
-  /** `messagePersister.isSessionWaitingBackground` */
+  /** `LiveSessions.isWaitingBackground` */
   isWaitingBackground(sessionId: string): boolean
-  /** `messagePersister.hasOnlyUntrackedBackgroundWork` */
+  /** `LiveSessions.hasOnlyUntrackedBackgroundWork` */
   hasOnlyUntrackedBackgroundWork(sessionId: string): boolean
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
-  /** `messagePersister.waitForIdle` */
+  /** `LiveSessions.waitForIdle` */
   waitForIdle(
     sessionId: string,
     opts?: { timeoutMs?: number; signal?: AbortSignal; requireActiveFirst?: boolean; observeMs?: number },
   ): Promise<void>
-  /** `messagePersister.getActiveSessionIdsForAgent` */
+  /** `LiveSessions.activeIds` */
   activeIds(): string[]
-  /** `messagePersister.hasActiveSessionsForAgent` */
+  /** `LiveSessions.hasActive` */
   hasActive(): boolean
-  /** `messagePersister.hasSessionsAwaitingInputForAgent` */
+  /** `LiveSessions.hasAwaitingInput` */
   hasAwaitingInput(): boolean
-  /** `messagePersister.markAllSessionsInactiveForAgent` */
+  /** `LiveSessions.markAllInactive` */
   markAllInactive(options?: { settleRecovering?: boolean }): void
-  /** `messagePersister.syncAgentSessionsAwaiting` */
+  /** `LiveSessions.syncAwaiting` */
   syncAwaiting(): void
   /**
-   * `messagePersister.broadcastSessionUpdate`: tell the session's stream
+   * Emit `session_updated`: tell the session's stream
    * listeners that its metadata changed (a rename, a model or effort change)
    * so they refetch before their next send.
    */
   broadcastUpdate(sessionId: string): void
-  /** `messagePersister.recoverSessionAwaitingInput` */
+  /** `LiveSessions.recoverAwaitingInput` */
   recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
   /**
-   * `messagePersister.promoteAutomatedSession`. `metadata` is the session's
+   * `LiveSessions.promoteAutomated`. `metadata` is the session's
    * entry as the caller just read it; resolves to the entry as it now stands.
    */
   promoteAutomated(sessionId: string, metadata?: SessionMetadata | null): Promise<SessionMetadata | null>
-  /** `messagePersister.grantSessionCapability` */
+  /** `LiveSessions.grantCapability` */
   grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): void
-  /** `messagePersister.getSlashCommands` */
+  /** `LiveSessions.slashCommands` */
   slashCommands(sessionId: string): SlashCommandInfo[]
-  /** `messagePersister.setSlashCommands` */
+  /** `LiveSessions.setSlashCommands` */
   setSlashCommands(sessionId: string, commands: SlashCommandInfo[]): void
-  /** `messagePersister.getActiveBackgroundTasks` */
+  /** `LiveSessions.backgroundTasks` */
   backgroundTasks(sessionId: string): ActiveBackgroundTaskSnapshot[]
-  /** `messagePersister.getActiveSubagents` — running and completed subagents for the current turn. */
+  /** `LiveSessions.activeSubagents` — running and completed subagents for the current turn. */
   activeSubagents(sessionId: string): ActiveSubagentSnapshot[]
 
-  // Container stream attachment — messagePersister follows the container's
-  // stream for a session and persists what arrives.
+  // Container stream attachment — the agent's `LiveSessions` follows the
+  // container's stream for a session and persists what arrives.
 
   /**
-   * `messagePersister.subscribeToSession` with this agent's client. `metadata`
+   * `LiveSessions.subscribe` with this agent's client. `metadata`
    * is the session's entry as the caller just read it (null: none).
    */
   subscribeStream(sessionId: string, containerSessionId: string, metadata?: SessionMetadata | null): Promise<void>
-  /** `messagePersister.unsubscribeFromSession` */
+  /** `LiveSessions.unsubscribe` */
   unsubscribeStream(sessionId: string): void
-  /** `messagePersister.isSubscribed` */
+  /** `LiveSessions.isSubscribed` */
   isStreamSubscribed(sessionId: string): boolean
 }
 
@@ -429,7 +430,7 @@ export interface MessageOps {
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
   /** `client.interruptSession` */
   interrupt(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
-  /** `messagePersister.withSessionSend` with this agent's client — brackets a send so a fast reply cannot land before the active mark. */
+  /** `LiveSessions.withSend` with this agent's client — brackets a send so a fast reply cannot land before the active mark. */
   withSend<T>(sessionId: string, send: () => Promise<T>): Promise<T>
 
   // Transcript reads and edits — session-service.
@@ -466,15 +467,15 @@ export interface MessageOps {
   /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
   media(sessionId: string, ref: MediaRef, signal?: AbortSignal): Promise<MediaBlob | undefined>
 
-  // Fan-out and recovery — messagePersister.
+  // Fan-out and recovery — the agent's `LiveSessions`.
 
-  /** `messagePersister.addSSEClient` — returns the unsubscribe function. */
+  /** `LiveSessions.listen` — returns the unsubscribe function. */
   subscribe(sessionId: string, listener: (data: unknown) => void): () => void
-  /** `messagePersister.broadcastSessionEvent` */
+  /** `LiveSessions.emit` */
   broadcastEvent(sessionId: string, data: unknown): void
-  /** `messagePersister.coalesceIfRecovering` */
+  /** `LiveSessions.coalesceIfRecovering` */
   coalesceIfRecovering(sessionId: string, message: CoalescedUserMessage): boolean
-  /** `messagePersister.dropCoalescedUserMessage` */
+  /** `LiveSessions.dropCoalesced` */
   dropCoalescedUserMessage(sessionId: string, uuid: string): boolean
 }
 
@@ -506,15 +507,15 @@ export interface InputOps {
   /** `AgentInputRequests.enrichOpenRequestPayload` */
   enrich(id: string, kind: PendingUserInputRequest['kind'], enrichment: Record<string, unknown>): boolean
 
-  // Settlement — messagePersister.
+  // Settlement — the agent's `LiveSessions`.
 
-  /** `messagePersister.completeInputRequest`. `sessionId` undefined = take it from the request's scope. */
+  /** `LiveSessions.completeRequest`. `sessionId` undefined = take it from the request's scope. */
   complete(sessionId: string | undefined, toolUseId: string, outcome: UserInputRequestOutcome): void
-  /** `messagePersister.completeCapabilityReview` */
+  /** `LiveSessions.completeCapabilityReview` */
   completeCapabilityReview(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
-  /** `messagePersister.cancelAwaitingInput` */
+  /** `LiveSessions.cancelAwaitingInput` */
   cancelAwaiting(sessionId: string): Promise<void>
-  /** `messagePersister.getSettledInputRequests` */
+  /** `LiveSessions.settledRequests` */
   settled(sessionId: string): Map<string, UserInputRequestOutcome>
 
   readonly reviews: ReviewOps
@@ -568,7 +569,7 @@ export interface ComputerUseOps {
   consumeOnce(level: ComputerUsePermissionLevel, appName?: string): void
   /** `AgentComputerUse.revoke` */
   revokeGrant(level: ComputerUsePermissionLevel, appName?: string): void
-  /** `messagePersister.clearPendingComputerUseRequest` */
+  /** `LiveSessions.clearComputerUseRequest` */
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
   /**
    * Run an approved computer-use request: claim it, run the command on the

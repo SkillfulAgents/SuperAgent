@@ -2,8 +2,8 @@
  * Session-scoped routes must be scoped to the session, not just to the agent.
  *
  * Auth-mode routes authorize the AGENT in the URL. The session id in the URL was
- * never checked against it, and the registries these routes drive — the message
- * persister above all — are keyed by session id ALONE, with no agent dimension.
+ * never checked against it, and the registries these routes drove — the old
+ * message persister above all — were keyed by session id ALONE, with no agent dimension.
  * So a user holding a role on their own agent could name a stranger's session id
  * and reach it: subscribe to its live event stream, interrupt it, post into it.
  *

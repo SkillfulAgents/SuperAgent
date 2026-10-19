@@ -22,7 +22,7 @@ import {
  * here and in another agent's store at once).
  *
  * Everything downstream derives from the store: the session "awaiting input"
- * status (`isSessionAwaiting` — the persister's bit is an edge-detection
+ * status (`isSessionAwaiting` — the live session's bit is an edge-detection
  * cache of that projection), the unified wire events, the snapshot endpoint,
  * OS notifications, and the decision routes' already-settled gate. The
  * process-wide `userInputRequestManager` is the router in front of every
@@ -381,7 +381,7 @@ export class AgentInputRequests {
    * Derived awaiting projection for a session: any open real wait scoped to
    * the session, plus any agent-scoped real wait (a parked review blocks every
    * session of the agent). This is the source of truth for "awaiting input" —
-   * the persister recomputes it after every transition and broadcasts on the
+   * the live session recomputes it after every transition and broadcasts on the
    * edges.
    */
   isSessionAwaiting(sessionId: string): boolean {

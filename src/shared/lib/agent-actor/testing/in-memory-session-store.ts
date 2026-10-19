@@ -1,6 +1,6 @@
 /**
- * A `SessionStore` over an in-memory workspace: for tests that drive the
- * message persister, or the session service, without a directory on disk.
+ * A `SessionStore` over an in-memory workspace: for tests that drive an
+ * agent's live sessions, or the session service, without a directory on disk.
  */
 import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '../session-store'

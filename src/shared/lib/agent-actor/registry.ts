@@ -1,5 +1,4 @@
 import { containerHost } from '@shared/lib/container/container-host'
-import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
@@ -28,11 +27,9 @@ import type { AgentActor, AgentRegistry, AgentSlug } from './types'
  * container state behind it is the agent's `ContainerRuntime`, held by the
  * container host and created on first use. Evicting a handle releases both.
  *
- * The registry also hands the message persister the way to each agent's
- * session store: the persister is inside the actor and cannot ask the
- * registry, and the store it stats and appends to must be the one the
- * agent's actor reads. In the same way it hands the user-input, review,
- * re-auth and computer-use routers the way to each actor's stores.
+ * The registry also hands the container host the way to each agent's
+ * workspace and live sessions, and the user-input, review, re-auth and
+ * computer-use routers the way to each actor's stores.
  */
 export function createAgentRegistry(
   deps: LocalActorDeps,
@@ -40,9 +37,9 @@ export function createAgentRegistry(
     /**
      * State the actors own that outlived an earlier registry: in development
      * the backend modules are re-evaluated on edit (the Vite adapter reloads
-     * the SSR entry in the same process), and the host, the persister and the
-     * routers all survive that on `globalThis`. What the actors hold — parked
-     * reviews and waits, open requests, grants — must survive with them, or a
+     * the SSR entry in the same process), and the host and the routers both
+     * survive that on `globalThis`. What the actors hold — live sessions,
+     * parked reviews and waits, open requests, grants — must survive with them, or a
      * reload strands every pending approval; so the singleton registry keeps
      * this map on `globalThis` too, and a reloaded module wraps each state in
      * a fresh handle: the new code over the state the old one built.
@@ -63,7 +60,11 @@ export function createAgentRegistry(
   // `all()` and reads through `peek` must see it without waiting for a `get`.
   for (const [slug, state] of states) wrap(slug, state)
 
-  const get = (slug: AgentSlug): LocalAgentActor => handles.get(slug) ?? wrap(slug)
+  // A handle this registry does not hold wraps the agent's state if another
+  // registry over the same map already made one. After a reload, a singleton
+  // that survived on `globalThis` still calls the registry of its own module
+  // evaluation; a fresh state there would replace the live one in the map.
+  const get = (slug: AgentSlug): LocalAgentActor => handles.get(slug) ?? wrap(slug, states.get(slug))
 
   const evict = (slug: AgentSlug): void => {
     // Release what the handle owns while its runtime still exists: settling
@@ -81,31 +82,15 @@ export function createAgentRegistry(
     files: (slug) => get(slug).files,
     instructions: (slug) => get(slug).config.get('instructions'),
   })
-
-  // The persister's way to the agents' session stores is attached on first
-  // use, not at construction: this module and the persister import each
-  // other, and the persister is not initialized while this module evaluates.
-  // Every path that gives the persister a session to work on goes through a
-  // handle first. A test double of the persister may not carry the port; the
-  // real one does.
-  let attached = false
-  const attach = () => {
-    if (attached) return
-    attached = true
-    deps.messagePersister.attachSessionStores?.((slug) => get(slug).store)
-    deps.messagePersister.attachHost?.(deps.host)
-  }
+  // A runtime marks and recovers only sessions that are live, and a live
+  // session is always on a held actor: peeking never creates one.
+  deps.containerHost.attachAgentSessions({ peek: (slug) => handles.get(slug)?.state.sessions })
 
   // The routers over the actors' stores get the same: one directory each,
   // reading through the handles, so nothing is stored anywhere but on them.
-  // A router creating a handle is a first use like any other, so the
-  // persister is attached then too. A test double may not carry the port;
-  // the real routers do.
+  // A test double may not carry the port; the real routers do.
   const directory = <T>(pick: (state: AgentState) => T): AgentStoreDirectory<T> => ({
-    get: (slug) => {
-      attach()
-      return pick(get(slug).state)
-    },
+    get: (slug) => pick(get(slug).state),
     peek: (slug) => {
       const actor = handles.get(slug)
       return actor ? pick(actor.state) : undefined
@@ -119,15 +104,9 @@ export function createAgentRegistry(
   deps.computerUsePermissionManager.attachAgents?.(directory((state) => state.computerUse))
 
   return {
-    get: (slug): AgentActor => {
-      attach()
-      return get(slug)
-    },
+    get: (slug): AgentActor => get(slug),
     peek: (slug) => handles.get(slug),
-    running: () => {
-      attach()
-      return deps.containerHost.getRunningAgentIds().map(get)
-    },
+    running: () => deps.containerHost.getRunningAgentIds().map(get),
     evict,
     evictAll: () => {
       // Release every handle first, while the runtimes still exist, then let
@@ -142,7 +121,7 @@ export function createAgentRegistry(
 }
 
 // The actors' state persists across dev-server hot reloads on globalThis,
-// matching the host, the persister and the routers it is wired to: a reload
+// matching the host and the routers it is wired to: a reload
 // that kept the routers but lost the state would leave every parked approval
 // undecidable. See `createAgentRegistry`.
 const globalForRegistry = globalThis as unknown as {
@@ -160,9 +139,6 @@ if (process.env.NODE_ENV !== 'production') {
 export const agentRegistry: AgentRegistry = createAgentRegistry({
   get containerHost() {
     return containerHost
-  },
-  get messagePersister() {
-    return messagePersister
   },
   get userInputRequestManager() {
     return userInputRequestManager

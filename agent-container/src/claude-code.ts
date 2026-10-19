@@ -1203,7 +1203,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).
         // server.ts announces this capability on WebSocket connect — keep the two
-        // in sync. See message-persister.ts.
+        // in sync. See the host's live-session.ts.
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         // The id of the session this process IS, inherited by every Bash
         // child. /opt/gamut/bin/list-sessions.py and read-session.py use it
@@ -1444,7 +1444,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                   this.emit('capability-grant', { capability });
                 },
                 onReviewCancelled: (cancelledToolUseId, capability) => {
-                  // Same relay as SDK frames (persister → SSE → renderer),
+                  // Same relay as SDK frames (live session → SSE → renderer),
                   // so the host closes the orphaned approval card.
                   this.emit('message', {
                     type: 'capability_review_cancelled',
@@ -1723,7 +1723,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           } else {
             userError = errorMsg || 'An unexpected error occurred';
           }
-          // Emit synthetic result so downstream (WebSocket → message-persister → UI)
+          // Emit synthetic result so downstream (WebSocket → host's live session → UI)
           // knows the query failed and can transition to error state
           const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
           this.emit('message', {
@@ -2405,7 +2405,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return { promise, cancel: () => cleanup() };
   }
 
-  // Downstream (persister → SSE → renderer) learns each dead uuid through the
+  // Downstream (live session → SSE → renderer) learns each dead uuid through the
   // exact same pipeline as real SDK frames and can rescue the message text
   // deterministically instead of racing a refetch.
   private emitDiscarded(uuid: string): void {

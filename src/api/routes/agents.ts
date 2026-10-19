@@ -553,7 +553,7 @@ function getAttentionOutsideLatest(
     }
   }
 
-  // Also sample the persister projection. It covers recovered/racing state and
+  // Also sample the live sessions' projection. It covers recovered/racing state and
   // lets us classify hidden active sessions without ever returning their IDs.
   if (!hasPendingInput) {
     const candidateIds = new Set([
@@ -837,7 +837,7 @@ async function enrichAgentsWithSummary(
 }
 
 // Unresolved blocking user-input tool calls in the current (trailing) turn —
-// the recovery input for messagePersister.recoverSessionAwaitingInput when the
+// the recovery input for sessions.recoverAwaitingInput when the
 // one-shot request stream event was missed.
 function getUnresolvedBlockingInputRequests(
   items: TransformedItem[],
@@ -3442,13 +3442,13 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // This handles the case where container crashed/restarted but UI still shows active
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
-      await agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
+      agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
       agentRegistry.get(agentSlug).inputs.reviews.denyAll()
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
     // Try to interrupt in the container. The turn generation read here tells
-    // the persister whether the turn running afterwards is still the stopped one.
+    // the live session whether the turn running afterwards is still the stopped one.
     const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
     const { interrupted, processKept } = await actor.messages.interrupt(sessionId, { scope })
 
@@ -3460,8 +3460,8 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
 
     // processKept is the container's word, not the requested scope: a 'turn'
     // stop that had to fall back to a process restart killed the background
-    // tasks, and the persister must drop them.
-    await actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+    // tasks, and the live session must drop them.
+    actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
     actor.inputs.reviews.denyAll()
 
     return c.json({ success: true, processKept })
@@ -3470,7 +3470,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state.
     // Ownership was established above, so this reaches only the caller's session.
     try {
-      await agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
+      agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
       agentRegistry.get(agentSlug).inputs.reviews.denyAll()
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
@@ -4368,7 +4368,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       } catch (e) {
         console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
       }
-      await actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+      actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
@@ -6830,7 +6830,7 @@ agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
 // dashboard proxy so /artifacts/:slug/widget/* never reaches a dashboard.
 // ============================================================
 
-// The after-run trigger listens on the persister's global stream; arm it
+// The after-run trigger listens on the global feed; arm it
 // once when the routes register (both the web server and Electron main
 // import this module exactly once).
 widgetRefreshService.start()

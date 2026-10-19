@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
     },
   })),
   publishGlobal: vi.fn(),
-  promoteAutomatedSession: vi.fn(async () => {}),
+  promoteAutomated: vi.fn(async (_agentSlug: string, _sessionId: string) => null),
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
@@ -64,10 +64,10 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: mocks.publishGlobal, subscribe: () => () => {} },
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    promoteAutomatedSession: mocks.promoteAutomatedSession,
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    promoteAutomated: (agentSlug, sessionId) => mocks.promoteAutomated(agentSlug, sessionId),
+  }),
 }))
 // The web-push channel reads real push-subscription rows on deliver; stub it
 // so these tests never open a database. The client-broadcast channel stays
@@ -82,7 +82,7 @@ vi.mock('./channels/web-push-channel', () => ({
 const mockCreateNotification = mocks.createNotification
 const mockGetSessionMetadata = mocks.getSessionMetadata
 const mockPublishGlobal = mocks.publishGlobal
-const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
+const mockPromoteAutomated = mocks.promoteAutomated
 
 import { notificationManager } from './notification-manager'
 import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
@@ -439,9 +439,9 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionWaitingInput promotes before creating the notification', async () => {
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
-    expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockPromoteAutomated.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateNotification.mock.invocationCallOrder[0],
     )
   })
@@ -449,17 +449,17 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionApiReviewWaiting promotes too — the proxy-review path was the original gap', async () => {
     await notificationManager.triggerSessionApiReviewWaiting('sess-1', 'agent-x', 'review-1', 'Allow?')
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
   it('triggerSessionComplete does not promote', async () => {
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
-    expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
+    expect(mockPromoteAutomated).not.toHaveBeenCalled()
   })
 
   it('a promotion failure does not block the notification', async () => {
-    mockPromoteAutomatedSession.mockRejectedValueOnce(new Error('disk full'))
+    mockPromoteAutomated.mockRejectedValueOnce(new Error('disk full'))
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
@@ -474,7 +474,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
       },
     })
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 })

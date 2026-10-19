@@ -3,7 +3,7 @@ import { promises as fsPromises } from 'fs'
 import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { StreamMessage } from './types'
 
-// Dev-only capture of MessagePersister inputs, outputs, and FS snapshots.
+// Dev-only capture of the live sessions' inputs, outputs, and FS snapshots.
 // Enabled when SUPERAGENT_CAPTURE_DIR is set. Used to produce realistic
 // fixtures for the subagent-routing replay harness.
 

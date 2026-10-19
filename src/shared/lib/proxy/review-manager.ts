@@ -83,11 +83,11 @@ export class ReviewManager {
   }
 }
 
-// Use globalThis to persist across dev-server hot reloads, matching
-// messagePersister. The two are coupled: pending reviews write through to the
-// agents' user-input stores (which drive the persister's awaiting projection),
-// and both singletons survive reloads — so reviewManager must too, or a reload
-// would strand its pending reviews in a stale instance.
+// Use globalThis to persist across dev-server hot reloads, matching the
+// agents' state (see `createAgentRegistry`). The two are coupled: pending
+// reviews live in the agents' actors and write through to their user-input
+// stores (which drive the live sessions' awaiting projection), and that state
+// survives reloads — so the router in front of it must too.
 const globalForReviewManager = globalThis as unknown as {
   reviewManager: ReviewManager | undefined
 }

@@ -64,8 +64,10 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { isSessionActive },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (slug, sessionId) => isSessionActive(slug, sessionId),
+  }),
 }))
 
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({

@@ -7,17 +7,19 @@ import { ReviewManager } from '@shared/lib/proxy/review-manager'
 import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
 import { createAgentRegistry } from './registry'
 import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
+import type { SessionStore } from './session-store'
+import { createRecordingHostPort } from './testing/recording-host-port'
 
-// The singleton registry wires the real host and persister. These tests build
-// their own registry from fakes, so those modules are stubbed to keep the
+// The singleton registry wires the real container host. These tests build
+// their own registry from fakes, so that module is stubbed to keep the
 // import side-effect free. The per-agent stores (input requests, reviews,
 // re-auth waits, computer-use grants) and the routers over them are real:
 // they are the actor's own and are what the tests below exercise.
-vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {} } }))
-vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { attachSessionStores: () => {} } }))
+vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {} } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
 vi.mock('@shared/lib/services/session-service', () => ({}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
@@ -118,6 +120,7 @@ function fakeDeps() {
     dropRuntime: vi.fn(),
     clearRuntimes: vi.fn(),
     attachAgentWorkspaces: vi.fn(),
+    attachAgentSessions: vi.fn(),
   }
   const { inputManager, reviewManager, accountReauthManager, mcpReauthManager, computerUsePermissionManager } =
     routers()
@@ -136,14 +139,11 @@ function fakeDeps() {
   }
   const appendAssistantEntry = vi.fn()
   const recordSessionActivity = vi.fn()
-  const messagePersister = {
-    attachSessionStores: vi.fn(),
-    markSessionIdle: vi.fn(),
-    syncAgentSessionsAwaiting: vi.fn(),
-  }
+  // What the agents' live sessions send the host (request events, notifications).
+  const host = createRecordingHostPort()
   const deps = {
     containerHost,
-    messagePersister,
+    host: host.port,
     userInputRequestManager: inputManager,
     reviewManager,
     accountReauthManager,
@@ -162,7 +162,6 @@ function fakeDeps() {
   return {
     deps: deps as unknown as LocalActorDeps,
     containerHost,
-    messagePersister,
     runtimes,
     client,
     reviewManager,
@@ -236,6 +235,34 @@ describe('createAgentRegistry', () => {
     expect(getDoc).toHaveBeenCalledWith('instructions')
   })
 
+  describe('the container host reaches the held agents\' live sessions', () => {
+    const attached = () => {
+      expect(fake.containerHost.attachAgentSessions).toHaveBeenCalledTimes(1)
+      return fake.containerHost.attachAgentSessions.mock.calls[0][0] as AgentSessionsAccess
+    }
+
+    it('peeking never creates a handle', () => {
+      const registry = createAgentRegistry(fake.deps)
+      expect(attached().peek('a')).toBeUndefined()
+      expect(registry.peek('a')).toBeUndefined()
+    })
+
+    it('peeking a held agent answers its actor\'s live sessions', () => {
+      const registry = createAgentRegistry(fake.deps)
+      const a = registry.get('a') as LocalAgentActor
+      const b = registry.get('b') as LocalAgentActor
+      expect(attached().peek('a')).toBe(a.state.sessions)
+      expect(attached().peek('b')).toBe(b.state.sessions)
+    })
+
+    it('an evicted agent has no live sessions to peek', () => {
+      const registry = createAgentRegistry(fake.deps)
+      registry.get('a')
+      registry.evict('a')
+      expect(attached().peek('a')).toBeUndefined()
+    })
+  })
+
   it('evict drops the handle and forgets the runtime for that slug only', () => {
     const registry = createAgentRegistry(fake.deps)
     const a = registry.get('a')
@@ -289,18 +316,20 @@ describe('createAgentRegistry', () => {
       expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
     })
 
-    it('sessions.broadcastUpdate and syncAwaiting reach the persister scoped to this agent', () => {
-      const broadcastSessionUpdate = vi.fn()
-      const syncAgentSessionsAwaiting = vi.fn()
-      const deps = {
-        ...fake.deps,
-        messagePersister: { attachSessionStores: vi.fn(), broadcastSessionUpdate, syncAgentSessionsAwaiting },
-      } as unknown as LocalActorDeps
-      const actor = createAgentRegistry(deps).get('a')
+    it('sessions.broadcastUpdate and syncAwaiting reach this agent\'s live sessions only', () => {
+      const registry = createAgentRegistry(fake.deps)
+      const actor = registry.get('a') as LocalAgentActor
+      const other = (registry.get('b') as LocalAgentActor).state.sessions
+      const emit = vi.spyOn(actor.state.sessions, 'emit')
+      const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
+      const otherEmit = vi.spyOn(other, 'emit')
+      const otherSyncAwaiting = vi.spyOn(other, 'syncAwaiting')
       actor.sessions.broadcastUpdate('s1')
       actor.sessions.syncAwaiting()
-      expect(broadcastSessionUpdate).toHaveBeenCalledWith('a', 's1')
-      expect(syncAgentSessionsAwaiting).toHaveBeenCalledWith('a')
+      expect(emit).toHaveBeenCalledWith('s1', { type: 'session_updated' })
+      expect(syncAwaiting).toHaveBeenCalledTimes(1)
+      expect(otherEmit).not.toHaveBeenCalled()
+      expect(otherSyncAwaiting).not.toHaveBeenCalled()
     })
 
     it('container.openWebSocket targets this agent\'s container and adds its auth headers last', () => {
@@ -352,23 +381,24 @@ describe('createAgentRegistry', () => {
       })
     })
 
-    it('hands the persister this agent\'s session store, the one its own reads use', () => {
+    it('hands the live sessions this agent\'s session store, the one its own reads use', () => {
       const registry = createAgentRegistry(fake.deps)
-      const attach = (fake.deps.messagePersister as unknown as { attachSessionStores: ReturnType<typeof vi.fn> }).attachSessionStores
-      // On the first handle, once: the persister is not initialized while the registry module evaluates.
-      expect(attach).not.toHaveBeenCalled()
-      const actor = registry.get('a')
-      registry.get('b')
-      expect(attach).toHaveBeenCalledTimes(1)
-      const resolve = attach.mock.calls[0]![0] as (slug: string) => { slug: string; files: unknown; transcriptsDir: string }
-      const store = resolve('a')
+      const actor = registry.get('a') as LocalAgentActor
+      const other = registry.get('b') as LocalAgentActor
+      // The store is the sessions' own dependency, not on their public surface.
+      const storeOf = (handle: LocalAgentActor) =>
+        (handle.state.sessions as unknown as { deps: { store: SessionStore } }).deps.store
+      const store = storeOf(actor)
+      expect(store).toBe(actor.store)
       expect(store.slug).toBe('a')
       expect(store.files).toBe(actor.files)
       expect(store.transcriptsDir).toBe('.claude/projects/-workspace')
+      expect(storeOf(other)).toBe(other.store)
     })
 
     it('inputs.reviews.request parks the review on the actor\'s own store under its slug', async () => {
-      const actor = createAgentRegistry(fake.deps).get('a')
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
       const details = {
         accountId: 'acct',
         toolkit: 'gmail',
@@ -385,7 +415,8 @@ describe('createAgentRegistry', () => {
       expect(fake.inputManager.report).toHaveBeenCalledWith(expect.objectContaining({ type: 'created', request: open }))
       expect(actor.inputs.reviews.submit(open.id, 'allow')).toBe(true)
       await expect(decision).resolves.toBe('allow')
-      expect(fake.messagePersister.syncAgentSessionsAwaiting).toHaveBeenCalledWith('a')
+      // The review opening and closing changed whether the agent's sessions wait.
+      expect(syncAwaiting).toHaveBeenCalled()
     })
 
     it('transcript-adjacent reads bind the session store and forward the rest', async () => {
@@ -435,10 +466,13 @@ describe('createAgentRegistry', () => {
     })
 
     it('sessions.markIdle marks the runtime before the session goes idle', () => {
-      const actor = createAgentRegistry(fake.deps).get('a')
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      const markIdle = vi.spyOn(actor.state.sessions, 'markIdle')
       actor.sessions.markIdle('s1')
-      expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledTimes(1)
-      expect(fake.messagePersister.markSessionIdle).toHaveBeenCalledWith('a', 's1')
+      const noteSessionActivity = fake.runtimes.get('a')!.noteSessionActivity
+      expect(noteSessionActivity).toHaveBeenCalledTimes(1)
+      expect(markIdle).toHaveBeenCalledWith('s1')
+      expect(noteSessionActivity.mock.invocationCallOrder[0]).toBeLessThan(markIdle.mock.invocationCallOrder[0])
     })
   })
 
@@ -521,10 +555,10 @@ describe('createAgentRegistry', () => {
       }
       expect(directory.all()).toEqual([])
       expect(directory.peek('a')).toBeUndefined()
-      // A router creating the first handle is a first use: the persister gets its stores then.
-      expect(fake.messagePersister.attachSessionStores).not.toHaveBeenCalled()
+      expect(registry.peek('a')).toBeUndefined()
+      // A router's `get` is a first use like any other: it creates the handle.
       const store = directory.get('a')
-      expect(fake.messagePersister.attachSessionStores).toHaveBeenCalledTimes(1)
+      expect(registry.peek('a')).toBeDefined()
       expect(store).toBe((registry.get('a') as LocalAgentActor).state.inputRequests)
       expect(directory.peek('a')).toBe(store)
       expect(directory.all()).toEqual([store])
@@ -581,6 +615,8 @@ describe('createAgentRegistry', () => {
       getSessionSummaryCacheSlot(actor.store).revision = 7
       expect(actor.inputs.openForAgent()).toHaveLength(4)
       fake.inputManager.report.mockClear()
+      const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
+      const dispose = vi.spyOn(actor.state.sessions, 'dispose')
 
       registry.evict('a')
 
@@ -598,7 +634,9 @@ describe('createAgentRegistry', () => {
         'question',
       ])
       expect(resolved.find((t) => t.request.id === 'q1')?.outcome).toBe('invalidated')
-      expect(fake.messagePersister.syncAgentSessionsAwaiting).toHaveBeenCalledWith('a')
+      expect(syncAwaiting).toHaveBeenCalled()
+      // The live sessions are released with it: their streams and timers go.
+      expect(dispose).toHaveBeenCalledTimes(1)
       expect(fake.containerHost.dropRuntime).toHaveBeenCalledWith('a')
 
       // Nothing survives into the next handle for the slug.

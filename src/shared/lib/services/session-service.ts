@@ -616,7 +616,7 @@ async function buildSessionActivityMap(
  * per-session entries. Callers must treat the returned map as read-only.
  *
  * Invalidation: the directory's mtime (a transcript added or removed), the
- * TTL, and the writes the persister and the transcript appends record
+ * TTL, and the writes the live sessions and the transcript appends record
  * through `recordSessionActivity`. Nothing watches the directory.
  */
 async function loadSessionActivityMap(
@@ -2115,10 +2115,11 @@ export async function sessionExists(
  * Both halves are needed: the transcript lands only once the first turn writes,
  * and the metadata entry covers the window from `registerSession` up to then.
  *
- * It is also the ownership gate for every route that reaches a registry keyed by
- * session id — above all the message persister. Authorizing the agent in the
- * URL says nothing about the session id in it, so without this a caller with a
- * role on their own agent drives a stranger's live session.
+ * It is also the ownership gate for every route that acts on a session by id —
+ * above all through the agent's live sessions, which take any id they are
+ * handed. Authorizing the agent in the URL says nothing about the session id in
+ * it, so without this a caller with a role on their own agent has it act on an
+ * id that is not one of its sessions.
  *
  * Never throws. An id that cannot name a file under this agent's transcripts
  * directory cannot be one of its sessions. Letting a throw escape would hand

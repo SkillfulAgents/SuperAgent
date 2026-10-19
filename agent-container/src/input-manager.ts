@@ -29,7 +29,7 @@ type EarlyResult =
   | { type: 'resolve'; value: InputValue; createdAt: Date }
   | { type: 'reject'; error: string; createdAt: Date }
 
-// Input types the HOST answers programmatically (message-persister handlers
+// Input types the HOST answers programmatically (host tool handlers
 // hitting the DB/scheduler) — normally within milliseconds. An entry this old
 // means the host handler died mid-request; nobody is coming back for it.
 const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set([

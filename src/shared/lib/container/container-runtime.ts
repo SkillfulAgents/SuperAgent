@@ -29,7 +29,8 @@ import { getSettings } from '@shared/lib/config/settings'
 import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
-import { messagePersister } from './message-persister'
+import { NO_LIVE_SESSIONS, type AgentSessionsAccess, type RuntimeSessions } from './agent-sessions-access'
+import type { RuntimeFatalKind } from './runtime-death'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -72,6 +73,8 @@ export interface RuntimeHost {
    * registry attached it, which in the app is never.
    */
   readonly agentWorkspaces: AgentWorkspaceAccess | null
+  /** The agents' live sessions. Null only before the agent registry attached it. */
+  readonly agentSessions: AgentSessionsAccess | null
   /** Runs before a container is stopped (e.g. to close the host browser). */
   readonly onBeforeContainerStop: ((slug: string) => Promise<void>) | null
   /**
@@ -127,6 +130,8 @@ export class ContainerRuntime {
   })
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
+  /** The fatal result a deferred recovery is to report, until it does. */
+  private lastFatal: RuntimeFatalKind = null
   /** Being stopped — skip health checks, sync, and connection error recovery */
   private stopping = false
   /** In-flight ensureRunning promise — deduplicates concurrent start requests */
@@ -135,7 +140,7 @@ export class ContainerRuntime {
   private lifecycle = 0
   /**
    * Dropped by the host. The client this runtime handed out may still be held
-   * elsewhere (the persister's stream subscriptions, a stop in flight) and its
+   * elsewhere (the live sessions' stream subscriptions, a stop in flight) and its
    * callbacks land here; a disposed runtime answers none of them, so a
    * container dying after the eviction cannot start recovery through a runtime
    * the host no longer knows about.
@@ -204,6 +209,28 @@ export class ContainerRuntime {
     return this.starting !== null
   }
 
+  /** This agent's live sessions, as the runtime marks and recovers them. */
+  sessions(): RuntimeSessions {
+    return this.host.agentSessions?.peek(this.slug) ?? NO_LIVE_SESSIONS
+  }
+
+  /**
+   * A session's agent process reported a fatal result. When the client will
+   * recover the turn (it restarts the dead generation), the kind is kept for
+   * the recovery to report.
+   */
+  fatalResult(client: ContainerClient | undefined, kind: Exclude<RuntimeFatalKind, null>): 'settle' | 'defer_for_recovery' {
+    const plan = client?.onFatalResult(kind) ?? 'settle'
+    if (plan === 'defer_for_recovery') this.lastFatal = kind
+    return plan
+  }
+
+  private consumeLastFatal(): RuntimeFatalKind {
+    const kind = this.lastFatal
+    this.lastFatal = null
+    return kind
+  }
+
   handleUnexpectedDeath(restrictToSessionIds?: string[]): void {
     if (this.disposed) return
     const slug = this.slug
@@ -213,17 +240,15 @@ export class ContainerRuntime {
       getClient: () => this.getClient(),
       restartAgent: () => this.restartAgent(),
       ensureRunning: () => this.ensureRunning(),
-      snapshotMidTurnSessions: (agentId, restrict) => messagePersister.snapshotMidTurnSessions(agentId, restrict),
-      consumeLastFatal: (agentId) => messagePersister.consumeLastFatal(agentId),
-      settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(slug, ids),
-      markRecovered: (ids) => messagePersister.markRecovered(slug, ids),
-      takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(slug, id),
-      isSessionRecovering: (id) => messagePersister.isSessionRecovering(slug, id),
-      isSubscribed: (id) => messagePersister.isSubscribed(slug, id),
+      snapshotMidTurnSessions: (_agentId, restrict) => this.sessions().claimMidTurnForRecovery(restrict),
+      consumeLastFatal: () => this.consumeLastFatal(),
+      settleRecoveringSessions: (ids) => this.sessions().settleRecovering(ids),
+      markRecovered: (ids) => this.sessions().markRecovered(ids),
+      takeCoalescedUserMessages: (id) => this.sessions().takeCoalesced(id),
+      isSessionRecovering: (id) => this.sessions().isRecovering(id),
+      isSubscribed: (id) => this.sessions().isSubscribed(id),
       subscribeToSession: (sessionId, client, containerSessionId) =>
-        // Recovery only ever resubscribes THIS agent's sessions, so the slug is
-        // this runtime's — never a value the caller could disagree with.
-        messagePersister.subscribeToSession(slug, sessionId, client, containerSessionId),
+        this.sessions().subscribe(sessionId, client, containerSessionId),
       restrictToSessionIds,
       syncAgentStatus: async () => {
         try {
@@ -231,7 +256,7 @@ export class ContainerRuntime {
         } catch (err) {
           console.error(`[ContainerRuntime] Failed to sync status after connection error:`, err)
           this.markAsStopped()
-          messagePersister.markAllSessionsInactiveForAgent(slug)
+          this.sessions().markAllInactive()
           globalFeed.publish({
             type: 'agent_status_changed',
             agentSlug: slug,
@@ -272,7 +297,7 @@ export class ContainerRuntime {
     this.markAsStopped()
     // Dead generation had live sessions; clear isActive before the new start
     // (same as stopContainer — replace does not go through stopContainer).
-    messagePersister.markAllSessionsInactiveForAgent(this.slug)
+    this.sessions().markAllInactive()
     globalFeed.publish({
       type: 'agent_status_changed',
       agentSlug: this.slug,
@@ -403,7 +428,7 @@ export class ContainerRuntime {
         this.markAsStopped()
 
         // Mark all sessions for this agent as inactive
-        messagePersister.markAllSessionsInactiveForAgent(slug, { settleRecovering: true })
+        this.sessions().markAllInactive({ settleRecovering: true })
 
         // If this agent had grabbed a window, ungrab it so the halo disappears
         if (computerUsePermissionManager.getGrabbedApp(slug)) {
@@ -480,7 +505,7 @@ export class ContainerRuntime {
 
       // If container stopped, mark sessions as inactive
       if (info.status === 'stopped') {
-        messagePersister.markAllSessionsInactiveForAgent(slug)
+        this.sessions().markAllInactive()
       }
     }
 
@@ -788,8 +813,8 @@ export class ContainerRuntime {
 
   private isBusy(): boolean {
     return (
-      messagePersister.hasActiveSessionsForAgent(this.slug) ||
-      messagePersister.hasSessionsAwaitingInputForAgent(this.slug)
+      this.sessions().hasActive() ||
+      this.sessions().hasAwaitingInput()
     )
   }
 

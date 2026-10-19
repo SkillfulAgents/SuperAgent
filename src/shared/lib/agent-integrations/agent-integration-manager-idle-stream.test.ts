@@ -10,15 +10,15 @@ import type { IncomingMessage } from '../chat-integrations/chat-agent-integratio
 
 const mocks = vi.hoisted(() => ({
   send: vi.fn(),
-  withSessionSend: vi.fn(),
+  withSend: vi.fn(),
   notice: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
     isSubscribed: () => true,
-    withSessionSend: (...args: unknown[]) => mocks.withSessionSend(...args),
-  },
+    withSend: (...args) => mocks.withSend(...args),
+  }),
 }))
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
@@ -62,7 +62,7 @@ const connector = mockChatIntegration({ sendMessage: mocks.notice })
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mocks.withSessionSend.mockImplementation((_slug, _session, _client, send: () => Promise<void>) => send())
+  mocks.withSend.mockImplementation((_slug, _session, _client, send: () => Promise<void>) => send())
   mocks.send.mockResolvedValue(undefined)
   manager.connections.set('integration', { connector, integration: integration('slack') })
   vi.spyOn(manager, 'subscribeChatSession').mockImplementation(() => {})
@@ -77,7 +77,7 @@ afterEach(() => {
 describe('chat session delivery', () => {
   it.each(['slack', 'telegram', 'imessage'] as const)('uses the shared send lifecycle for the same %s session', async (provider) => {
     await manager.handleIncomingMessageInner('integration', inputEvent(message), integration(provider), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)
-    expect(mocks.withSessionSend).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.withSend).toHaveBeenCalledExactlyOnceWith(
       'agent', 'existing-session', expect.objectContaining({ sendMessage: mocks.send }), expect.any(Function),
     )
     expect(mocks.send).toHaveBeenCalledExactlyOnceWith('existing-session', 'continue', 'delivery-uuid')
@@ -89,7 +89,7 @@ describe('chat session delivery', () => {
       prepared = true
       return { text: 'continue' }
     })
-    mocks.withSessionSend.mockImplementation(async (_slug, _session, _client, send: () => Promise<void>) => {
+    mocks.withSend.mockImplementation(async (_slug, _session, _client, send: () => Promise<void>) => {
       expect(prepared).toBe(true)
       await send()
     })
@@ -98,7 +98,7 @@ describe('chat session delivery', () => {
   })
 
   it('propagates a shared reconnect failure to the durable scheduler without sending', async () => {
-    mocks.withSessionSend.mockRejectedValueOnce(new Error('connection unavailable'))
+    mocks.withSend.mockRejectedValueOnce(new Error('connection unavailable'))
     await expect(manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)).rejects.toThrow('connection unavailable')
     expect(mocks.send).not.toHaveBeenCalled()
     expect(mocks.notice).not.toHaveBeenCalled()

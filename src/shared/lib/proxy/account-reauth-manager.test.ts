@@ -1,12 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-const mockSyncAgentSessionsAwaiting = vi.fn()
-
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    syncAgentSessionsAwaiting: (...args: unknown[]) => mockSyncAgentSessionsAwaiting(...args),
-  },
-}))
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 
 import {
   ACCOUNT_REAUTH_TIMEOUT_MS,
@@ -30,14 +22,22 @@ const DETAILS = {
 describe('AccountReauthManager', () => {
   let manager: AccountReauthManager
   let agents: InMemoryAgentStateDirectory
+  let syncAwaiting: Map<string, MockInstance<() => void>>
 
   beforeEach(() => {
     vi.useFakeTimers()
-    mockSyncAgentSessionsAwaiting.mockReset()
     // The waits live on the agents' actors; the manager under test routes to
     // them. Build the actors' stores in memory, attached the way the registry
     // attaches the real handles.
-    agents = attachInMemoryAgentState({ syncAwaiting: (slug) => mockSyncAgentSessionsAwaiting(slug) })
+    agents = attachInMemoryAgentState()
+    // A card opening or closing has the agent's sessions recompute their
+    // waiting state: observed here, with no session to recompute.
+    syncAwaiting = new Map(
+      ['agent-1', 'agent-2'].map((slug) => [
+        slug,
+        vi.spyOn(agents.get(slug).sessions, 'syncAwaiting').mockImplementation(() => {}),
+      ]),
+    )
     manager = new AccountReauthManager()
     manager.attachAgents(agents.pick((state) => state.accountReauth))
     userInputRequestManager.reset()
@@ -64,8 +64,11 @@ describe('AccountReauthManager', () => {
       },
     })
     expect((request.payload as Record<string, unknown>).proxyRequestId).toBe(request.id)
+    expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(1)
 
     manager.completeAccount('account-1')
+    expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(2)
+    expect(syncAwaiting.get('agent-2')).not.toHaveBeenCalled()
     return expect(promise).resolves.toBeUndefined()
   })
 

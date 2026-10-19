@@ -39,8 +39,8 @@ export interface ActivityStatsOptions {
   now?: Date
   cronSlots?: number
   /**
-   * Whether a session's container subscription is currently live (the message
-   * persister's view). A persisted 'running' automationStatus with no live
+   * Whether a session's turn is currently live (the agent's live sessions'
+   * `isActive`). A persisted 'running' automationStatus with no live
    * session is a run that died without a terminal result (container killed,
    * app quit mid-run) — it is reported as failed instead of pulsing forever.
    * Defaults to trusting the persisted status when no probe is supplied.

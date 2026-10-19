@@ -38,7 +38,7 @@ export function formatToolName(rawName: string): string {
 }
 
 // ── UserRequestEvent union ────��──────────────────────────────────────
-// Matches the SSE event shapes broadcast by MessagePersister.
+// The card shapes chat connectors render, built by chat-integrations/request-card.ts.
 
 export interface QuestionOption {
   label: string

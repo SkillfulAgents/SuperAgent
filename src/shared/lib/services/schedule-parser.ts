@@ -177,7 +177,7 @@ function formatInterval(ms: number): string {
  * MIN_RECURRING_INTERVAL_MS. Returns null for one-time ("at") schedules,
  * unparseable expressions, or intervals at/above the threshold.
  *
- * Shared by the agent tool path (message-persister) and the manual API path
+ * Shared by the agent tool path (host/tools/scheduling.ts) and the manual API path
  * (scheduled-tasks route) so both surface identical guidance.
  */
 export function getFrequencyWarning(

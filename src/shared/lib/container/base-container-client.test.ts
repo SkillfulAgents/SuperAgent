@@ -716,7 +716,7 @@ describe('subscribeToStream failure handling', () => {
     // No 'error' listener registered — a bare emit('error') would throw here.
     const { ready } = client.subscribeToStream('sess-1', () => {})
 
-    // The discarded-promise scenario from MessagePersister: only catch `ready`.
+    // The discarded-promise scenario from the live sessions' reattach: only catch `ready`.
     await expect(ready).rejects.toThrow('Container is not running')
   })
 

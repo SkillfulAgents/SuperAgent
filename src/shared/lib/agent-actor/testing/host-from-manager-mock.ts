@@ -138,6 +138,7 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   // The registry attaches the agents' workspaces when it is created; a mock
   // host has no runtimes that would read them, so it only has to accept them.
   if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
+  if (typeof host.attachAgentSessions !== 'function') host.attachAgentSessions = () => {}
   // A mock host has no alarms to re-arm; it only has to accept the call.
   if (typeof host.rearmIdleAlarms !== 'function') host.rearmIdleAlarms = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.

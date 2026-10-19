@@ -1,8 +1,6 @@
 import { randomUUID } from 'crypto'
-import { containerHost } from './container-host'
-import { messagePersister } from './message-persister'
-import { syncAgentConnectionEnvironment, type ConnectionRuntimeKind } from './connection-runtime-sync'
-import type { ContainerClient } from './types'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import type { ConnectionRuntimeKind } from './connection-runtime-sync'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
 
 export interface ConnectionReplacement {
@@ -21,27 +19,25 @@ export async function finishConnectionReplacement(
   change: ConnectionReplacement,
   releaseRequests: () => void,
 ): Promise<{ liveRefresh: boolean; sessionNotification: boolean }> {
-  const { agentSlug } = change
+  const actor = agentRegistry.get(change.agentSlug)
   let liveRefresh = false
   let sessionNotification = true
-  const ready: Array<{ sessionId: string; client: ContainerClient }> = []
+  const ready: string[] = []
   try {
-    const runtime = containerHost.runtime(agentSlug)
-    const sessionIds = messagePersister.getActiveSessionIdsForAgent(agentSlug)
-    liveRefresh = await syncAgentConnectionEnvironment(agentSlug, change.kind, runtime)
+    const sessionIds = actor.sessions.activeIds()
+    liveRefresh = await actor.container.syncConnectionEnvironment(change.kind)
     if (!liveRefresh) return { liveRefresh: false, sessionNotification: false }
-    if (sessionIds.length === 0 || runtime.getCachedInfo().status !== 'running') {
+    if (sessionIds.length === 0 || actor.container.status().status !== 'running') {
       return { liveRefresh: true, sessionNotification: true }
     }
 
-    const client = runtime.getClient()
     const interrupted = await Promise.allSettled(sessionIds.map(async (sessionId) => {
       // A user may have stopped a session while the projection was being updated.
-      if (!messagePersister.isSessionActive(agentSlug, sessionId)) return null
-      const turnGenerationBefore = messagePersister.getTurnGeneration(agentSlug, sessionId)
-      const result = await client.interruptSession(sessionId, { scope: 'turn' })
+      if (!actor.sessions.isActive(sessionId)) return null
+      const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
+      const result = await actor.messages.interrupt(sessionId, { scope: 'turn' })
       if (!result.interrupted) throw new Error(`Failed to interrupt session ${sessionId}`)
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId, {
+      actor.sessions.markInterrupted(sessionId, {
         processKept: result.processKept,
         turnGenerationBefore,
       })
@@ -52,7 +48,7 @@ export async function finishConnectionReplacement(
         sessionNotification = false
         console.warn('[ConnectionReplacement] Failed to interrupt a session:', result.reason)
       } else if (result.value) {
-        ready.push({ sessionId: result.value, client })
+        ready.push(result.value)
       }
     }
   } catch (error) {
@@ -64,9 +60,9 @@ export async function finishConnectionReplacement(
     releaseRequests()
   }
 
-  const deliveries = await Promise.allSettled(ready.map(({ sessionId, client }) =>
-    messagePersister.withSessionSend(agentSlug, sessionId, client, () =>
-      client.sendMessage(sessionId, buildConnectionReplacementMessage(change), randomUUID(), { shouldQuery: true }),
+  const deliveries = await Promise.allSettled(ready.map((sessionId) =>
+    actor.messages.withSend(sessionId, () =>
+      actor.messages.send(sessionId, buildConnectionReplacementMessage(change), randomUUID(), { shouldQuery: true }),
     ),
   ))
   for (const result of deliveries) {

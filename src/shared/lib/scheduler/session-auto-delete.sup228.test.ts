@@ -5,7 +5,7 @@ import type { AgentConfig } from '@shared/lib/types/agent'
 // ============================================================================
 // SUP-228 — Session auto-delete leaves stale notifications for deleted sessions
 //
-// cleanupAgent() removed session JSONL files, unsubscribed the persister and
+// cleanupAgent() removed session JSONL files, unsubscribed their live streams and
 // (auth mode only) deleted message_author rows, but it never deleted the
 // `notifications` rows for the removed session IDs. Notifications are stored in
 // BOTH auth and non-auth modes (userId is nullable), so the leak affects both.
@@ -72,11 +72,11 @@ vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    isSessionActive: (id: string) => mockIsSessionActive(id),
-    unsubscribeFromSession: (id: string) => mockUnsubscribeFromSession(id),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (_agentSlug, id) => mockIsSessionActive(id),
+    unsubscribe: (_agentSlug, id) => mockUnsubscribeFromSession(id),
+  }),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({

@@ -83,22 +83,6 @@ vi.mock('@shared/lib/config/data-dir', () => ({
 const mockHasActive = vi.fn(() => false)
 const mockHasAwaiting = vi.fn(() => false)
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    markAllSessionsInactiveForAgent: vi.fn(),
-    hasActiveSessionsForAgent: () => mockHasActive(),
-    hasSessionsAwaitingInputForAgent: () => mockHasAwaiting(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
@@ -117,6 +101,12 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAge
 vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }) }))
 
 import { containerHost } from './container-host'
+import { NO_LIVE_SESSIONS } from './agent-sessions-access'
+
+// The agent's live sessions, as the runtime asks them whether it is busy.
+containerHost.attachAgentSessions({
+  peek: () => ({ ...NO_LIVE_SESSIONS, hasActive: () => mockHasActive(), hasAwaitingInput: () => mockHasAwaiting() }),
+})
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE

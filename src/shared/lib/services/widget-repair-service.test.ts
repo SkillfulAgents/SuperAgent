@@ -7,8 +7,8 @@ const mocks = vi.hoisted(() => ({
   ensureRunning: vi.fn(),
   createSession: vi.fn(),
   registerSession: vi.fn(async () => {}),
-  subscribeToSession: vi.fn(async () => {}),
-  markSessionActive: vi.fn(),
+  subscribe: vi.fn(async (..._args: unknown[]) => {}),
+  markActive: vi.fn(),
   publishGlobal: vi.fn(),
   logTail: null as string | null,
   ownerUserId: null as string | null,
@@ -34,12 +34,12 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: (...args: unknown[]) => mocks.publishGlobal(...args), subscribe: () => () => {} },
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    hasActiveSessionsForAgent: () => mocks.hasActiveSessions,
-    subscribeToSession: (...args: unknown[]) => mocks.subscribeToSession(...(args as [])),
-    markSessionActive: (...args: unknown[]) => mocks.markSessionActive(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    hasActive: () => mocks.hasActiveSessions,
+    subscribe: (...args) => mocks.subscribe(...args),
+    markActive: (...args) => mocks.markActive(...args),
+  }),
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
@@ -79,8 +79,8 @@ describe('openWidgetRepairSession', () => {
     mocks.ensureRunning.mockReset()
     mocks.createSession.mockReset()
     mocks.registerSession.mockClear()
-    mocks.subscribeToSession.mockClear()
-    mocks.markSessionActive.mockClear()
+    mocks.subscribe.mockClear()
+    mocks.markActive.mockClear()
     mocks.publishGlobal.mockClear()
     mocks.ensureRunning.mockResolvedValue({ createSession: mocks.createSession })
     mocks.createSession.mockResolvedValue({ id: 'session-new' })
@@ -104,8 +104,8 @@ describe('openWidgetRepairSession', () => {
       widgetRepairSlug: 'weather',
       automationStatus: 'running',
     })
-    expect(mocks.subscribeToSession).toHaveBeenCalled()
-    expect(mocks.markSessionActive).toHaveBeenCalledWith(AGENT, 'session-new')
+    expect(mocks.subscribe).toHaveBeenCalled()
+    expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new')
     expect(mocks.publishGlobal).toHaveBeenCalledWith({
       type: 'session_updated',
       agentSlug: AGENT,

@@ -3,7 +3,7 @@
  *
  * Strategy: real in-memory SQLite for proxyTokens / agentAcl / xAgentPolicies
  * (so policy + ACL logic is exercised end-to-end). Mock the file-based agent/session
- * services and the container/messagePersister.
+ * services, the container and the agents' live sessions.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
 import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { WaitForIdleTimeoutError } from '@shared/lib/agent-actor/live/wait-for-idle'
 import * as schema from '@shared/lib/db/schema'
 
 // Shrink the readLastAssistantMessage retry budget in tests (default is 10×500ms).
@@ -155,14 +156,11 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-// Message persister
-// Built by name, not by importing the class from the (wholesale-mocked) module:
-// the routes match timeout errors on error.name, and this mirrors that contract.
-// message-persister.test.ts pins the real class to this name.
+// Live sessions
+// The real error the live sessions' waitForIdle throws: the routes match
+// timeout errors on error.name, so this holds them to the real class.
 function waitForIdleTimeoutError(): Error {
-  return Object.assign(new Error('waitForIdle timeout after 120000ms'), {
-    name: 'WaitForIdleTimeoutError',
-  })
+  return new WaitForIdleTimeoutError(120_000)
 }
 
 // Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
@@ -190,22 +188,19 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    withSend: async (agentSlug, sessionId, _client, send) => {
       mockMarkSessionActive(agentSlug, sessionId)
       return send()
     },
-    isSessionActive: (agentSlug?: string, sessionId?: string) => mockIsSessionActive(agentSlug, sessionId),
-    isSessionAwaitingInput: (agentSlug: string, sessionId?: string,) => mockIsSessionAwaitingInput(agentSlug, sessionId),
-    waitForIdle: (...args: unknown[]) => mockWaitForIdle(...args),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    unsubscribeFromSession: vi.fn(),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
-    setSlashCommands: vi.fn(),
-  },
+    isActive: (agentSlug, sessionId) => mockIsSessionActive(agentSlug, sessionId),
+    isAwaitingInput: (agentSlug, sessionId) => mockIsSessionAwaitingInput(agentSlug, sessionId),
+    waitForIdle: (...args) => mockWaitForIdle(...args),
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+    markIdle: (...args) => mockMarkSessionIdle(...args),
+  }),
 }))
 
 // Settings + secrets (only used by invoke for new sessions)
@@ -1040,7 +1035,7 @@ describe('/invoke', () => {
   it('404s when the continued session belongs to some other agent', async () => {
     // Invoke rights on the target say nothing about the session id passed with
     // them. Without an ownership check, a caller allowed to invoke the target
-    // could name a THIRD agent's session and have the persister re-point it at
+    // could name a THIRD agent's session and have its live sessions re-point it at
     // the target's container — and the target's transcript written under it.
     reviewDecisions.push('allow')
     await grantCallerOwnerTargetAccess()
@@ -1230,7 +1225,7 @@ describe('/invoke', () => {
     let clockOffsetMs = 0
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
     try {
-      // Mirror the real persister: marking active flips the activity flag, so
+      // Mirror the real live sessions: marking active flips the activity flag, so
       // the exhausted-budget check sees a genuinely still-running turn.
       mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
       mockSendMessage.mockImplementationOnce(async () => {
@@ -1379,7 +1374,7 @@ describe('/invoke', () => {
   })
 
   it('fails fast instead of hanging when the stream attach stalls (existing session)', async () => {
-    // The persister's WebSocket ready promise has no timeout of its own; a
+    // The live sessions' WebSocket ready promise has no timeout of its own; a
     // wedged container must surface as an error before the prompt goes out,
     // not hold the caller's fetch open indefinitely.
     reviewDecisions.push('allow')
