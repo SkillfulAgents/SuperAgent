@@ -3328,11 +3328,13 @@ class MessagePersister {
     let isBackground = false
     try {
       const parsed = typeof input === 'string' ? JSON.parse(input) : input
+      // A fork (CLI 2.1.302+) always runs in the background and takes no
+      // run_in_background.
       isBackground = !!(
         parsed &&
         typeof parsed === 'object' &&
-        'run_in_background' in parsed &&
-        parsed.run_in_background
+        (('run_in_background' in parsed && parsed.run_in_background) ||
+          ('subagent_type' in parsed && parsed.subagent_type === 'fork'))
       )
     } catch { /* partial or invalid JSON — default to foreground */ }
 
