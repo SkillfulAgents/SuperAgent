@@ -11,9 +11,11 @@ import {
   selectAllMarkdownComposer,
   setMarkdownComposerSelection,
 } from './markdown-composer-editor'
-import { findPotentialSecrets, type SecuredSecret } from '@renderer/lib/secret-detection'
+import { findPotentialSecrets } from '@renderer/lib/secret-detection'
+import type { ChipContext } from './composer-chips'
+import { secretMarker } from './secret-chip'
 
-function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
+function ControlledEditor({ initialValue = '', chipContext }: { initialValue?: string; chipContext?: ChipContext }) {
   const [value, setValue] = useState(initialValue)
   return (
     <>
@@ -22,31 +24,7 @@ function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
         onChange={setValue}
         placeholder="Write a message"
         dataTestId="markdown-editor"
-      />
-      <output data-testid="markdown-value">{value}</output>
-    </>
-  )
-}
-
-function SecuredEditorHarness({
-  initialValue,
-  secrets,
-  onRemove,
-}: {
-  initialValue: string
-  secrets: SecuredSecret[]
-  onRemove: (secrets: SecuredSecret[]) => void
-}) {
-  const [value, setValue] = useState(initialValue)
-  return (
-    <>
-      <MarkdownComposerEditor
-        value={value}
-        onChange={setValue}
-        placeholder="Write a message"
-        dataTestId="markdown-editor"
-        securedSecrets={secrets}
-        onRemoveSecuredSecrets={onRemove}
+        chipContext={chipContext}
       />
       <output data-testid="markdown-value">{value}</output>
     </>
@@ -347,55 +325,6 @@ describe('MarkdownComposerEditor', () => {
     expect(editor).toHaveTextContent('[unsafe](javascript:alert(1))')
   })
 
-  it('deletes the complete selection when it contains a secured pill', async () => {
-    const user = userEvent.setup()
-    const secret: SecuredSecret = {
-      id: 'first',
-      key: 'Token',
-      envVar: 'TOKEN_ONE',
-      displayText: '[Token | *********]',
-    }
-    const onRemove = vi.fn()
-    render(
-      <SecuredEditorHarness
-        initialValue={`Before ${secret.displayText} after`}
-        secrets={[secret]}
-        onRemove={onRemove}
-      />
-    )
-    const editor = screen.getByTestId('markdown-editor')
-
-    expect(selectAllMarkdownComposer(editor)).toBe(true)
-    await user.keyboard('{Backspace}')
-
-    expect(screen.getByTestId('markdown-value').textContent).toBe('')
-    expect(onRemove).toHaveBeenCalledWith([secret])
-  })
-
-  it('deletes the selected occurrence when secured pills have identical labels', async () => {
-    const user = userEvent.setup()
-    const displayText = '[Token | *********]'
-    const first: SecuredSecret = { id: 'first', key: 'Token', envVar: 'TOKEN_ONE', displayText }
-    const second: SecuredSecret = { id: 'second', key: 'Token', envVar: 'TOKEN_TWO', displayText }
-    const value = `A ${displayText} B ${displayText} C`
-    const onRemove = vi.fn()
-    render(
-      <SecuredEditorHarness
-        initialValue={value}
-        secrets={[first, second]}
-        onRemove={onRemove}
-      />
-    )
-    const editor = screen.getByTestId('markdown-editor')
-    const secondPillEnd = 1 + value.lastIndexOf(displayText) + displayText.length
-
-    expect(setMarkdownComposerSelection(editor, secondPillEnd)).toBe(true)
-    await user.keyboard('{Backspace}')
-
-    expect(screen.getByTestId('markdown-value').textContent).toBe(`A ${displayText} B  C`)
-    expect(onRemove).toHaveBeenCalledWith([second])
-  })
-
   it('keeps a Shift+Enter line break in the Markdown source', async () => {
     const user = userEvent.setup()
     render(<ControlledEditor />)
@@ -447,6 +376,124 @@ function pasteText(editor: HTMLElement, text: string) {
     clipboardData: { getData: (type: string) => (type === 'text/plain' ? text : ''), items: [] },
   })
 }
+
+describe('MarkdownComposerEditor chips', () => {
+  const marker = secretMarker({ envVar: 'API_KEY', key: 'My Key' })
+  const saved = { secretEnvVars: new Set(['API_KEY']) }
+
+  function paste(editor: HTMLElement, content: string, mimeType = 'text/plain') {
+    fireEvent.paste(editor, {
+      clipboardData: {
+        getData: (type: string) => type === mimeType ? content : '',
+        types: [mimeType],
+        items: [],
+      },
+    })
+  }
+
+  it('paints a marker as a pill and saves the same marker after editing', async () => {
+    render(<ControlledEditor initialValue={`Use ${marker}`} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    expect(screen.getByTestId('secured-secret')).toHaveTextContent('[My Key | *********]')
+    expect(setMarkdownComposerSelection(editor, 1)).toBe(true)
+    await userEvent.setup().keyboard('x')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`xUse ${marker}`)
+  })
+
+  it('keeps a typed marker as escaped text', async () => {
+    const user = userEvent.setup()
+    render(<ControlledEditor />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    await user.type(editor, '[[[[secret:API_KEY|x]] and [[[[foo:bar|baz]]')
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('\\[\\[secret:API_KEY|x\\]\\] and \\[\\[foo:bar|baz\\]\\]')
+  })
+
+  it('pastes a marker as a pill', () => {
+    render(<ControlledEditor />)
+    paste(screen.getByTestId('markdown-editor'), `Use ${marker}`)
+
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`Use ${marker}`)
+  })
+
+  it('pastes a pill copied as HTML, and drops a chip span that is not a marker', () => {
+    render(<ControlledEditor />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    paste(editor, `<span data-chip="${marker}">[My Key | *********]</span><span data-chip="nope">junk</span>`, 'text/html')
+
+    expect(screen.getAllByTestId('secured-secret')).toHaveLength(1)
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`${marker}junk`)
+  })
+
+  it.each([
+    ['a heading', `## Deploy ${marker}`, 'h2', `## xDeploy ${marker}`],
+    ['a link label', `[see ${marker}](https://example.com)`, 'a', `x[see ${marker}](https://example.com)`],
+    // markdown-it runs no inline rules in code, so these lift after parsing.
+    ['inline code', `\`${marker}\``, 'code', `\`x\`${marker}`],
+    ['a fenced code block', `\`\`\`\n${marker}\n\`\`\``, 'pre', `\`\`\`\nx${marker}\n\`\`\``],
+  ])('paints a marker inside %s and keeps it through editing', async (_, draft, container, edited) => {
+    render(<ControlledEditor initialValue={draft} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    expect(editor.querySelector(`${container} [data-testid="secured-secret"]`)).toBeInTheDocument()
+    expect(setMarkdownComposerSelection(editor, 1)).toBe(true)
+    await userEvent.setup().keyboard('x')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(edited)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+  })
+
+  it('keeps a marker in image alt text as plain alt text', async () => {
+    render(<ControlledEditor initialValue={`![a ${marker} b](img.png)`} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    expect(editor.querySelector('img')).toHaveAttribute('alt', `a ${marker} b`)
+    expect(setMarkdownComposerSelection(editor, 1)).toBe(true)
+    await userEvent.setup().keyboard('x')
+    expect(screen.getByTestId('markdown-value').textContent).toBe('x![a \\[\\[secret:API_KEY|My%20Key\\]\\] b](img.png)')
+  })
+
+  it('flags a pill whose key the agent lacks, and clears the flag once it has it', () => {
+    const { rerender } = render(<ControlledEditor initialValue={`Use ${marker}`} chipContext={{ secretEnvVars: new Set() }} />)
+    const chip = () => screen.getByTestId('secured-secret').parentElement!
+
+    expect(chip()).toHaveAttribute('data-unbacked', 'true')
+    rerender(<ControlledEditor initialValue={`Use ${marker}`} chipContext={saved} />)
+    expect(chip()).not.toHaveAttribute('data-unbacked')
+    rerender(<ControlledEditor initialValue={`Use ${marker}`} />)
+    expect(chip()).not.toHaveAttribute('data-unbacked')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`Use ${marker}`)
+  })
+
+  it.each([
+    { key: 'Backspace', keyCode: 8, offset: 1 },
+    { key: 'Delete', keyCode: 46, offset: 0 },
+  ])('removes a pill as one unit with $key', ({ keyCode, offset }) => {
+    render(<ControlledEditor initialValue={`Before ${marker} after`} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    // Paragraph content starts at 1; Backspace starts after the atom, Delete before it.
+    expect(setMarkdownComposerSelection(editor, 1 + 'Before '.length + offset)).toBe(true)
+    fireEvent.keyDown(editor, { keyCode })
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('Before  after')
+  })
+
+  it('deletes a whole selection that contains pills', async () => {
+    render(<ControlledEditor initialValue={`A ${marker} B ${marker} C`} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    expect(selectAllMarkdownComposer(editor)).toBe(true)
+    await userEvent.setup().keyboard('{Backspace}')
+
+    expect(screen.getByTestId('markdown-value').textContent).toBe('')
+  })
+})
 
 describe('demoteMultilineSetextHeadings', () => {
   const tokenize = (src: string) => {

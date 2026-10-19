@@ -25,7 +25,7 @@ const {
   return {
     mockFork: vi.fn(),
     mockForkAndCompact: vi.fn(),
-    mockSnapshot: vi.fn(() => ({ text: 'draft', securedSecrets: undefined })),
+    mockSnapshot: vi.fn(() => ({ text: 'draft' })),
     mockSeed: vi.fn(),
     mockSetQueryData: vi.fn(),
     mockNavigate: vi.fn(),
