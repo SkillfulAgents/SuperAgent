@@ -12,8 +12,9 @@ import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
-import { chipsToAgentText, type ChipContext } from '@renderer/components/messages/composer-chips'
+import { chipsToAgentText, openingTeammate, type ChipContext } from '@renderer/components/messages/composer-chips'
 import { secretMarker } from '@renderer/components/messages/secret-chip'
+import type { ComposerMentions } from './use-composer-mentions'
 import {
   findPotentialSecrets,
   type PotentialSecret,
@@ -38,18 +39,21 @@ interface UseMessageComposerOptions {
   initialAttachments?: Attachment[]
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
+  /** For a composer that offers `@` (useComposerMentions). */
+  mentions?: ComposerMentions
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, mentions } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const { data: savedSecrets } = useAgentSecrets(agentSlug)
+  const mentionDirectory = mentions?.directory
   const chipContext = useMemo<ChipContext>(
-    () => ({ agentSlug, secretEnvVars: savedSecrets && new Set(savedSecrets.map((secret) => secret.envVar)) }),
-    [agentSlug, savedSecrets]
+    () => ({ agentSlug, secretEnvVars: savedSecrets && new Set(savedSecrets.map((secret) => secret.envVar)), ...mentionDirectory }),
+    [agentSlug, savedSecrets, mentionDirectory]
   )
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -241,6 +245,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     let content = effectiveMessage.trim()
 
+    // Anyone it tags who could not see it is offered access first.
+    const silent = !!mentions?.silent && !!openingTeammate(content)
+    const sendContext = mentions ? await mentions.confirm(content, chipContext, { silent }) : chipContext
+    if (!sendContext) return false
+
     if (attachmentsRef.current.some((a) => a.type !== 'mount' && a.error)) {
       setIsUploading(true)
       const { ok } = await queue.retryAndWait()
@@ -294,7 +303,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = chipsToAgentText(content, chipContext)
+    const submittedContent = chipsToAgentText(content, sendContext, { silent })
 
     try {
       await onSubmit(submittedContent)

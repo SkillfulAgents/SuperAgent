@@ -333,6 +333,9 @@ export function GlobalNotificationHandler() {
             } else if (notifType === 'session_scheduled' && data.taskId) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
               queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
+            } else if (notifType === 'session_mention') {
+              // No session lifecycle event follows a mention to refresh the agent row's dot.
+              queryClient.invalidateQueries({ queryKey: ['agents'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -358,7 +361,7 @@ export function GlobalNotificationHandler() {
             const notifyWhenUnfocused =
               userSettingsRef.current?.notifications?.notifyWhenUnfocused === true
             const isAppActive =
-              notificationType === 'session_waiting' || notifyWhenUnfocused
+              notificationType === 'session_waiting' || notificationType === 'session_mention' || notifyWhenUnfocused
                 ? isTabVisible && document.hasFocus()
                 : isTabVisible
 

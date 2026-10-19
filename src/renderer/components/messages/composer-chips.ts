@@ -1,7 +1,26 @@
 import type { ComponentType } from 'react'
 import type { DOMOutputSpec } from 'prosemirror-model'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
+import { appendMentions, type Mention } from '@shared/lib/utils/mentions'
 import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
+import { agentChip, userChip } from './mention-chips'
+
+/** Someone who can open the agent. */
+export interface ChipPerson {
+  id: string
+  name: string
+  email?: string
+  image?: string | null
+}
+
+/** Another agent, as the agents tools know it. */
+export interface ChipAgent {
+  slug: string
+  displaySlug: string
+  name: string
+  avatar?: AgentAvatar | null
+}
 
 /** What the composer knows about its agent, for kinds whose referent can go away. */
 export interface ChipContext {
@@ -9,6 +28,10 @@ export interface ChipContext {
   agentSlug?: string
   /** Env vars of the agent's saved secrets; undefined until they load. */
   secretEnvVars?: ReadonlySet<string>
+  /** The people who can open the agent, by user id; undefined outside auth mode or until they load. */
+  members?: ReadonlyMap<string, ChipPerson>
+  /** The agents the viewer can see, by slug; undefined until they load. */
+  agents?: ReadonlyMap<string, ChipAgent>
 }
 
 /** What a kind's right-click menu receives. It stays mounted until it calls `onClose`. */
@@ -32,10 +55,17 @@ export interface ComposerChipKind {
   kind: string
   /** The referents this kind accepts. Any other marker of this kind stays text. */
   referent: RegExp
-  /** The chip's contents in the composer. */
+  /**
+   * The chip's contents in the composer. An element carrying `data-chip-icon`
+   * is where the editor draws the kind's `Icon`.
+   */
   render: (chip: Chip) => DOMOutputSpec
+  /** Drawn into the chip's `data-chip-icon` element: React, so it can be an avatar. */
+  Icon?: ComponentType<{ chip: Chip; context: ChipContext }>
   /** What the agent receives in place of the marker. Omitted, the marker itself. */
   toAgentText?: (chip: Chip) => string
+  /** Who the chip names, listed for the agent after the message (see `appendMentions`). */
+  mention?: (chip: Chip, context: ChipContext) => Mention
   /**
    * False once the referent is gone (a deleted key). The composer flags the chip
    * and send keeps its marker rather than claim something that is not there.
@@ -45,7 +75,7 @@ export interface ComposerChipKind {
   Menu?: ComponentType<ChipMenuProps>
 }
 
-export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind[] = [secretChip]
+export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind[] = [secretChip, userChip, agentChip]
 
 const kindsByName = new Map(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, kind]))
 
@@ -71,11 +101,31 @@ export function isChipBacked(chip: Chip, context: ChipContext): boolean {
   return getChipKind(chip)?.isBacked?.(chip, context) ?? true
 }
 
-/** The draft as the agent receives it: each backed chip's marker replaced by its agent text. */
-export function chipsToAgentText(text: string, context: ChipContext): string {
-  return text.replace(CHIP_MARKER, (marker: string, kind: string, referent: string, label: string) => {
+/** The registered chips in a draft, in order. */
+export function chipsIn(text: string): Chip[] {
+  return [...text.matchAll(CHIP_MARKER)].flatMap((match) => registeredChip(match) ?? [])
+}
+
+/** The teammate a draft opens on: such a draft only notifies them, where the composer allows that. */
+export function openingTeammate(text: string): Chip | null {
+  const opening = chipAt(text.trimStart())?.chip
+  return opening?.kind === userChip.kind ? opening : null
+}
+
+/**
+ * The draft as the agent receives it: each backed chip's marker replaced by its
+ * agent text, and the people and agents it names listed after it. `silent`
+ * tells the agent the message only notified the teammates it tags.
+ */
+export function chipsToAgentText(text: string, context: ChipContext, { silent = false } = {}): string {
+  const mentions = new Map<string, Mention>()
+  const body = text.replace(CHIP_MARKER, (marker: string, kind: string, referent: string, label: string) => {
     const chip = registeredChip([marker, kind, referent, label])
     if (!chip || !isChipBacked(chip, context)) return marker
-    return getChipKind(chip)?.toAgentText?.(chip) ?? marker
+    const chipKind = getChipKind(chip)
+    const mention = chipKind?.mention?.(chip, context)
+    if (mention) mentions.set(`${chip.kind}:${chip.referent}`, mention)
+    return chipKind?.toAgentText?.(chip) ?? marker
   })
+  return appendMentions(body, [...mentions.values()], { silent })
 }

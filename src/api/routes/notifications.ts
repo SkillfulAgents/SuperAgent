@@ -80,7 +80,12 @@ notificationsRouter.get('/stream', async (c) => {
         })
       }
       const scoped = gate
-      unsubscribe = globalFeed.subscribe(scoped ? (event) => scoped.push(event) : write)
+      unsubscribe = globalFeed.subscribe((event) => {
+        // A targeted frame (a mention) goes to its recipient alone.
+        if (user && event.recipientUserId !== undefined && event.recipientUserId !== user.id) return
+        if (scoped) scoped.push(event)
+        else write(event)
+      })
 
       if (user) {
         unsubscribeCollaboration = subscribeCollaborationEvents(user.id, async (data) => {

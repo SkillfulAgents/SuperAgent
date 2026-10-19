@@ -550,3 +550,45 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
     expect(payload.title).not.toContain('API Request Review')
   })
 })
+
+describe('triggerSessionMention', () => {
+  it('writes a row for the person tagged and broadcasts it to them alone', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'user-b',
+      senderName: 'Dana Lee',
+      text: '@Mike Smith look at this',
+    })
+
+    expect(mockCreateNotification).toHaveBeenCalledWith({
+      type: 'session_mention',
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      title: 'Dana Lee mentioned you',
+      body: '@Mike Smith look at this',
+      recipientUserId: 'user-b',
+      messageUuid: 'msg-1',
+    })
+    expect(mockPublishGlobal).toHaveBeenCalledWith(expect.objectContaining({
+      notificationType: 'session_mention',
+      recipientUserId: 'user-b',
+    }))
+  })
+
+  it('cuts a long message to a preview', async () => {
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'user-b',
+      senderName: 'Dana Lee',
+      text: 'x'.repeat(1000),
+    })
+    const [{ body }] = mockCreateNotification.mock.calls[0] as unknown as [{ body: string }]
+    expect(body).toHaveLength(280)
+    expect(body.endsWith('…')).toBe(true)
+  })
+})

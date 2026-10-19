@@ -6,6 +6,9 @@ import type { Attachment } from '@renderer/components/messages/attachment-previe
 import type { FolderGroup } from '@renderer/lib/file-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { secretMarker } from '@renderer/components/messages/secret-chip'
+import type { ChipContext } from '@renderer/components/messages/composer-chips'
+import { formatChipMarker } from '@renderer/lib/chip-marker'
+import { parseMentions } from '@shared/lib/utils/mentions'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
@@ -84,6 +87,8 @@ let mockSavedSecrets: Array<{ envVar: string; key: string }> | undefined = []
 vi.mock('./use-secrets', () => ({
   useAgentSecrets: () => ({ data: mockSavedSecrets }),
 }))
+
+const mockConfirmMentions = vi.fn(async (_content: string, context: ChipContext, _options: { silent: boolean }): Promise<ChipContext | null> => context)
 
 vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@renderer/lib/file-utils')>()),
@@ -209,6 +214,58 @@ describe('useMessageComposer', () => {
 
     expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN] please')
     expect(opts.onSubmit).not.toHaveBeenCalledWith(expect.stringContaining(key))
+  })
+
+  describe('mentions', () => {
+    const mike = formatChipMarker({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
+    const billing = formatChipMarker({ kind: 'agent', referent: 'k3j4h5g6f7', label: 'Billing Agent' })
+
+    const directory: Pick<ChipContext, 'members' | 'agents'> = {
+      members: new Map([['mike-id', { id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }]]),
+      agents: new Map([['k3j4h5g6f7', { slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }]]),
+    }
+    const mentions = (silent = false) => ({ directory, silent, confirm: mockConfirmMentions, dialog: null })
+
+    it('sends each mention as its name and lists who it is after the message', async () => {
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions(true) }), { wrapper: createWrapper() })
+      act(() => result.current.setMessage(`ping ${mike} once ${billing} has the numbers`))
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+
+      expect(mockConfirmMentions).toHaveBeenCalledWith(`ping ${mike} once ${billing} has the numbers`, expect.anything(), { silent: false })
+      expect(opts.onSubmit).toHaveBeenCalledWith(
+        'ping @Mike Smith once @Billing Agent has the numbers\n\n[Mentioned:]\n'
+        + '- @Mike Smith: teammate, mike@acme.com (user id mike-id)\n'
+        + '- @Billing Agent: agent, slug billing-agent-k3j4h5g6f7 (call it by this slug with the agents tools, no need to list agents first)',
+      )
+    })
+
+    it('marks a draft that opens on a teammate silent, where the composer allows it', async () => {
+      for (const silentMentions of [true, false]) {
+        const opts = defaultOptions()
+        const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions(silentMentions) }), { wrapper: createWrapper() })
+        act(() => result.current.setMessage(`${mike} look at this`))
+        await act(async () => {
+          await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+        })
+        expect(parseMentions(opts.onSubmit.mock.calls[0][0]).silent).toBe(silentMentions)
+      }
+    })
+
+    it('keeps the draft when the person backs out of the access prompt', async () => {
+      mockConfirmMentions.mockResolvedValueOnce(null)
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions() }), { wrapper: createWrapper() })
+      act(() => result.current.setMessage(`ask ${billing}`))
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+
+      expect(opts.onSubmit).not.toHaveBeenCalled()
+      expect(result.current.message).toBe(`ask ${billing}`)
+    })
   })
 
   it('does not rewrite a pasted secret marker the agent does not have', async () => {

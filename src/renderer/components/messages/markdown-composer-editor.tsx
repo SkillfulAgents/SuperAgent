@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import MarkdownIt from 'markdown-it'
 import type Token from 'markdown-it/lib/token.mjs'
 import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
@@ -18,14 +19,14 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
+import { DOMSerializer, Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
   splitListItem,
 } from 'prosemirror-schema-list'
 import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Command, type Transaction } from 'prosemirror-state'
-import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
+import { Decoration, DecorationSet, EditorView, type NodeViewConstructor } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
 import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
@@ -33,6 +34,7 @@ import { openExternalUrl } from '@renderer/lib/open-external'
 import { findPotentialSecrets, type PotentialSecret } from '@renderer/lib/secret-detection'
 import { CHIP_MARKER, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
 import { chipAt, getChipKind, isChipBacked, registeredChip, type ChipContext } from './composer-chips'
+import { MentionMenu, type MentionMenuHandle } from './mention-menu'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -47,6 +49,8 @@ export interface MarkdownComposerEditorProps {
   className?: string
   potentialSecrets?: PotentialSecret[]
   chipContext?: ChipContext
+  /** Typing `@` offers the agent's teammates and the other agents (needs `chipContext.agentSlug`). */
+  mentions?: boolean
   onEditorElement?: (element: HTMLDivElement | null) => void
 }
 
@@ -736,6 +740,48 @@ function locateChip(doc: ProseMirrorNode, { chip, pos }: ChipTarget): number | n
   return found
 }
 
+/** The `@query` the caret sits at the end of, and the range it covers. */
+interface MentionQuery { from: number; to: number; query: string }
+
+function mentionQueryAt(state: EditorState): MentionQuery | null {
+  const { selection } = state
+  if (!selection.empty) return null
+  const { $from } = selection
+  if ($from.parent.type.spec.code || $from.marks().some((mark) => mark.type.spec.code)) return null
+  // A chip reads as one placeholder character, so `@` never matches into one.
+  const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 40), $from.parentOffset, undefined, '\ufffc')
+  const match = /(?:^|[\s(])@([^\s@\ufffc]{0,30})$/.exec(before)
+  if (!match) return null
+  return { from: $from.pos - match[1].length - 1, to: $from.pos, query: match[1] }
+}
+
+const sameMentionQuery = (a: MentionQuery | null, b: MentionQuery | null) =>
+  a === b || (!!a && !!b && a.from === b.from && a.query === b.query)
+
+/** A zero-width box where the `@` sits, for the menu to hang from. */
+function caretAnchor(view: EditorView, pos: number) {
+  return {
+    getBoundingClientRect: () => {
+      try {
+        const coords = view.coordsAtPos(pos)
+        return new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top)
+      } catch {
+        // No layout (JSDOM).
+        return new DOMRect()
+      }
+    },
+  }
+}
+
+const iconSlotKeys = new WeakMap<HTMLElement, string>()
+let nextIconSlotKey = 0
+/** A stable React key per icon slot element. */
+function iconSlotKey(slot: HTMLElement): string {
+  let key = iconSlotKeys.get(slot)
+  if (!key) iconSlotKeys.set(slot, (key = `chip-icon-${nextIconSlotKey++}`))
+  return key
+}
+
 const composerDecorationsKey = new PluginKey<DecorationSet>('composer-decorations')
 const composerDecorationsMeta = 'composer-decorations:update'
 const editorViews = new WeakMap<HTMLElement, EditorView>()
@@ -824,6 +870,7 @@ export function MarkdownComposerEditor({
   className,
   potentialSecrets = [],
   chipContext = EMPTY_CHIP_CONTEXT,
+  mentions = false,
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
@@ -841,11 +888,18 @@ export function MarkdownComposerEditor({
     disabled,
     potentialSecrets,
     chipContext,
+    mentions,
   })
   const lastMarkdownRef = useRef(value)
   const [linkCard, setLinkCard] = useState<{ href: string; anchor: { current: Element } } | null>(null)
   const [chipMenu, setChipMenu] = useState<(ChipTarget & { anchor: { x: number; y: number } }) | null>(null)
   const hadChipMenuRef = useRef(false)
+  const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null)
+  // Escape closes the menu until the caret leaves this `@`.
+  const dismissedMentionRef = useRef<number | null>(null)
+  const mentionMenuRef = useRef<MentionMenuHandle>(null)
+  // Where each chip's kind draws its React icon (an avatar), keyed by the chip's slot element.
+  const [iconSlots, setIconSlots] = useState<ReadonlyMap<HTMLElement, Chip>>(() => new Map())
 
   latestRef.current = {
     onChange,
@@ -855,6 +909,14 @@ export function MarkdownComposerEditor({
     disabled,
     potentialSecrets,
     chipContext,
+    mentions,
+  }
+
+  const updateMentionQuery = (state: EditorState) => {
+    const { mentions: enabled, chipContext: context } = latestRef.current
+    const next = enabled && context.agentSlug ? mentionQueryAt(state) : null
+    if (next?.from !== dismissedMentionRef.current) dismissedMentionRef.current = null
+    setMentionQuery((current) => (sameMentionQuery(current, next) ? current : next))
   }
 
   useLayoutEffect(() => {
@@ -875,8 +937,29 @@ export function MarkdownComposerEditor({
       ],
     })
 
+    // A chip whose kind has an Icon gets a slot the component fills through a portal.
+    const chipView: NodeViewConstructor = (node) => {
+      const { dom } = DOMSerializer.renderSpec(document, chipNodeSpec.toDOM!(node))
+      const slot = (dom as HTMLElement).querySelector<HTMLElement>('[data-chip-icon]')
+      if (slot && getChipKind(chipOf(node))?.Icon) setIconSlots((slots) => new Map(slots).set(slot, chipOf(node)))
+      return {
+        dom,
+        // React owns the slot's contents.
+        ignoreMutation: () => true,
+        destroy: () => {
+          if (slot) setIconSlots((slots) => {
+            if (!slots.has(slot)) return slots
+            const next = new Map(slots)
+            next.delete(slot)
+            return next
+          })
+        },
+      }
+    }
+
     const view = new EditorView(hostRef.current, {
       state,
+      nodeViews: { chip: chipView },
       editable: () => !latestRef.current.disabled,
       attributes: {
         role: 'textbox',
@@ -894,6 +977,10 @@ export function MarkdownComposerEditor({
       },
       handleDOMEvents: {
         mousedown: () => typeof document.elementFromPoint !== 'function',
+        blur: () => {
+          setMentionQuery(null)
+          return false
+        },
         contextmenu: (editorView, event) => {
           const dom = editorView.editable && event.target instanceof Element ? event.target.closest('[data-chip]') : null
           const target = dom && chipForDOM(editorView, dom)
@@ -904,6 +991,12 @@ export function MarkdownComposerEditor({
         },
         keydown: (editorView, event) => {
           if (event.isComposing) return false
+
+          // An open `@` menu takes its keys (arrows, Enter, Tab, Escape) first.
+          if (mentionMenuRef.current?.onKeyDown(event)) {
+            event.preventDefault()
+            return true
+          }
 
           // Cmd/Ctrl+B belongs to the rich-text editor. Keep it from reaching
           // window-level shortcuts (notably the sidebar toggle) without
@@ -946,6 +1039,7 @@ export function MarkdownComposerEditor({
         const leavesLink = tr.docChanged || (tr.selectionSet && !isInLink(nextState, nextState.selection.head))
         if (leavesLink) setLinkCard(null)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
+        if (tr.docChanged || tr.selectionSet) updateMentionQuery(nextState)
         if (!tr.docChanged) return
         const markdown = serializeComposerMarkdown(nextState.doc)
         lastMarkdownRef.current = markdown
@@ -1051,9 +1145,40 @@ export function MarkdownComposerEditor({
   }
   const ChipMenu = chipMenu && getChipKind(chipMenu.chip)?.Menu
 
+  const insertMention = (chip: Chip) => {
+    const view = viewRef.current
+    const target = view && mentionQueryAt(view.state)
+    if (!view || !target) return
+    const tr = view.state.tr.replaceWith(target.from, target.to, [
+      markdownSchema.nodes.chip.create(chip),
+      markdownSchema.text(' '),
+    ])
+    view.dispatch(tr.setSelection(TextSelection.create(tr.doc, target.from + 2)).scrollIntoView())
+  }
+  const dismissMention = () => {
+    dismissedMentionRef.current = mentionQuery?.from ?? null
+    setMentionQuery(null)
+  }
+  const showMentionMenu = mentions && mentionQuery && chipContext.agentSlug && viewRef.current
+    && dismissedMentionRef.current !== mentionQuery.from
+
   return (
     <>
       <div ref={hostRef} className="contents" />
+      {[...iconSlots].map(([slot, chip]) => {
+        const Icon = getChipKind(chip)?.Icon
+        return Icon && createPortal(<Icon chip={chip} context={chipContext} />, slot, iconSlotKey(slot))
+      })}
+      {showMentionMenu && (
+        <MentionMenu
+          ref={mentionMenuRef}
+          agentSlug={chipContext.agentSlug!}
+          query={mentionQuery.query}
+          anchor={caretAnchor(viewRef.current!, mentionQuery.from)}
+          onPick={insertMention}
+          onDismiss={dismissMention}
+        />
+      )}
       {chipMenu && ChipMenu && (
         <ChipMenu
           chip={chipMenu.chip}

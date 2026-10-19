@@ -420,4 +420,21 @@ describe('auth-mode access over the global feed', () => {
     )
     errors.mockRestore()
   })
+
+  it('sends a mention frame to its recipient only', async () => {
+    authMode.value = true
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue(['shared-agent'])
+    const [mike, sara] = await Promise.all([connectSSE('mike'), connectSSE('sara')])
+    for (const client of [mike, sara]) expect(await client.waitForData('"type":"connected"')).toBe(true)
+
+    publish({ type: 'os_notification', agentSlug: 'shared-agent', recipientUserId: 'mike', title: 'Dana mentioned you' })
+    publish({ type: 'os_notification', agentSlug: 'shared-agent', title: 'Session Complete' })
+
+    expect(await mike.waitForData('Session Complete')).toBe(true)
+    expect(await sara.waitForData('Session Complete')).toBe(true)
+    expect(mike.received()).toContain('Dana mentioned you')
+    expect(sara.received()).not.toContain('Dana mentioned you')
+    mike.destroy()
+    sara.destroy()
+  })
 })

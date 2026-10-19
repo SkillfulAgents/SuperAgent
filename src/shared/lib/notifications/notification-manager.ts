@@ -39,6 +39,9 @@ interface SessionCompleteNotificationOptions {
   responseTranscriptEndOffset?: number | null
 }
 
+/** A mention's inbox body is its message, cut to a preview. */
+const MENTION_BODY_MAX = 280
+
 type NotificationBody = string | {
   fallback: string
   resolve: () => Promise<string>
@@ -120,8 +123,10 @@ class NotificationManager {
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
+    /** A targeted notification: only this user gets it. */
+    recipient?: { userId: string; messageUuid: string }
   }): Promise<void> {
-    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
+    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra, recipient } = params
 
     // A blocked automated session must become visible: session lists exclude
     // non-promoted automated sessions, so a session_waiting notification on one
@@ -157,6 +162,7 @@ class NotificationManager {
       agentSlug,
       title,
       body: resolvedBody,
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -178,6 +184,7 @@ class NotificationManager {
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
       ...(extra ? { extra } : {}),
+      ...(recipient ? { recipientUserId: recipient.userId } : {}),
     }
 
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,
@@ -415,6 +422,33 @@ class NotificationManager {
       agentSlug,
       title,
       body,
+    })
+  }
+
+  /**
+   * Trigger the notification for one person tagged in a session message.
+   * Only they get it, it always notifies (there is no setting for it), and it
+   * points at the message.
+   */
+  async triggerSessionMention(params: {
+    sessionId: string
+    agentSlug: string
+    messageUuid: string
+    recipientUserId: string
+    senderName: string
+    /** The message as the bubble shows it. */
+    text: string
+  }): Promise<void> {
+    const body = params.text.length > MENTION_BODY_MAX
+      ? `${params.text.slice(0, MENTION_BODY_MAX - 1).trimEnd()}…`
+      : params.text
+    await this.triggerNotification({
+      type: 'session_mention',
+      sessionId: params.sessionId,
+      agentSlug: params.agentSlug,
+      title: `${params.senderName} mentioned you`,
+      body,
+      recipient: { userId: params.recipientUserId, messageUuid: params.messageUuid },
     })
   }
 

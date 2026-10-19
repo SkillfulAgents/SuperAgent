@@ -11,11 +11,14 @@
  * An event about one agent names it at the top level (`agentSlug`). In auth
  * mode the notifications stream admits events by exactly that field, and
  * forwards an event without one to every authenticated user, so an agent's
- * slug must never be nested inside another field.
+ * slug must never be nested inside another field. An event for one person (a
+ * mention) names them the same way (`recipientUserId`), and the stream
+ * forwards it to them alone.
  */
 export interface GlobalFeedEvent {
   type: string
   agentSlug?: string
+  recipientUserId?: string
   [key: string]: unknown
 }
 

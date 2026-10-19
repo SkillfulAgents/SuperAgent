@@ -779,7 +779,9 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
-import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
+import { countMembersWithMinRole, listAgentMembers } from '@shared/lib/services/agent-members-service'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
@@ -6907,6 +6909,93 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
 
     expect(mockLiveSessions.emit).not.toHaveBeenCalled()
+  })
+})
+
+describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sessions', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  const mike = { kind: 'user' as const, id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }
+  const member = (id: string, name: string) => ({ id, name, email: `${id}@acme.com`, image: null, role: 'user' as const })
+  let triggerSessionMention: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User'), member('mike-id', 'Mike Smith')])
+    mockSendMessage.mockResolvedValue({})
+    triggerSessionMention = vi.spyOn(notificationManager, 'triggerSessionMention').mockResolvedValue()
+  })
+
+  afterEach(() => triggerSessionMention.mockRestore())
+
+  it('a message that opens on a teammate joins the transcript without a turn, and notifies them', async () => {
+    const content = appendMentions('@Mike Smith look at this', [mike], { silent: true })
+    const res = await postJson(app, URL, { content, model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    const { uuid } = await res.json()
+
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', content, uuid, { shouldQuery: false, preserveRuntime: true })
+    expect(mockLiveSessions.markActive).not.toHaveBeenCalled()
+    expect(triggerSessionMention).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+      messageUuid: uuid,
+      recipientUserId: 'mike-id',
+      senderName: 'Test User',
+      text: '@Mike Smith look at this',
+    })
+  })
+
+  it('a mid-message mention runs the agent as usual, and notifies the teammate', async () => {
+    const content = appendMentions('ping @Mike Smith when you are done', [mike])
+    const res = await postJson(app, URL, { content })
+    expect(res.status).toBe(201)
+
+    const [, sentText, , options] = mockSendMessage.mock.calls[0]
+    expect(sentText).toBe(content)
+    expect(options).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'mike-id' }))
+  })
+
+  it('refuses a teammate who cannot open the agent, before anything is written', async () => {
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User')])
+    const res = await postJson(app, URL, { content: appendMentions('@Mike Smith look', [mike], { silent: true }) })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Mike Smith can't open this agent. Share it with them first.")
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalled()
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('never notifies the sender, so tagging only yourself is an ordinary turn', async () => {
+    const me = { kind: 'user' as const, id: 'test-user-id', name: 'Test User' }
+    const res = await postJson(app, URL, { content: appendMentions('@Test User remember this', [me], { silent: true }) })
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage.mock.calls[0][3]).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('has no teammates to tag outside auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    const res = await postJson(app, URL, { content: appendMentions('@Mike Smith look', [mike], { silent: true }) })
+    expect(res.status).toBe(201)
+
+    expect(listAgentMembers).not.toHaveBeenCalled()
+    expect(mockSendMessage.mock.calls[0][3]).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('a first message refuses a teammate without access, before the session exists', async () => {
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User')])
+    const res = await postJson(app, '/api/agents/test-agent/sessions', { message: appendMentions('ask @Mike Smith', [mike]) })
+
+    expect(res.status).toBe(400)
+    expect(mockClientCreateSession).not.toHaveBeenCalled()
   })
 })
 

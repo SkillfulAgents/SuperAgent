@@ -1718,4 +1718,50 @@ describe('MessageInput', () => {
       })
     })
   })
+
+  describe('mentions', () => {
+    function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
+      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      useEffect(() => { setDraft(value) }, [setDraft, value])
+      return null
+    }
+    const mike = '[[user:mike-id|Mike%20Smith]]'
+
+    it('sends a message that opens on a teammate without a turn, even while the agent works', async () => {
+      mockStreamState.isActive = true
+      const user = userEvent.setup()
+      renderWithProviders(
+        <>
+          <DraftSeeder sessionId="s-1" value={`${mike} look at this`} />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+        </>
+      )
+      expect(await screen.findByTestId('mention-notify-only-hint')).toHaveTextContent("Only notifies Mike Smith. The agent won't reply.")
+
+      await user.click(screen.getByTestId('send-button'))
+
+      await waitFor(() => expect(mockSendMessage.mutateAsync).toHaveBeenCalled())
+      const sent = mockSendMessage.mutateAsync.mock.calls[0][0]
+      expect(sent).toMatchObject({ sessionId: 's-1', shouldQuery: false })
+      expect(sent).not.toHaveProperty('model')
+      expect(sent.content).toMatch(/^@Mike Smith look at this\n\n\[Mentioned:\]\n- @Mike Smith: teammate \(user id mike-id\)\n\(This message only notifies/)
+    })
+
+    it('runs the agent for a mention mid-message', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <>
+          <DraftSeeder sessionId="s-1" value={`ping ${mike} when done`} />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+        </>
+      )
+      await waitFor(() => expect(screen.getByTestId('user-mention')).toBeInTheDocument())
+      expect(screen.queryByTestId('mention-notify-only-hint')).toBeNull()
+
+      await user.click(screen.getByTestId('send-button'))
+
+      await waitFor(() => expect(mockSendMessage.mutateAsync).toHaveBeenCalled())
+      expect(mockSendMessage.mutateAsync.mock.calls[0][0]).not.toHaveProperty('shouldQuery')
+    })
+  })
 })

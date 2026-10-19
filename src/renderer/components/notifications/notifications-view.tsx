@@ -1,4 +1,4 @@
-import { ArrowRight, Bell, CheckCheck, ChevronLeft, ChevronRight, Loader2, Megaphone } from 'lucide-react'
+import { ArrowRight, AtSign, Bell, CheckCheck, ChevronLeft, ChevronRight, Loader2, Megaphone } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { format, isToday, isYesterday, isThisYear } from 'date-fns'
 import { Button } from '@renderer/components/ui/button'
@@ -131,6 +131,9 @@ function NotificationRow({
               !notification.isRead ? 'font-medium text-foreground' : 'text-foreground/90',
             )}
           >
+            {notification.type === 'session_mention' && (
+              <AtSign className="mr-1 inline h-3 w-3 align-[-2px] text-violet-500" aria-hidden />
+            )}
             {notification.title}
           </span>
           <span className="text-xs text-muted-foreground truncate">

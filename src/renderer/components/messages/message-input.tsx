@@ -4,7 +4,7 @@ import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterru
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
 import { StopSessionDialog } from './stop-session-dialog'
-import { WifiOff } from 'lucide-react'
+import { AtSign, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -35,6 +35,9 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { useComposerMentions } from '@renderer/hooks/use-composer-mentions'
+import { openingTeammate } from './composer-chips'
+import { parseMentions } from '@shared/lib/utils/mentions'
 import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
@@ -187,6 +190,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const isSending = sessionId ? sendMessage.isPending : createSession.isPending
   const sendError = sessionId ? sendMessage.error : createSession.error
 
+  const mentions = useComposerMentions(agentSlug, { silent: !!sessionId })
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
@@ -205,12 +209,15 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       const localId = crypto.randomUUID()
       const inputMode = voiceSendRef.current ? 'voice' : 'text'
       voiceSendRef.current = false
+      // A message that opens on a teammate only notifies them: it joins the
+      // transcript and no turn runs, so it is never queued behind one.
+      const silent = parseMentions(content).silent
       // Mid-turn sends are queued by the agent loop (SDK streaming input) and
       // picked up after the current step. They must not carry model/effort —
       // a parameter change would interrupt/restart the in-flight query.
       // (The server also strips them when it sees the session is active.)
-      const queued = isActive && !isWaitingBackground
-      const runtimeOptions = queued ? {} : composerOptions.toRuntimeOptions()
+      const queued = !silent && isActive && !isWaitingBackground
+      const runtimeOptions = queued || silent ? {} : composerOptions.toRuntimeOptions()
       onMessageSent?.(content, localId, queued)
       try {
         const result = await sendMessage.mutateAsync({
@@ -218,11 +225,12 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
           agentSlug,
           content,
           ...runtimeOptions,
+          ...(silent ? { shouldQuery: false } : {}),
         })
         // Only a fresh turn accepts runtime-option changes. The server's
         // queued decision is authoritative and may differ from our SSE-based
         // guess, so keep a user pick dirty when the server stripped it.
-        if (!result.queued) composerOptions.markSubmitted(runtimeOptions)
+        if (!result.queued && !silent) composerOptions.markSubmitted(runtimeOptions)
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,
         // a peer's turn, background-task flag), and a mismatch otherwise strands
@@ -238,7 +246,9 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,
     keepMessageUntilComplete: !sessionId,
     draftKey: sessionId ? `session:${sessionId}` : `new-session:${agentSlug}`,
+    mentions,
   })
+  const notifiesOnly = sessionId ? openingTeammate(composer.message) : null
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { warmStart } = useWarmStartOnType({
@@ -605,6 +615,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
+      {mentions.dialog}
       <SlashCommandMenu
         commands={filteredCommands}
         selectedIndex={slashMenuIndex}
@@ -643,6 +654,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
           onSecure: composer.securePotentialSecret,
         }}
         chipContext={composer.chipContext}
+        mentions
         leftActions={(
           <>
             <AttachmentPicker
@@ -685,6 +697,12 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
               <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
                 <WifiOff className="h-3 w-3 shrink-0" />
                 <span>No internet connection. Messages cannot be sent.</span>
+              </div>
+            )}
+            {notifiesOnly && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="mention-notify-only-hint">
+                <AtSign className="h-3 w-3 shrink-0 text-violet-500" />
+                <span>{`Only notifies ${notifiesOnly.label}. The agent won't reply.`}</span>
               </div>
             )}
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />

@@ -9,6 +9,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
+import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -735,7 +736,7 @@ async function enrichAgentsWithSummary(
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
   const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs),
+    getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
   ])
 
@@ -1917,7 +1918,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       // nothing notable the id set is empty, listSessionsByIds returns before
       // it stats anything, and the whole request stays off disk.
       const [unreadIds, markedUnreadIds] = await Promise.all([
-        getSessionIdsWithUnreadNotifications(slug),
+        getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
         getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       ])
       const activeIds = agentRegistry.get(slug).sessions.activeIds()
@@ -1959,7 +1960,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
       }),
-      getSessionIdsWithUnreadNotifications(slug),
+      getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
       getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
     ])
@@ -2055,6 +2056,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
+
+    // Refused before the session exists. A first message always runs the agent:
+    // the teammates it tags are notified, and it is never notify-only.
+    const mentions = await readSessionMentions(c, slug, message.trim())
+    if ('error' in mentions) return c.json({ error: mentions.error }, 400)
 
     const actor = agentRegistry.get(slug)
 
@@ -2173,6 +2179,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
       agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
     }
+
+    await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
     if (isSystemMessageText(message.trim())) {
       sessionsAwaitingHumanName.add(`${slug}/${sessionId}`)
@@ -2793,6 +2801,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    // Refused before anything is written. A message that opens on a teammate
+    // only notifies them: it joins the transcript, and no turn runs.
+    const mentions = await readSessionMentions(c, agentSlug, content.trim())
+    if ('error' in mentions) return c.json({ error: mentions.error }, 400)
+    if (mentions.silent) runtimeOptions.shouldQuery = false
+
     // The session's metadata, read once for the whole send: the promotion
     // check, the stream's lifecycle, the runtime selection and the container's
     // provider binding all work from it. Marked first, so the selection turn
@@ -2817,6 +2831,10 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const text = content.trim()
     // Every path below hands the agent this same attributed text.
     const agentText = await attributedForAgent(c, agentSlug, text)
+    // Every path below tells the teammates it tags once it is sent.
+    const notifyMentions = () => notifySessionMentions(c, mentions, {
+      agentSlug, agentName: agent.name, sessionId, sessionName: metadata?.name, messageUuid,
+    })
 
     if (agentRegistry.get(agentSlug).messages.coalesceIfRecovering(sessionId, {
       uuid: messageUuid,
@@ -2830,6 +2848,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         content: text,
         queued: true,
       })
+      await notifyMentions()
       return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
@@ -2863,6 +2882,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       await actor.messages.send(sessionId, agentText, messageUuid, { shouldQuery: false, preserveRuntime: true })
       // No stream frames follow an append, so the warm summary is told directly.
       actor.sessions.recordActivity(sessionId)
+      await notifyMentions()
       return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
     }
 
@@ -2937,6 +2957,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         throw error
       }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
+      await notifyMentions()
       const updates: Partial<SessionMetadata> = { ...fields }
       // The container client resolves the pair, including inherited fallback
       // after deletion. Do not overwrite it with a stale request pair.
