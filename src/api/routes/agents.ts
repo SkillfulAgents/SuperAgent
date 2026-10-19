@@ -122,6 +122,10 @@ import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
+import {
+  saveLoginAfterBrowserInput,
+  type LoginSaveOutcome,
+} from '@shared/lib/browser/browser-login-save'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
 import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
@@ -4310,8 +4314,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
   let claimedToolUseId: string | null = null
   try {
     const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { toolUseId, decline, declineReason } = body
+    const { toolUseId, decline, declineReason, saveLogin } = body
 
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
@@ -4350,7 +4355,6 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
         return c.json({ error: 'Failed to reject browser input request' }, 500)
       }
 
-      const sessionId = c.req.param('sessionId')
       agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
 
       // Interrupt the turn so the user can chat directly with the agent.
@@ -4366,6 +4370,25 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
+    }
+
+    // Save before resolving so the agent does not navigate away mid-capture.
+    // A failed save is reported to the user but never blocks completion.
+    let loginSave: LoginSaveOutcome | undefined
+    // On a shared agent the browser may hold another member's sign-in, and saving
+    // would copy it into the caller's vault, so only single-member agents save.
+    // TODO: allow shared agents once the save can tell whose sign-in the browser holds.
+    const sharedAgent = isAuthMode() && await countMembersWithMinRole(agentSlug, 'viewer') > 1
+    const request = actor.inputs.get(toolUseId)
+    if (saveLogin === true && !sharedAgent && request?.kind === 'browser_input' && request.payload.login === true) {
+      // The page the request opened on, not the current one, so a sign-in that ends on another site keeps its site.
+      loginSave = await saveLoginAfterBrowserInput({
+        client: actor.container,
+        sessionId,
+        agentSlug,
+        userId: getViewerUserId(c),
+        url: typeof request.payload.loginUrl === 'string' ? request.payload.loginUrl : null,
+      })
     }
 
     // User completed the browser interaction
@@ -4390,8 +4413,8 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
-    return c.json({ success: true })
+    agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'answered')
+    return c.json({ success: true, ...(loginSave ? { loginSave } : {}) })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
     return c.json({ error: 'Failed to complete browser input' }, 500)

@@ -3,7 +3,7 @@ export interface MockStreamState {
   isStreaming: boolean
   streamingMessage: string | null
   streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
-  pendingBrowserInputRequests: Array<{ toolUseId: string; message: string; requirements: string[] }>
+  pendingBrowserInputRequests: Array<{ toolUseId: string; message: string; requirements: string[]; login?: boolean }>
   autoApprovedScriptRunIds: ReadonlySet<string>
   autoApprovedComputerUseIds: ReadonlySet<string>
   error: string | null

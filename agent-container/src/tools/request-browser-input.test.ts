@@ -80,4 +80,21 @@ describe('requestBrowserInputTool browser-lifecycle guard', () => {
     expect(result.content[0].text).toContain('Click the login or sign-in button')
     expect(result.content[0].text).toContain('call request_browser_input again')
   })
+
+  it('marks sign-in requests so the card offers saving the login', async () => {
+    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222' })
+    const toolUseId = `guard-login-${Date.now()}`
+    inputManager.setCurrentToolUseId(toolUseId)
+    const createPending = vi.spyOn(inputManager, 'createPendingWithType')
+
+    const { requestBrowserInputTool } = await import('./request-browser-input')
+    const resultPromise = (requestBrowserInputTool as any).handler({ message: 'Sign in to GitHub to continue.', requirements: [], purpose: 'login' })
+
+    await vi.waitFor(() => expect(inputManager.hasPending(toolUseId)).toBe(true))
+    expect(createPending).toHaveBeenCalledWith(toolUseId, 'browser_input', expect.objectContaining({ login: true }))
+    inputManager.resolve(toolUseId, 'done')
+
+    expect((await resultPromise).content[0].text).toContain('with purpose "login"')
+    createPending.mockRestore()
+  })
 })

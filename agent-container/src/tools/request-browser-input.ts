@@ -9,6 +9,8 @@ export const requestBrowserInputTool = tool(
 
 Do NOT use this tool when you only need information or a decision from the user (a phone number, address, which option to pick, whether to submit). Ask with AskUserQuestion instead, then fill the page yourself — the answer is easier to give and stays in the conversation for next time.
 
+Set purpose to "login" when the user must sign in to a site (including the 2FA step of a sign-in); the user can then use a saved login or save this one for other agents. Use "other" for everything else (CAPTCHA, cookie consent, confirmations).
+
 The user will see your message and requirements in the UI alongside the browser preview. The tool blocks until the user clicks "Complete" or chooses to chat with you instead. After the user completes, take a browser snapshot to see the current state.
 
 Example:
@@ -20,6 +22,9 @@ Example:
     ),
     requirements: z.array(z.string()).default([]).describe(
       'Optional formal list of specific actions the user should complete'
+    ),
+    purpose: z.enum(['login', 'other']).describe(
+      '"login" when the user must sign in to a site (including its 2FA step); "other" for anything else.'
     ),
   },
   async (args) => {
@@ -55,6 +60,7 @@ Example:
       const completion = await inputManager.createPendingWithType<string>(toolUseId, 'browser_input', {
         message: args.message,
         requirements: args.requirements,
+        ...(args.purpose === 'login' ? { login: true } : {}),
       })
 
       return {
@@ -62,7 +68,9 @@ Example:
           type: 'text' as const,
           text: completion === 'credentials_filled'
             ? 'Credentials have been filled into the browser. Click the login or sign-in button to continue. If 2FA or another manual step appears, call request_browser_input again.'
-            : 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.',
+            : args.purpose === 'login'
+              ? 'The user finished this sign-in step. Take a browser snapshot to confirm you are signed in. If another sign-in step remains (for example 2FA), call request_browser_input again with purpose "login".'
+              : 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.',
         }],
       }
     } catch (error: unknown) {

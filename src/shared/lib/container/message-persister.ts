@@ -11,6 +11,7 @@ import type { RequestFileInput } from '@shared/lib/tools/request-file/definition
 import type { RequestConnectedAccountInput } from '@shared/lib/tools/request-connected-account/definition'
 import type { RequestRemoteMcpInput } from '@shared/lib/tools/request-remote-mcp/definition'
 import type { RequestBrowserInputInput } from '@shared/lib/tools/request-browser-input/definition'
+import { siteOf } from '@shared/lib/browser/site'
 import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run/definition'
 import { getToolDefinition } from '@shared/lib/tools/registry'
 import { getBlockingUserInputRequestKind } from '@shared/lib/tools/user-input-tools'
@@ -5947,6 +5948,7 @@ ${continuation}`
         console.error('[MessagePersister] Browser input request missing message')
         return
       }
+      const login = input.purpose === 'login'
 
       this.registerStreamRequest(
         sessionId,
@@ -5957,6 +5959,7 @@ ${continuation}`
           // The model controls this field — coerce a non-array (e.g. a bare
           // string) to [] so no renderer calls `.map()` on a non-array.
           requirements: Array.isArray(input.requirements) ? input.requirements : [],
+          ...(login ? { login: true } : {}),
         },
         { agentSlug, parentToolUseId },
       )
@@ -5975,7 +5978,19 @@ ${continuation}`
           if (typeof context.url !== 'string') return
           userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
             browserContext: { url: context.url, capturedAt: Date.now() },
+            ...(login ? { loginUrl: context.url } : {}),
           }, agentSlug)
+          // Fingerprint cookies before the user signs in, so saving the login can
+          // keep other sites' cookies the sign-in changed (e.g. an identity provider's).
+          const site = login ? siteOf(context.url) : null
+          if (site) {
+            const baseline = await client.fetch('/browser/storage/baseline', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId, site }),
+            })
+            if (!baseline?.ok) throw new Error(`Sign-in baseline failed with ${baseline?.status}`)
+          }
         }).catch((error: unknown) => {
           console.warn(
             '[MessagePersister] Failed to capture browser input context:',

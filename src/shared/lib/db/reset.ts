@@ -4,6 +4,8 @@ import {
   proxyAuditLog,
   proxyTokens,
   agentConnectedAccounts,
+  agentBrowserCredentials,
+  browserCredentials,
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
@@ -63,6 +65,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  agentBrowserCredentials,
+  browserCredentials,
   // attachments precede both their saved source and their agent
   agentVolumes,
   volumeDefinitions,

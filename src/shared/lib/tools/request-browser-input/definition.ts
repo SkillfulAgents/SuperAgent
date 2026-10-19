@@ -3,6 +3,7 @@ import { waitingInputNotification, type RequestDefinition } from '../requests/de
 export interface RequestBrowserInputInput {
   message?: string
   requirements?: string[]
+  purpose?: 'login' | 'other'
 }
 
 function parseInput(input: unknown): RequestBrowserInputInput {
