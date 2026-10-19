@@ -18,7 +18,12 @@ vi.mock('../db', () => ({
   },
 }))
 
-import { saveBrowserLogin } from './browser-credential-service'
+import {
+  getOwnedBrowserLogin,
+  listBrowserLogins,
+  mapAgentToBrowserLogin,
+  saveBrowserLogin,
+} from './browser-credential-service'
 
 function bundleFor(site: string, theme: string): SiteStorageBundle {
   return {
@@ -122,6 +127,41 @@ describe('saveBrowserLogin', () => {
     expect(chrome.status).toBe('created')
     expect(chrome.credentialId).not.toBe(container.credentialId)
     expect(await credentials()).toHaveLength(2)
+  })
+
+  it('lists and reads only the caller\'s logins for the site and browser type', async () => {
+    const alice = await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    await saveBrowserLogin({
+      userId: 'bob', agentSlug: 'agent-b', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-c', browserType: 'chrome', bundle: bundleFor('example.com', 'dark'),
+    })
+    await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-d', browserType: 'container', bundle: bundleFor('other.com', 'dark'),
+    })
+
+    const listed = await listBrowserLogins({ userId: 'alice', site: 'example.com', browserType: 'container' })
+    expect(listed.map((login) => login.id)).toEqual([alice.credentialId])
+    expect(listed[0]).not.toHaveProperty('bundle')
+    expect(await getOwnedBrowserLogin('alice', alice.credentialId)).toMatchObject({ id: alice.credentialId })
+    expect(await getOwnedBrowserLogin('bob', alice.credentialId)).toBeUndefined()
+  })
+
+  it('maps an agent to a login, replacing its previous login for the site', async () => {
+    const first = await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    const second = await saveBrowserLogin({
+      userId: 'bob', agentSlug: 'agent-b', browserType: 'container', bundle: bundleFor('example.com', 'light'),
+    })
+
+    await mapAgentToBrowserLogin({ agentSlug: 'agent-a', credentialId: second.credentialId, site: 'example.com', version: 1 })
+
+    expect(await mapping('agent-a', 'example.com')).toMatchObject({ credentialId: second.credentialId, appliedVersion: 1 })
+    expect(first.credentialId).not.toBe(second.credentialId)
   })
 
   it('keeps one login per owner, site and browser type when two saves race', async () => {
