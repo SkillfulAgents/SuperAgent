@@ -55,10 +55,14 @@ balances. Built-in adapters:
   shared numbers and are labeled "Team plan …" instead of "Seat …"; a missing
   `creditScope` (older proxy) reads as per-seat.
 
-Usage reads use the saved access token directly, with no OAuth refresh, retry or
-credential writes. A 401 hides usage until an agent request or reconnect refreshes
-the credentials; reporting cannot poison the shared inference credential state.
-The sole upstream request has a 10-second timeout. No inference or
+Informational usage reads use the saved access token directly, with no OAuth
+refresh, retry or credential writes. The subscription paywall requests
+`GET /api/llm-connections/:id/usage?refreshCredentials=1`: after checking access,
+the route uses the shared `resolveConnectionCredential()` utility to check expiry
+and refresh when needed, then reloads the connection before reading usage. This
+uses the refreshed token and cache generation, so an informational read's cached
+401 cannot hide an otherwise usable subscription. Failed refreshes remain unavailable.
+The usage request has a 10-second timeout. No inference or
 container is needed. The subscription HTTP responses are live-verified backend
 contracts, parsed defensively as they evolve.
 
@@ -75,8 +79,10 @@ use sanitized server warnings throttled to once per provider type per minute;
 optional Platform reads bypass the normal billing service's Sentry reporting.
 
 The renderer caches by user and connection, with one-minute freshness. Reads occur when
-settings or the provider dropdown is opened; closed dropdown items do not mount
-usage queries. There is no interval, focus or reconnect polling. Connection edits
+settings, the provider dropdown, or the subscription paywall is opened; closed dropdown
+items do not mount usage queries. The renderer separates refresh-enabled paywall
+queries from informational reads so an unavailable cached read cannot suppress
+credential revalidation. There is no interval, focus or reconnect polling. Connection edits
 invalidate only that connection's usage. A failed usage read hides old data; disconnected
 connections cannot keep showing cached usage.
 

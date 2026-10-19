@@ -1,7 +1,8 @@
 import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
+import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
-import { OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
+import { isOAuthProvider, OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -112,10 +113,16 @@ routes.post('/validate', async (c) => {
 })
 routes.get('/:id/usage', async c => {
   c.header('Cache-Control', 'no-store')
-  const row = await getConnection(c.req.param('id'))
+  let row = await getConnection(c.req.param('id'))
   const actor = viewer(c)
   // Being able to use another member's saved session does not expose their billing.
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
+  if (c.req.query('refreshCredentials') === '1' && isOAuthProvider(row.provider)) {
+    await resolveConnectionCredential(row.id)
+    // Refresh can rotate both the token and the usage cache generation.
+    row = await getConnection(row.id)
+    if (!row) return c.json({ error: 'Connection not found' }, 404)
+  }
   return c.json(await runWithOptionalUser(actor.userId, () => readConnectionUsage(row)))
 })
 routes.get('/:id/model-availability', async c => {

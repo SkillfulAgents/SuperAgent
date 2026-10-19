@@ -209,7 +209,11 @@ test('switches to an active saved subscription and requests both default writes'
     if (route.request().method() !== 'PUT') return route.continue()
     const body = route.request().postDataJSON() as Record<string, string>
     writes.push({ kind: 'global', body })
-    await route.fulfill({ json: { success: true, defaultSelection: body, summarizerSelection: null } })
+    await route.fulfill({ json: {
+      success: true,
+      before: { defaultSelection: baseline.defaultSelection, summarizerSelection: baseline.summarizerSelection },
+      after: { defaultSelection: body, summarizerSelection: null },
+    } })
   })
   await page.route('**/api/agents/*/preferences', async route => {
     if (route.request().method() !== 'PUT') return route.continue()

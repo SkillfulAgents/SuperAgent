@@ -105,7 +105,7 @@ beforeEach(() => {
       return Response.json({ id: 'new-connection' })
     }
     if (url === '/api/llm-connections') return Response.json({ connections: saved, defaultSelection: { llmProviderId: 'platform', model: 'old-model' }, summarizerSelection: null })
-    const usageMatch = url.match(/^\/api\/llm-connections\/([^/]+)\/usage$/)
+    const usageMatch = url.match(/^\/api\/llm-connections\/([^/]+)\/usage\?refreshCredentials=1$/)
     if (usageMatch) {
       const usage = usageByConnection[decodeURIComponent(usageMatch[1])]
       if (usage === 'error') return Response.json({ error: 'Usage unavailable' }, { status: 503 })
@@ -114,7 +114,11 @@ beforeEach(() => {
         limits: [{ kind: 'window', id: 'weekly', label: 'Weekly', usedPercent: 50 }],
       })
     }
-    if (url === '/api/llm-connections/defaults/default' && init?.method === 'PUT') return Response.json({ success: true, defaultSelection: data, summarizerSelection: { llmProviderId: 'platform', model: 'old-model' } })
+    if (url === '/api/llm-connections/defaults/default' && init?.method === 'PUT') return Response.json({
+      success: true,
+      before: { defaultSelection: { llmProviderId: 'platform', model: 'old-model' }, summarizerSelection: null },
+      after: { defaultSelection: data, summarizerSelection: { llmProviderId: 'platform', model: 'old-model' } },
+    })
     if (url === '/api/llm-connections/defaults/default/compare-and-set' && init?.method === 'PUT') return Response.json({ updated: true })
     if (url === '/api/agents/agent/preferences' && init?.method === 'PUT') {
       return failAgentDefault ? Response.json({ error: 'Could not update agent default' }, { status: 500 }) : Response.json(data)
@@ -223,6 +227,28 @@ describe('subscription paywall recovery', () => {
     expect(events('switched')).toHaveLength(0)
   })
 
+  it('rolls back to the server pre-write state when another admin edited defaults after the paywall loaded', async () => {
+    state.isAuthMode = false
+    failAgentDefault = true
+    saved = [savedSubscription({ userId: null })]
+    const before = {
+      defaultSelection: { llmProviderId: 'other-default', model: 'other-model' },
+      summarizerSelection: { llmProviderId: 'new-helper', model: 'helper-model' },
+    }
+    const after = { ...before, defaultSelection: { llmProviderId: 'saved-grok', model: 'grok-model' } }
+    const implementation = state.fetch.getMockImplementation()!
+    state.fetch.mockImplementation((url: string, init?: RequestInit) =>
+      url === '/api/llm-connections/defaults/default' && init?.method === 'PUT'
+        ? Promise.resolve(Response.json({ success: true, before, after }))
+        : implementation(url, init))
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Always use Grok' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not update agent default')
+    const restore = state.fetch.mock.calls.find(([url]) => url.endsWith('/compare-and-set'))
+    expect(JSON.parse(String(restore?.[1].body))).toEqual({ expected: after, restore: before })
+    expect(sendCount).toBe(0)
+  })
+
   it('does not resume an abandoned session after default writes finish', async () => {
     state.isAuthMode = false
     saved = [savedSubscription({ userId: null })]
@@ -250,7 +276,7 @@ describe('subscription paywall recovery', () => {
       limits: [{ kind: 'window', id: 'weekly', label: 'Weekly', usedPercent: 100 }],
     }
     mount()
-    await waitFor(() => expect(client.getQueryState(['llm-provider-usage', 'saved-grok', 'me', true])?.status).toBe('success'))
+    await waitFor(() => expect(client.getQueryState(['llm-provider-usage', 'saved-grok', 'me', true, true])?.status).toBe('success'))
     expect(screen.queryByText('Personal Grok')).not.toBeInTheDocument()
     expect(screen.queryByText('Use an active subscription')).not.toBeInTheDocument()
   })
@@ -278,7 +304,7 @@ describe('subscription paywall recovery', () => {
     saved = [savedSubscription()]
     usageByConnection['saved-grok'] = usage
     mount()
-    await waitFor(() => expect(client.getQueryState(['llm-provider-usage', 'saved-grok', 'me', true])?.status).toBe(status))
+    await waitFor(() => expect(client.getQueryState(['llm-provider-usage', 'saved-grok', 'me', true, true])?.status).toBe(status))
     if (shown) expect(await screen.findByText('Personal Grok')).toBeVisible()
     else expect(screen.queryByText('Personal Grok')).not.toBeInTheDocument()
   })

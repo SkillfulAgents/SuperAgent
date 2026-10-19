@@ -31,9 +31,12 @@ import {
   connectionInputSchema,
   mergeConnectionConfig,
   modelSelectionSchema,
+  globalSelectionStateSchema,
   resolveSelection,
   type ConnectionInfo,
   type ModelSelection,
+  type GlobalSelectionState,
+  type GlobalSelectionChange,
 } from './connection-schema'
 
 export type ConnectionRow = typeof llmConnections.$inferSelect
@@ -301,8 +304,6 @@ async function applyGlobalSelection(
   })
 }
 
-export type GlobalSelectionState = { defaultSelection: ModelSelection | null; summarizerSelection: ModelSelection | null }
-
 export async function globalSelectionState(): Promise<GlobalSelectionState> {
   const root = await resolveGlobalSelection()
   const summarizer = await resolveSummarizerSelection()
@@ -315,23 +316,22 @@ export async function globalSelectionState(): Promise<GlobalSelectionState> {
 export async function setGlobalSelection(
   purpose: 'default' | 'summarizer',
   raw: unknown
-): Promise<GlobalSelectionState> {
+): Promise<GlobalSelectionChange> {
   const selection = raw === null && purpose === 'summarizer' ? null : modelSelectionSchema.parse(raw)
   return mutateConnections(async () => {
+    // Capture the rollback state in the same queue as the write, never from a client's cache.
+    const before = await globalSelectionState()
     await applyGlobalSelection(purpose, selection)
-    return globalSelectionState()
+    return { before, after: await globalSelectionState() }
   })
 }
-
-const globalSelectionStateSchema = z.object({
-  defaultSelection: modelSelectionSchema,
-  summarizerSelection: modelSelectionSchema.nullable(),
-})
 
 /** Restore a previous app default and summarizer only if nothing changed them since `expected` was observed. */
 export async function compareAndSetGlobalDefault(expectedRaw: unknown, restoreRaw: unknown): Promise<boolean> {
   const expected = globalSelectionStateSchema.parse(expectedRaw)
   const restore = globalSelectionStateSchema.parse(restoreRaw)
+  if (!expected.defaultSelection || !restore.defaultSelection)
+    throw new Error('Select a model from a global connection')
   return mutateConnections(async () => {
     const current = await globalSelectionState()
     if (JSON.stringify(current) !== JSON.stringify(expected)) return false

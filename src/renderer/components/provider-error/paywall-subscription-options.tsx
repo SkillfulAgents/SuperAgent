@@ -12,7 +12,7 @@ import { useCancelQueuedMessage, useSendMessage } from '@renderer/hooks/use-mess
 import { useProviderUsages, supportsUsage } from '@renderer/hooks/use-provider-usage'
 import { useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useModelSettings } from '@renderer/hooks/use-settings'
-import { resolveSelection, type ConnectionInfo, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
+import { globalSelectionChangeSchema, resolveSelection, type ConnectionInfo, type GlobalSelectionChange, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 import { isProviderUsageExhausted } from '@shared/lib/llm-provider/usage-schema'
 import type { ConnectionSetupObserver } from '@renderer/components/settings/connection-setup-events'
 import { usePaywallTracking, type PaywallAnalyticsContext, type SubscriptionRecovery } from './paywall-analytics'
@@ -34,7 +34,6 @@ type SubscriptionAttempt = {
   analytics: PaywallAnalyticsContext
 }
 type SwitchScope = 'session' | 'always'
-type GlobalSelectionState = { defaultSelection: ModelSelection | null; summarizerSelection: ModelSelection | null }
 type ResolvedConnectionSelection = ModelSelection & { wireModel: string }
 type SavedSubscriptionOption = {
   connection: ConnectionInfo
@@ -80,7 +79,7 @@ export function PaywallSubscriptionOptions({ session, onResumed, analytics }: {
     const subscription = SUBSCRIPTIONS.find(option => option.provider === connection.provider)
     return subscription ? [{ connection, subscription }] : []
   })
-  const usage = useProviderUsages(candidates.map(option => option.connection))
+  const usage = useProviderUsages(candidates.map(option => option.connection), { refreshCredentials: true })
   const activeConnections = candidates.flatMap(({ connection, subscription }, index): SavedSubscriptionOption[] => {
     const selection = selectionForConnection(connection)
     if (!selection) return []
@@ -101,8 +100,7 @@ export function PaywallSubscriptionOptions({ session, onResumed, analytics }: {
   return (
     <div className="relative mt-3 rounded-xl border border-border/70 bg-background/90 px-4 py-4 backdrop-blur-md sm:px-6" data-testid="paywall-subscriptions">
       {activeConnections.length > 0 && (
-        <SavedSubscriptionConnections options={activeConnections} previousDefault={connectionData?.defaultSelection ?? null}
-          previousSummarizer={connectionData?.summarizerSelection ?? null}
+        <SavedSubscriptionConnections options={activeConnections}
           session={session} analytics={analytics} onResumed={onResumed} />
       )}
       <div className={activeConnections.length > 0 ? 'mt-4 border-t border-border/70 pt-4' : undefined}>
@@ -138,10 +136,8 @@ export function PaywallSubscriptionOptions({ session, onResumed, analytics }: {
   )
 }
 
-function SavedSubscriptionConnections({ options, previousDefault, previousSummarizer, session, analytics, onResumed }: {
+function SavedSubscriptionConnections({ options, session, analytics, onResumed }: {
   options: SavedSubscriptionOption[]
-  previousDefault: ModelSelection | null
-  previousSummarizer: ModelSelection | null
   session: Session
   analytics: PaywallAnalyticsContext
   onResumed: (recovery: SubscriptionRecovery) => void
@@ -172,15 +168,14 @@ function SavedSubscriptionConnections({ options, previousDefault, previousSummar
     setError('')
     setPending({ connectionId: option.connection.id, scope })
     const attemptId = uuid()
-    let globalDefaultWritten: GlobalSelectionState | null = null
+    let globalDefaultChange: GlobalSelectionChange | null = null
     let agentDefaultChanged = false
     try {
       if (scope === 'always') {
-        const written = await setGlobalDefault({
+        globalDefaultChange = globalSelectionChangeSchema.parse(await setGlobalDefault({
           path: '/defaults/default', method: 'PUT',
           body: { llmProviderId: option.selection.llmProviderId, model: option.selection.model },
-        }) as GlobalSelectionState
-        globalDefaultWritten = { defaultSelection: written.defaultSelection, summarizerSelection: written.summarizerSelection }
+        }))
         if (!mounted.current || active.current) throw new Error('The chat is still busy. Try again when its current turn finishes.')
         await setAgentDefault({
           defaultLlmProviderId: option.selection.llmProviderId,
@@ -211,15 +206,15 @@ function SavedSubscriptionConnections({ options, previousDefault, previousSummar
       onResumed({ attemptId, provider: option.subscription.provider, scope })
     } catch (cause) {
       let failure = cause
-      if (globalDefaultWritten && !agentDefaultChanged && !previousDefault) {
+      if (globalDefaultChange && !agentDefaultChanged && !globalDefaultChange.before.defaultSelection) {
         failure = new Error('The app default was set, but this agent\'s default could not be saved. Check Model Providers settings.')
-      } else if (globalDefaultWritten && !agentDefaultChanged && previousDefault) {
+      } else if (globalDefaultChange && !agentDefaultChanged) {
         try {
           const restored = await setGlobalDefault({
             path: '/defaults/default/compare-and-set', method: 'PUT',
             body: {
-              expected: globalDefaultWritten,
-              restore: { defaultSelection: previousDefault, summarizerSelection: previousSummarizer },
+              expected: globalDefaultChange.after,
+              restore: globalDefaultChange.before,
             },
           }) as { updated: boolean }
           if (!restored.updated) failure = new Error('The app default was changed elsewhere, so it was left as is. Check Model Providers settings.')
@@ -232,7 +227,7 @@ function SavedSubscriptionConnections({ options, previousDefault, previousSummar
       inFlight.current = false
       if (mounted.current) setPending(null)
     }
-  }, [analytics, cancelQueuedMessage, isAdmin, isAuthMode, onResumed, previousDefault, previousSummarizer, sendMessage, session, setAgentDefault, setGlobalDefault, track])
+  }, [analytics, cancelQueuedMessage, isAdmin, isAuthMode, onResumed, sendMessage, session, setAgentDefault, setGlobalDefault, track])
 
   return (
     <div data-testid="active-subscription-connections">
