@@ -839,7 +839,14 @@ class MessagePersister {
     // — e.g. the markSessionIdle revert after markSessionActive's sync picked
     // up an open agent-scoped review.
     state.isAwaitingInput = false
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false, outcome })
+    const turnOutcome = outcome ? this.recordTurnOutcome(agentSlug, sessionId, outcome) : undefined
+    this.settleTurnBoundaryRequests(agentSlug, sessionId, 'ended')
+    this.broadcastToSSE(agentSlug, sessionId, {
+      type: 'session_idle',
+      isActive: false,
+      outcome,
+      ...(turnOutcome && { turnOutcome }),
+    })
     this.broadcastGlobal({
       type: 'session_idle',
       sessionId,
@@ -1677,17 +1684,26 @@ class MessagePersister {
       // Only the turn ended. The renderer resets its streaming state off this
       // frame the way it does off session_idle, but keeps the task list.
       state.waitingBackground = true
+      const turnOutcome = this.recordTurnOutcome(agentSlug, sessionId, 'cancelled')
       this.broadcastToSSE(agentSlug, sessionId, {
         type: 'session_waiting_background',
         interrupted: true,
         backgroundTaskCount: backgroundTasks.length,
         backgroundTasks,
+        turnOutcome,
       })
       return
     }
 
     // Broadcast to session-specific clients
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'session_idle', isActive: false, outcome: 'cancelled' })
+    const turnOutcome = this.recordTurnOutcome(agentSlug, sessionId, 'cancelled')
+    this.settleTurnBoundaryRequests(agentSlug, sessionId, 'ended')
+    this.broadcastToSSE(agentSlug, sessionId, {
+      type: 'session_idle',
+      isActive: false,
+      outcome: 'cancelled',
+      ...(turnOutcome && { turnOutcome }),
+    })
 
     // Also broadcast globally so sidebar updates regardless of which session is being viewed
     if (agentSlug) {
@@ -1886,6 +1902,11 @@ class MessagePersister {
     if (state.agentSlug) {
       state.provisionalActivity = recordProvisionalSessionActivity(this.storeOf(state.agentSlug), sessionId, Date.now())
     }
+
+    // A queued message joins the response in progress; a new turn starts its own.
+    if (!wasActive) this.beginStreamedText(state)
+    // Any accepted message, queued or not, supersedes what the turn left parked.
+    this.settleTurnBoundaryRequests(agentSlug, sessionId, 'started')
 
     // Broadcast to session-specific clients. queuedMidTurn tells the app this is a
     // message accepted into a running turn rather than a new one, so it can keep the
@@ -2177,63 +2198,11 @@ class MessagePersister {
     this.broadcastToSSE(agentSlug, sessionId, data)
   }
 
-  // Broadcast to SSE clients
+  // Fan an event out to the session's stream listeners. Pure: every state
+  // change an event stands for is made by its emitter, before it emits.
   private broadcastToSSE(agentSlug: string, sessionId: string, data: unknown): void {
-    const key = sessionKeyOf(agentSlug, sessionId)
-    const state = this.streamingStates.get(key)
-    const event = data as { type?: string; text?: string; error?: string; outcome?: SessionTurnOutcome['status']; interrupted?: boolean; queuedMidTurn?: boolean }
-    if (state && event) {
-      // Retain reply context for an error before its complete assistant frame.
-      if (event.type === 'stream_start' || (event.type === 'session_active' && !event.queuedMidTurn)) state.lastStreamedText = ''
-      if (event.type === 'stream_delta') state.lastStreamedText = (state.lastStreamedText ?? '') + (event.text ?? '')
-      // Record decisions already made by the lifecycle owner. This does not
-      // change activity, settle background tasks, or introduce another timer.
-      const status = event.type === 'session_error' ? 'failed'
-        : event.type === 'session_waiting_background' && event.interrupted ? 'cancelled'
-        : event.type === 'session_idle' ? event.outcome : undefined
-      if (status) {
-        state.turnOutcome = {
-          id: randomUUID(), status,
-          responseText: status === 'completed'
-            ? state.lastAssistantText || state.lastStreamedText || ''
-            : state.lastStreamedText || state.lastAssistantText,
-          error: status === 'failed' ? event.error ?? 'An unknown error occurred' : null,
-        }
-        data = { ...event, turnOutcome: state.turnOutcome }
-      }
-    }
     void this.capture?.recordOutput(sessionId, data)
-    // Turn boundaries settle whatever the last turn left parked. That is the
-    // only request bookkeeping on the broadcast path — registration itself
-    // lives in the per-kind handlers.
-    const evt = data as { type?: string } | null
-    if (evt && (evt.type === 'session_active' || evt.type === 'session_idle')) {
-      const state = this.streamingStates.get(key)
-      if (state) {
-        // The turn boundary lands the held-back sibling results in the
-        // transcript — the settled-outcome stamps are no longer needed.
-        state.settledInputRequests.clear()
-        // A new turn supersedes parked asks; an idle boundary cancels them.
-        userInputRequestManager.clearSessionStreamRequests(
-          agentSlug,
-          sessionId,
-          evt.type === 'session_active' ? 'superseded' : 'cancelled',
-        )
-        if (evt.type === 'session_active') {
-          // A new turn also supersedes computer-use approvals left over from
-          // a previous one. Historically these were never cleared at turn
-          // boundaries (only by a decision or cancelAwaitingInput), so
-          // stale entries could survive an idle/interrupt — harmless when
-          // awaiting was an imperative bit, but the derived projection would
-          // read them as a live wait and flag the fresh turn as awaiting.
-          // (Idle keeps them so a still-parked approval survives a reconnect.)
-          for (const id of userInputRequestManager.getStoreIdsForSession(agentSlug, sessionId, 'computer_use')) {
-            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded', agentSlug)
-          }
-        }
-      }
-    }
-    const clients = this.sseClients.get(key)
+    const clients = this.sseClients.get(sessionKeyOf(agentSlug, sessionId))
     if (clients) {
       clients.forEach((callback) => {
         try {
@@ -2242,6 +2211,68 @@ class MessagePersister {
           console.error('Error broadcasting to SSE client:', error)
         }
       })
+    }
+  }
+
+  // The streamed text of the response in progress: the reply context an
+  // outcome falls back on when an error lands before the complete assistant
+  // frame. A new response (stream_start) or a new turn starts it over.
+  private beginStreamedText(state: StreamingState): void {
+    state.lastStreamedText = ''
+  }
+
+  private appendStreamedText(state: StreamingState, text: string): void {
+    state.lastStreamedText = (state.lastStreamedText ?? '') + text
+  }
+
+  // Record how the turn ended, as decided by the lifecycle code emitting it:
+  // the outcome rides on that frame and is replayed to clients that connect
+  // later. Changes nothing else (activity, background work, timers). A
+  // session with no state records nothing, and its frame carries none.
+  private recordTurnOutcome(
+    agentSlug: string,
+    sessionId: string,
+    status: SessionTurnOutcome['status'],
+    error?: string,
+  ): SessionTurnOutcome | undefined {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state) return undefined
+    state.turnOutcome = {
+      id: randomUUID(),
+      status,
+      responseText: status === 'completed'
+        ? state.lastAssistantText || state.lastStreamedText || ''
+        : state.lastStreamedText || state.lastAssistantText,
+      error: status === 'failed' ? error ?? 'An unknown error occurred' : null,
+    }
+    return state.turnOutcome
+  }
+
+  // A turn boundary settles whatever the last turn left parked. Runs before
+  // the boundary's own frame, so the requests' resolved frames precede it.
+  private settleTurnBoundaryRequests(agentSlug: string, sessionId: string, boundary: 'started' | 'ended'): void {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state) return
+    // The boundary lands the held-back sibling results in the transcript —
+    // the settled-outcome stamps are no longer needed.
+    state.settledInputRequests.clear()
+    // A new turn supersedes parked asks; an ended one cancels them.
+    userInputRequestManager.clearSessionStreamRequests(
+      agentSlug,
+      sessionId,
+      boundary === 'started' ? 'superseded' : 'cancelled',
+    )
+    if (boundary === 'started') {
+      // A new turn also supersedes computer-use approvals left over from a
+      // previous one. Historically these were never cleared at turn
+      // boundaries (only by a decision or cancelAwaitingInput), so stale
+      // entries could survive an idle/interrupt — harmless when awaiting was
+      // an imperative bit, but the derived projection would read them as a
+      // live wait and flag the fresh turn as awaiting. (An ended turn keeps
+      // them so a still-parked approval survives a reconnect.)
+      for (const id of userInputRequestManager.getStoreIdsForSession(agentSlug, sessionId, 'computer_use')) {
+        userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded', agentSlug)
+      }
     }
   }
 
@@ -2419,6 +2450,7 @@ class MessagePersister {
           // Email and chat delivery only see stream_delta. A finished answer
           // with no text deltas would show in the transcript and never send.
           if (!content.error && state.currentText.length === 0 && assistantText) {
+            this.appendStreamedText(state, assistantText)
             this.broadcastToSSE(agentSlug, sessionId, { type: 'stream_delta', text: assistantText })
           }
         }
@@ -2436,6 +2468,7 @@ class MessagePersister {
           } else {
             const errorText = this.extractAssistantText(content)
             if (errorText) {
+              this.appendStreamedText(state, errorText)
               this.broadcastToSSE(agentSlug, sessionId, { type: 'stream_delta', text: errorText, apiErrorCode: content.error })
             }
           }
@@ -2497,6 +2530,7 @@ class MessagePersister {
               state.slashCommands,
             )
           }
+          this.beginStreamedText(state)
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'stream_start',
             slashCommands: state.slashCommands.length > 0 ? state.slashCommands : undefined,
@@ -2772,6 +2806,8 @@ class MessagePersister {
             // running → idle pair without another result; clearing the guard
             // here would leave isActive stuck until disconnect. The response
             // reset above keeps any duplicate completion notification generic.
+            this.beginStreamedText(state)
+            this.settleTurnBoundaryRequests(agentSlug, sessionId, 'started')
             this.broadcastToSSE(agentSlug, sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -2987,6 +3023,7 @@ class MessagePersister {
             apiErrorCode ? `(${apiErrorCode})` : '',
             terminalReason ? `[${terminalReason}]` : ''
           )
+          const turnOutcome = this.recordTurnOutcome(agentSlug, sessionId, 'failed', errorMessage)
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'session_error',
             error: errorMessage,
@@ -2994,7 +3031,8 @@ class MessagePersister {
             errorPresentation,
             terminalReason,
             apiErrorStatus,
-            isActive: false
+            isActive: false,
+            ...(turnOutcome && { turnOutcome }),
           })
           // Also broadcast globally
           this.broadcastGlobal({
@@ -3207,12 +3245,14 @@ class MessagePersister {
         'The container may have crashed or run out of memory.'
       console.error(`[MessagePersister] Session ${sessionId} died mid-turn (connection lost)`)
       this.persistAutomationStatus(sessionId, state, 'failed')
+      const turnOutcome = this.recordTurnOutcome(agentSlug, sessionId, 'failed', errorMessage)
       this.broadcastToSSE(agentSlug, sessionId, {
         type: 'session_error',
         error: errorMessage,
         apiErrorCode: null,
         terminalReason: 'connection_lost',
         isActive: false,
+        ...(turnOutcome && { turnOutcome }),
       })
       this.broadcastGlobal({
         type: 'session_error',
@@ -4026,6 +4066,7 @@ class MessagePersister {
         state.isRetrying = false // the response is flowing now, so any retry resolved
         // 'streaming' is deferred to the first text token (set above) so a message that
         // opens with a tool call stays 'working' instead of flipping streaming→working.
+        this.beginStreamedText(state)
         this.broadcastToSSE(agentSlug, sessionId, { type: 'stream_start' })
         break
 
@@ -4062,6 +4103,7 @@ class MessagePersister {
       case 'content_block_delta':
         if (event.delta?.type === 'text_delta' && event.delta.text) {
           state.currentText += event.delta.text
+          this.appendStreamedText(state, event.delta.text)
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'stream_delta',
             text: event.delta.text,

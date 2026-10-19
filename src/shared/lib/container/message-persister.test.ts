@@ -417,6 +417,81 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('turn boundaries are made by their emitters, not by the fan-out', () => {
+    const emit = (content: Record<string, unknown>) => mockClient._sendMessage(content)
+    const askQuestion = (id: string) => {
+      emit({ type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'tool_use', id, name: 'AskUserQuestion' } } })
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: JSON.stringify({ questions: [{ question: 'Which?' }] }) } } })
+      emit({ type: 'stream_event', event: { type: 'content_block_stop' } })
+    }
+
+    it('fans a broadcast boundary-shaped event out unchanged, touching no state', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      askQuestion('q-open')
+      expect(openStreamRequestIds()).toEqual(['q-open'])
+
+      const idle = { type: 'session_idle', isActive: false, outcome: 'completed' }
+      messagePersister.broadcastSessionEvent(AGENT_SLUG, SESSION_ID, idle)
+      messagePersister.broadcastSessionEvent(AGENT_SLUG, SESSION_ID, { type: 'session_active', isActive: true })
+      messagePersister.broadcastSessionEvent(AGENT_SLUG, SESSION_ID, { type: 'stream_delta', text: 'not the answer' })
+
+      expect(sseEvents).toContainEqual(idle)
+      expect(messagePersister.getSessionTurnOutcome(AGENT_SLUG, SESSION_ID)).toBeNull()
+      expect(openStreamRequestIds()).toEqual(['q-open'])
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('puts the requests a new message supersedes on the stream before its session_active', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      askQuestion('q-superseded')
+      sseEvents.length = 0
+
+      // A queued message is a boundary for parked asks too.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+
+      const types = sseEvents.map((e) => e.type)
+      expect(types.indexOf('user_request_resolved')).toBeGreaterThanOrEqual(0)
+      expect(types.indexOf('user_request_resolved')).toBeLessThan(types.indexOf('session_active'))
+      expect(sseEvents.find((e) => e.type === 'user_request_resolved')).toMatchObject({
+        requestId: 'q-superseded',
+        outcome: 'superseded',
+      })
+      expect(openStreamRequestIds()).toEqual([])
+    })
+
+    it('puts the requests an ended turn cancels on the stream before its session_idle, which carries the outcome', () => {
+      // The runtime owns idle, so the result alone does not end the turn.
+      emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emit({ type: 'assistant', message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } })
+      askQuestion('q-cancelled')
+      emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
+      sseEvents.length = 0
+
+      emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      const types = sseEvents.map((e) => e.type)
+      expect(types.indexOf('user_request_resolved')).toBeLessThan(types.indexOf('session_idle'))
+      const idle = sseEvents.find((e) => e.type === 'session_idle')
+      expect(idle.turnOutcome).toEqual(messagePersister.getSessionTurnOutcome(AGENT_SLUG, SESSION_ID))
+      expect(idle.turnOutcome).toMatchObject({ status: 'completed', responseText: 'Done.' })
+    })
+
+    it('starts the streamed reply context over at each response, and only at a new turn', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emit({ type: 'stream_event', event: { type: 'message_start' } })
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'first ' } } })
+      // A queued message joins the response in progress.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'reply' } } })
+      emit({ type: 'result', subtype: 'error_during_execution', errors: ['boom'] })
+      expect(messagePersister.getSessionTurnOutcome(AGENT_SLUG, SESSION_ID)).toMatchObject({
+        status: 'failed',
+        responseText: 'first reply',
+      })
+    })
+  })
+
   describe('session summary activity', () => {
     it('records complete top-level transcript frames with their source timestamp', () => {
       const timestamp = new Date('2026-08-07T18:00:00.000Z')
