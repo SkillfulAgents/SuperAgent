@@ -10,6 +10,17 @@ export const modelSelectionSchema = z.object({
 })
 export type ModelSelection = z.infer<typeof modelSelectionSchema>
 
+export const globalSelectionStateSchema = z.object({
+  defaultSelection: modelSelectionSchema.nullable(),
+  summarizerSelection: modelSelectionSchema.nullable(),
+})
+export type GlobalSelectionState = z.infer<typeof globalSelectionStateSchema>
+export const globalSelectionChangeSchema = z.object({
+  before: globalSelectionStateSchema,
+  after: globalSelectionStateSchema,
+})
+export type GlobalSelectionChange = z.infer<typeof globalSelectionChangeSchema>
+
 export const apiFormatSchema = z.enum(['messages', 'chat-completions', 'responses'])
 
 export const connectionConfigSchema = z.object({

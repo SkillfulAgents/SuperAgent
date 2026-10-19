@@ -1,7 +1,8 @@
 import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
+import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
-import { OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
+import { isOAuthProvider, OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -10,13 +11,12 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
   canSelectConnection,
-  isHelperSelection,
   listConnections,
-  resolveSummarizerSelection,
-  resolveGlobalSelection,
   saveConnection,
   deleteConnection,
   setGlobalSelection,
+  compareAndSetGlobalDefault,
+  globalSelectionState,
   getConnection,
   assertManageConnection,
   providerForConnection,
@@ -60,16 +60,10 @@ routes.post('/oauth/:id/poll', async c => {
 })
 routes.get('/', async (c) => {
   const connections = await listConnections(viewer(c))
-  const root = await resolveGlobalSelection()
-  const summarizer = await resolveSummarizerSelection()
   return c.json({
     connections,
     legacyLlmProviderId: getSettings().llmLegacyProviderId,
-    defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
-    summarizerSelection:
-      isHelperSelection(summarizer)
-        ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
-        : null,
+    ...await globalSelectionState(),
   })
 })
 routes.post('/', async (c) =>
@@ -84,8 +78,12 @@ routes.delete('/:id', async (c) => {
 })
 routes.put('/defaults/:purpose', IsAdmin(), async (c) => {
   const purpose = z.enum(['default', 'summarizer']).parse(c.req.param('purpose'))
-  await setGlobalSelection(purpose, await c.req.json())
-  return c.json({ success: true })
+  const state = await setGlobalSelection(purpose, await c.req.json())
+  return c.json({ success: true, ...state })
+})
+routes.put('/defaults/default/compare-and-set', IsAdmin(), async (c) => {
+  const body = z.object({ expected: z.unknown(), restore: z.unknown() }).parse(await c.req.json())
+  return c.json({ updated: await compareAndSetGlobalDefault(body.expected, body.restore) })
 })
 routes.post('/validate', async (c) => {
   const body = z
@@ -115,10 +113,16 @@ routes.post('/validate', async (c) => {
 })
 routes.get('/:id/usage', async c => {
   c.header('Cache-Control', 'no-store')
-  const row = await getConnection(c.req.param('id'))
+  let row = await getConnection(c.req.param('id'))
   const actor = viewer(c)
   // Being able to use another member's saved session does not expose their billing.
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
+  if (c.req.query('refreshCredentials') === '1' && isOAuthProvider(row.provider)) {
+    await resolveConnectionCredential(row.id)
+    // Refresh can rotate both the token and the usage cache generation.
+    row = await getConnection(row.id)
+    if (!row) return c.json({ error: 'Connection not found' }, 404)
+  }
   return c.json(await runWithOptionalUser(actor.userId, () => readConnectionUsage(row)))
 })
 routes.get('/:id/model-availability', async c => {
