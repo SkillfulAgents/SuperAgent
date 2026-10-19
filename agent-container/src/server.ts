@@ -50,7 +50,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
-import { keptAcrossTabSwitch, screencastSize } from './screencast-size';
+import { screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -2476,11 +2476,6 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
-  /** Pixel ratio this connection forced on the page; null means Chrome's own. */
-  renderOverride: number | null;
-  /** Chrome's own devicePixelRatio, read before any override; 1 until known. */
-  nativeScale: number;
-  nativeScaleRequestId: number | null;
   screencastStarted: boolean;
 } | null = null;
 
@@ -2499,37 +2494,10 @@ function setViewerWidth(ws: WebSocket, value: unknown): void {
   startScreencast(state);
 }
 
-function currentScreencastSize(state: NonNullable<typeof cdpScreencast>) {
-  return screencastSize(
-    viewerWidths.get(state.clientWs),
-    state.lastDeviceWidth || 1280,
-    state.lastDeviceHeight || 720,
-    state.nativeScale,
-  );
-}
-
-function applyRenderOverride(state: NonNullable<typeof cdpScreencast>, override: number | null): void {
-  if (override === state.renderOverride) return;
-  // width/height 0 keep the window's own size; Chrome drops the override when this connection closes.
-  state.cdpWs.send(override === null
-    ? cdpMsg(state, 'Emulation.clearDeviceMetricsOverride')
-    : cdpMsg(state, 'Emulation.setDeviceMetricsOverride', {
-      width: 0, height: 0, deviceScaleFactor: override, mobile: false,
-    }));
-  state.renderOverride = override;
-}
-
-/** Render the page sharp enough for the viewer's canvas (up to 2x), then stream frames no wider than it. */
+/** Stream frames no wider than the viewer's canvas. */
 function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
-  if (!state.screencastStarted) {
-    // Sent before any override on this connection, so it reports Chrome's own ratio.
-    state.cdpWs.send(cdpMsg(state, 'Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true }));
-    state.nativeScaleRequestId = state.msgId;
-  }
-  const size = currentScreencastSize(state);
-  applyRenderOverride(state, size.override);
   state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-    format: 'jpeg', quality: 80, maxWidth: size.maxWidth, maxHeight: size.maxHeight, everyNthFrame: 1,
+    format: 'jpeg', quality: 80, everyNthFrame: 1, ...screencastSize(viewerWidths.get(state.clientWs)),
   }));
   state.screencastStarted = true;
 }
@@ -2876,12 +2844,10 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  const kept = keptAcrossTabSwitch(cdpScreencast?.clientWs === clientWs ? cdpScreencast : null);
   const state: NonNullable<typeof cdpScreencast> = {
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
-    ...kept, cdpSessionId: null,
-    autoFollow: prevAutoFollow, pendingSelections: new Set(),
-    renderOverride: null, nativeScaleRequestId: null, screencastStarted: false,
+    lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
+    autoFollow: prevAutoFollow, pendingSelections: new Set(), screencastStarted: false,
     navigation: createBrowserNavigation({
       targetId,
       sendCommand(method, params) {
@@ -2966,11 +2932,6 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
             loading: msg.method === 'Page.frameStartedLoading',
           }));
         }
-      } else if (msg.id && msg.id === state.nativeScaleRequestId) {
-        state.nativeScaleRequestId = null;
-        const ratio = Number(msg.result?.result?.value);
-        if (ratio > 0) state.nativeScale = ratio;
-        applyRenderOverride(state, currentScreencastSize(state).override);
       } else if (msg.id && state.pendingSelections.has(msg.id)) {
         state.pendingSelections.delete(msg.id);
         const text = msg.result?.result?.value;
