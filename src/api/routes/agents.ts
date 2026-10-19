@@ -92,10 +92,10 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, applyMyAgentDrives } from '@shared/lib/services/mount-service'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { VolumeError } from '@shared/lib/services/volume-service'
-import { volumeViewer } from '../lib/volume-access'
+import { afterMountChange, volumeViewer } from '../lib/volume-access'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -1224,7 +1224,8 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
 // ACL insert failure would return 500 but leave an orphaned agent directory
 // with no owner ACL (SUP-207). The cleanup is best-effort and guarded so a
 // failed rollback never masks the original error. In non-auth mode
-// createOwnerAcl is a no-op, so this never rolls back there.
+// createOwnerAcl is a no-op, so this never rolls back there. Every create path
+// runs through here, so it also gives the agent the creator's "all my agents" drives.
 async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
   try {
     await createOwnerAcl(c, agentSlug)
@@ -1254,6 +1255,7 @@ async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
     })
     throw error
   }
+  await applyMyAgentDrives(agentSlug, volumeViewer(c))
 }
 
 // Create LLM client using the active provider
@@ -6420,14 +6422,6 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
     return c.json({ error: 'Failed to list drives' }, 500)
   }
 })
-
-// A running container keeps the drives it started with until it restarts.
-async function afterMountChange(agentSlug: string, restart?: boolean) {
-  const container = agentRegistry.get(agentSlug).container
-  if (container.status().status !== 'running') return
-  if (restart) await container.restart()
-  else container.markStale()
-}
 
 // POST /api/agents/:id/mounts - Add a mount
 agents.post('/:id/mounts', AgentUser(), async (c) => {

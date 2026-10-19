@@ -5,10 +5,13 @@ import { Hono } from 'hono'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { z } from 'zod'
 import { Authenticated, getReadableAgentIds } from '../middleware/auth'
-import { volumeViewer } from '../lib/volume-access'
+import { afterMountChange, volumeViewer } from '../lib/volume-access'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition, VolumeError, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
+import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition, VolumeError, openVolumeDefinition, getVisibleVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
+import { listMyAgentSlugs, previewMyAgents, setMyAgentDrive } from '@shared/lib/services/mount-service'
+import { myAgentDriveSchema, updateUserSettings } from '@shared/lib/services/user-settings-service'
 
 const routes = new Hono()
 routes.use('*', Authenticated())
@@ -68,6 +71,42 @@ routes.get('/:id/file', async c => {
     await file.close()
     throw error
   }
+})
+
+routes.get('/:id/my-agents', async c => {
+  const { shared } = z.object({ shared: z.enum(['true', 'false']) }).parse(c.req.query())
+  const viewer = volumeViewer(c)
+  await getVisibleVolumeDefinition(c.req.param('id'), viewer)
+  return c.json(await previewMyAgents(viewer.userId, shared === 'true'))
+})
+// "Add to all my agents": saved for agents created later, and applied now to each of the
+// user's agents (private only, or with `shared` every agent they own), replacing access set on them by hand.
+routes.put('/:id/my-agents', async c => {
+  const id = c.req.param('id')
+  const viewer = volumeViewer(c)
+  const userId = getCurrentUserId(c)
+  const setting = myAgentDriveSchema.strict().parse(await c.req.json())
+  // The same checks attach makes, before anything is saved: the drive is visible and usable.
+  await openVolumeDefinition(id, viewer)
+  // One run per user at a time, so quick changes (and turning off) land in the order they were made.
+  const agents = await serializeByKey(`my-agents:${userId}`, async () => {
+    await updateUserSettings(userId, { myAgentDrives: { [id]: setting } })
+    const slugs = await listMyAgentSlugs(viewer.userId, setting.shared)
+    for (const slug of slugs) {
+      if (await setMyAgentDrive(slug, id, setting.level, viewer)) await afterMountChange(slug)
+    }
+    return slugs.length
+  })
+  await logAuditEvent({ userId, object: 'volume', objectId: id, action: 'updated', details: { myAgents: setting, agents } })
+  return c.json({ agents })
+})
+// Turning it off only stops new agents getting the drive; agents that have it keep it.
+routes.delete('/:id/my-agents', async c => {
+  const id = c.req.param('id')
+  const userId = getCurrentUserId(c)
+  await serializeByKey(`my-agents:${userId}`, () => updateUserSettings(userId, { myAgentDrives: { [id]: null } }))
+  await logAuditEvent({ userId, object: 'volume', objectId: id, action: 'updated', details: { myAgents: 'off' } })
+  return c.json({ success: true })
 })
 
 routes.get('/', async c => c.json(await listVolumeDefinitions(volumeViewer(c))))

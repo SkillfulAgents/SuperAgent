@@ -137,6 +137,10 @@ vi.mock('../middleware/auth', () => ({
 
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
+vi.mock('@shared/lib/services/mount-service', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/services/mount-service')>(),
+  applyMyAgentDrives: vi.fn(async () => {}),
+}))
 
 // Sentry reporting on the ACL-insert / rollback failure paths (mock-prefixed so
 // it can be referenced inside the hoisted vi.mock factory).

@@ -235,6 +235,12 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+const mockApplyMyAgentDrives = vi.fn(async (..._args: unknown[]) => {})
+vi.mock('@shared/lib/services/mount-service', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/services/mount-service')>(),
+  applyMyAgentDrives: (...args: unknown[]) => mockApplyMyAgentDrives(...args),
+}))
+
 const mockCaptureException = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
@@ -533,6 +539,7 @@ describe('/create', () => {
     expect(newAgentAcl).toHaveLength(1)
     expect(newAgentAcl[0].userId).toBe(OWNER_USER_ID)
     expect(newAgentAcl[0].role).toBe('owner')
+    expect(mockApplyMyAgentDrives).toHaveBeenCalledWith('new-helper', { userId: OWNER_USER_ID, admin: false })
   })
 
   it('broadcasts agent_created only after inherited owner ACL is persisted', async () => {

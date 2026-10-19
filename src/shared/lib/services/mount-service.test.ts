@@ -5,14 +5,18 @@ import * as os from 'node:os'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
+import { agentAcl, agents, agentVolumes, user, volumeDefinitions } from '@shared/lib/db/schema'
+import { addMount, applyMyAgentDrives, listMyAgentSlugs, setMyAgentDrive, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
+import { getUserSettings, updateUserSettings } from './user-settings-service'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
 let tmpDir: string
 const viewer = { userId: null, admin: true }
 vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
+const authMode = vi.hoisted(() => ({ on: false }))
+vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => authMode.on }))
 
 beforeEach(async () => {
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-service-test-')))
@@ -20,6 +24,7 @@ beforeEach(async () => {
   await handle.db.insert(agents).values(['test-agent', 'agent-b'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
 })
 afterEach(async () => {
+  authMode.on = false
   await handle.close()
   fs.rmSync(tmpDir, { recursive: true, force: true })
 })
@@ -170,5 +175,86 @@ describe('volume health and stored configuration', () => {
     expect(await resolveVolume('test-agent', 'bad')).toBeNull()
     await removeMount('test-agent', 'bad')
     expect(await getMounts('test-agent')).toEqual([])
+  })
+})
+
+describe('add to all my agents', () => {
+  const owner = { userId: 'u1', admin: false }
+  /** slug → member ids, `id:user` for a non-owner member. */
+  async function seedMembers(members: Record<string, string[]>) {
+    authMode.on = true
+    await handle.db.insert(agents).values(['agent-c', 'agent-d'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
+    for (const id of ['u1', 'u2']) await handle.db.insert(user).values({ id, name: id, email: `${id}@example.test` }).run()
+    for (const [slug, ids] of Object.entries(members)) {
+      for (const member of ids) {
+        const [id, role = 'owner'] = member.split(':') as [string, 'owner' | 'user' | 'viewer']
+        await handle.db.insert(agentAcl).values({ id: `${slug}-${id}`, userId: id, agentSlug: slug, role, createdAt: new Date() }).run()
+      }
+    }
+  }
+  const readOnlyOn = async (slug: string, volumeId: string) => (await getMounts(slug)).find(m => m.volumeId === volumeId)?.readOnly
+
+  it('sets the level on every private agent, replacing hand-set access, and skips shared agents', async () => {
+    const drive = await add(folder('brain'))
+    await seedMembers({ 'test-agent': ['u1'], 'agent-b': ['u1', 'u2'], 'agent-c': ['u1'], 'agent-d': ['u1:viewer'] })
+    const mine = await listMyAgentSlugs('u1', false)
+    expect(mine.sort()).toEqual(['agent-c', 'test-agent'])
+    for (const slug of mine) await setMyAgentDrive(slug, drive.volumeId, 'read', owner)
+    expect(await readOnlyOn('test-agent', drive.volumeId)).toBe(true)
+    expect(await readOnlyOn('agent-c', drive.volumeId)).toBe(true)
+    expect(await getMounts('agent-b')).toEqual([])
+  })
+
+  it('adds a drive read-only in one write', async () => {
+    const drive = await add(folder('ro'))
+    expect((await attachMount('agent-b', drive.volumeId, viewer, true)).readOnly).toBe(true)
+  })
+
+  it('with shared, reaches shared agents I own but never ones I am only a member of', async () => {
+    await seedMembers({ 'test-agent': ['u1'], 'agent-b': ['u1', 'u2'], 'agent-c': ['u2', 'u1:user'] })
+    expect((await listMyAgentSlugs('u1', true)).sort()).toEqual(['agent-b', 'test-agent'])
+  })
+
+  it('reports created, updated, then nothing when the level already holds', async () => {
+    const drive = await add(folder('levels'))
+    await seedMembers({ 'agent-c': ['u1'] })
+    expect(await setMyAgentDrive('agent-c', drive.volumeId, 'write', owner)).toBe('created')
+    expect(await setMyAgentDrive('agent-c', drive.volumeId, 'read', owner)).toBe('updated')
+    expect(await setMyAgentDrive('agent-c', drive.volumeId, 'read', owner)).toBeNull()
+  })
+
+  it('on an agent with two owners, applies only the drives set for shared agents', async () => {
+    const privateOnly = await add(folder('private-only'))
+    const shared = await add(folder('shared'))
+    await seedMembers({ 'agent-b': ['u1', 'u2'] })
+    await updateUserSettings('u1', { myAgentDrives: { [privateOnly.volumeId]: { level: 'read', shared: false }, [shared.volumeId]: { level: 'read', shared: true } } })
+    await applyMyAgentDrives('agent-b', owner)
+    expect((await getMounts('agent-b')).map(m => m.volumeId)).toEqual([shared.volumeId])
+  })
+
+  it('a new agent waits for a change already in progress and gets the new level', async () => {
+    const drive = await add(folder('ordered'))
+    await seedMembers({ 'agent-c': ['u1'] })
+    await updateUserSettings('u1', { myAgentDrives: { [drive.volumeId]: { level: 'write', shared: false } } })
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const change = serializeByKey('my-agents:u1', async () => {
+      await held
+      await updateUserSettings('u1', { myAgentDrives: { [drive.volumeId]: { level: 'read', shared: false } } })
+    })
+    const created = applyMyAgentDrives('agent-c', owner)
+    release()
+    await Promise.all([change, created])
+    expect(await readOnlyOn('agent-c', drive.volumeId)).toBe(true)
+  })
+
+  it('gives a new agent the saved drives and skips one that no longer exists', async () => {
+    const drive = await add(folder('notes'))
+    await seedMembers({ 'agent-c': ['u1'] })
+    await updateUserSettings('u1', { myAgentDrives: { [drive.volumeId]: { level: 'write', shared: false }, gone: { level: 'read', shared: false } } })
+    await applyMyAgentDrives('agent-c', owner)
+    expect(await readOnlyOn('agent-c', drive.volumeId)).toBe(false)
+    await updateUserSettings('u1', { myAgentDrives: { gone: null } })
+    expect((await getUserSettings('u1')).myAgentDrives).toEqual({ [drive.volumeId]: { level: 'write', shared: false } })
   })
 })

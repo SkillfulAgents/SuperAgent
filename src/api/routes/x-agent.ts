@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { applyMyAgentDrives } from '@shared/lib/services/mount-service'
 import { insertMessageAuthorBestEffort } from './message-author'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
@@ -321,6 +322,11 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
         createdAt: now,
       })
     }
+    // Each owner's "all my agents" drives, as on every other create path. A drive set to
+    // private agents only applies when this agent has a single owner.
+    for (const userId of owners) await applyMyAgentDrives(agent.slug, { userId, admin: false })
+  } else {
+    await applyMyAgentDrives(agent.slug, { userId: null, admin: true })
   }
 
   // Announce only after ACL inheritance so live stream filters admit owners.

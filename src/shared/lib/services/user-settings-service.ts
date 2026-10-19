@@ -81,6 +81,25 @@ const lenientBooleanRecord = z
   .optional()
   .catch(undefined)
 
+/** "Add to all my agents": the access a drive gets, and whether shared agents I own count. */
+export const myAgentDriveSchema = z.object({ level: z.enum(['read', 'write']), shared: z.boolean() })
+export type MyAgentDrive = z.infer<typeof myAgentDriveSchema>
+
+/** Read-tolerant drive id → setting map: a malformed entry is dropped alone, same
+ * reasoning as `lenientArray`. */
+const lenientMyAgentDriveRecord = z
+  .record(z.string(), z.unknown())
+  .transform((record) => {
+    const out: Record<string, MyAgentDrive> = {}
+    for (const [key, value] of Object.entries(record)) {
+      const setting = myAgentDriveSchema.safeParse(value)
+      if (setting.success) out[key] = setting.data
+    }
+    return out
+  })
+  .optional()
+  .catch(undefined)
+
 /**
  * A write to the experiment switches names only experiments that exist. The
  * stored map is lenient instead: it keeps a switch for an experiment that has
@@ -216,6 +235,10 @@ export const userSettingsSchema = z.object({
   // @shared/lib/experiments). Absent id = off. A write merges into the map
   // rather than replacing it, so toggling one never resets another.
   experiments: lenientBooleanRecord,
+  // Drive id → what the drive gets on every agent the user creates
+  // (Drives → "Add to all my agents"). Ids may dangle after a drive is
+  // deleted; attaching a missing drive fails and is skipped.
+  myAgentDrives: lenientMyAgentDriveRecord,
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),
@@ -224,7 +247,11 @@ export const userSettingsSchema = z.object({
 
 export type UserSettingsData = z.infer<typeof userSettingsSchema>
 /** What a write may carry: the stored shape, except the voice may be unset with null. */
-export type UserSettingsWrite = Omit<Partial<UserSettingsData>, 'voice'> & { voice?: Partial<UserVoiceSettingsWrite> }
+export type UserSettingsWrite = Omit<Partial<UserSettingsData>, 'voice' | 'myAgentDrives'> & {
+  voice?: Partial<UserVoiceSettingsWrite>
+  /** Merged per drive; null removes the drive. */
+  myAgentDrives?: Record<string, MyAgentDrive | null>
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -328,6 +355,18 @@ function mergeVoice(
   return merged
 }
 
+function mergeMyAgentDrives(
+  current: UserSettingsData['myAgentDrives'],
+  patch: Record<string, MyAgentDrive | null>,
+): UserSettingsData['myAgentDrives'] {
+  const merged = { ...current }
+  for (const [id, setting] of Object.entries(patch)) {
+    if (setting === null) delete merged[id]
+    else merged[id] = setting
+  }
+  return merged
+}
+
 /** Deep merge the nested groups if provided. */
 function mergeSettings(current: UserSettingsData, partial: UserSettingsWrite): UserSettingsData {
   return userSettingsSchema.parse({
@@ -340,6 +379,9 @@ function mergeSettings(current: UserSettingsData, partial: UserSettingsWrite): U
     experiments: partial.experiments
       ? { ...current.experiments, ...partial.experiments }
       : current.experiments,
+    myAgentDrives: partial.myAgentDrives
+      ? mergeMyAgentDrives(current.myAgentDrives, partial.myAgentDrives)
+      : current.myAgentDrives,
   })
 }
 

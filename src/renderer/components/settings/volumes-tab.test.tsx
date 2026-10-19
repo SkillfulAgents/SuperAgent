@@ -8,13 +8,17 @@ const state = vi.hoisted(() => ({
   definitions: [] as VolumeDefinitionSummary[],
   selectedId: undefined as string | undefined, source: undefined as 'home' | undefined, from: undefined as string | undefined, navigate: vi.fn(), push: vi.fn(),
   host: true, isAdmin: true, save: vi.fn(), remove: vi.fn(),
+  preview: {} as { isSuccess?: boolean; isFetching?: boolean; isError?: boolean; data?: { agents: number; sharedAgents: string[] } },
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useVolumeAgents: () => ({ data: { attachments: [] }, isLoading: false }),
   useVolumeDefinitions: () => ({ data: state.definitions, isLoading: false }),
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
   useDeleteVolumeDefinition: () => ({ mutateAsync: state.remove, isPending: false }),
+  useSetMyAgentDrive: () => ({ mutate: vi.fn(), isPending: false }),
+  useMyAgentsPreview: () => state.preview,
 }))
+vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ data: {}, isLoading: false }) }))
 vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => state.host }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
@@ -38,6 +42,24 @@ afterEach(() => {
   delete (window as { electronAPI?: unknown }).electronAPI
 })
 
+describe('add to all my agents', () => {
+  // Consent is given against the count and names, so Set waits for a fresh preview.
+  it('enables Set only on a fresh preview and says when counting failed', async () => {
+    state.selectedId = 'v1'
+    state.preview = { isSuccess: true, isFetching: true, data: { agents: 1, sharedAgents: [] } }
+    const { rerender } = render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('switch', { name: 'Add to all my agents' }))
+    expect(screen.getByRole('button', { name: 'Set' })).toBeDisabled()
+    state.preview = { isSuccess: true, isFetching: false, data: { agents: 2, sharedAgents: [] } }
+    rerender(<VolumesTab />)
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('on 2 agents?')
+    expect(screen.getByRole('button', { name: 'Set' })).toBeEnabled()
+    state.preview = { isError: true }
+    rerender(<VolumesTab />)
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Could not count your agents')
+  })
+})
+
 describe('volume settings', () => {
   it('renames from the title without offering to change its folder or attached mount paths', async () => {
     state.definitions[0].attachmentCount = 2
@@ -49,7 +71,7 @@ describe('volume settings', () => {
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox')).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Who can add this drive?' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Rename drive' }))
     await userEvent.clear(screen.getByTestId('volume-title-input'))
     await userEvent.type(screen.getByTestId('volume-title-input'), 'Team notes{Enter}')

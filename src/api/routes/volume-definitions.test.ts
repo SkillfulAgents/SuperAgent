@@ -4,8 +4,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { agents, user } from '@shared/lib/db/schema'
-import { attachMount } from '@shared/lib/services/mount-service'
+import { agentAcl, agents, user } from '@shared/lib/db/schema'
+import { attachMount, getMounts } from '@shared/lib/services/mount-service'
+import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
 let handle: TestDatabase
 let folder: string
@@ -77,6 +78,25 @@ describe('volume definition API', () => {
   })
 })
 
+
+describe('add to all my agents', () => {
+  it('checks the drive before saving, applies to private agents, and turning off keeps their drives', async () => {
+    await handle.db.insert(agentAcl).values({ id: 'acl', userId: 'alice', agentSlug: 'agent', role: 'owner', createdAt: new Date() }).run()
+    const { id } = await (await request('', 'POST', input())).json()
+    expect((await request(`/${id}/my-agents?shared=false`, 'GET', undefined, 'bob')).status).toBe(404)
+    expect((await request(`/${id}/my-agents`, 'PUT', { level: 'read', shared: false }, 'bob')).status).toBe(404)
+    expect((await getUserSettings('bob')).myAgentDrives).toBeUndefined()
+    await handle.db.insert(agents).values({ slug: 'team', name: 'Team', createdAt: new Date() }).run()
+    await handle.db.insert(agentAcl).values([{ id: 'acl-t1', userId: 'alice', agentSlug: 'team', role: 'owner', createdAt: new Date() }, { id: 'acl-t2', userId: 'bob', agentSlug: 'team', role: 'user', createdAt: new Date() }]).run()
+    expect(await (await request(`/${id}/my-agents?shared=true`)).json()).toEqual({ agents: 2, sharedAgents: ['Team'] })
+    expect(await (await request(`/${id}/my-agents?shared=false`)).json()).toEqual({ agents: 1, sharedAgents: [] })
+    expect(await (await request(`/${id}/my-agents`, 'PUT', { level: 'read', shared: false })).json()).toEqual({ agents: 1 })
+    expect(await getMounts('agent')).toMatchObject([{ volumeId: id, readOnly: true }])
+    expect((await request(`/${id}/my-agents`, 'DELETE')).status).toBe(200)
+    expect((await getUserSettings('alice')).myAgentDrives).toEqual({})
+    expect(await getMounts('agent')).toMatchObject([{ volumeId: id, readOnly: true }])
+  })
+})
 
 describe('volume browsing', () => {
   it('browses a stopped local source, with folders first and exact file names', async () => {

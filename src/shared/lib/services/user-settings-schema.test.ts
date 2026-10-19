@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { agentFolderSettingsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
 
+describe('userSettingsSchema myAgentDrives', () => {
+  it('drops a malformed drive entry alone', () => {
+    expect(userSettingsSchema.parse({ myAgentDrives: { a: { level: 'read', shared: false }, b: { level: 'all' } } }).myAgentDrives)
+      .toEqual({ a: { level: 'read', shared: false } })
+  })
+})
+
 describe('userSettingsSchema voice', () => {
   it('defaults to undefined and stores a valid voice and speed', () => {
     expect(userSettingsSchema.parse({}).voice).toBeUndefined()

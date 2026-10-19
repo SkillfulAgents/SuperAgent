@@ -6,6 +6,7 @@ vi.mock('@shared/lib/services/agent-members-service', () => ({
   removeMember: (...args: unknown[]) => mockRemoveMember(...args),
 }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { applyMyAgentDrives } from '@shared/lib/services/mount-service'
 
 // The last-owner guards live in agent-members-service (real-database tests
 // there); the routes only map its outcome to a status and a message.
@@ -479,6 +480,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   attachMount: vi.fn(async () => ({ id: 'm1', volumeId: 'v1', volumeName: 'code' })),
   removeMount: vi.fn(async () => {}),
   setMountReadOnly: vi.fn(async () => true),
+  applyMyAgentDrives: vi.fn(async () => {}),
   volumeSummary: () => ({ type: 'local', name: 'code' }),
 }))
 
@@ -2095,6 +2097,7 @@ describe('POST /api/agents/import-template', () => {
 
     expect(res.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'full')
+    expect(applyMyAgentDrives).toHaveBeenCalledWith('imported-agent', expect.anything())
   })
 
   it('forwards mode=template to importAgentFromTemplate', async () => {

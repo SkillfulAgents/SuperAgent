@@ -41,6 +41,10 @@ userSettingsRouter.put('/', async (c) => {
   if (!experimentSettingsWriteSchema.safeParse(body).success) {
     return c.json({ error: 'Invalid experiment settings' }, 400)
   }
+  // Drive defaults go through /api/volume-definitions/:id/my-agents, which checks the drive and applies it.
+  if ('myAgentDrives' in body) {
+    return c.json({ error: 'Set drive defaults from the drive page' }, 400)
+  }
   // Which voice ids exist is the configured provider's business.
   const ttsVoice = voiceFields.data.voice?.ttsVoice
   if (ttsVoice && !getConfiguredVoiceProvider()?.hasTtsVoice(ttsVoice)) {
