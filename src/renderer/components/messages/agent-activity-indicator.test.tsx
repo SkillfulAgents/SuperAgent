@@ -44,6 +44,12 @@ vi.mock('@renderer/hooks/use-messages', () => ({
   useStopBackgroundTask: () => mockStopBackgroundTask,
 }))
 
+// No avatar by default: the header falls back to the thought orb
+let mockAgent: { slug: string; name: string; avatar: { color: string; shape: string } | null } | undefined
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgent: () => ({ data: mockAgent }),
+}))
+
 // Mock useElapsedTimer
 vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   useElapsedTimer: (startTime: unknown) => (startTime ? '10s' : null),
@@ -96,6 +102,7 @@ describe('AgentActivityIndicator', () => {
     mockMessages.length = 0
     mockPendingUserRequests = []
     platformAuth.connected = false
+    mockAgent = undefined
   })
 
   it('returns null when not active and no error', () => {
@@ -103,6 +110,25 @@ describe('AgentActivityIndicator', () => {
       <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
     )
     expect(container.innerHTML).toBe('')
+  })
+
+  it('stays up between turns with the agent at rest when it has an avatar', () => {
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('activity-indicator')).toBeInTheDocument()
+    expect(screen.getByText('Ready when you are...')).toHaveClass('text-muted-foreground')
+    expect(screen.queryByText('Research Bot')).not.toBeInTheDocument()
+    expect(container.querySelector('[data-avatar-shape="circle"]')).toBeInTheDocument()
+    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+  })
+
+  it('shows the avatar, not the thought orb, while the agent works', () => {
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.querySelector('[data-avatar-shape="circle"]')).toBeInTheDocument()
+    expect(container.querySelector('canvas')).not.toBeInTheDocument()
   })
 
   it('shows LLM provider error alert when apiErrorCode indicates a provider error', () => {

@@ -3,6 +3,7 @@ import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { useMessages, useStopBackgroundTask } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { usePendingUserRequests } from '@shared/lib/tools/requests/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
@@ -13,7 +14,7 @@ import { useCallback, useMemo, useState } from 'react'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityCard, ActivityErrorCard, type ActivitySubagentItem } from './activity-card'
-import { deriveActivityStatus } from './activity-orb'
+import { deriveActivityStatus, deriveIdleStatus } from './activity-orb'
 
 interface AgentActivityIndicatorProps {
   sessionId: string
@@ -27,6 +28,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
+  const { data: agent } = useAgent(agentSlug)
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -76,6 +78,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     }
     return null
   }, [activeStartTime, messages])
+  const turnCount = useMemo(
+    () => messages?.filter(isTurnStartingUserMessage).length ?? 0,
+    [messages]
+  )
 
   const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
 
@@ -223,9 +229,17 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     )
   }
 
-  // Don't render if not active
+  // Between turns the drawer stays up as the agent's seat: its avatar at
+  // rest over a line read off the session (deriveIdleStatus). Agents without an avatar keep the old behaviour and
+  // voice mode has its own surface, so both hide it.
   if (!isActive) {
-    return null
+    if (!agent?.avatar || voiceModeActive) return null
+    const statusText = deriveIdleStatus({
+      sessionId,
+      turnCount,
+      pendingTaskCount: todos?.filter((todo) => todo.status !== 'completed').length ?? 0,
+    })
+    return <ActivityCard statusText={statusText} orbState="working" agent={agent} idle />
   }
 
   // One precedence order drives both the label and the orb's animation.
@@ -241,6 +255,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     <ActivityCard
       statusText={statusText}
       orbState={orbState}
+      agent={agent}
       elapsed={elapsed}
       isAwaitingInput={isAwaitingInput}
       detached={voiceModeActive}

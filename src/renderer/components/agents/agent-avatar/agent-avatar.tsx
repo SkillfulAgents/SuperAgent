@@ -31,6 +31,8 @@ interface AvatarViewProps {
   state?: AvatarMotionState
   /** Follow the cursor: `true` anywhere in the window, or a selector for an ancestor region to follow within. */
   followPointer?: boolean | string
+  /** Roll the face round the rim as the nearest element matching this selector scrolls. */
+  rollWithScroll?: string
   className?: string
 }
 

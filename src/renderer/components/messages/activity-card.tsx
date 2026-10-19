@@ -8,6 +8,8 @@ import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/compon
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
+import { AgentAvatar, type AvatarMotionState } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
 /**
@@ -53,6 +55,10 @@ export interface ActivityComputerUse {
 export interface ActivityCardProps {
   statusText: string
   orbState: ActivityOrbState
+  /** Whose turn this is: its avatar replaces the thought orb when it has one. */
+  agent?: Pick<ApiAgent, 'slug' | 'avatar'> | null
+  /** Between turns: the avatar rests and follows the pointer. */
+  idle?: boolean
   /** Preformatted elapsed time; omitted before the turn has a start anchor. */
   elapsed?: string | null
   /** Parked on a blocking request: the card detaches from the composer. */
@@ -70,9 +76,21 @@ export interface ActivityCardProps {
   onStopTask?: (taskId: string) => Promise<void>
 }
 
+/** The idle avatar's gaze tracks the pointer within the composer footer. */
+const COMPOSER_FOLLOW_REGION = '[data-composer-footer]'
+/** The avatar rolls round its rim as the transcript scrolls. */
+const TRANSCRIPT_SCROLLER = '[data-transcript-scroller]'
+
+/** The avatar has fewer states than the orb: anything but waiting on the user is work. */
+function avatarMotionState(orbState: ActivityOrbState): AvatarMotionState {
+  return orbState === 'waiting' ? 'needs-input' : 'working'
+}
+
 export function ActivityCard({
   statusText,
   orbState,
+  agent,
+  idle = false,
   elapsed,
   isAwaitingInput = false,
   detached = false,
@@ -141,17 +159,28 @@ export function ActivityCard({
         )}
         data-testid="activity-indicator"
       >
-        {/* Header with the thought orb — its animation is the status cue. The
-            disclosure button is the row's last child rather than positioned over
-            it: items-center then centers it against the orb, and the gap keeps it
+        {/* Header with the agent's avatar (the thought orb when it has none) —
+            its animation is the status cue. The disclosure button is the row's
+            last child rather than positioned over it: items-center then
+            centers it against the avatar, and the gap keeps it
             off the summary, instead of a hand-tuned inset and a matching pr-* on
             the row that have to agree with the button's own size to stay right. */}
         <div
           className="flex min-w-0 items-center gap-2"
           data-testid="activity-indicator-header"
         >
-          <ActivityOrb state={orbState} size={24} />
-          <span className="min-w-0 truncate text-sm font-medium">{statusText}</span>
+          {agent?.avatar
+            ? (
+              <AgentAvatar
+                agent={agent}
+                state={idle ? 'idle' : avatarMotionState(orbState)}
+                size={24}
+                followPointer={idle && COMPOSER_FOLLOW_REGION}
+                rollWithScroll={TRANSCRIPT_SCROLLER}
+              />
+            )
+            : <ActivityOrb state={orbState} size={24} />}
+          <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">{statusText}</span>
           {elapsed && (
             <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{elapsed}</span>
           )}
