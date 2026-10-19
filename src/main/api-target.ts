@@ -64,7 +64,10 @@ export function resolveApiTargetForRenderer(
  * reload has not started yet — so it is where the workspace's first round trips
  * begin. See `cloud-boot-prefetch.ts`.
  */
-export function applyPreferredApiTarget(target: unknown): void {
+export function applyPreferredApiTarget(
+  target: unknown,
+  onTargetApplied: () => void,
+): void {
   const next = coerceApiTarget(target)
   writePreferredApiTarget(next)
   closeQuickDispatchWindow()
@@ -76,4 +79,5 @@ export function applyPreferredApiTarget(target: unknown): void {
   // on screen for up to that long. Kick them now.
   refreshTrayMenu()
   refreshAppMenu()
+  onTargetApplied()
 }
