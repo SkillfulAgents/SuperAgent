@@ -135,9 +135,12 @@ export function SubAgentBlock({
   const subagentDisplayType = displaySubagentType(subagentType)
   const description = activeSubagent?.description || input.description || ''
 
-  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText
+  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText.
+  // A background launch's tool_result is its launch acknowledgement ("Async
+  // agent launched successfully…"), not what the agent reported.
+  const isLaunchAck = toolCall.subagent?.status === 'async_launched'
   const resultText = useMemo(() => {
-    if (toolCall.result != null) {
+    if (toolCall.result != null && !isLaunchAck) {
       const parsed = parseToolResult(toolCall.result)
       return parsed.text
     }
@@ -145,7 +148,7 @@ export function SubAgentBlock({
       return activeSubagent.resultText
     }
     return null
-  }, [toolCall.result, activeSubagent?.resultText])
+  }, [toolCall.result, isLaunchAck, activeSubagent?.resultText])
 
   // Stats from completed subagent
   const stats = toolCall.subagent
