@@ -1260,7 +1260,7 @@ describe('usage-service', () => {
     })
 
     it('bills platform DeepSeek V4.1 Flash at Fireworks list rates with no speed tier', async () => {
-      const deepseekBase = (100_000 * 0.22 + 1_000 * 0.66) / 1_000_000
+      const deepseekBase = (100_000 * 0.3 + 1_000 * 1.2) / 1_000_000
       expect(await costOf('deepseek-v4.1-flash', {})).toBeCloseTo(deepseekBase, 9)
       expect(await costOf('deepseek-v4.1-flash', { speed: 'fast' })).toBeCloseTo(
         deepseekBase,
