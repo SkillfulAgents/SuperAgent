@@ -178,6 +178,12 @@ function resolveConstant(id) {
  * either a feature gate or an env getter (2.1.296: `QTe()` returns
  * CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL and is tested with `!==void 0`), so
  * "unset" must be undefined — a `false` stub reads as "set" there.
+ *
+ * An import that resolves to no literal is often used only by a sibling
+ * function the chunk also exports (2.1.303: `ZHs`, a template-literal tool
+ * description, read only by `S8r` next to the skill body `b8r`), so it is left
+ * out of the sandbox: reading it throws a ReferenceError that fails the run
+ * (exit 2), never reading it is harmless.
  */
 function sandboxFor(source, entry, extra = {}) {
   const sandbox = { JSON, ...extra };
@@ -191,12 +197,27 @@ function sandboxFor(source, entry, extra = {}) {
       sandbox[id] = () => undefined; // feature gate or env getter, both unset
     } else {
       const value = resolveConstant(id);
-      if (value === undefined) fail(`${entry.name}: cannot resolve imported identifier "${id}" to a literal — pin it under constants: {} in VENDORED`);
+      if (value === undefined) {
+        console.log(`unresolved ${id} (left undefined: reading it fails the run)`);
+        continue;
+      }
       sandbox[id] = value;
       console.log(`resolved ${id} = ${JSON.stringify(value)}`);
     }
   }
   return sandbox;
+}
+
+/** vm.runInNewContext, with any error (e.g. a read of an unresolved import) failing the run as exit 2. */
+function runSandboxed(code, sandbox, entry) {
+  try {
+    return vm.runInNewContext(code, sandbox, { timeout: 5000 });
+  } catch (err) {
+    const hint = err instanceof Error && err.name === 'ReferenceError'
+      ? ' — an import that resolves to no literal; pin it under constants: {} in VENDORED'
+      : '';
+    fail(`${entry.name}: ${err.message}${hint}`);
+  }
 }
 
 function extractWorkflow(entry) {
@@ -215,7 +236,7 @@ function extractWorkflow(entry) {
     captured,
     [register[1]]: (script, meta) => captured.push({ script, meta }),
   });
-  vm.runInNewContext(`${chunkBody(source)};${init}();`, sandbox, { timeout: 5000 });
+  runSandboxed(`${chunkBody(source)};${init}();`, sandbox, entry);
   const hit = captured.find((c) => c.meta?.name === entry.name);
   if (!hit || typeof hit.script !== 'string') fail(`registration for workflow "${entry.name}" was not captured`);
   console.log(`upstream: ${hit.meta.description}`);
@@ -234,7 +255,7 @@ function extractSkill(entry) {
   if (!bodyFn) fail(`${entry.name}: prompt wrapper shape changed`);
   const descM = reg.source.match(/description:`((?:[^`\\]|\\.)*)`/);
   if (!descM) fail(`${entry.name}: description template not found`);
-  const description = vm.runInNewContext('`' + descM[1] + '`', sandboxFor(reg.source, entry));
+  const description = runSandboxed('`' + descM[1] + '`', sandboxFor(reg.source, entry), entry);
 
   // The body function lives in another chunk: the one that both defines and exports it.
   const fn = bodyFn[1];
@@ -247,7 +268,7 @@ function extractSkill(entry) {
   if (candidates.length !== 1) fail(`${entry.name}: expected exactly one chunk defining and exporting ${fn}(), found ${candidates.length}`);
   const body = candidates[0];
   const sandbox = sandboxFor(body.source, entry);
-  const promptText = vm.runInNewContext(`${chunkBody(body.source)};${fn}();`, sandbox, { timeout: 5000 });
+  const promptText = runSandboxed(`${chunkBody(body.source)};${fn}();`, sandbox, entry);
   if (typeof promptText !== 'string' || promptText.length < 500) fail(`${entry.name}: prompt text not captured`);
   console.log(`upstream: ${description}`);
   return `---\nname: ${entry.name}\ndescription: ${JSON.stringify(description)}\n---\n\n${promptText.trim()}\n`;
