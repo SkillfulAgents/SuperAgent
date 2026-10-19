@@ -36,7 +36,9 @@ import type { HostPort } from '../host-port'
 import { rejectInput, type HostRunActor } from '../host-runs'
 import type { ActiveBackgroundTaskSnapshot } from './background-tasks'
 import { LiveSession, type LiveSessionContext, type SessionRuntime } from './live-session'
-import { SessionChannel, type SessionEvent, type SessionListener } from './session-channel'
+import type { SessionEvent, SessionListener, WireFrame } from './session-channel'
+import { SessionChannels, wireFrame } from './session-channels'
+import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import type { ActiveSubagentSnapshot } from './subagents'
 import type { Capability } from './tool-calls'
 import { WorkflowTailers } from './workflow-tailers'
@@ -75,7 +77,7 @@ export interface PendingComputerUseRequest {
 
 export class LiveSessions {
   private readonly states = new Map<string, LiveSession>()
-  private readonly channels = new Map<string, SessionChannel>()
+  private readonly channels = new SessionChannels()
   private readonly clients = new Map<string, ContainerClient>()
   private readonly subscriptions = new Map<string, () => void>()
   /** Subscribes in flight: concurrent subscribes share one. */
@@ -199,23 +201,91 @@ export class LiveSessions {
 
   /** Listen to a session's events; returns the unsubscribe. */
   listen(sessionId: string, listener: SessionListener): () => void {
-    let channel = this.channels.get(sessionId)
-    if (!channel) {
-      channel = new SessionChannel()
-      this.channels.set(sessionId, channel)
+    return this.channels.listen(sessionId, listener)
+  }
+
+  /**
+   * A viewer's wire for the session (see `SessionChannels.follow`): the
+   * frames it missed since `after`, or a snapshot of the session, then every
+   * event, each frame carrying its id. Resolves once attached; returns the
+   * unsubscribe.
+   */
+  async follow(sessionId: string, after: string | undefined, onFrame: (frame: WireFrame) => void): Promise<() => void> {
+    // A cold session's commands come from its metadata: read before the
+    // snapshot, which is then built from live state in the attach itself.
+    const stored = this.slashCommands(sessionId).length > 0 ? null : await this.storedSlashCommands(sessionId)
+    const release = this.channels.follow(
+      sessionId,
+      { after, snapshot: (lastId) => [this.connectedFrame(sessionId, lastId, stored)] },
+      onFrame,
+    )
+    // The app the agent has grabbed is agent state, not one of this
+    // session's events (it has no id): every viewer is told, once its icon is
+    // read, unless another grab or a release has gone out meanwhile. A follow
+    // that fails leaves nothing attached.
+    try {
+      const app = this.deps.computerUse.grabbed()
+      if (app) {
+        const icon = await this.appIcon(app)
+        if (this.deps.computerUse.grabbed() === app) {
+          onFrame(wireFrame({ type: 'computer_use_grab_changed', app, ...(icon && { appIcon: icon }) }))
+        }
+      }
+    } catch (error) {
+      release()
+      throw error
     }
-    const unsubscribe = channel.subscribe(listener)
-    const owned = channel
-    return () => {
-      unsubscribe()
-      if (owned.listenerCount === 0 && this.channels.get(sessionId) === owned) this.channels.delete(sessionId)
-    }
+    return release
   }
 
   /** An event for a session's listeners. */
   emit(sessionId: string, event: SessionEvent): void {
     void this.deps.capture?.recordOutput(sessionId, event)
-    this.channels.get(sessionId)?.emit(event)
+    this.channels.emit(sessionId, event)
+  }
+
+  /** The session as a viewer starting from nothing needs it: it stands for every event up to `lastId`. */
+  private connectedFrame(sessionId: string, lastId: string, stored: SlashCommandInfo[] | null): WireFrame {
+    const live = this.slashCommands(sessionId)
+    const slashCommands = live.length > 0 ? live : (stored ?? [])
+    return wireFrame(
+      {
+        type: 'connected',
+        isActive: this.isActive(sessionId),
+        turnOutcome: this.turnOutcome(sessionId),
+        // A background task can run while the turn is still streaming, so
+        // the task list alone does not say whether the turn's output ended.
+        isWaitingBackground: this.isWaitingBackground(sessionId),
+        slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
+        // Always the array, even empty: an absent list reads as "unchanged"
+        // to a reconnecting client, which would keep tasks that ended while
+        // it was away.
+        backgroundTasks: this.backgroundTasks(sessionId),
+        activeSubagents: this.activeSubagents(sessionId),
+      },
+      lastId,
+    )
+  }
+
+  /** The commands the session's metadata kept (after a container restart, say), repaired once. */
+  private async storedSlashCommands(sessionId: string): Promise<SlashCommandInfo[]> {
+    const meta = await getSessionMetadata(this.deps.store, sessionId)
+    if (!meta?.slashCommands || meta.slashCommands.length === 0) return []
+    const repaired = repairLegacySlashCommands(meta.slashCommands)
+    this.setSlashCommands(sessionId, repaired.commands)
+    if (repaired.changed) {
+      updateSessionMetadata(this.deps.store, sessionId, { slashCommands: repaired.commands }).catch(console.error)
+    }
+    return repaired.commands
+  }
+
+  private async appIcon(app: string): Promise<string | null> {
+    try {
+      return await this.deps.host.call('computerUseAppIcon', { app })
+    } catch (error) {
+      console.error(`[LiveSessions] Failed to read the icon of ${app}:`, error)
+      return null
+    }
   }
 
   // ===========================================================================
@@ -706,7 +776,7 @@ export class LiveSessions {
     for (const tailers of this.workflows.values()) tailers.stopAll()
     this.workflows.clear()
     this.clients.clear()
-    this.channels.clear()
+    this.channels.dispose()
   }
 
   // ===========================================================================

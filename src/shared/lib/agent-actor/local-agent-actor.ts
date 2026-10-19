@@ -290,6 +290,7 @@ function createMessageOps(slug: AgentSlug, store: SessionStore, live: LiveSessio
     media: (...args) => deps.transcripts.openMedia(store, ...args),
 
     subscribe: (sessionId, listener) => live.listen(sessionId, listener),
+    follow: (sessionId, { after }, onFrame) => live.follow(sessionId, after, onFrame),
     broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
     coalesceIfRecovering: (sessionId, message) => live.coalesceIfRecovering(sessionId, message),
     dropCoalescedUserMessage: (sessionId, uuid) => live.dropCoalesced(sessionId, uuid),

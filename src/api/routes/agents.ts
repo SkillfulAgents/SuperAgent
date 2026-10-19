@@ -76,7 +76,6 @@ import { guessMimeType } from '@shared/lib/utils/mime'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
-import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
 import type {
@@ -3299,64 +3298,15 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
     let unsubscribe: (() => void) | null = null
 
     try {
-      // Subscribe FIRST to avoid missing any broadcasts
-      unsubscribe = agentRegistry.get(agentSlug).messages.subscribe(sessionId, async (data) => {
-        try {
-          await stream.writeSSE({
-            data: JSON.stringify(data),
-            event: 'message',
-          })
-        } catch (error) {
+      // The actor catches the client up (the frames it missed since the last
+      // id it got, or a snapshot) and then forwards every event; each frame
+      // carries its id, which the browser sends back as Last-Event-ID when it
+      // reconnects.
+      unsubscribe = await actor.messages.follow(sessionId, { after: c.req.header('Last-Event-ID') }, (frame) => {
+        stream.writeSSE({ id: frame.id, data: frame.data, event: 'message' }).catch((error) => {
           console.error('Error sending SSE message:', error)
-        }
-      })
-
-      // Send initial connection message (include slash commands for late-joining clients)
-      let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
-      // Fall back to persisted metadata (e.g. after container restart)
-      if (slashCommands.length === 0) {
-        const meta = await actor.sessions.metadata(sessionId)
-        if (meta?.slashCommands && meta.slashCommands.length > 0) {
-          const repaired = repairLegacySlashCommands(meta.slashCommands)
-          slashCommands = repaired.commands
-          agentRegistry.get(agentSlug).sessions.setSlashCommands(sessionId, slashCommands)
-          if (repaired.changed) {
-            actor.sessions.updateMetadata(sessionId, { slashCommands }).catch(console.error)
-          }
-        }
-      }
-      const backgroundTasks = agentRegistry.get(agentSlug).sessions.backgroundTasks(sessionId)
-      const activeSubagents = agentRegistry.get(agentSlug).sessions.activeSubagents(sessionId)
-      // A background task can run while the turn is still streaming, so the
-      // task list alone does not say whether the turn's output has ended.
-      const isWaitingBackground = agentRegistry.get(agentSlug).sessions.isWaitingBackground(sessionId)
-      await stream.writeSSE({
-        data: JSON.stringify({
-          type: 'connected',
-          isActive: actor.sessions.isActive(sessionId),
-          turnOutcome: actor.sessions.turnOutcome(sessionId),
-          isWaitingBackground,
-          slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
-          // Always the array, even empty: an absent list reads as "unchanged" to
-          // a reconnecting client, which would keep tasks that ended while it
-          // was away.
-          backgroundTasks,
-          activeSubagents,
-        }),
-        event: 'message',
-      })
-
-      // Replay current computer use grab state (with icon if cached)
-      const agentSlugForStream = getAgentId(c)
-      const grabbedApp = agentRegistry.get(agentSlugForStream).inputs.computerUse.grabbedApp()
-      if (grabbedApp) {
-        const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
-        const appIcon = await getAppIconBase64(grabbedApp)
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'computer_use_grab_changed', app: grabbedApp, ...(appIcon && { appIcon }) }),
-          event: 'message',
         })
-      }
+      })
 
       // Keep-alive ping every 30 seconds
       pingInterval = setInterval(async () => {

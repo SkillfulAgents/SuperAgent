@@ -496,6 +496,42 @@ function getOrCreateEventSource(
   // conditional refetch can materialize its optimistic ghost reliably.
   const startedCommandsAwaitingTranscript = new Set<string>()
 
+  // What a viewer coming back must check again: state its stream does not
+  // carry (the browser preview the browser stream cleared when it dropped)
+  // and one-shot events it may have missed. The 'connected' snapshot does it
+  // for a viewer starting over; a viewer the server resumed is replayed the
+  // missed frames and gets no snapshot, so its reopened connection does it.
+  // Once per connection, and it never touches the streamed content.
+  let reconnecting = false
+  let reconciled = false
+  const reconcileConnection = () => {
+    if (reconciled) return
+    reconciled = true
+    // Resync the unified pending-request store too: its create/resolve
+    // events are one-shot, so anything settled or opened while this
+    // stream was down must be recovered from the snapshot endpoint.
+    queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+    // Fetch current browser status to sync state (handles missed events)
+    fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
+      .then((res) => res.json())
+      .then((status: { active?: boolean; sessionId?: string }) => {
+        const latest = streamStates.get(sessionId)
+        // Only mark browser active if it belongs to THIS session
+        const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
+        if (latest && latest.browserActive !== activeForThisSession) {
+          streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
+          streamListeners.get(sessionId)?.forEach((listener) => listener())
+        }
+      })
+      .catch(() => { /* ignore - agent may not be running */ })
+  }
+  es.onopen = () => {
+    reconciled = false
+    if (!reconnecting) return
+    reconnecting = false
+    reconcileConnection()
+  }
+
   es.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
@@ -568,23 +604,7 @@ function getOrCreateEventSource(
           void reconcileMessagesUntil(sessionId, queryClient, () =>
             lastPersistedMessageIsAssistant(queryClient, sessionId))
         }
-        // Resync the unified pending-request store too: its create/resolve
-        // events are one-shot, so anything settled or opened while this
-        // stream was down must be recovered from the snapshot endpoint.
-        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
-        // Fetch current browser status to sync state (handles missed events)
-        fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
-          .then((res) => res.json())
-          .then((status: { active?: boolean; sessionId?: string }) => {
-            const latest = streamStates.get(sessionId)
-            // Only mark browser active if it belongs to THIS session
-            const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
-            if (latest && latest.browserActive !== activeForThisSession) {
-              streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
-              streamListeners.get(sessionId)?.forEach((listener) => listener())
-            }
-          })
-          .catch(() => { /* ignore - agent may not be running */ })
+        reconcileConnection()
       }
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
@@ -1515,8 +1535,11 @@ function getOrCreateEventSource(
   }
 
   es.onerror = () => {
-    // Don't reset isActive on error - EventSource will auto-reconnect
-    // and we'll get the correct state from the 'connected' event.
+    reconnecting = true
+    // Don't reset isActive on error - EventSource will auto-reconnect with
+    // the last frame id it got, and the server either replays what was missed
+    // (the streamed text continues where it stopped) or, when it cannot,
+    // sends a fresh 'connected' snapshot.
     // Only reset streaming state since that's definitely interrupted.
     // Preserve pending secret requests and error as they may still be valid.
     const current = streamStates.get(sessionId)
