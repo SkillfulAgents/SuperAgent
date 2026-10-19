@@ -735,3 +735,69 @@ describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
     }
   })
 })
+
+// CLI 2.1.302 turned on fork subagents (Agent subagent_type "fork"): a
+// background agent that inherits the parent's conversation. On the wire it is
+// a background subagent like any other (async_launched ack, task_started with
+// is_backgrounded, terminal task frames); only its transcript differs (see
+// subagentOwnEntries).
+describe('sdk303 fork captures replay', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it.each(['sdk303-fork-subagent', 'sdk303-fork-sendmessage-resumed'])(
+    '%s: background contract holds and the session finalizes once',
+    async (name) => {
+      const { sseEvents, timeline } = await replayTracked(name)
+
+      assertBackgroundContract(timeline, sseEvents)
+      const subStarted = sseEvents.filter((e) => e['type'] === 'subagent_started')
+      expect(subStarted.length).toBeGreaterThan(0)
+      expect(subStarted.map((e) => e['subagentType'])).toEqual(subStarted.map(() => 'fork'))
+      expect(sseEvents.filter((e) => e['type'] === 'subagent_completed')).toHaveLength(subStarted.length)
+      const fin = finalSnapshot(timeline)
+      expect(fin.sessionIdleCount).toBe(1)
+      expect(fin.isActive).toBe(false)
+    }
+  )
+
+  it('keeps the fork running past its launch ack, and completes it once at its task_notification', async () => {
+    const { streamEntries, sseEvents } = await replayTracked('sdk303-fork-subagent')
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const notification = contents.find((c) => c['subtype'] === 'task_notification')!
+    const ackIndex = contents.findIndex((c) =>
+      c['type'] === 'user' && (c['tool_use_result'] as { status?: string } | undefined)?.status === 'async_launched'
+    )
+    expect(ackIndex).toBeGreaterThan(0)
+
+    const completed = sseEvents.filter((e) => e['type'] === 'subagent_completed')
+    expect(completed).toEqual([
+      expect.objectContaining({ parentToolId: notification['tool_use_id'], agentId: notification['task_id'] }),
+    ])
+    // The fork's own frames stream into its entry after the lead's ack.
+    const firstDelta = sseEvents.findIndex((e) => e['type'] === 'subagent_stream_delta' || e['type'] === 'subagent_updated')
+    const completion = sseEvents.indexOf(completed[0])
+    expect(firstDelta).toBeGreaterThan(-1)
+    expect(firstDelta).toBeLessThan(completion)
+  })
+
+  it('streams a SendMessage-resumed fork into its own entry, not the finished first run', async () => {
+    const { streamEntries, sseEvents } = await replayTracked('sdk303-fork-sendmessage-resumed')
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const starts = contents.filter((c) => c['subtype'] === 'task_started' && c['task_type'] === 'local_agent')
+    expect(starts).toHaveLength(2)
+    const [launchToolId, resumeToolId] = starts.map((c) => c['tool_use_id'] as string)
+    expect(resumeToolId).not.toBe(launchToolId)
+
+    const resumeStart = sseEvents.findIndex((e) => e['type'] === 'subagent_started' && e['parentToolId'] === resumeToolId)
+    const resumeEnd = sseEvents.findIndex((e) => e['type'] === 'subagent_completed' && e['parentToolId'] === resumeToolId)
+    expect(resumeStart).toBeGreaterThan(0)
+    expect(resumeEnd).toBeGreaterThan(resumeStart)
+    const during = sseEvents
+      .slice(resumeStart + 1, resumeEnd)
+      .filter((e) => e['type'] === 'subagent_stream_delta' || e['type'] === 'subagent_updated')
+    expect(during.length).toBeGreaterThan(0)
+    expect(during.map((e) => e['parentToolId'])).toEqual(during.map(() => resumeToolId))
+  })
+})

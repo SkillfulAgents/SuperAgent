@@ -445,6 +445,9 @@ const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   { name: 'sdk303-bg-subagent-interrupt-noop', settledAtEnd: true },
   { name: 'sdk303-bg-subagent-nested-bg-bash', settledAtEnd: true },
   { name: 'sdk303-sendmessage-resumed-subagent', settledAtEnd: true },
+  // CLI 2.1.302+ fork subagents: background subagents on the wire.
+  { name: 'sdk303-fork-subagent', settledAtEnd: true },
+  { name: 'sdk303-fork-sendmessage-resumed', settledAtEnd: true },
   { name: 'sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sequential-different-types', settledAtEnd: true },
   { name: 'single-subagent-progress', settledAtEnd: true },

@@ -263,6 +263,32 @@ describe('usage-service', () => {
       }
     })
 
+    it("does not bill a fork subagent's copy of the parent's launching response", async () => {
+      // A fork transcript (CLI 2.1.302+) opens with a copy of the parent's
+      // assistant entry that launched it: same requestId and message id, a
+      // partial usage snapshot, isSidechain. Real capture: sdk303-fork-subagent.
+      const fixture = path.resolve(__dirname, '../container/__fixtures__/sdk303-fork-subagent')
+      const forkName = (await fsPromises.readdir(path.join(fixture, 'fs-snapshot'))).find((n) => n.endsWith('.jsonl'))!
+      const forkLines = (await fsPromises.readFile(path.join(fixture, 'fs-snapshot', forkName), 'utf8')).trim().split('\n')
+      const launchCopy = forkLines.findIndex((line) => JSON.parse(line).type === 'assistant')
+      const totalsWith = async (fork: string[]) => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'usage-fork-'))
+        try {
+          await fsPromises.copyFile(path.join(fixture, 'lead-transcript.jsonl'), path.join(dir, 'session.jsonl'))
+          mkdirSync(path.join(dir, 'session', 'subagents'), { recursive: true })
+          writeFileSync(path.join(dir, 'session', 'subagents', forkName), fork.join('\n') + '\n')
+          return await loadSessionUsageTotals({ ...sessionOptions(path.join(dir, 'session.jsonl')) })
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+
+      const withCopy = await totalsWith(forkLines)
+      const withoutCopy = await totalsWith(forkLines.filter((_, i) => i !== launchCopy))
+      expect(withCopy).toEqual(withoutCopy)
+      expect(withCopy.totalTokens).toBeGreaterThan(0)
+    })
+
     it('deduplicates snapshots when requestId presence differs', async () => {
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-mixed-request-id-'))
       const transcript = path.join(dir, 'mixed-request-id.jsonl')
