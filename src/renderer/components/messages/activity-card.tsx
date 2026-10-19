@@ -158,6 +158,7 @@ export function ActivityCard({
             : 'rounded-t-2xl border-b-0 pb-8',
         )}
         data-testid="activity-indicator"
+        data-idle={idle || undefined}
       >
         {/* Header with the agent's avatar (the thought orb when it has none) —
             its animation is the status cue. The disclosure button is the row's
