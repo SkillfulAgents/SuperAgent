@@ -115,6 +115,8 @@ export interface ApiDiscoverableAgent {
   category?: string
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon?: string
+  /** The template's orb, when its skillset names one. */
+  avatar?: AgentAvatar
   tags?: string[]
   /** Services the template connects to; `slug` matches the service-icon set. */
   worksWith?: { type: string; slug: string }[]
