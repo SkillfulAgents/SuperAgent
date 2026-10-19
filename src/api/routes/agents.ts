@@ -32,7 +32,7 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
-import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
+import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes } from '@shared/lib/messages-page'
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
@@ -2213,6 +2213,12 @@ const messagesListQuerySchema = z
     // base64. Absent means inline, so clients that predate the media endpoint
     // (and the unpaginated path below) are unaffected.
     media: z.literal('ref').optional(),
+    // Opt-in `max_bytes`: a soft budget on the raw transcript bytes behind a
+    // backward page, clamped by clampMessagesPageBytes. Absent means the
+    // reader's default, so clients that predate it are unaffected. Validated
+    // on every paginated request, honored on backward pages only: a forward
+    // delta is already bounded by the live turn.
+    maxBytes: z.coerce.number().int().min(1).optional(),
   })
   // Backward paging and the forward delta are different protocols; a request
   // mixing them has no coherent meaning.
@@ -2341,14 +2347,17 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const rawCursor = c.req.query('cursor')
     const rawAfter = c.req.query('after')
     const rawMedia = c.req.query('media')
-    // `media` selects the paginated branch too: it is only honored there, so
-    // leaving it out would silently serve a full inline response to a client
-    // that asked for refs — and skip validating the value at all.
+    const rawMaxBytes = c.req.query('max_bytes')
+    // `media` and `max_bytes` select the paginated branch too: they are only
+    // honored there, so leaving them out would silently serve the full
+    // transcript to a client that asked for refs or for a bounded response —
+    // and skip validating the value at all.
     const paginated =
       rawLimit !== undefined ||
       rawCursor !== undefined ||
       rawAfter !== undefined ||
-      rawMedia !== undefined
+      rawMedia !== undefined ||
+      rawMaxBytes !== undefined
 
     if (!(await actor.sessions.exists(sessionId))) {
       // A live session whose first turn has not persisted anything yet: the
@@ -2377,6 +2386,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
         ...(rawAfter !== undefined ? { after: rawAfter } : {}),
         ...(rawMedia !== undefined ? { media: rawMedia } : {}),
+        ...(rawMaxBytes !== undefined ? { maxBytes: rawMaxBytes } : {}),
       })
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
@@ -2405,11 +2415,15 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
           ...(delta.resync ? { resync: true as const } : {}),
         })
       }
+      // Without `max_bytes` no budget is passed and the reader's default
+      // applies — the same call as before the parameter existed.
+      const byteBudget = clampMessagesPageBytes(parsed.data.maxBytes)
       const page = await actor.messages.page(sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
         media: parsed.data.media,
+        ...(byteBudget !== undefined ? { byteBudget } : {}),
       })
       c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
