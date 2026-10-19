@@ -33,10 +33,10 @@ import type { NotificationEvent } from './notification-event'
 import { buildSessionCompleteBody } from './session-complete-summary'
 
 interface SessionCompleteNotificationOptions {
-  /** Final top-level assistant text, already selected by MessagePersister. */
+  /** Final top-level assistant text, already selected by the agent's session. */
   responseText?: string | null
-  /** In-flight same-file byte-boundary snapshot for this completed turn. */
-  responseTranscriptEndOffset?: Promise<number | null>
+  /** Where the transcript ended when this turn did: the byte bound for the body's context lookup. */
+  responseTranscriptEndOffset?: number | null
 }
 
 type NotificationBody = string | {
@@ -247,8 +247,7 @@ class NotificationManager {
                 sessionId,
                 agentSlug,
                 responseText: options.responseText,
-                responseTranscriptEndOffset:
-                  await options.responseTranscriptEndOffset,
+                responseTranscriptEndOffset: options.responseTranscriptEndOffset,
                 fallbackBody,
               }),
             )

@@ -193,7 +193,9 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     // THE BUG: the legacy result-driven path finalized idle here.
     expect(countIdle(sseEvents)).toBe(0)
     expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(true)
-    // The premature completion notification was part of the same bug.
+    // The premature completion notification was part of the same bug. (It
+    // goes out once the transcript's end is read, so let that settle first.)
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     // The turn's output is still announced so the renderer can reconcile the
     // just-streamed text against the transcript.
@@ -205,14 +207,14 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     // Exactly one idle, at the authoritative session_state_changed:'idle'.
     expect(countIdle(sseEvents)).toBe(1)
     expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
-    expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1))
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
       sessionId,
       agentSlug,
       {
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
-        responseTranscriptEndOffset: expect.any(Promise),
+        responseTranscriptEndOffset: null,
       },
     )
 
@@ -238,13 +240,14 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     // session is never left stuck).
     expect(countIdle(sseEvents)).toBeGreaterThanOrEqual(1)
     expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(
       sessionId,
       agentSlug,
       {
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
-        responseTranscriptEndOffset: expect.any(Promise),
+        responseTranscriptEndOffset: null,
       },
     )
 
