@@ -398,11 +398,10 @@ describe('shared manager durability with real integration storage', () => {
     manager.stop()
     const row = (await rows())[0]
     await database.update(integrationDeliveries).set({ state: 'sending', owner: 'dead-host' }).where(eq(integrationDeliveries.id, row.id)).run()
-    runtime.receipt.mockImplementation(async (_session, predicate: (entry: unknown) => boolean) => {
-      const receipt = { type: 'user', uuid: row.id }
-      expect(predicate(receipt)).toBe(true)
-      expect(predicate({ type: 'user', uuid: 'different-message' })).toBe(false)
-      return receipt
+    runtime.receipt.mockImplementation(async (_session, query: unknown) => {
+      // Positive evidence only: the user message sent with the delivery's uuid.
+      expect(query).toEqual({ kind: 'user', uuid: row.id })
+      return { type: 'user', uuid: row.id }
     })
     await start()
     await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))

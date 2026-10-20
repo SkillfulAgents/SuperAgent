@@ -478,10 +478,13 @@ export interface MessageOps {
   ): Promise<SessionMessagesPage>
   /** `getSessionMessagesDelta` */
   delta(sessionId: string, opts: { after: string; signal?: AbortSignal; media?: 'ref' }): Promise<SessionMessagesDelta>
-  /** `findLastSessionEntry` */
+  /**
+   * `findLastSessionEntry`: the last transcript entry `query` names, read
+   * from the tail. `endOffset` stops the search at that byte of the transcript.
+   */
   findLastEntry(
     sessionId: string,
-    predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+    query: TranscriptEntryQuery,
     options?: { endOffset?: number | null },
   ): Promise<JsonlMessageEntry | JsonlSystemEntry | null>
   /** `removeMessage` */
@@ -512,6 +515,15 @@ export interface MessageOps {
   /** `LiveSessions.emit` */
   broadcastEvent(sessionId: string, data: unknown): void
 }
+
+/** Which transcript entry `messages.findLastEntry` looks for. */
+export type TranscriptEntryQuery =
+  /** The user message sent with this uuid. */
+  | { kind: 'user'; uuid: string }
+  /** The last assistant message. */
+  | { kind: 'assistant' }
+  /** The last message a person wrote (see `userRequestText`). */
+  | { kind: 'user-request' }
 
 /** A message for a session, as `messages.deliver` takes it. */
 export interface DeliverRequest {

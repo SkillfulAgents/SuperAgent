@@ -22,6 +22,7 @@ import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
+import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
@@ -297,7 +298,8 @@ function createMessageOps(
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
     delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
-    findLastEntry: (...args) => deps.sessionService.findLastSessionEntry(store, ...args),
+    findLastEntry: (sessionId, query, options) =>
+      deps.sessionService.findLastSessionEntry(store, sessionId, matchesTranscriptQuery(query), options),
     remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(store, sessionId, messageUuid),
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
     appendInformational: (sessionId, entry) => deps.appendInformationalEntry(store, sessionId, entry),

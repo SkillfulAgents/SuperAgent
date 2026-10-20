@@ -44,7 +44,6 @@ import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSetti
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
-import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
   removeTransferredAttachments,
@@ -538,10 +537,6 @@ function syncWaitPromotedNote(timeoutMs: number): string {
   )
 }
 
-function isReturnableAssistantEntry(e: JsonlMessageEntry | JsonlSystemEntry): boolean {
-  return e.type === 'assistant' && compactMessage(e) !== null
-}
-
 /**
  * `boundaryUuid` is the uuid of the last assistant entry persisted BEFORE the
  * current turn's prompt was delivered (undefined when the session is new or
@@ -559,7 +554,7 @@ async function readLastAssistantMessage(
     // Only the most recent assistant entry matters, so read the transcript
     // from the tail instead of full-parsing it (transcripts reach 100MB+, and
     // this runs up to READ_RETRY_ATTEMPTS times per invoke).
-    const entry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
+    const entry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
     if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
@@ -613,7 +608,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   if (sync && actor.sessions.isActive(sessionId)) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
-    const boundaryEntry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
+    const boundaryEntry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     try {
       // 'timeout' falls through: return the transcript so far with status
       // 'running'. Sync get-transcript is a bounded long-poll the caller can
@@ -870,7 +865,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
         const replyBoundary = sync
-          ? await targetActor.messages.findLastEntry(existingSessionId, isReturnableAssistantEntry)
+          ? await targetActor.messages.findLastEntry(existingSessionId, { kind: 'assistant' })
           : null
         stage = 'subscribe'
         // Attached here rather than by the delivery, so the attach is bounded

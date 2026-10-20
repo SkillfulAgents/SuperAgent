@@ -112,7 +112,7 @@ export class AgentIntegrationManager {
       const actor = agentRegistry.get(integration.agentSlug)
       // A persisted user entry with our UUID is positive runtime acceptance.
       // Never infer rejection from an absent entry or an unavailable container.
-      const entry = await actor.messages.findLastEntry(row.sessionId, entry => entry.type === 'user' && entry.uuid === row.id)
+      const entry = await actor.messages.findLastEntry(row.sessionId, { kind: 'user', uuid: row.id })
       return !!entry
     },
     notice: (row, beforeSend) => this.deliverFailureNotice(row, beforeSend),
