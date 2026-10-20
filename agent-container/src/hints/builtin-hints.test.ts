@@ -35,6 +35,7 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['write a CSV report', wrote('/workspace/reports/activations.csv'), ['deliver-files']],
   ['write a PDF', wrote('/workspace/invoice.pdf'), ['deliver-files']],
   ['write a temp CSV', wrote('/tmp/scratch.csv'), []],
+  ['agent-browser and uv run in one command', bash('agent-browser snapshot && uv run report.py'), ['agent-browser-bash', 'uv-run-env-file']],
   ['wait, then print secrets', bash('sleep 2; cat /workspace/.env'), ['no-foreground-wait', 'no-secret-values']],
   ['wait, then write a deck', bash('sleep 5 && uv run --env-file .env python - <<\'EOF\'\nurl = f"{proxy}/acc-gslides/slides.googleapis.com/v1/presentations/{pid}:batchUpdate"\nEOF'), ['no-foreground-wait', 'shared-doc-revision']],
 ]
