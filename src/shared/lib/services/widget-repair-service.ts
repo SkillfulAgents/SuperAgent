@@ -16,7 +16,7 @@ import { readWidgetLogTail } from './widget-service'
  * sit there failing silently until a human noticed the error badge. Instead the
  * platform opens an automated session ("your widget script failed, here is the
  * error, fix it"), exactly like a cron run: hidden from the session list,
- * `automationStatus` finalized by the persister, promoted to interactive only
+ * `automationStatus` finalized by its live session, promoted to interactive only
  * if the agent has to ask the user something.
  *
  * The guards matter more than the trigger. A permanently broken widget must

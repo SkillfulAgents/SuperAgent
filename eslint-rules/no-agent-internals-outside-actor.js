@@ -2,7 +2,7 @@
  * Fence the agent internals behind the agent actor.
  *
  * Per-agent state and storage belong to the actor. That covers the container
- * manager, the message persister, the per-agent user-input, review, re-auth
+ * manager, the agents' live sessions, the per-agent user-input, review, re-auth
  * and computer-use stores and the process-wide routers in front of them, the
  * session service and its transcript-append, summary-cache and media modules,
  * the connection runtime sync, and the workflow tree. Code outside the
@@ -40,7 +40,8 @@ const ALLOWLIST_PATH = path.join(__dirname, 'agent-internals-allowlist.json')
 const FENCED_MODULES = new Set([
   'src/shared/lib/container/container-host',
   'src/shared/lib/container/container-runtime',
-  'src/shared/lib/container/message-persister',
+  'src/shared/lib/agent-actor/live/live-sessions',
+  'src/shared/lib/agent-actor/live/live-session',
   'src/shared/lib/container/connection-runtime-sync',
   'src/shared/lib/tools/requests/request-manager',
   'src/shared/lib/tools/requests/agent-input-requests',
@@ -130,7 +131,7 @@ module.exports = {
     type: 'problem',
     docs: {
       description:
-        'Agent internals (container host and runtime, message persister, input/review/re-auth/permission stores and routers, session storage and transcript modules, agent path helpers, usage loaders) may only be imported by the actor package; everything else goes through agentRegistry.get(slug)',
+        'Agent internals (container host and runtime, live sessions, input/review/re-auth/permission stores and routers, session storage and transcript modules, agent path helpers, usage loaders) may only be imported by the actor package; everything else goes through agentRegistry.get(slug)',
     },
     schema: [],
     messages: {

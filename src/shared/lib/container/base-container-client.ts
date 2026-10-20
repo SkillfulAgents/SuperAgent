@@ -1811,7 +1811,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         rejectReady(new Error('Session stream closed before initialization'))
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
-        // This allows the message persister to handle the disconnection
+        // This allows the session's LiveSession to handle the disconnection
         const closeMessage: StreamMessage = {
           type: 'connection_closed',
           content: { type: 'connection_closed' },
@@ -1828,7 +1828,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
-      // Notify the callback so the consumer (e.g. MessagePersister) can react to
+      // Notify the callback so the consumer (e.g. LiveSessions) can react to
       // the failed (re)subscribe instead of relying on the `ready` promise —
       // callers that discard `ready` (e.g. reconnect) would otherwise leave a
       // free-floating rejected promise and never learn the session is gone.

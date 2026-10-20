@@ -152,22 +152,6 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: {
     checkAll: vi.fn().mockReturnValue([]),
@@ -990,8 +974,15 @@ describe('ContainerHost.clearRuntimes', () => {
 // ============================================================================
 
 import { healthMonitor } from './health-monitor'
-import { messagePersister } from './message-persister'
+import { NO_LIVE_SESSIONS } from './agent-sessions-access'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+
+// The agents' live sessions, as the runtimes mark them when a container stops:
+// every agent's marks land on one mock, under the agent's slug.
+const markAllInactive = vi.fn()
+containerHost.attachAgentSessions({
+  peek: (slug) => ({ ...NO_LIVE_SESSIONS, markAllInactive: (...args) => markAllInactive(slug, ...args) }),
+})
 
 describe('ContainerRuntime — health warnings', () => {
   beforeEach(() => {
@@ -1433,7 +1424,7 @@ describe('ContainerRuntime.syncAgentStatus', () => {
 
     await containerHost.runtime('sync-agent').syncAgentStatus()
 
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('sync-agent')
+    expect(markAllInactive).toHaveBeenCalledWith('sync-agent')
   })
 })
 
@@ -1662,13 +1653,13 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
     expect(containerHost.runtime('other-agent-2').getCachedInfo()).toEqual({ status: 'stopped', port: null })
 
     // Sessions should be marked inactive for all agents
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('stuck-agent', {
+    expect(markAllInactive).toHaveBeenCalledWith('stuck-agent', {
       settleRecovering: true,
     })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-1', {
+    expect(markAllInactive).toHaveBeenCalledWith('other-agent-1', {
       settleRecovering: true,
     })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-2', {
+    expect(markAllInactive).toHaveBeenCalledWith('other-agent-2', {
       settleRecovering: true,
     })
   })
@@ -1768,7 +1759,7 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
     )
     expect(stoppedEvents).toHaveLength(0)
     expect(broadcasts.filter(([msg]: any) => msg.type === 'system_alert')).toHaveLength(0)
-    expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalledWith('stuck-agent')
+    expect(markAllInactive).not.toHaveBeenCalledWith('stuck-agent')
     expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
   })
 
@@ -1782,7 +1773,7 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
 
     // Should still be marked as stopped despite the error
     expect(containerHost.runtime('error-agent').getCachedInfo()).toEqual({ status: 'stopped', port: null })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('error-agent', {
+    expect(markAllInactive).toHaveBeenCalledWith('error-agent', {
       settleRecovering: true,
     })
   })

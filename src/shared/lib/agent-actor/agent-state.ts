@@ -1,6 +1,7 @@
 /**
- * The in-memory state one agent owns: its pending user-input requests, the
- * reviews and re-auth waits parked on them, and its computer-use grants.
+ * The in-memory state one agent owns: its live sessions, its pending
+ * user-input requests, the reviews and re-auth waits parked on them, and its
+ * computer-use grants.
  *
  * Created with the agent's actor and released with it, so `agentRegistry.evict`
  * is the one operation that ends everything an agent held in this process.
@@ -17,39 +18,91 @@ import {
   type McpReauthWaits,
 } from '@shared/lib/proxy/reauth-waits'
 import { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
+import { LiveSessions, type LiveSessionsDeps } from './live/live-sessions'
+import type { SessionEvent } from './live/session-channel'
+import type { HostRunActor } from './host-runs'
+import type { SessionStore } from './session-store'
 import type { AgentSlug } from './types'
 
 export interface AgentState {
+  /**
+   * Where the agent's sessions are. It goes with the state: what the live
+   * sessions record must land where the actor's reads look, also for a
+   * handle that adopts state an earlier one built (a dev-server reload).
+   */
+  readonly store: SessionStore
+  readonly sessions: LiveSessions
   readonly inputRequests: AgentInputRequests
   readonly reviews: AgentReviews
   readonly accountReauth: AccountReauthWaits
   readonly mcpReauth: McpReauthWaits
   readonly computerUse: AgentComputerUse
+  /** The agent's own parts, as an approved computer-use or script run needs them. */
+  readonly hostRuns: HostRunActor
 }
 
 export interface AgentStateHooks {
-  /** Where the agent's request transitions go: the router that indexes and fans them out. */
+  /** Where the agent's request transitions go first: the router that indexes them. */
   transitions: UserInputTransitionSink
-  /** Recompute the agent's sessions' awaiting state after a card opens or closes. */
-  syncAwaiting: () => void
+  /** What the agent's live sessions reach outside the agent. */
+  sessions: Pick<LiveSessionsDeps, 'store' | 'host' | 'runtime' | 'capture'>
 }
 
 export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): AgentState {
-  const inputRequests = new AgentInputRequests(slug, hooks.transitions)
+  // A request transition is indexed by the router, then put on the wire by
+  // the agent's sessions. The sessions are built from the stores, so the
+  // sink reaches them through this binding, set before any request can exist.
+  let sessions: LiveSessions | undefined
+  const inputRequests = new AgentInputRequests(slug, {
+    report: (transition) => {
+      hooks.transitions.report(transition)
+      sessions?.requestTransition(transition)
+    },
+  })
+  const computerUse = new AgentComputerUse(slug)
+  // One view of the agent for every host run: the decision routes' (through
+  // the actor) and the auto-approved ones the sessions start. Settling a run
+  // goes through the sessions, so it reaches the session's wire.
+  const hostRuns: HostRunActor = {
+    inputs: {
+      claim: (id) => inputRequests.claimRequest(id),
+      releaseClaim: (id) => inputRequests.releaseClaim(id),
+      resolve: (id, outcome) => inputRequests.resolve(id, outcome),
+      complete: (sessionId, id, outcome) => sessions?.completeRequest(sessionId, id, outcome),
+      computerUse: {
+        grant: (...args) => computerUse.grant(...args),
+        consumeOnce: (...args) => computerUse.consumeOnce(...args),
+        setGrabbedApp: (appName) => computerUse.setGrabbed(appName),
+        clearGrabbedApp: () => computerUse.clearGrabbed(),
+        clearPending: (sessionId, id, outcome = 'answered') => sessions?.clearComputerUseRequest(sessionId, id, outcome),
+      },
+    },
+    container: { fetch: (path, init) => hooks.sessions.runtime.client().fetch(path, init) },
+    messages: { broadcastEvent: (sessionId, event) => sessions?.emit(sessionId, event as SessionEvent) },
+  }
+  sessions = new LiveSessions({ slug, requests: inputRequests, computerUse, runs: hostRuns, ...hooks.sessions })
+  // A review or re-auth wait opening or closing changes whether the agent's sessions wait.
+  const live = sessions
+  const syncAwaiting = () => live.syncAwaiting()
   return {
+    store: hooks.sessions.store,
+    sessions: live,
     inputRequests,
-    reviews: new AgentReviews(slug, inputRequests, hooks.syncAwaiting),
-    accountReauth: createAccountReauthWaits(slug, inputRequests, hooks.syncAwaiting),
-    mcpReauth: createMcpReauthWaits(slug, inputRequests, hooks.syncAwaiting),
-    computerUse: new AgentComputerUse(slug),
+    reviews: new AgentReviews(slug, inputRequests, syncAwaiting),
+    accountReauth: createAccountReauthWaits(slug, inputRequests, syncAwaiting),
+    mcpReauth: createMcpReauthWaits(slug, inputRequests, syncAwaiting),
+    computerUse,
+    hostRuns,
   }
 }
 
 /**
  * The agent is gone from this process: reject every parked call, settle
- * every open request so its listeners hear the end of it, and forget the
- * rest. The persisted computer-use grants are left where they are; they
- * belong to the agent's settings entry, not to the process.
+ * every open request so its listeners hear the end of it, then drop the
+ * sessions' streams and timers. The requests go first, so their resolved
+ * events still reach the sessions' listeners. The persisted computer-use
+ * grants are left where they are; they belong to the agent's settings entry,
+ * not to the process.
  */
 export function releaseAgentState(state: AgentState): void {
   const gone = (what: string) => new Error(`${what} dropped: the agent is no longer held by this process`)
@@ -58,4 +111,5 @@ export function releaseAgentState(state: AgentState): void {
   state.mcpReauth.rejectAll(gone('MCP re-authentication'))
   state.inputRequests.dispose()
   state.computerUse.clearGrabbed()
+  state.sessions.dispose()
 }

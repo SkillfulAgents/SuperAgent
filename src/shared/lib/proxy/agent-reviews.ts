@@ -258,7 +258,7 @@ export class AgentReviews {
       this.syncAwaiting()
 
       // The OS notification fires from the registry 'created' transition
-      // (persister dispatchRequestNotification) — one per review, attributed
+      // (the live sessions' notifyRequest) — one per review, attributed
       // to the agent's first active session there.
     })
   }

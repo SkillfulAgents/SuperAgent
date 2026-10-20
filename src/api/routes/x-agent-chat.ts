@@ -445,7 +445,7 @@ async function notifySessionOfOutboundMessage(
     await actor.messages.appendAssistant(sessionId, notificationText)
   }
   // Both paths advance the transcript without emitting the stream frames the
-  // message persister watches, so the warm summary must be told directly.
+  // agent's live sessions watch, so the warm summary must be told directly.
   actor.sessions.recordActivity(sessionId)
 }
 

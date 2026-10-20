@@ -167,17 +167,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastSessionUpdate: vi.fn(), persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(), isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false), hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false), isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(), unsubscribeFromSession: vi.fn(), markSessionActive: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(), listSessionsFromSummary: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),

@@ -10,10 +10,10 @@ vi.mock('@shared/lib/services/activity-stats-service', () => ({
   getConnectionActivityStats: (...args: unknown[]) => mockGetConnectionActivityStats(...args),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    isSessionActive: (...args: unknown[]) => mockIsSessionActive(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (slug, sessionId) => mockIsSessionActive(slug, sessionId),
+  }),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -62,7 +62,7 @@ describe('activity API', () => {
     })
   })
 
-  it('probes execution liveness (isSessionActive, not subscription) through the message persister', async () => {
+  it("probes execution liveness (isActive, not subscription) through the agent's live sessions", async () => {
     await createApp().request('http://localhost/api/activity/agents/agent-a')
 
     const { isSessionLive } = mockGetAgentActivityStats.mock.calls[0][1] as {

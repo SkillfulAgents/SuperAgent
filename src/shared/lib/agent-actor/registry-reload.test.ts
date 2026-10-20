@@ -1,19 +1,23 @@
 /**
  * In development the backend modules are re-evaluated on edit (the Vite
- * adapter reloads the SSR entry in the same process). The host, the persister
- * and the routers survive that on `globalThis`; the state the actors own must
- * survive with them, or every parked approval and reconnect wait is stranded
- * until it times out. These drive a real module reload with `vi.resetModules`
- * and check that the reloaded registry still finds and settles what the
- * previous one held.
+ * adapter reloads the SSR entry in the same process). The host and the routers
+ * survive that on `globalThis`; the state the actors own (their live sessions
+ * among it) must survive with them, or every parked approval and reconnect
+ * wait is stranded until it times out. These drive a real module reload with
+ * `vi.resetModules` and check that the reloaded registry still finds and
+ * settles what the previous one held.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
+import type { LocalAgentActor } from './local-agent-actor'
 
 vi.mock('@shared/lib/container/container-host', () => ({
-  containerHost: { attachAgentWorkspaces: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
+  containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
 }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { attachSessionStores: vi.fn(), syncAgentSessionsAwaiting: vi.fn() },
+// What the agents' live sessions hand the host (feed events, notifications)
+// is not what these tests are about: a recording port keeps it in the test.
+vi.mock('@shared/lib/host/local-host-port', async () => ({
+  localHostPort: (await import('./testing/recording-host-port')).createRecordingHostPort().port,
 }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
 vi.mock('@shared/lib/services/session-service', () => ({}))
@@ -89,6 +93,24 @@ describe('the actors\' state survives a backend module reload', () => {
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a').map((r) => r.id)).toEqual(['reload-secret'])
   })
 
+  it('the live sessions held before the reload are the ones after it, and the container host reaches them', async () => {
+    const original = await load()
+    const heard: unknown[] = []
+    original.agentRegistry.get('a').messages.subscribe('s', (event) => heard.push(event))
+    const sessions = (original.agentRegistry.get('a') as LocalAgentActor).state.sessions
+
+    const reloaded = await reload()
+
+    expect((reloaded.agentRegistry.get('a') as LocalAgentActor).state.sessions).toBe(sessions)
+    // A tab listening before the reload hears what the reloaded code emits.
+    reloaded.agentRegistry.get('a').sessions.broadcastUpdate('s')
+    expect(heard).toEqual([{ type: 'session_updated' }])
+    // The reloaded registry attached the reloaded host to the same sessions.
+    const { containerHost } = await import('@shared/lib/container/container-host')
+    const access = vi.mocked(containerHost.attachAgentSessions).mock.calls.at(-1)![0] as AgentSessionsAccess
+    expect(access.peek('a')).toBe(sessions)
+  })
+
   it('a bare id shared by two agents still goes to the agent that registered it first after the reload', async () => {
     const original = await load()
     // a's handle exists first; b registers the shared id first.
@@ -149,6 +171,39 @@ describe('the actors\' state survives a backend module reload', () => {
 
     expect(reloaded.accountReauthManager.completeAccount('acct')).toBe(1)
     await expect(parked).resolves.toBeUndefined()
+  })
+
+  it('the reloaded handle reads the session store the live sessions write to', async () => {
+    const original = await load()
+    const before = original.agentRegistry.get('a') as LocalAgentActor
+
+    const reloaded = await reload()
+    const after = reloaded.agentRegistry.get('a') as LocalAgentActor
+
+    // The summary cache is per store: a second store would never see the
+    // activity the adopted sessions record.
+    expect(after.store).toBe(before.store)
+    expect(after.state.store).toBe(after.store)
+  })
+
+  it('a registry left over from before the reload adopts the state the current one built, never replacing it', async () => {
+    // A singleton pinned on globalThis (the notification manager) keeps
+    // calling the registry of the module evaluation that created it.
+    const stale = await load()
+    const current = await reload()
+    current.agentRegistry.get('new-agent').inputs.register({
+      id: 'after-reload',
+      kind: 'secret',
+      scope: { sessionId: 's' },
+      blocking: true,
+      payload: {},
+    })
+
+    const fromStale = stale.agentRegistry.get('new-agent') as LocalAgentActor
+
+    expect(fromStale.state).toBe((current.agentRegistry.get('new-agent') as LocalAgentActor).state)
+    const next = await reload()
+    expect(next.agentRegistry.get('new-agent').inputs.get('after-reload')).not.toBeNull()
   })
 
   it('evicting after the reload releases the state the earlier registry built', async () => {

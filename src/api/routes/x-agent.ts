@@ -481,7 +481,7 @@ async function raceDeadline<T>(promise: Promise<T>, deadline: number): Promise<T
   }
 }
 
-// Bounds the persister's stream attach — its WebSocket `ready` promise has no
+// Bounds the live sessions' stream attach — its WebSocket `ready` promise has no
 // timeout of its own, so a wedged container would otherwise hold the caller's
 // fetch open past its 300s header timeout.
 const SUBSCRIBE_TIMEOUT_MS = Number(process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS) || 30_000
@@ -496,9 +496,9 @@ async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
   }
 }
 
-// Matched by name rather than instanceof: the persister module is wholesale-
-// mocked in many test suites, and an instanceof against a possibly-undefined
-// mock export throws instead of returning false.
+// Matched by name rather than instanceof: the error class belongs to the
+// agent's live sessions (`agent-actor/live/wait-for-idle`), which routes reach
+// only through the registry, not by import.
 function isWaitForIdleTimeout(error: unknown): boolean {
   return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
 }
@@ -611,8 +611,8 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
 
   const actor = agentRegistry.get(targetSlug)
 
-  // Status and wait state live in the process-global persister. Validate the
-  // target/session pair before consulting it, not only before reading the
+  // Status and wait state live in the target's live sessions. Validate the
+  // target/session pair before consulting them, not only before reading the
   // target-scoped transcript below.
   if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
@@ -846,9 +846,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const targetActor = agentRegistry.get(targetSlug)
       if (existingSessionId) {
         // Invoke rights on the target say nothing about the session id sent
-        // with them. The persister is keyed by session id alone, so a third
-        // agent's id would get re-pointed at the target's container here — and
-        // the target's transcript written under it.
+        // with them. The target's live sessions take any id they are handed, so
+        // a third agent's id would get attached to the target's container here —
+        // and the target's transcript written under it.
         if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }

@@ -4,25 +4,21 @@ const mocks = vi.hoisted(() => ({
   sync: vi.fn(), active: vi.fn(), isActive: vi.fn(), interrupt: vi.fn(), markInterrupted: vi.fn(),
   send: vi.fn(), withSend: vi.fn(), status: 'running', order: [] as string[],
 }))
-vi.mock('./connection-runtime-sync', () => ({
-  syncAgentConnectionEnvironment: mocks.sync,
-}))
-vi.mock('./container-host', () => ({
-  containerHost: {
-    attachAgentWorkspaces: () => {},
-    runtime: () => ({
-      getCachedInfo: () => ({ status: mocks.status }),
-      getClient: () => ({ interruptSession: mocks.interrupt, sendMessage: mocks.send }),
-    }),
-  },
-}))
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    getActiveSessionIdsForAgent: mocks.active,
-    isSessionActive: mocks.isActive,
-    getTurnGeneration: () => 7,
-    markSessionInterrupted: mocks.markInterrupted,
-    withSessionSend: mocks.withSend,
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentRegistry: {
+    get: (slug: string) => {
+      mocks.order.push(`actor:${slug}`)
+      return {
+        container: { syncConnectionEnvironment: mocks.sync, status: () => ({ status: mocks.status }) },
+        sessions: {
+          activeIds: mocks.active,
+          isActive: mocks.isActive,
+          turnGeneration: () => 7,
+          markInterrupted: mocks.markInterrupted,
+        },
+        messages: { interrupt: mocks.interrupt, send: mocks.send, withSend: mocks.withSend },
+      }
+    },
   },
 }))
 
@@ -44,9 +40,9 @@ beforeEach(() => {
     mocks.order.push(`interrupt:${id}`)
     return { interrupted: true, processKept: true }
   })
-  mocks.markInterrupted.mockImplementation(async (_agent: string, id: string) => { mocks.order.push(`mark:${id}`) })
+  mocks.markInterrupted.mockImplementation(async (id: string) => { mocks.order.push(`mark:${id}`) })
   mocks.send.mockImplementation(async (id: string) => { mocks.order.push(`send:${id}`) })
-  mocks.withSend.mockImplementation(async (_agent: string, _id: string, _client: unknown, send: () => Promise<void>) => send())
+  mocks.withSend.mockImplementation(async (_id: string, send: () => Promise<void>) => send())
   release.mockImplementation(() => { mocks.order.push('release') })
 })
 
@@ -54,15 +50,11 @@ describe('connection replacement notification', () => {
   it.each(['connected-accounts', 'remote-mcps'] as const)('refreshes and interrupts before notifying active sessions for %s', async (kind) => {
     expect(await finishConnectionReplacement({ ...change, kind }, release))
       .toEqual({ liveRefresh: true, sessionNotification: true })
-    expect(mocks.active).toHaveBeenCalledWith('shared-agent')
-    expect(mocks.sync).toHaveBeenCalledWith(
-      'shared-agent',
-      kind,
-      expect.objectContaining({ getCachedInfo: expect.any(Function), getClient: expect.any(Function) }),
-    )
+    expect(mocks.order[0]).toBe('actor:shared-agent')
+    expect(mocks.sync).toHaveBeenCalledWith(kind)
     for (const sessionId of ['session-1', 'session-2']) {
       expect(mocks.interrupt).toHaveBeenCalledWith(sessionId, { scope: 'turn' })
-      expect(mocks.markInterrupted).toHaveBeenCalledWith('shared-agent', sessionId, {
+      expect(mocks.markInterrupted).toHaveBeenCalledWith(sessionId, {
         processKept: true, turnGenerationBefore: 7,
       })
       expect(mocks.order.indexOf(`interrupt:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('refresh'))

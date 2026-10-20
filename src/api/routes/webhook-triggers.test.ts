@@ -23,10 +23,6 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionsByWebhookTrigger: vi.fn(() => []),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { isSessionActive: vi.fn(() => false) },
-}))
-
 vi.mock('@shared/lib/auth/config', () => ({
   getCurrentUserId: () => 'request-user',
 }))

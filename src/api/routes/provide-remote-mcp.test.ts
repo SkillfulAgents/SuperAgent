@@ -33,14 +33,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    completeInputRequest: vi.fn(),
-  },
-}))
-
 const mockSelectFrom = vi.fn()
 const mockInsertValues = vi.fn()
 

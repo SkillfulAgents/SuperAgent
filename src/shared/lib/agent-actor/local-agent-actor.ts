@@ -1,5 +1,4 @@
 import type { containerHost } from '@shared/lib/container/container-host'
-import type { messagePersister } from '@shared/lib/container/message-persister'
 import type { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
 import type { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
@@ -17,7 +16,10 @@ import type {
 } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { HostPort } from './host-port'
-import { runComputerUse, runScript, type HostRunActor } from './host-runs'
+import { runComputerUse, runScript } from './host-runs'
+import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
+import type { SessionEvent } from './live/session-channel'
+import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
@@ -55,7 +57,6 @@ import type {
  */
 export interface LocalActorDeps {
   readonly containerHost: typeof containerHost
-  readonly messagePersister: typeof messagePersister
   readonly userInputRequestManager: typeof userInputRequestManager
   readonly reviewManager: typeof reviewManager
   readonly accountReauthManager: typeof accountReauthManager
@@ -75,6 +76,10 @@ export interface LocalActorDeps {
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
 }
+
+// Dev-only capture of the sessions' frames for fixture replays: one per
+// process, so offsets and snapshot numbers compare across agents.
+const subagentCapture = SubagentCapture.fromEnv()
 
 /**
  * An agent whose container and files are managed by this process.
@@ -97,9 +102,9 @@ export class LocalAgentActor implements AgentActor {
   /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
   readonly store: SessionStore
   /**
-   * What this agent holds in memory: its pending user-input requests, the
-   * reviews and re-auth waits parked on them, its computer-use grants.
-   * Created with the handle and released by `dispose`.
+   * What this agent holds in memory: its live sessions, its pending
+   * user-input requests, the reviews and re-auth waits parked on them, its
+   * computer-use grants. Created with the handle and released by `dispose`.
    */
   readonly state: AgentState
 
@@ -110,26 +115,30 @@ export class LocalAgentActor implements AgentActor {
    */
   constructor(readonly slug: AgentSlug, deps: LocalActorDeps, state?: AgentState) {
     // Every write to a session goes through the store, so this is where the
-    // container's idle clock learns of session activity — the persister's
+    // container's idle clock learns of session activity — the live sessions'
     // stream frames, the transcript appends and `sessions.recordActivity`
     // all record through it.
-    this.store = createLocalSessionStore(slug, deps, {
-      onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
-    })
     this.state =
       state ??
       createAgentState(slug, {
         transitions: deps.userInputRequestManager,
-        // A test double of the persister may not carry the projection; the real one does.
-        syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting?.(slug),
+        sessions: {
+          store: createLocalSessionStore(slug, deps, {
+            onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
+          }),
+          host: deps.host,
+          runtime: createSessionsRuntime(slug, deps),
+          capture: subagentCapture,
+        },
       })
+    this.store = this.state.store
     this.files = this.store.files
     this.memories = createMemoryOps(this.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
-    this.sessions = createSessionOps(slug, this.store, deps)
-    this.messages = createMessageOps(slug, this.store, deps)
-    this.inputs = createInputOps(slug, this.state, deps, this)
+    this.sessions = createSessionOps(slug, this.store, this.state.sessions, deps)
+    this.messages = createMessageOps(slug, this.store, this.state.sessions, deps)
+    this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
   }
 
@@ -178,7 +187,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
   }
 }
 
-function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActorDeps): SessionOps {
+function createSessionOps(slug: AgentSlug, store: SessionStore, live: LiveSessions, deps: LocalActorDeps): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
@@ -221,54 +230,51 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     deleteLive: (sessionId) => client().deleteSession(sessionId),
     warm: (sessionId) => client().warmSession(sessionId),
 
-    activity: (sessionId) => deps.messagePersister.getSessionActivity(slug, sessionId),
-    isActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
-    isAwaitingInput: (sessionId) => deps.messagePersister.isSessionAwaitingInput(slug, sessionId),
-    markActive: (sessionId) => deps.messagePersister.markSessionActive(slug, sessionId),
-    markProvisionalActive: (sessionId) => deps.messagePersister.markSessionProvisionallyActive(slug, sessionId),
+    activity: (sessionId) => live.activity(sessionId),
+    isActive: (sessionId) => live.isActive(sessionId),
+    isAwaitingInput: (sessionId) => live.isAwaitingInput(sessionId),
+    markActive: (sessionId) => live.markActive(sessionId),
+    markProvisionalActive: (sessionId) => live.markProvisionallyActive(sessionId),
     markIdle: (sessionId) => {
       // Going idle is the last moment the session was busy.
       deps.containerHost.runtime(slug).noteSessionActivity()
-      deps.messagePersister.markSessionIdle(slug, sessionId)
+      live.markIdle(sessionId)
     },
-    markInterrupted: (...args) => deps.messagePersister.markSessionInterrupted(slug, ...args),
-    turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
-    turnOutcome: (sessionId) => deps.messagePersister.getSessionTurnOutcome(slug, sessionId),
-    isWaitingBackground: (sessionId) => deps.messagePersister.isSessionWaitingBackground(slug, sessionId),
-    hasOnlyUntrackedBackgroundWork: (sessionId) =>
-      deps.messagePersister.hasOnlyUntrackedBackgroundWork(slug, sessionId),
+    markInterrupted: (sessionId, options) => live.markInterrupted(sessionId, options),
+    turnGeneration: (sessionId) => live.turnGeneration(sessionId),
+    turnOutcome: (sessionId) => live.turnOutcome(sessionId),
+    isWaitingBackground: (sessionId) => live.isWaitingBackground(sessionId),
+    hasOnlyUntrackedBackgroundWork: (sessionId) => live.hasOnlyUntrackedBackgroundWork(sessionId),
     stopTask: (sessionId, taskId) => client().stopTask(sessionId, taskId),
-    waitForIdle: (...args) => deps.messagePersister.waitForIdle(slug, ...args),
-    activeIds: () => deps.messagePersister.getActiveSessionIdsForAgent(slug),
-    hasActive: () => deps.messagePersister.hasActiveSessionsForAgent(slug),
-    hasAwaitingInput: () => deps.messagePersister.hasSessionsAwaitingInputForAgent(slug),
-    markAllInactive: (...args) => deps.messagePersister.markAllSessionsInactiveForAgent(slug, ...args),
-    syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting(slug),
-    broadcastUpdate: (sessionId) => deps.messagePersister.broadcastSessionUpdate(slug, sessionId),
-    recoverAwaitingInput: (sessionId, unresolved) =>
-      deps.messagePersister.recoverSessionAwaitingInput(slug, sessionId, unresolved),
-    promoteAutomated: (...args) => deps.messagePersister.promoteAutomatedSession(slug, ...args),
-    grantCapability: (sessionId, capability) =>
-      deps.messagePersister.grantSessionCapability(slug, sessionId, capability),
-    slashCommands: (sessionId) => deps.messagePersister.getSlashCommands(slug, sessionId),
-    setSlashCommands: (sessionId, commands) => deps.messagePersister.setSlashCommands(slug, sessionId, commands),
-    backgroundTasks: (sessionId) => deps.messagePersister.getActiveBackgroundTasks(slug, sessionId),
-    activeSubagents: (sessionId) => deps.messagePersister.getActiveSubagents(slug, sessionId),
+    waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
+    activeIds: () => live.activeIds(),
+    hasActive: () => live.hasActive(),
+    hasAwaitingInput: () => live.hasAwaitingInput(),
+    markAllInactive: (options) => live.markAllInactive(options),
+    syncAwaiting: () => live.syncAwaiting(),
+    broadcastUpdate: (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
+    recoverAwaitingInput: (sessionId, unresolved) => live.recoverAwaitingInput(sessionId, unresolved),
+    promoteAutomated: (sessionId, metadata) => live.promoteAutomated(sessionId, metadata),
+    grantCapability: (sessionId, capability) => live.grantCapability(sessionId, capability),
+    slashCommands: (sessionId) => live.slashCommands(sessionId),
+    setSlashCommands: (sessionId, commands) => live.setSlashCommands(sessionId, commands),
+    backgroundTasks: (sessionId) => live.backgroundTasks(sessionId),
+    activeSubagents: (sessionId) => live.activeSubagents(sessionId),
 
     subscribeStream: (sessionId, containerSessionId, ...metadata) =>
-      deps.messagePersister.subscribeToSession(slug, sessionId, client(), containerSessionId, ...metadata),
-    unsubscribeStream: (sessionId) => deps.messagePersister.unsubscribeFromSession(slug, sessionId),
-    isStreamSubscribed: (sessionId) => deps.messagePersister.isSubscribed(slug, sessionId),
+      live.subscribe(sessionId, client(), containerSessionId, ...metadata),
+    unsubscribeStream: (sessionId) => live.unsubscribe(sessionId),
+    isStreamSubscribed: (sessionId) => live.isSubscribed(sessionId),
   }
 }
 
-function createMessageOps(slug: AgentSlug, store: SessionStore, deps: LocalActorDeps): MessageOps {
+function createMessageOps(slug: AgentSlug, store: SessionStore, live: LiveSessions, deps: LocalActorDeps): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     send: (...args) => client().sendMessage(...args),
     cancelQueued: (sessionId, uuid) => client().cancelQueuedMessage(sessionId, uuid),
     interrupt: (...args) => client().interruptSession(...args),
-    withSend: (sessionId, send) => deps.messagePersister.withSessionSend(slug, sessionId, client(), send),
+    withSend: (sessionId, send) => live.withSend(sessionId, client(), send),
 
     list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
@@ -283,16 +289,14 @@ function createMessageOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
     media: (...args) => deps.transcripts.openMedia(store, ...args),
 
-    subscribe: (sessionId, listener) => deps.messagePersister.addSSEClient(slug, sessionId, listener),
-    broadcastEvent: (sessionId, data) => deps.messagePersister.broadcastSessionEvent(slug, sessionId, data),
-    coalesceIfRecovering: (sessionId, message) =>
-      deps.messagePersister.coalesceIfRecovering(slug, sessionId, message),
-    dropCoalescedUserMessage: (sessionId, uuid) =>
-      deps.messagePersister.dropCoalescedUserMessage(slug, sessionId, uuid),
+    subscribe: (sessionId, listener) => live.listen(sessionId, listener),
+    broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
+    coalesceIfRecovering: (sessionId, message) => live.coalesceIfRecovering(sessionId, message),
+    dropCoalescedUserMessage: (sessionId, uuid) => live.dropCoalesced(sessionId, uuid),
   }
 }
 
-function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps, actor: HostRunActor): InputOps {
+function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): InputOps {
   const requests = state.inputRequests
   return {
     register: (input) => requests.register(input),
@@ -306,14 +310,14 @@ function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps
     snapshot: (sessionId) => requests.getSnapshotForScope(sessionId),
     enrich: (id, kind, enrichment) => requests.enrichOpenRequestPayload(id, kind, enrichment),
 
-    complete: (sessionId, toolUseId, outcome) =>
-      deps.messagePersister.completeInputRequest(slug, sessionId, toolUseId, outcome),
-    completeCapabilityReview: (...args) => deps.messagePersister.completeCapabilityReview(slug, ...args),
-    cancelAwaiting: (sessionId) => deps.messagePersister.cancelAwaitingInput(slug, sessionId),
-    settled: (sessionId) => deps.messagePersister.getSettledInputRequests(slug, sessionId),
+    complete: (sessionId, toolUseId, outcome) => state.sessions.completeRequest(sessionId, toolUseId, outcome),
+    completeCapabilityReview: (sessionId, toolUseId, outcome) =>
+      state.sessions.completeCapabilityReview(sessionId, toolUseId, outcome),
+    cancelAwaiting: (sessionId) => state.sessions.cancelAwaitingInput(sessionId),
+    settled: (sessionId) => state.sessions.settledRequests(sessionId),
 
     reviews: createReviewOps(slug, deps),
-    computerUse: createComputerUseOps(slug, state, deps, actor),
+    computerUse: createComputerUseOps(state, deps),
     mcpReauth: createMcpReauthOps(slug, deps),
     accountReauth: createAccountReauthOps(slug, deps),
   }
@@ -341,7 +345,7 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   }
 }
 
-function createComputerUseOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps, actor: HostRunActor): ComputerUseOps {
+function createComputerUseOps(state: AgentState, deps: LocalActorDeps): ComputerUseOps {
   const computerUse = state.computerUse
   return {
     grabbedApp: () => computerUse.grabbed(),
@@ -350,9 +354,25 @@ function createComputerUseOps(slug: AgentSlug, state: AgentState, deps: LocalAct
     grant: (...args) => computerUse.grant(...args),
     consumeOnce: (...args) => computerUse.consumeOnce(...args),
     revokeGrant: (...args) => computerUse.revoke(...args),
-    clearPending: (...args) => deps.messagePersister.clearPendingComputerUseRequest(slug, ...args),
-    run: (run) => runComputerUse(actor, deps.host, run),
-    runScript: (run) => runScript(actor, deps.host, run),
+    clearPending: (...args) => state.sessions.clearComputerUseRequest(...args),
+    run: (run) => runComputerUse(state.hostRuns, deps.host, run),
+    runScript: (run) => runScript(state.hostRuns, deps.host, run),
+  }
+}
+
+/** The agent's container runtime, as its live sessions reach it. */
+function createSessionsRuntime(slug: AgentSlug, deps: LocalActorDeps): SessionsRuntime {
+  const runtime = () => deps.containerHost.runtime(slug)
+  return {
+    client: () => runtime().getClient(),
+    fatalResult: (client, kind) => runtime().fatalResult(client, kind),
+    unexpectedDeath: (sessionId) => runtime().handleUnexpectedDeath(sessionId ? [sessionId] : undefined),
+    stopAfterFatalError: () => {
+      console.log(`[LocalAgentActor] Stopping container for ${slug} after a fatal error`)
+      runtime()
+        .stopContainer()
+        .catch((err) => console.error(`[LocalAgentActor] Failed to stop container for ${slug}:`, err))
+    },
   }
 }
 

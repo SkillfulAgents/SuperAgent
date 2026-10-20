@@ -100,25 +100,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
-      return send()
-    },
-    isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false),
-    hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
-    markSessionActive: vi.fn(),
-    setSlashCommands: vi.fn(),
-    broadcastSessionUpdate: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { getPendingReviewsForAgent: vi.fn(() => []) },
 }))

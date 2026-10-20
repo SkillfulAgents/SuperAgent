@@ -3,8 +3,9 @@
  *
  * Lives next to register/delete rather than in the route so the rollback
  * (register fails → host delete + container delete) is one call. Kept out of
- * session-service.ts because this path talks to the container and the
- * persister, and session-service is already in that import graph.
+ * session-service.ts because this path talks to the container and the live
+ * sessions through the agent's actor, and session-service is already in that
+ * import graph.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'

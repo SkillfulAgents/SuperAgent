@@ -16,16 +16,15 @@ const send = vi.fn()
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => true }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => currentUserId }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    syncAgentSessionsAwaiting: vi.fn(), getActiveSessionIdsForAgent: () => activeSessions(),
-    isSessionActive: () => true, getTurnGeneration: () => 3, markSessionInterrupted: vi.fn(),
-    withSessionSend: async (_agent: string, _session: string, _client: unknown, deliver: () => Promise<void>) => deliver(),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    activeIds: () => activeSessions(), isActive: () => true, turnGeneration: () => 3,
+  }),
 }))
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
     attachAgentWorkspaces: () => {},
+    attachAgentSessions: () => {},
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),

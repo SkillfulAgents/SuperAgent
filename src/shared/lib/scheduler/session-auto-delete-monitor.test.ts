@@ -40,11 +40,11 @@ vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    isSessionActive: (agentSlug: string, id: string) => mockIsSessionActive(agentSlug, id),
-    unsubscribeFromSession: (agentSlug: string, id: string) => mockUnsubscribeFromSession(agentSlug, id),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (agentSlug, id) => mockIsSessionActive(agentSlug, id),
+    unsubscribe: (agentSlug, id) => mockUnsubscribeFromSession(agentSlug, id),
+  }),
 }))
 
 const mockListSessionIdsWithPendingWakes = vi.fn((_slug: string) =>

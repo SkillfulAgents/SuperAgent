@@ -54,13 +54,13 @@ const mockMarkSessionActive = vi.fn()
 const mockIsSessionActive = vi.fn()
 const mockIsSessionAwaitingInput = vi.fn()
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-    isSessionActive: (...args: unknown[]) => mockIsSessionActive(...args),
-    isSessionAwaitingInput: (...args: unknown[]) => mockIsSessionAwaitingInput(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+    isActive: (...args) => mockIsSessionActive(...args),
+    isAwaitingInput: (...args) => mockIsSessionAwaitingInput(...args),
+  }),
 }))
 
 const mockTriggerScheduledSessionStarted = vi.fn()

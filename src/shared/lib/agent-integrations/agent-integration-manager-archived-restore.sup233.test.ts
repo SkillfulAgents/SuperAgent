@@ -9,8 +9,8 @@ vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testi
  *
  * This drives the real restore path (addIntegration -> connectIntegration ->
  * restore loop) against an in-memory DB seeded with one active and one archived
- * session, and asserts `messagePersister.addSSEClient` is wired only for the
- * active session. It also covers the new active-only listing helper directly.
+ * session, and asserts a listener (`LiveSessions.listen`) is wired only for
+ * the active session. It also covers the new active-only listing helper directly.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -86,11 +86,7 @@ import {
   listAgentIntegrationSessions,
   listActiveAgentIntegrationSessions,
 } from '@shared/lib/services/agent-integration-session-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
-
-// The registry attaches the real stores; these tests drive the persister alone.
-messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
+import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
 
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
   beforeEach(async () => {
@@ -137,14 +133,14 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     }))
     await archiveAgentIntegrationSession(archivedRowId)
 
-    const addSSEClient = vi
-      .spyOn(messagePersister, 'addSSEClient')
+    const listen = vi
+      .spyOn(LiveSessions.prototype, 'listen')
       .mockReturnValue(() => {})
 
     // Drives connectIntegration -> restore loop.
     await agentIntegrationManager.addIntegration(integrationId)
 
-    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[1])
+    const subscribedSessionIds = listen.mock.calls.map((c) => c[0])
     expect(subscribedSessionIds).toContain('active-agent-session')
     expect(subscribedSessionIds).not.toContain('archived-agent-session')
   })

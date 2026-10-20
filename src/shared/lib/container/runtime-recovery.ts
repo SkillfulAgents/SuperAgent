@@ -5,7 +5,7 @@ import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from
 
 // Session lifecycle here: active --(unexpected death)--> isRecovering --> either
 // markRecovered (resume prompt sent, turn continues) or settleRecoveringSessions
-// (today's session_error). Flags live in message-persister; this module only orchestrates.
+// (today's session_error). Flags live in the agent's live sessions; this module only orchestrates.
 
 export type RuntimeRecoveryDeps = {
   agentId: string

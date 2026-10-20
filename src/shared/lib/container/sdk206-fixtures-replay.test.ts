@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+import { attachLiveSessionsHarness, createStreamClient } from '@shared/lib/agent-actor/testing/live-sessions-harness'
 import * as path from 'path'
 import { promises as fs } from 'fs'
-import type { ContainerClient, StreamMessage } from './types'
+import type { StreamMessage } from './types'
 
 // Replay of real SUPERAGENT_CAPTURE_DIR captures taken on claude-agent-sdk
 // 0.3.206 / CLI 2.1.206 (the sdk206-* fixtures). These are the first captures
@@ -12,10 +12,10 @@ import type { ContainerClient, StreamMessage } from './types'
 //   - result.terminal_reason (present on EVERY result, success included)
 //   - the background-BY-DEFAULT subagent shape (Agent tool without run_in_background)
 //   - task_started/task_notification for FOREGROUND Bash too (new CLI behavior),
-//     which is why these tests derive "background" from the persister's own
+//     which is why these tests derive "background" from the live sessions' own
 //     background_task_started SSE rather than from raw task_* frames.
 //
-// The persister does not consume the new frames yet — these tests lock the
+// The sessions did not consume the new frames yet — these tests lock the
 // derived-SSE contract on the new stream shapes BEFORE the bookkeeping
 // refactors (background_tasks_changed authority swap, command_lifecycle ghost
 // states) so those changes must keep every assertion here green.
@@ -119,40 +119,9 @@ async function loadFixture(fixtureName: string): Promise<{
   return { meta, streamEntries }
 }
 
-// ----- Mock container client -----
+// ----- The agent's live sessions, over test doubles -----
 
-function createReplayClient(): {
-  client: ContainerClient
-  send: (message: StreamMessage) => void
-} {
-  let callback: ((message: StreamMessage) => void) | null = null
-  const client = {
-    subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
-      callback = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    start: vi.fn(),
-    stop: vi.fn(),
-    stopSync: vi.fn(),
-    getInfoFromRuntime: vi.fn(),
-    getInfo: vi.fn(),
-    fetch: vi.fn(),
-    waitForHealthy: vi.fn(),
-    isHealthy: vi.fn(),
-    getStats: vi.fn(),
-    createSession: vi.fn(),
-    getSession: vi.fn(() => Promise.resolve(null)),
-    deleteSession: vi.fn(),
-    sendMessage: vi.fn(),
-    interruptSession: vi.fn(),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as ContainerClient
-  return {
-    client,
-    send: (m) => callback?.(m),
-  }
-}
+const live = attachLiveSessionsHarness()
 
 // ----- Tracked replay -----
 
@@ -180,28 +149,21 @@ async function replayTracked(fixtureName: string): Promise<{
 }> {
   const { meta, streamEntries } = await loadFixture(fixtureName)
 
-  vi.resetModules()
-  const { messagePersister } = await import('./message-persister')
-  // The registry attaches the real stores; this test drives the persister alone.
-  messagePersister.attachSessionStores(createInMemorySessionStore)
-  const { client, send } = createReplayClient()
-
-  const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
-    sseEvents.push(data as Record<string, unknown>)
-  })
+  const sessions = live.sessions(meta.agentSlug)
+  const client = createStreamClient()
+  const { events: sseEvents, stop } = live.collect(meta.agentSlug, meta.sessionId)
 
   // The turn-starting user message predates the capture window; the idle
   // handler's gates are keyed on isActive.
   if (meta.startActive) {
-    messagePersister.markSessionActive(meta.agentSlug, meta.sessionId)
+    sessions.markActive(meta.sessionId)
   }
-  await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+  await sessions.subscribe(meta.sessionId, client, meta.sessionId)
 
   const timeline: ReplaySnapshot[] = []
   for (let i = 0; i < streamEntries.length; i++) {
     const entry = streamEntries[i]
-    send(entry.message)
+    client.emit(entry.message.content)
     await new Promise((r) => setImmediate(r))
 
     const c = (entry.message?.content ?? {}) as Record<string, unknown>
@@ -211,7 +173,7 @@ async function replayTracked(fixtureName: string): Promise<{
       type: c['type'] as string | undefined,
       subtype: c['subtype'] as string | undefined,
       state: c['state'] as string | undefined,
-      isActive: messagePersister.isSessionActive(meta.agentSlug, meta.sessionId),
+      isActive: sessions.isActive(meta.sessionId),
       bgStartedIds: sseEvents.filter((e) => e['type'] === 'background_task_started').map((e) => e['taskId'] as string),
       bgCompletedIds: sseEvents.filter((e) => e['type'] === 'background_task_completed').map((e) => e['taskId'] as string),
       sessionIdleCount: sseEvents.filter((e) => e['type'] === 'session_idle').length,
@@ -220,8 +182,8 @@ async function replayTracked(fixtureName: string): Promise<{
   }
 
   await new Promise((r) => setTimeout(r, 50))
-  cleanup()
-  messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
+  stop()
+  sessions.unsubscribe(meta.sessionId)
 
   return { meta, streamEntries, sseEvents, timeline }
 }
@@ -283,6 +245,7 @@ function prematureIdleSnapshots(timeline: ReplaySnapshot[]): ReplaySnapshot[] {
 
 describe('sdk 0.3.206 capture replays', () => {
   afterEach(() => {
+    live.reset()
     vi.clearAllMocks()
   })
 
@@ -296,7 +259,7 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(started).toHaveLength(2)
 
       // The SDK fired idle at turn-end while both tasks were running; the
-      // persister must have answered with session_waiting_background, not
+      // session must have answered with session_waiting_background, not
       // finalization.
       expect(prematureIdleSnapshots(timeline).length).toBeGreaterThanOrEqual(1)
       const fin = finalSnapshot(timeline)
@@ -553,7 +516,7 @@ describe('sdk 0.3.206 capture replays', () => {
 })
 
 // SDK 0.3.296 / CLI 2.1.296 captures (capture-fixtures.mjs in the
-// update-claude-deps skill). Two shape changes the persister must absorb:
+// update-claude-deps skill). Two shape changes the live sessions must absorb:
 //   - a finishing task leaves background_tasks_changed AFTER its task_updated
 //     and task_notification (it led them up to 2.1.284);
 //   - a subagent's own background Bash is listed in the lead snapshot with
@@ -574,6 +537,7 @@ describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
   const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
 
   afterEach(() => {
+    live.reset()
     vi.clearAllMocks()
   })
 
@@ -604,25 +568,20 @@ describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
     )
     expect(snapshotIndex).toBeGreaterThanOrEqual(0)
 
-    vi.resetModules()
-    const { messagePersister } = await import('./message-persister')
-    messagePersister.attachSessionStores(createInMemorySessionStore)
-    const { client, send } = createReplayClient()
-    const events: Array<Record<string, unknown>> = []
-    const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, data => {
-      events.push(data as Record<string, unknown>)
-    })
+    const sessions = live.sessions(meta.agentSlug)
+    const client = createStreamClient()
+    const { events, stop } = live.collect(meta.agentSlug, meta.sessionId)
     const deliver = async (message: StreamMessage) => {
-      send(message)
+      client.emit(message.content)
       await new Promise<void>(resolve => setImmediate(resolve))
     }
     try {
-      messagePersister.markSessionActive(meta.agentSlug, meta.sessionId)
+      sessions.markActive(meta.sessionId)
       if (host === 'reattached') {
-        await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+        await sessions.subscribe(meta.sessionId, client, meta.sessionId)
         for (const entry of streamEntries.slice(0, attachIndex + 1)) await deliver(entry.message)
       }
-      await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+      await sessions.subscribe(meta.sessionId, client, meta.sessionId)
       // The real container handshake sends current background membership,
       // not the old Agent launch, async ack, or task_started frames.
       await deliver({
@@ -647,12 +606,12 @@ describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
       expect(events.filter(e => e['type'] === 'subagent_completed')).toEqual([
         expect.objectContaining({ parentToolId, agentId }),
       ])
-      expect(messagePersister.getActiveSubagents(meta.agentSlug, meta.sessionId)).toContainEqual(
+      expect(sessions.activeSubagents(meta.sessionId)).toContainEqual(
         expect.objectContaining({ parentToolId, agentId, status: 'completed' })
       )
     } finally {
-      cleanup()
-      messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
+      stop()
+      sessions.unsubscribe(meta.sessionId)
     }
   })
 
@@ -671,7 +630,7 @@ describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
 
   it('a task the snapshot drops after its completed signal is retired by that snapshot', async () => {
     // The trailing-snapshot order: completed arrives while the snapshot still
-    // lists the task (the persister holds it), then the next frame drops it.
+    // lists the task (the sessions hold it), then the next frame drops it.
     // The row must end by that frame, not linger to some later one.
     const { streamEntries, sseEvents } = await replayTracked(`${sdk}-bg-bash-premature-idle`)
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)

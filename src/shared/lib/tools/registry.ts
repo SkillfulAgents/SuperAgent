@@ -2,7 +2,7 @@
  * Tool definition registry.
  *
  * Maps tool names to their definitions. Usable from both backend
- * (MessagePersister, AgentIntegrationManager) and renderer.
+ * (the agents' live sessions, AgentIntegrationManager) and renderer.
  */
 
 import type { AnyRequestDefinition, RequestDefinition } from './requests/definition'

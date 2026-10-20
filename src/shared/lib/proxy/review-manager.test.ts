@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
 import { requestBodyPreview } from './review-display'
@@ -23,18 +23,17 @@ function attachAgents(manager: ReviewManager) {
 
 /**
  * What the UI actually sees when a review opens or settles: the registry
- * transition, which the persister turns into user_request_created /
+ * transition, which the agent's live sessions turn into user_request_created /
  * user_request_resolved. ReviewManager has no announcement channel of its own.
+ * Every store reports its transitions to the router first.
  */
-const transitions: UserInputRequestTransition[] = []
-let stopRecording: (() => void) | undefined
+let reported: MockInstance<(transition: UserInputRequestTransition) => void>
 function recordTransitions() {
-  transitions.length = 0
-  stopRecording?.()
-  stopRecording = userInputRequestManager.onTransition((t) => transitions.push(t))
+  reported = vi.spyOn(userInputRequestManager, 'report')
 }
-const created = () => transitions.filter((t) => t.type === 'created')
-const resolved = () => transitions.filter((t) => t.type === 'resolved')
+const transitions = () => reported.mock.calls.map(([t]) => t)
+const created = () => transitions().filter((t) => t.type === 'created')
+const resolved = () => transitions().filter((t) => t.type === 'resolved')
 
 describe('ReviewManager', () => {
   let manager: ReviewManager
@@ -50,7 +49,7 @@ describe('ReviewManager', () => {
   afterEach(() => {
     manager.rejectAll()
     agents.reset()
-    stopRecording?.()
+    vi.restoreAllMocks()
     vi.useRealTimers()
   })
 

@@ -114,22 +114,6 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
@@ -169,7 +153,6 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
-import { messagePersister } from './message-persister'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { createFakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 

@@ -223,23 +223,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastSessionUpdate: vi.fn(),
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false),
-    hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
-    unsubscribeFromSession: vi.fn(),
-    markSessionActive: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-  },
-}))
-
 // agentExists gates `/:id/*` routes — must resolve true so the request reaches
 // the download handler.
 vi.mock('@shared/lib/services/agent-service', () => ({

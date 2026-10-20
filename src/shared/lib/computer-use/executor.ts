@@ -2,7 +2,7 @@
  * Computer Use Executor
  *
  * Wraps the @skillful-agents/agent-computer SDK to execute commands on the host machine.
- * Used by both the message-persister (auto-execute path) and the API endpoint.
+ * Reached through the host port (see host/local-host-port.ts) for both the auto-execute path and the API endpoint.
  */
 
 import { AC, formatOutput } from '@skillful-agents/agent-computer'

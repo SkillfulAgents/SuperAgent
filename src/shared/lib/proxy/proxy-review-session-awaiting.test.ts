@@ -5,22 +5,17 @@
  * concurrent secret/question wait.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
-
-// The registry attaches the real stores; these tests drive the persister alone.
-messagePersister.attachSessionStores(createInMemorySessionStore)
-import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
+import { attachLiveSessionsHarness } from '@shared/lib/agent-actor/testing/live-sessions-harness'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { ReviewManager } from './review-manager'
 
-// Likewise the actors' in-memory stores (requests, reviews), which the
-// persister and the review manager route to.
-const agents = attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
+// The actors' in-memory state (requests, reviews, live sessions), which the
+// review manager routes to; the sessions' global feed is the recording host.
+const live = attachLiveSessionsHarness()
 
 const SESSION_ID = 'proxy-review-awaiting-session'
 const AGENT_SLUG = 'proxy-review-awaiting-agent'
+const sessions = () => live.sessions(AGENT_SLUG)
 
 function reviewDetails() {
   return {
@@ -40,21 +35,21 @@ describe('proxy review session awaiting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     manager = new ReviewManager()
-    manager.attachAgents(agents.pick((state) => state.reviews))
-    messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+    manager.attachAgents(live.agents.pick((state) => state.reviews))
+    sessions().markActive(SESSION_ID)
   })
 
   afterEach(() => {
     manager.rejectAll()
-    agents.reset()
+    live.reset()
     vi.useRealTimers()
   })
 
   it('marks activity awaiting while a review is pending', async () => {
     const promise = manager.requestReview(reviewDetails())
     expect(manager.getPendingReviewsForAgent(AGENT_SLUG)).toHaveLength(1)
-    expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
-    expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
+    expect(sessions().activity(SESSION_ID)).toBe('awaiting')
 
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
     manager.submitDecision(id, 'deny', AGENT_SLUG)
@@ -63,32 +58,26 @@ describe('proxy review session awaiting', () => {
 
   it('clears awaiting on allow when nothing else is waiting', async () => {
     const promise = manager.requestReview(reviewDetails())
-    expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
+    expect(sessions().activity(SESSION_ID)).toBe('awaiting')
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
     manager.submitDecision(id, 'allow', AGENT_SLUG)
     await promise
-    expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
-    expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('working')
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
+    expect(sessions().activity(SESSION_ID)).toBe('working')
   })
 
   it('clears awaiting on timeout and announces the settlement', async () => {
-    const globalEvents: Array<Record<string, unknown>> = []
-    const unsub = globalFeed.subscribe((e) => {
-      globalEvents.push(e as Record<string, unknown>)
-    })
-
     const promise = manager.requestReview(reviewDetails())
-    expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
+    expect(sessions().activity(SESSION_ID)).toBe('awaiting')
 
     vi.advanceTimersByTime(5 * 60 * 1000)
     await expect(promise).rejects.toThrow('Review timeout')
-    expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
 
-    const resolved = globalEvents.filter(
-      (e) => e.type === 'user_request_resolved' && e.outcome === 'timeout',
-    )
+    const resolved = live.host
+      .sent('global')
+      .filter((e) => e.type === 'user_request_resolved' && e.outcome === 'timeout')
     expect(resolved.length).toBeGreaterThanOrEqual(1)
-    unsub()
   })
 
   it('keeps awaiting when a second review is still pending after the first resolves', async () => {
@@ -97,17 +86,17 @@ describe('proxy review session awaiting', () => {
     const [r1, r2] = manager.getPendingReviewsForAgent(AGENT_SLUG)
     manager.submitDecision(r1.id, 'allow', AGENT_SLUG)
     await p1
-    expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
+    expect(sessions().activity(SESSION_ID)).toBe('awaiting')
     manager.submitDecision(r2.id, 'deny', AGENT_SLUG)
     await p2.catch(() => {})
-    expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
   })
 
   it('does not clear awaiting when a blocking input request is still open', async () => {
     const promise = manager.requestReview(reviewDetails())
-    expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
-    // Park a secret request the way the persister's handlers do — awaiting
+    // Park a secret request the way the session's tool calls do — awaiting
     // derives from the registry entry.
     userInputRequestManager.register({
       id: 'secret-1',
@@ -122,8 +111,8 @@ describe('proxy review session awaiting', () => {
     manager.submitDecision(id, 'deny', AGENT_SLUG)
     await promise.catch(() => {})
 
-    expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
-    expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('awaiting')
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
+    expect(sessions().activity(SESSION_ID)).toBe('awaiting')
 
     userInputRequestManager.resolve('secret-1', 'cancelled')
   })

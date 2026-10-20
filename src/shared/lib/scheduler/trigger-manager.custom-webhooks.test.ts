@@ -39,11 +39,8 @@ vi.mock('@shared/lib/config/settings', () => ({
   }),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    subscribeToSession: vi.fn(),
-    markSessionActive: vi.fn(),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(),
 }))
 
 vi.mock('@shared/lib/notifications/notification-manager', () => ({

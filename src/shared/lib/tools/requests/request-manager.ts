@@ -21,16 +21,15 @@ export type { SettledUserInputRequest, UserInputRequestTransition } from './agen
  * The requests themselves live in each agent's `AgentInputRequests`, owned by
  * its actor. This singleton holds only what spans agents: the index from
  * request id to the agents holding it open (so a call that arrives with a
- * bare id finds a store), the transition listeners (the single feed for the
- * unified wire events), and the process-wide sweeps. Every store reports its
- * transitions here, which is what keeps the index current.
+ * bare id finds a store) and the process-wide sweeps. Every store reports its
+ * transitions here, which is what keeps the index current; the agent's own
+ * live sessions put them on the wire.
  *
  * An id can be open in more than one agent's store: a session cloned into
  * another agent replays the tool-use ids of its source. So every id-addressed
- * method takes the agent when the caller knows it — the persister always
- * does — and only that agent's store is consulted. A bare id is answered by
- * the agent that registered it first and still holds it, which is what the
- * one global store used to answer.
+ * method takes the agent when the caller knows it, and only that agent's
+ * store is consulted. A bare id is answered by the agent that registered it
+ * first and still holds it, which is what the one global store used to answer.
  *
  * The slug-addressed methods dispatch to that agent's store; the agent's
  * actor calls its store directly. A read for an agent that has no handle
@@ -41,8 +40,6 @@ export class UserInputRequestManager implements UserInputTransitionSink {
 
   /** The agents holding each id open, in the order they registered it. */
   private ownersById = new Map<string, Set<AgentSlug>>()
-
-  private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
   /**
    * Called by the agent registry with the way to each agent's store. The
@@ -71,7 +68,10 @@ export class UserInputRequestManager implements UserInputTransitionSink {
     owners.add(slug)
   }
 
-  /** A store's transition: index it, then fan it out. */
+  /**
+   * A store's transition: keep the id index in step. The agent's own sessions
+   * put the transition on the wire (see `createAgentState`).
+   */
   report(transition: UserInputRequestTransition): void {
     const { id, scope } = transition.request
     const slug = scope.agentSlug
@@ -84,7 +84,6 @@ export class UserInputRequestManager implements UserInputTransitionSink {
         if (owners?.size === 0) this.ownersById.delete(id)
       }
     }
-    this.emitTransition(transition)
   }
 
   /**
@@ -115,26 +114,6 @@ export class UserInputRequestManager implements UserInputTransitionSink {
   /** Settle and remove a request. Idempotent: unknown ids are a no-op (null). */
   resolve(id: string, outcome: UserInputRequestOutcome, agentSlug?: AgentSlug): PendingUserInputRequest | null {
     return this.storeFor(id, agentSlug)?.resolve(id, outcome) ?? null
-  }
-
-  /**
-   * Subscribe to transitions from every agent's store. Listener errors are
-   * swallowed: wire fan-out must never break the mutation path that
-   * triggered it.
-   */
-  onTransition(listener: (transition: UserInputRequestTransition) => void): () => void {
-    this.transitionListeners.add(listener)
-    return () => this.transitionListeners.delete(listener)
-  }
-
-  private emitTransition(transition: UserInputRequestTransition): void {
-    for (const listener of this.transitionListeners) {
-      try {
-        listener(transition)
-      } catch (error) {
-        console.error('[UserInputRequestManager] transition listener failed:', error)
-      }
-    }
   }
 
   /** `AgentInputRequests.resolveIfInStore` on the agent's store. */
@@ -285,10 +264,10 @@ export class UserInputRequestManager implements UserInputTransitionSink {
   }
 }
 
-// Use globalThis to persist across dev-server hot reloads, matching
-// messagePersister and reviewManager — both write through to this registry, and
-// they survive reloads, so the registry must too or a reload would strand their
-// open requests in a stale instance.
+// Use globalThis to persist across dev-server hot reloads, matching the agents'
+// state and reviewManager — the agents' stores report their transitions to this
+// router, and they survive reloads, so the router must too or a reload would
+// strand their open requests in a stale instance.
 const globalForUserInputRequestManager = globalThis as unknown as {
   userInputRequestManager: UserInputRequestManager | undefined
 }

@@ -53,26 +53,26 @@ const mockMarkSessionIdle = vi.fn()
 const mockIsSubscribed = vi.fn()
 const mockCancelAwaitingInput = vi.fn()
 const mockPublishGlobal = vi.fn()
-const mockBroadcastSessionUpdate = vi.fn()
+const mockEmit = vi.fn()
 
 vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    withSend: async (agentSlug, sessionId, _client, send) => {
       mockMarkSessionActive(agentSlug, sessionId)
       try { return await send() }
       catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
     },
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
-    isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
-    cancelAwaitingInput: (...args: unknown[]) => mockCancelAwaitingInput(...args),
-    broadcastSessionUpdate: (...args: unknown[]) => mockBroadcastSessionUpdate(...args),
-  },
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+    markIdle: (...args) => mockMarkSessionIdle(...args),
+    isSubscribed: (...args) => mockIsSubscribed(...args),
+    cancelAwaitingInput: (...args) => mockCancelAwaitingInput(...args),
+    emit: (...args) => mockEmit(...args),
+  }),
 }))
 
 const mockTriggerScheduledSessionStarted = vi.fn()

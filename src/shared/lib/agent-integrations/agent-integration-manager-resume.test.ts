@@ -49,12 +49,6 @@ vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
   markNoticeSent: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    getSessionActivity: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
   addErrorBreadcrumb: vi.fn(),

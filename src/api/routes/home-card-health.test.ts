@@ -13,10 +13,10 @@ vi.mock('./home-agent-scope', () => ({
   getHomeAgentScope: (...args: unknown[]) => mockGetHomeAgentScope(...args),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    isSessionActive: (...args: unknown[]) => mockIsSessionActive(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (slug, sessionId) => mockIsSessionActive(slug, sessionId),
+  }),
 }))
 
 vi.mock('../middleware/auth', () => ({

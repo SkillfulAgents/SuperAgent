@@ -3,7 +3,7 @@
  *
  * The indicator is a self-healing projection of the agent's activity:
  *  - The manager owns a per-session TICK (alive for the SSE subscription, not a
- *    turn). Each tick reads `messagePersister.getSessionActivity(agentSlug, sessionId)` and
+ *    turn). Each tick reads `agentRegistry.get(agentSlug).sessions.activity(sessionId)` and
  *    reconciles the connector. The tick is the ONLY thing that PAINTS, and the
  *    self-healing backstop — a stuck or wrong indicator self-corrects within one
  *    tick because the tick re-reads reality every interval.
@@ -30,13 +30,12 @@ import {
 } from './chat-delivery'
 import { TelegramConnector } from './telegram-connector'
 import { MockChatAgentIntegration } from './mock-connector'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
-
-// The registry attaches the real stores; these tests drive the persister alone.
-messagePersister.attachSessionStores(createInMemorySessionStore)
+import { agentRegistry } from '@shared/lib/agent-actor'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import type { SessionActivity } from '@shared/lib/types/agent'
+
+/** Stand in for the agent's live session activity, which every tick reads through its actor. */
+const spyActivity = () => vi.spyOn(agentRegistry.get('repro-agent').sessions, 'activity')
 
 function makeManaged(connector: ManagedConnector['connector'], chatId: string): ManagedConnector {
   return {
@@ -119,7 +118,7 @@ describe('reconcileIndicator (idempotent paint/clear)', () => {
 })
 
 // ── The per-session tick (pull) ────────────────────────────────────────────────
-// Each tick reads getSessionActivity (spied here) and reconciles. Lifetime is the
+// Each tick reads the session's activity (spied here) and reconciles. Lifetime is the
 // subscription, not the turn — it self-heals and keeps Telegram drafts alive.
 
 describe('per-session indicator tick (pull)', () => {
@@ -128,7 +127,7 @@ describe('per-session indicator tick (pull)', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3)
       expect(connector.workingActivities).toEqual(['working', 'working', 'working'])
@@ -143,7 +142,7 @@ describe('per-session indicator tick (pull)', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3)
       expect(connector.typingIndicators).toEqual([])
@@ -159,7 +158,7 @@ describe('per-session indicator tick (pull)', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      const spy = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      const spy = spyActivity().mockReturnValue('working')
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
       expect(managed.indicatorShown).toBe(true)
@@ -178,7 +177,7 @@ describe('per-session indicator tick (pull)', () => {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       managed.indicatorShown = true // forced stuck (a leaked label)
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
       expect(connector.stoppedWorking).toEqual(['chat-t'])
@@ -194,7 +193,7 @@ describe('per-session indicator tick (pull)', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('streaming')
+      spyActivity().mockReturnValue('streaming')
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 2)
       expect(connector.workingActivities).toEqual([])
@@ -209,7 +208,7 @@ describe('per-session indicator tick (pull)', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
       stopIndicatorTick(managed)
@@ -232,7 +231,7 @@ describe('13-transition acceptance', () => {
   // within a tick, and at most ONE self-healing 'Working…' if idle lags a full tick." This
   // kills the OLD deterministic every-turn flash + the perpetual re-stamp; a bounded,
   // self-healing ≤1-tick flash can still occur on a lagging settle. These two tests pin
-  // both arms of that — driving getSessionActivity through the REAL working→idle window,
+  // both arms of that — driving the session's activity through the REAL working→idle window,
   // not mocking it to 'idle' up front.
   it('streaming→stop→idle (idle within a tick): no end-of-turn flash', async () => {
     vi.useFakeTimers()
@@ -243,7 +242,7 @@ describe('13-transition acceptance', () => {
       await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' }) // first token clears
       expect(connector.stoppedWorking).toContain('chat-h')
       // idle has already landed by the time the tick samples (message_stop→idle sub-tick).
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
       startIndicatorTick(managed, 'sess-h')
       await processSSEEvent(managed, { type: 'session_idle' })
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3)
@@ -262,7 +261,7 @@ describe('13-transition acceptance', () => {
       managed.indicatorShown = true
       await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' }) // first token clears
       // The reply finished, but idle LAGS: the session still reads 'working' in the gap.
-      const spy = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      const spy = spyActivity().mockReturnValue('working')
       startIndicatorTick(managed, 'sess-h')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS) // a tick fires in the gap → one honest paint
       expect(connector.workingActivities).toEqual(['working']) // ≤1-tick flash, bounded
@@ -283,7 +282,7 @@ describe('13-transition acceptance', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working') // tool work continues
+      spyActivity().mockReturnValue('working') // tool work continues
       startIndicatorTick(managed, 'sess-h')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
       expect(connector.workingActivities).toEqual(['working'])
@@ -299,7 +298,7 @@ describe('13-transition acceptance', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
-      const spy = vi.spyOn(messagePersister, 'getSessionActivity')
+      const spy = spyActivity()
       spy.mockReturnValue('thinking')
       startIndicatorTick(managed, 'sess-h')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
@@ -321,7 +320,7 @@ describe('13-transition acceptance', () => {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       managed.indicatorShown = true
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
       await processSSEEvent(managed, { type: 'session_error', apiErrorCode: 'overloaded_error', isActive: false })
       startIndicatorTick(managed, 'sess-h')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3)
@@ -339,7 +338,7 @@ describe('13-transition acceptance', () => {
     try {
       const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
-      const spy = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('awaiting')
+      const spy = spyActivity().mockReturnValue('awaiting')
       startIndicatorTick(managed, 'sess-h')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
       expect(connector.workingActivities).toEqual([]) // awaiting shows nothing

@@ -109,7 +109,7 @@ export interface MockScenario {
 
 /**
  * Simple text response scenario - streams text in chunks
- * Event format matches what MessagePersister expects from the real container
+ * Event format matches what the host's live sessions expect from the real container
  */
 export class SimpleTextResponseScenario implements MockScenario {
   constructor(private responseText: string) {}
@@ -119,7 +119,7 @@ export class SimpleTextResponseScenario implements MockScenario {
     const finalDelay = 60 + words.length * 5
 
     // Start assistant message - wrapped in stream_event
-    // The content needs a 'type' field that MessagePersister.handleMessage switches on
+    // The content needs a 'type' field that LiveSession.frame switches on
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
@@ -590,7 +590,7 @@ export class SlowCompactionScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     // Echo the turn-starting message first, so its optimistic ghost materializes
-    // before compaction opens. Order matters: the persister ends compaction at
+    // before compaction opens. Order matters: the live session ends compaction at
     // the first user message that follows the compacting status.
     setTimeout(() => {
       client.writeJsonlEntry(sessionId, {
@@ -604,7 +604,7 @@ export class SlowCompactionScenario implements MockScenario {
       })
     }, 10)
 
-    // Well clear of the echo above (the persister ends compaction at the first
+    // Well clear of the echo above (the live session ends compaction at the first
     // user message that FOLLOWS the compacting status) and of any subscribe
     // hand-off: compact_start is one-shot, so a client that is not listening
     // yet never learns compaction began.
@@ -631,7 +631,7 @@ export class SlowCompactionScenario implements MockScenario {
         timestamp: new Date().toISOString(),
       })
       // The summary on the stream is what ends compaction host-side (the
-      // persister clears isCompacting on the first user message after the
+      // live session clears isCompacting on the first user message after the
       // compacting status and broadcasts compact_complete).
       client.emitStreamMessage(sessionId, {
         type: 'user',
@@ -746,7 +746,7 @@ export class DelayedTextResponseScenario implements MockScenario {
  * settings-file hook (e.g. UserPromptSubmit) blocks a prompt: a warning-level
  * `informational` system message with prevent_continuation, then a success
  * result with num_turns 0 and no API time. Crucially, the CLI writes NOTHING
- * to the transcript JSONL for a blocked prompt — the host's message-persister
+ * to the transcript JSONL for a blocked prompt — the host's live session
  * is responsible for persisting the banner.
  */
 export class HookBlockScenario implements MockScenario {
@@ -778,7 +778,7 @@ export class HookBlockScenario implements MockScenario {
 
 /**
  * Tool use scenario - simulates a tool call with result
- * Event format matches what MessagePersister expects from the real container
+ * Event format matches what the host's live sessions expect from the real container
  */
 export class ToolUseScenario implements MockScenario {
   constructor(
@@ -1043,7 +1043,7 @@ export class UserInputRequestScenario implements MockScenario {
       }, delay)
       delay += 10
 
-      // content_block_stop — triggers MessagePersister to detect user input tools
+      // content_block_stop — triggers the live session to detect user input tools
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
@@ -1079,7 +1079,7 @@ export class UserInputRequestScenario implements MockScenario {
         message: { content: assistantContent },
         timestamp: new Date().toISOString(),
       })
-      // Emit the completed assistant message through the stream so MessagePersister
+      // Emit the completed assistant message through the stream so the live session
       // broadcasts `messages_updated` (the real Claude Agent SDK emits this; a direct
       // JSONL write alone does not). Without it, a client that joined after the
       // one-shot `*_request` broadcasts has NO signal to refetch the transcript and
@@ -1244,7 +1244,7 @@ export class SkillSubagentLifecycleScenario implements MockScenario {
  * stays open: the request arrives as a sidechain assistant message
  * (parent_tool_use_id set), not on the main stream. The card must appear AND
  * the agent-level status must flip to awaiting_input — the sidebar/header
- * orange dot reads the persister's awaiting flag, which only the main-stream
+ * orange dot reads the live session's awaiting flag, which only the main-stream
  * path used to set. Replicates the stuck "working" session with an
  * unanswerable browser card.
  */
@@ -1532,8 +1532,8 @@ export class ProxyReviewScenario implements MockScenario {
 /**
  * Mixed cross-store pending requests: two container-side input asks (secret +
  * question) stream in one turn while an agent-scoped proxy review parks in
- * the real ReviewManager. The three waits live in DIFFERENT stores (persister
- * pendingInputRequests × 2, ReviewManager pending × 1), so this scenario
+ * the real ReviewManager. The three waits live in DIFFERENT stores (the agent's
+ * 'stream' requests × 2, its 'review' requests × 1), so this scenario
  * exercises the aggregation no single-store scenario can: the pending-request
  * stack must show all three, and the awaiting indicator must survive until
  * the LAST wait of either store resolves. The review decision deliberately
@@ -1871,8 +1871,8 @@ export class BackgroundBashScenario implements MockScenario {
     // After delay, the background command finishes. The SDK delivers the completion
     // as a `task_updated` state patch (the busy-path shape: the task settled while
     // the agent had moved on, so there is no in-band `task_notification` carrying this
-    // task's id — only a state change). The persister clears the task from this.
-    // See message-persister.ts `task_updated` handling and the
+    // task's id — only a state change). The live session clears the task from this.
+    // See live-session.ts `task_updated` handling and the
     // background-bash-busy-completion replay fixture.
     const notificationDelay = firstResultDelay + this.delayMs
     setTimeout(() => {
@@ -2230,7 +2230,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     // Script type must be valid for the host platform (VALID_SCRIPT_TYPES in
-    // settings.ts) or the persister auto-rejects before the card ever pends.
+    // settings.ts) or the live session auto-rejects before the card ever pends.
     ['ask script', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_script_run',
@@ -2292,7 +2292,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       },
     ])],
     // Capability review scenarios: the streamed Task/Workflow tool_use flows
-    // through the real MessagePersister policy gate (workflows default to
+    // through the real live-session policy gate (workflows default to
     // review, subagents to allow), and the decision route answers via the
     // mock's /inputs resolve/reject just like the real container.
     ['launch workflow', new UserInputRequestScenario([
@@ -2563,7 +2563,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private heldToolResults: Map<string, Array<Record<string, unknown>>> = new Map()
   // toolUseId → parent_tool_use_id for input requests that a SUBAGENT issued.
   // The real SDK returns their tool_results on the sidechain (parent id set),
-  // which the persister routes through handleSidechainMessage — a top-level
+  // which the live session routes through sidechainFrame — a top-level
   // result here would exercise the wrong production path.
   private sidechainToolParents: Map<string, string> = new Map()
 
@@ -3104,7 +3104,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           console.log(`[MockContainerClient] Session ${sessionId}: ${remaining} pending inputs remaining`)
           // The real SDK surfaces each resolved/rejected input as a 'user' message
           // carrying the tool_result block — persisted to the transcript and
-          // streamed so MessagePersister broadcasts `tool_result` to every SSE
+          // streamed so the live session broadcasts `tool_result` to every SSE
           // client (this is what lets other tabs drop the resolved card).
           const toolResultBlocks = [{
             type: 'tool_result',
@@ -3506,8 +3506,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const timer = setTimeout(() => {
         this.queuedSteeringTimers.get(sessionId)?.delete(steeringUuid)
         // The drain signal: the real CLI emits status 'requesting' when it
-        // picks queued messages up — the persister clears its pending-queued
-        // set and broadcasts a refetch on it.
+        // picks queued messages up — the live session broadcasts a refetch
+        // on it.
         this.emitStreamMessage(sessionId, {
           type: 'system',
           content: { type: 'system', subtype: 'status', status: 'requesting' },
@@ -3615,7 +3615,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   /**
    * Stop one background task. Mirrors the real CLI's answer to a stop_task
    * control request: a task_notification of status 'stopped' on the stream,
-   * which is what retires the task in the persister and the UI. The task's
+   * which is what retires the task in the live session and the UI. The task's
    * own scheduled completion becomes a no-op (already cleared).
    */
   async stopTask(sessionId: string, taskId: string): Promise<boolean> {
@@ -3737,7 +3737,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Subscribed to stream for session ${sessionId}`)
 
     // Mirror the real container's WS hello: announce the stream contract
-    // before any relayed message so the persister treats state events as the
+    // before any relayed message so the live session treats state events as the
     // idle authority from the first turn (the mock emits them — see
     // emitSessionState).
     // process_instance is STABLE per session here: the mock never replaces a

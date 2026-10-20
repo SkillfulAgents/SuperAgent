@@ -12,24 +12,14 @@
  * dismiss-on-cancel wiring) is unit-testable without the full container/session harness.
  */
 
-interface AwaitingInputPersister {
-  isSessionAwaitingInput(agentSlug: string, sessionId: string): boolean
-  cancelAwaitingInput(agentSlug: string, sessionId: string): Promise<void>
-}
-
-/**
- * The registry, narrowed to what this decision needs. Reading the open request
- * from here rather than the persister's replay mirror is what keeps chat and
- * the app answering the same question from the same source — the mirror is a
- * legacy store scheduled for deletion, and it holds entries the registry has
- * already settled.
- */
-interface OpenRequestRegistry {
-  getOpenRequestsForSession(agentSlug: string, sessionId: string): Array<{
-    id: string
-    kind: string
-    payload: unknown
-  }>
+/** The chat's session, through its agent's actor, narrowed to what this decision needs. */
+interface AwaitingSession {
+  /** Whether the session waits on the user: the source of truth for every surface. */
+  isAwaitingInput(): boolean
+  /** The session's open requests, from the registry the app answers from too. */
+  openRequests(): Array<{ id: string; kind: string; payload: unknown }>
+  /** Cancel what the session waits on (a no-op when it waits on nothing). */
+  cancelAwaiting(): Promise<void>
 }
 
 interface DismissibleConnector {
@@ -38,8 +28,6 @@ interface DismissibleConnector {
 }
 
 export async function consumeOrCancelAwaitingInput(opts: {
-  sessionId: string
-  agentSlug: string
   chatId: string
   messageText: string
   // The raw user text to resolve an open question with as the "Other" answer. Distinct from
@@ -48,24 +36,23 @@ export async function consumeOrCancelAwaitingInput(opts: {
   // back to messageText when not supplied.
   answerText?: string
   hasFiles: boolean
-  persister: AwaitingInputPersister
-  registry: OpenRequestRegistry
+  session: AwaitingSession
   connector: DismissibleConnector
 }): Promise<boolean> {
-  const { sessionId, agentSlug, chatId, messageText, answerText, hasFiles, persister, registry, connector } = opts
+  const { chatId, messageText, answerText, hasFiles, session, connector } = opts
 
   // A plain-text message during an open single-question card is the free-form "Other" answer:
-  // resolve that question so the same turn continues. isSessionAwaitingInput is the source of
+  // resolve that question so the same turn continues. isAwaitingInput is the source of
   // truth (it reflects taps, cancels, and answers from other surfaces), so we consume the message
   // only on a confirmed live resolve; a non-text message, a multi-question card, or any other
   // awaiting type falls through to cancel.
   const isPlainText = !!messageText.trim() && !hasFiles
-  if (isPlainText && persister.isSessionAwaitingInput(agentSlug, sessionId)) {
+  if (isPlainText && session.isAwaitingInput()) {
     // Recovered stubs are excluded the same way they are excluded from the
     // wire: they carry no renderable payload, so no card was ever posted and
     // there is nothing in this chat for the text to answer.
-    const pendingQuestion = registry
-      .getOpenRequestsForSession(agentSlug, sessionId)
+    const pendingQuestion = session
+      .openRequests()
       .find((r) => r.kind === 'question' && (r.payload as { recovered?: unknown }).recovered !== true)
     if (pendingQuestion) {
       const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.id, answerText ?? messageText)
@@ -76,7 +63,7 @@ export async function consumeOrCancelAwaitingInput(opts: {
   // Not an answer: cancel the pending request so the message starts a fresh turn instead of
   // deadlocking behind the blocked tool (no-op when not awaiting), and strip the now-abandoned
   // card so it does not keep showing live buttons.
-  await persister.cancelAwaitingInput(agentSlug, sessionId)
+  await session.cancelAwaiting()
   await connector.dismissOpenCards(chatId)
   return false
 }

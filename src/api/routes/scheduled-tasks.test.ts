@@ -79,15 +79,15 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-const mockMessagePersister = vi.hoisted(() => ({
-  withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
-  isSessionActive: vi.fn(),
-  subscribeToSession: vi.fn(),
-  markSessionActive: vi.fn(),
-  markSessionIdle: vi.fn(),
+const mockLiveSessions = vi.hoisted(() => ({
+  withSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
+  isActive: vi.fn(),
+  subscribe: vi.fn(),
+  markActive: vi.fn(),
+  markIdle: vi.fn(),
   isSubscribed: vi.fn(() => false),
   cancelAwaitingInput: vi.fn(() => Promise.resolve()),
-  broadcastSessionUpdate: vi.fn(),
+  emit: vi.fn(),
 }))
 
 const mockPublishGlobal = vi.hoisted(() => vi.fn())
@@ -95,8 +95,8 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: { publish: mockPublishGlobal, subscribe: () => () => {} },
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: mockMessagePersister,
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(mockLiveSessions),
 }))
 
 const mockGetEffectiveModels = vi.fn()
@@ -214,7 +214,7 @@ describe('scheduled-tasks route', () => {
       { id: 'session-active', name: 'Active session' },
       { id: 'session-idle', name: 'Idle session' },
     ])
-    mockMessagePersister.isSessionActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
+    mockLiveSessions.isActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -235,7 +235,7 @@ describe('scheduled-tasks route', () => {
     mockUpdateTaskName.mockResolvedValue(true)
   })
 
-  it('returns task sessions with live activity from the message persister', async () => {
+  it("returns task sessions with live activity from the agent's live sessions", async () => {
     const res = await app.request('http://localhost/api/scheduled-tasks/task-1/sessions')
 
     expect(res.status).toBe(200)
@@ -272,13 +272,13 @@ describe('scheduled-tasks route', () => {
       scheduledTaskId: 'task-1',
       scheduledTaskName: 'Daily report',
     })
-    expect(mockMessagePersister.subscribeToSession).toHaveBeenCalledWith(
+    expect(mockLiveSessions.subscribe).toHaveBeenCalledWith(
       'agent-one',
       'container-session-1',
       { createSession: mockCreateSession },
       'container-session-1',
     )
-    expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
+    expect(mockLiveSessions.markActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })

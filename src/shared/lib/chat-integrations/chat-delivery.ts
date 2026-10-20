@@ -338,9 +338,8 @@ export async function processSSEEvent(
     }
 
     case 'user_request_created': {
-      // The one wire chat renders cards from. The legacy per-type events still
-      // fire alongside this one (they die in Phase 8) and are deliberately NOT
-      // handled here — handling both would double-send every card.
+      // The one wire chat renders cards from: every kind of request opens
+      // with this event, so each card is sent exactly once.
       const request = (data as { request?: PendingUserInputRequest }).request
       if (!request) break
       const card = requestCardFromRegistry(request)
@@ -349,7 +348,7 @@ export async function processSSEEvent(
       if (!card) break
 
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
-      // indicator the moment the card is shown (the persister flips isAwaitingInput,
+      // indicator the moment the card is shown (the live session flips isAwaitingInput,
       // so the tick would clear within a tick anyway — this just makes it instant). The
       // tick then sleeps after the lull and re-checks activity at fire time.
       clearIndicator(managed)
