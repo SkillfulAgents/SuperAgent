@@ -304,7 +304,7 @@ function createMessageOps(
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
     appendInformational: (sessionId, entry) => deps.appendInformationalEntry(store, sessionId, entry),
     appendAssistant: (sessionId, text) => deps.appendAssistantEntry(store, sessionId, text),
-    rawEntries: (sessionId) => deps.transcripts.streamRawEntries(store, sessionId),
+    forkedUserUuids: (sessionId) => deps.transcripts.forkedUserUuids(store, sessionId),
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
     media: (...args) => deps.transcripts.openMedia(store, ...args),
 

@@ -224,8 +224,21 @@ async function copiedEntryUuids(store: SessionStore, sourceSessionId: string, ta
   return uuids
 }
 
-export function streamRawEntries(store: SessionStore, sessionId: string): AsyncIterable<unknown> {
-  return streamJsonl(store.files, transcriptPath(store, sessionId))
+/** A user line in a forked transcript: the SDK stamps the old uuid on every copied line. */
+const forkedUserLineSchema = z.object({
+  type: z.literal('user'),
+  uuid: z.string().min(1),
+  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string().min(1) }),
+}).loose()
+
+/** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
+export async function forkedUserUuids(store: SessionStore, sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>> {
+  const pairs: Array<{ newUuid: string; oldUuid: string }> = []
+  for await (const raw of streamJsonl(store.files, transcriptPath(store, sessionId))) {
+    const parsed = forkedUserLineSchema.safeParse(raw)
+    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
+  }
+  return pairs
 }
 
 function isBenignStreamError(error: unknown): boolean {

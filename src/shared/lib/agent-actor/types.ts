@@ -498,8 +498,8 @@ export interface MessageOps {
   appendInformational(sessionId: string, entry: { uuid: string; content: string; level?: string }): Promise<void>
   /** `appendAssistantEntry` (session-transcript-append) — an assistant message delivered out of band, recorded so the transcript shows it. */
   appendAssistant(sessionId: string, text: string): Promise<void>
-  /** `streamJsonlFile` over the transcript — every raw entry, in order. */
-  rawEntries(sessionId: string): AsyncIterable<unknown>
+  /** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
+  forkedUserUuids(sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>>
   /** The transcript file's bytes for the debug view, or null when there is no transcript. */
   rawLog(sessionId: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
