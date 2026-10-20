@@ -464,3 +464,82 @@ describe('scoping does not over-block the caller’s own session', () => {
     expect(victimEvents).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// The session stream on the wire: the real route over the real live sessions.
+// ---------------------------------------------------------------------------
+
+/** An SSE response read frame by frame, as a browser's EventSource would. */
+async function openStream(target: string, headers: Record<string, string> = {}) {
+  const controller = new AbortController()
+  const res = await app().request(target, { method: 'GET', headers, signal: controller.signal })
+  expect(res.status).toBe(200)
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffered = ''
+  return {
+    /** The next frame that is not a keep-alive ping: its id (if any) and parsed data. */
+    async next(): Promise<{ id: string | undefined; data: Record<string, unknown> }> {
+      for (;;) {
+        const end = buffered.indexOf('\n\n')
+        if (end >= 0) {
+          const block = buffered.slice(0, end)
+          buffered = buffered.slice(end + 2)
+          const lines = block.split('\n')
+          const id = lines.find((line) => line.startsWith('id: '))?.slice(4)
+          const data = JSON.parse(lines.filter((line) => line.startsWith('data: ')).map((line) => line.slice(6)).join('\n'))
+          if (data.type !== 'ping') return { id, data }
+          continue
+        }
+        const { value, done } = await reader.read()
+        if (done) throw new Error('stream ended')
+        buffered += decoder.decode(value, { stream: true })
+      }
+    },
+    close: () => controller.abort(),
+  }
+}
+
+describe('the session stream on the wire', () => {
+  const emit = (event: Record<string, unknown>) =>
+    agentRegistry.get(ATTACKER).messages.broadcastEvent(attackerSession, event)
+
+  it('opens with the connected snapshot and numbers every frame after it', async () => {
+    agentRegistry.get(ATTACKER).sessions.markActive(attackerSession)
+    const viewer = await openStream(url(ATTACKER, attackerSession, '/stream'))
+
+    const connected = await viewer.next()
+    expect(connected.data).toMatchObject({ type: 'connected', isActive: true, backgroundTasks: [], activeSubagents: [] })
+    expect(connected.id).toMatch(/^[0-9a-f]{8}:\d+$/)
+
+    emit({ type: 'stream_delta', text: 'hi' })
+    const delta = await viewer.next()
+    const [epoch, seq] = connected.id!.split(':')
+    expect(delta).toEqual({ id: `${epoch}:${Number(seq) + 1}`, data: { type: 'stream_delta', text: 'hi' } })
+    viewer.close()
+  })
+
+  it('resumes a viewer that comes back with Last-Event-ID: exactly the frames it missed, no snapshot', async () => {
+    const first = await openStream(url(ATTACKER, attackerSession, '/stream'))
+    await first.next()
+    emit({ type: 'stream_delta', text: 'one' })
+    const lastSeen = await first.next()
+    first.close()
+    emit({ type: 'stream_delta', text: 'two' })
+    emit({ type: 'stream_delta', text: 'three' })
+
+    const again = await openStream(url(ATTACKER, attackerSession, '/stream'), { 'Last-Event-ID': lastSeen.id! })
+
+    expect((await again.next()).data).toEqual({ type: 'stream_delta', text: 'two' })
+    expect((await again.next()).data).toEqual({ type: 'stream_delta', text: 'three' })
+    emit({ type: 'session_idle' })
+    expect((await again.next()).data).toMatchObject({ type: 'session_idle' })
+    again.close()
+  })
+
+  it('starts a viewer over from a snapshot when its id is from somewhere else', async () => {
+    const viewer = await openStream(url(ATTACKER, attackerSession, '/stream'), { 'Last-Event-ID': 'gone:7' })
+    expect((await viewer.next()).data).toMatchObject({ type: 'connected' })
+    viewer.close()
+  })
+})

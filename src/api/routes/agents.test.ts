@@ -1510,14 +1510,18 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     type FakeSSEStream = ReturnType<typeof fakeSSEStream>
 
     /** Open the stream; the route's stream callback runs against `stream`, and its promise is returned (boxed, so awaiting this does not await it). */
-    async function openStream(stream: FakeSSEStream, signal?: AbortSignal): Promise<{ handlerPromise: Promise<void> }> {
+    async function openStream(
+      stream: FakeSSEStream,
+      signal?: AbortSignal,
+      headers?: Record<string, string>,
+    ): Promise<{ handlerPromise: Promise<void> }> {
       let handlerPromise: Promise<void> | undefined
       mockStreamSSE.mockImplementationOnce((...args: unknown[]) => {
         const handler = args[1] as (value: FakeSSEStream) => Promise<void>
         handlerPromise = handler(stream)
         return new Response(null, { status: 200 })
       })
-      const res = await app.request(STREAM_URL, { method: 'GET', signal })
+      const res = await app.request(STREAM_URL, { method: 'GET', signal, headers })
       expect(res.status).toBe(200)
       expect(handlerPromise).toBeDefined()
       return { handlerPromise: handlerPromise! }
@@ -1539,7 +1543,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
 
     function expectReleased() {
       const actor = agentRegistry.get('authorized-agent')
-      expect(actor.messages.subscribe).toHaveBeenCalledOnce()
+      expect(actor.messages.follow).toHaveBeenCalledOnce()
       expect(unsubscribe).toHaveBeenCalledOnce()
       expect(globalThis.clearInterval).toHaveBeenCalledWith(timer)
     }
@@ -1547,15 +1551,13 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     beforeEach(() => {
       const actor = agentRegistry.get('authorized-agent')
       unsubscribe = vi.fn()
-      vi.spyOn(actor.messages, 'subscribe').mockReturnValue(unsubscribe)
-      vi.spyOn(actor.sessions, 'slashCommands').mockReturnValue([])
-      vi.spyOn(actor.sessions, 'metadata').mockResolvedValue(null)
-      vi.spyOn(actor.sessions, 'backgroundTasks').mockReturnValue([])
-      vi.spyOn(actor.sessions, 'activeSubagents').mockReturnValue([])
-      vi.spyOn(actor.sessions, 'isWaitingBackground').mockReturnValue(false)
+      // The actor catches the viewer up with its snapshot frame, then attaches.
+      vi.spyOn(actor.messages, 'follow').mockImplementation(async (_sessionId, _options, onFrame) => {
+        onFrame({ id: 'e:0', data: '{"type":"connected"}' })
+        return unsubscribe
+      })
       vi.spyOn(actor.sessions, 'isActive').mockReturnValue(false)
       vi.spyOn(actor.sessions, 'turnOutcome').mockReturnValue(null)
-      vi.spyOn(actor.inputs.computerUse, 'grabbedApp').mockReturnValue(undefined)
 
       pingTick = undefined
       vi.spyOn(globalThis, 'setInterval').mockImplementation(((handler: () => Promise<void>) => {
@@ -1649,7 +1651,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       const { handlerPromise } = await openStream(stream, controller.signal)
 
       expect(await settles(handlerPromise)).toBe(true)
-      expect(agentRegistry.get('authorized-agent').messages.subscribe).not.toHaveBeenCalled()
+      expect(agentRegistry.get('authorized-agent').messages.follow).not.toHaveBeenCalled()
       expect(globalThis.setInterval).not.toHaveBeenCalled()
       expect(stream.writeSSE).not.toHaveBeenCalled()
     })
@@ -1669,6 +1671,29 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       expect(stream.abort).toHaveBeenCalled()
       expectReleased()
       consoleError.mockRestore()
+    })
+
+    it('forwards the actor\'s frames with their ids, resuming after the Last-Event-ID the browser sent back', async () => {
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream, undefined, { 'Last-Event-ID': 'e:41' })
+      await waitingForClient(handlerPromise)
+
+      expect(agentRegistry.get('authorized-agent').messages.follow)
+        .toHaveBeenCalledWith('new-session', { after: 'e:41' }, expect.any(Function))
+      expect(stream.writeSSE).toHaveBeenCalledWith({ id: 'e:0', data: '{"type":"connected"}', event: 'message' })
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
+    })
+
+    it('starts a viewer that sent no Last-Event-ID from a snapshot', async () => {
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream)
+      await waitingForClient(handlerPromise)
+
+      expect(agentRegistry.get('authorized-agent').messages.follow)
+        .toHaveBeenCalledWith('new-session', { after: undefined }, expect.any(Function))
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
     })
 
     it('pings through the actor it opened with', async () => {

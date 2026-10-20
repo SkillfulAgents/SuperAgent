@@ -45,6 +45,7 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   pendingComputerUse: () => [],
   capabilityGranted: () => false,
   listen: () => () => {},
+  follow: async () => () => {},
   emit: () => {},
   subscribe: async () => {},
   unsubscribe: () => {},

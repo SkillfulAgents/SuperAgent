@@ -40,6 +40,7 @@ import type {
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
 import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
 import type { ActiveSubagentSnapshot } from './live/subagents'
+import type { WireFrame } from './live/session-channel'
 import type { WebSocket } from 'ws'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
@@ -471,6 +472,12 @@ export interface MessageOps {
 
   /** `LiveSessions.listen` — returns the unsubscribe function. */
   subscribe(sessionId: string, listener: (data: unknown) => void): () => void
+  /**
+   * `LiveSessions.follow` — a viewer's wire: the frames it missed since
+   * `after` (the last frame id it got), or a snapshot, then every event, each
+   * frame with its id. Resolves to the unsubscribe once attached.
+   */
+  follow(sessionId: string, options: { after?: string }, onFrame: (frame: WireFrame) => void): Promise<() => void>
   /** `LiveSessions.emit` */
   broadcastEvent(sessionId: string, data: unknown): void
   /** `LiveSessions.coalesceIfRecovering` */
