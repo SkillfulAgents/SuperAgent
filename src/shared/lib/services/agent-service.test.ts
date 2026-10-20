@@ -40,6 +40,11 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
+const mockRevokeAgentKeys = vi.fn(async (_slug: string) => {})
+vi.mock('@shared/lib/platform-attribution/container-token', () => ({
+  revokePlatformAgentKey: (slug: string) => mockRevokeAgentKeys(slug),
+}))
+
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     getPendingReviewsForAgent: mockGetPendingReviewsForAgent,
@@ -740,6 +745,17 @@ Instructions`
 
       expect(result).toBe(true)
       expect(await agentExists('test-agent')).toBe(false)
+    })
+
+    it("revokes the agent's platform keys once it is gone from the catalog", async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      let existedAtRevoke: boolean | undefined
+      mockRevokeAgentKeys.mockImplementationOnce(async (slug) => { existedAtRevoke = await agentExists(slug) })
+
+      await deleteAgent('test-agent')
+
+      expect(mockRevokeAgentKeys).toHaveBeenCalledWith('test-agent')
+      expect(existedAtRevoke).toBe(false)
     })
 
     it('stops container before deleting', async () => {

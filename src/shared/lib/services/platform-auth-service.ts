@@ -593,6 +593,11 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
   return getPlatformAuthStatus()
 }
 
+/** The app's platform key: the connected account's, else the PLATFORM_TOKEN env key. */
+export function getPlatformAppKey(): string | undefined {
+  return getPlatformAccessToken() ?? process.env.PLATFORM_TOKEN ?? undefined
+}
+
 export function getPlatformAccessToken(_userId?: string): string | null {
   const envToken = process.env.PLATFORM_TOKEN?.trim()
   if (isAuthMode() && envToken) return envToken
@@ -666,8 +671,7 @@ async function clearPlatformAuth(): Promise<void> {
   notifyPlatformServiceAuthChanged(false)
 }
 
-export async function revokePlatformTokenRemotely(): Promise<boolean> {
-  const token = readRecord()?.token
+export async function revokePlatformTokenRemotely(token: string | undefined): Promise<boolean> {
   if (!token) return false
 
   const proxyBase = getPlatformProxyBaseUrl()
@@ -680,6 +684,7 @@ export async function revokePlatformTokenRemotely(): Promise<boolean> {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(10_000),
     })
     return res.ok
   } catch (error) {
@@ -689,7 +694,7 @@ export async function revokePlatformTokenRemotely(): Promise<boolean> {
 }
 
 export async function revokePlatformToken(options?: { clearLocal?: boolean }): Promise<boolean> {
-  const success = await revokePlatformTokenRemotely()
+  const success = await revokePlatformTokenRemotely(readRecord()?.token)
   if (options?.clearLocal !== false) {
     await clearPlatformAuth()
   }
