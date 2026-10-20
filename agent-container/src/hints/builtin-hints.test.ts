@@ -6,9 +6,21 @@ import type { HintEventInput } from './hint-schema'
 const compiled = builtinHints.map((hint) => ({ name: hint.name, triggers: hint.triggers.map(compileTrigger) }))
 const matching = (input: HintEventInput) => compiled.filter(({ triggers }) => triggers.some((m) => m(input))).map(({ name }) => name).sort()
 
+const bash = (command: string): HintEventInput => ({ event: 'PreToolUse', toolName: 'Bash', toolInput: { command } })
+const wrote = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Write', toolInput: { file_path } })
+const edited = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Edit', toolInput: { file_path } })
+
 // Every row lists the exact hints a call triggers. A new hint that also fires on another hint's example
 // fails here, so its author decides whether both should fire.
-const CASES: Array<[string, HintEventInput, string[]]> = []
+const CASES: Array<[string, HintEventInput, string[]]> = [
+  ['agent-browser command', bash('agent-browser open https://example.com'), ['agent-browser-bash']],
+  ['agent-browser lookup', bash('which agent-browser'), ['agent-browser-bash']],
+  ['uv run without env file', bash('uv run --with requests fetch.py'), ['uv-run-env-file']],
+  ['uv run with env file', bash('uv run --env-file .env --with requests fetch.py'), []],
+  ['write a skill script', wrote('/workspace/.claude/skills/fetch-weather/weather.py'), ['update-skill-md']],
+  ['edit SKILL.md itself', edited('/workspace/.claude/skills/fetch-weather/SKILL.md'), []],
+  ['agent-browser and uv run in one command', bash('agent-browser snapshot && uv run report.py'), ['agent-browser-bash', 'uv-run-env-file']],
+]
 
 describe('built-in hints: which hints each call triggers', () => {
   it.each(CASES)('%s', (_label, input, expected) => {
