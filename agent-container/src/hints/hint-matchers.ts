@@ -35,20 +35,15 @@ function candidates(toolName: string, field: string, value: string): string[] {
 }
 
 function compileToolTrigger(trigger: HintToolTrigger): HintMatcher {
-  const required = Object.entries(trigger.input ?? {}).map(([field, glob]) => [field, globToRegExp(glob)] as const)
-  const excluded = Object.entries(trigger.unless ?? {}).map(([field, glob]) => [field, globToRegExp(glob)] as const)
-  const fields = [...new Set([...required, ...excluded].map(([field]) => field))]
+  const fields = Object.entries(trigger.input ?? {}).map(([field, glob]) => [field, globToRegExp(glob)] as const)
   return (input) => {
     if (!('toolName' in input) || input.toolName !== trigger.tool) return false
     const toolInput = (input.toolInput ?? {}) as Record<string, unknown>
-    return fields.every((field) => {
-      const want = required.find(([f]) => f === field)?.[1]
-      const avoid = excluded.find(([f]) => f === field)?.[1]
+    return fields.every(([field, regex]) => {
       const raw = toolInput[field]
-      // Booleans and numbers compare as text, so `unless: { run_in_background: "true" }` works.
+      // Booleans and numbers compare as text, so `input: { run_in_background: "true" }` works.
       const value = typeof raw === 'boolean' || typeof raw === 'number' ? String(raw) : raw
-      if (typeof value !== 'string') return !want
-      return candidates(trigger.tool, field, value).some((part) => (!want || want.test(part)) && !avoid?.test(part))
+      return typeof value === 'string' && candidates(trigger.tool, field, value).some((part) => regex.test(part))
     })
   }
 }

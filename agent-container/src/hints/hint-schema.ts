@@ -13,8 +13,6 @@ const toolTriggerSchema = z
     tool: z.string().min(1, 'Tool name is required'),
     /** Every field must match its glob. */
     input: fieldGlobsSchema.optional(),
-    /** No field may match its glob. */
-    unless: fieldGlobsSchema.optional(),
   })
   .strict()
 
