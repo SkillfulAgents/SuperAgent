@@ -45,20 +45,20 @@ describe('getProviderCatalog', () => {
         .map((model) => [model.icon, model.id])
 
     expect(defaultsByIcon('anthropic')).toEqual([
-      ['anthropic', 'claude-sonnet-5-5'],
+      ['anthropic', 'claude-opus-5-5'],
     ])
     expect(defaultsByIcon('bedrock')).toEqual([
       ['anthropic', 'us.anthropic.claude-opus-4-8'],
     ])
     expect(defaultsByIcon('openrouter')).toEqual([
-      ['anthropic', 'claude-sonnet-5-5'],
+      ['anthropic', 'claude-opus-5-5'],
       ['openai', 'openai/gpt-5.5'],
       ['zai', 'z-ai/glm-5.2'],
       ['xai', 'x-ai/grok-4.7'],
       ['kimi', 'moonshotai/kimi-k3'],
     ])
     expect(defaultsByIcon('platform')).toEqual([
-      ['anthropic', 'claude-sonnet-5-5'],
+      ['anthropic', 'claude-opus-5-5'],
       ['openai', 'gpt-6.1-sol'],
       ['xai', 'grok-4.7'],
       ['gemini', 'gemini-4-argon'],
@@ -100,6 +100,7 @@ describe('getProviderCatalog', () => {
         family: 'opus',
         label: 'Opus 5.5',
         isLatest: true,
+        isDefault: true,
         pricing: { inputPerMtok: 4, outputPerMtok: 20, speedMultipliers: { fast: 2 } },
       })
     }
@@ -740,8 +741,8 @@ describe('resolveModelForProvider', () => {
   })
 
   it('falls back to the provider default (alias-resolved) for an unknown family-less alias', () => {
-    // Anthropic agent default is 'sonnet' → resolves to its latest concrete id.
-    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-sonnet-5-5')
+    // Anthropic agent default is 'opus' → resolves to its latest concrete id.
+    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     // Summarizer default 'haiku' → latest haiku.
     expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-5-5')
   })

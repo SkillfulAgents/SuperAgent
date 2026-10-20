@@ -67,8 +67,8 @@ describe('bestAllowedModel', () => {
   const denied = (m: { id: string }) => isDeniedByPlan(PRO30, m.id)
   const byId = (id: string) => PLATFORM_CATALOG.find((m) => m.id === id)!
 
-  it('stays with the denied model\'s vendor: Fable falls back to Claude\'s default', () => {
-    expect(bestAllowedModel(PLATFORM_CATALOG, denied, byId('claude-fable-5-1'))?.id).toBe('claude-sonnet-5-5')
+  it('stays with the denied model\'s vendor: Fable falls back to Opus', () => {
+    expect(bestAllowedModel(PLATFORM_CATALOG, denied, byId('claude-fable-5-1'))?.id).toBe('claude-opus-5-5')
   })
 
   it('Astra falls back to OpenAI\'s default', () => {

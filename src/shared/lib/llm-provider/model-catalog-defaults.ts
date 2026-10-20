@@ -11,7 +11,7 @@ export interface CatalogDefaultModels {
 
 export const ANTHROPIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
-  agentModel: 'sonnet',
+  agentModel: 'opus',
   browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }

@@ -20,7 +20,7 @@ interface MockRecord {
 const recorder = mockRecorder<MockRecord>()
 
 
-// Distinct from the global default (Sonnet) so adoption is observable.
+// Distinct from the global default (Opus) so adoption is observable.
 const HAIKU_PINNED = 'claude-haiku-4-5'
 
 test.describe('Per-agent default model', () => {
@@ -83,7 +83,7 @@ test.describe('Per-agent default model', () => {
     // Revert via the picker's reset-to-global action (the in-popover
     // replacement for the old reset button): it disables itself once the
     // override is gone, the untouched composer follows the app-wide default
-    // again, and the next session is created with it (bare 'sonnet' alias,
+    // again, and the next session is created with it (bare 'opus' alias,
     // resolved to the latest concrete id on the wire).
     const resetMessage = `Reset to global message ${tag}`
     await page.goBack()
@@ -94,13 +94,13 @@ test.describe('Per-agent default model', () => {
     await expect(page.locator('[data-testid="settings-model-app-default"]')).toBeDisabled()
     await page.keyboard.press('Escape')
 
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Sonnet')
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
 
     await page.locator('[data-testid="home-message-input"]').fill(resetMessage)
     await page.locator('[data-testid="home-send-button"]').click()
 
     const resetRecord = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === resetMessage
     )
-    expect(resetRecord.model).toBe('claude-sonnet-5-5')
+    expect(resetRecord.model).toBe('claude-opus-5-5')
   })
 })

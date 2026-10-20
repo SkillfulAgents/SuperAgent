@@ -71,9 +71,8 @@ test.describe('Speed selection', () => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
-    // Opus latest carries the speed override — the Speed section must render
-    // and Fast must go on the wire.
-    await pickModel(page, OPUS_LATEST)
+    // The default model resolves to Opus latest, which carries the speed
+    // override — the Speed section must render and Fast must go on the wire.
     await pickSpeed(page, 'fast')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Fast')
 
@@ -129,7 +128,6 @@ test.describe('Speed selection', () => {
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     // Opus (speed override) shows the section...
-    await pickModel(page, OPUS_LATEST)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await expect(page.locator('[data-testid="speed-option-fast"]')).toBeVisible()
 

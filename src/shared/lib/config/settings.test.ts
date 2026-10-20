@@ -1207,7 +1207,7 @@ describe('getEffectiveModels', () => {
 
     expect(models).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'sonnet',
+      agentModel: 'opus',
       browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
@@ -1265,7 +1265,7 @@ describe('getEffectiveModels', () => {
 
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('haiku')
-    expect(models.agentModel).toBe('sonnet')
+    expect(models.agentModel).toBe('opus')
     expect(models.browserModel).toBe('haiku')
   })
 
@@ -1276,7 +1276,7 @@ describe('getEffectiveModels', () => {
 
     expect(models).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'sonnet',
+      agentModel: 'opus',
       browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
@@ -1302,7 +1302,7 @@ describe('getEffectiveModels', () => {
 
     expect(getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'sonnet',
+      agentModel: 'opus',
       browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
@@ -1437,7 +1437,7 @@ describe('DEFAULT_SETTINGS', () => {
   it('has expected model defaults (bare aliases so fresh installs track latest)', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'sonnet',
+      agentModel: 'opus',
       browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
