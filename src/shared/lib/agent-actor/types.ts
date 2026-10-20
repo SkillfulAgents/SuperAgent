@@ -838,14 +838,32 @@ export interface WriteOptions {
 /**
  * The agent's configuration documents (see `config-schema.ts`), typed and
  * validated. A JSON document that does not parse or fit its schema is
- * `corrupt`: `get` throws `ConfigDocError` and an `update` aborts before
- * writing, so a broken file is never silently replaced.
+ * `corrupt`: `get` and `read` throw `ConfigDocError`, so a read-modify-write
+ * stops before writing and a broken file is never silently replaced.
+ *
+ * A read-modify-write is a compare-and-set: `read` gives the document's
+ * revision and `put` with `ifRevision` stores only while it is still that one
+ * (`updateConfigDoc` loops over it). The comparison runs under the lock the
+ * container honours for a document it also writes (`.env`).
  */
 export interface ConfigOps {
   /** The document, or null when it does not exist yet. */
   get<K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null>
-  /** Validate and store a whole document atomically. */
-  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void>
+  /** The document and its revision; both null when it does not exist yet. */
+  read<K extends ConfigDocId>(id: K): Promise<{ doc: ConfigDoc<K> | null; revision: string | null }>
+  /**
+   * Validate and store a whole document atomically. With `ifRevision`, only
+   * while the stored one is still that revision (null: still absent); false
+   * when it is not, and nothing is written.
+   */
+  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>, options?: { ifRevision?: string | null }): Promise<boolean>
+}
+
+/**
+ * `ConfigOps` as the actor's own storage reaches it: with a serialized
+ * read-modify-write that takes a function, which cannot cross a transport.
+ */
+export interface StoreConfigOps extends ConfigOps {
   /**
    * Read-modify-write, serialized per document: no two updates interleave,
    * and for a document another process also writes, neither do theirs. A
