@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { createHintHookMatchers, createHintsHook } from './hints-hook'
-import { builtinHints, builtinHintsEnabled } from './index'
+import { createHintHookMatchers, createHintsHook } from './hint-hook'
 import type { Hint } from './hint-schema'
 
 const options = { signal: new AbortController().signal }
@@ -84,21 +83,5 @@ describe('createHintHookMatchers', () => {
     const matchers = createHintHookMatchers([hint('a', 'First', [{ event: 'UserPromptSubmit', prompt: 'deploy' }])], () => 1)
     expect(matchers.UserPromptSubmit).toHaveLength(1)
     expect(matchers.UserPromptSubmit[0].matcher).toBeUndefined()
-  })
-})
-
-describe('built-in hints', () => {
-  it('all compile', () => {
-    expect(() => createHintHookMatchers(builtinHints, () => 1)).not.toThrow()
-  })
-
-  it.each([
-    [undefined, true],
-    ['', true],
-    ['1', true],
-    ['0', false],
-    [' FALSE ', false],
-  ])('BUILTIN_HINTS=%s → enabled %s', (value, expected) => {
-    expect(builtinHintsEnabled(value)).toBe(expected)
   })
 })

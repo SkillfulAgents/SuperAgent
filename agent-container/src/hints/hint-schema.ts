@@ -39,7 +39,3 @@ export const hintFrontmatterSchema = z.object({
 export type HintTrigger = z.infer<typeof hintTriggerSchema>
 export type HintToolTrigger = z.infer<typeof toolTriggerSchema>
 export type Hint = z.output<typeof hintFrontmatterSchema> & { content: string }
-
-export type HintEventInput =
-  | { event: 'UserPromptSubmit'; prompt: string }
-  | { event: 'PreToolUse' | 'PostToolUse'; toolName: string; toolInput: unknown }

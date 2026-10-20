@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { builtinHints } from './index'
-import { compileTrigger } from './hint-matchers'
-import { createHintsHook } from './hints-hook'
-import type { HintEventInput } from './hint-schema'
+import { builtinHints, builtinHintsEnabled } from './builtin-hints'
+import { createHintHookMatchers, createHintsHook } from './hint-hook'
+import { compileTrigger, type HintEventInput } from './hint-matchers'
 
 const compiled = builtinHints.map((hint) => ({ name: hint.name, triggers: hint.triggers.map(compileTrigger) }))
 const matching = (input: HintEventInput) => compiled.filter(({ triggers }) => triggers.some((m) => m(input))).map(({ name }) => name).sort()
@@ -70,6 +69,10 @@ describe('built-in hints: which hints each call triggers', () => {
     expect(matching(input)).toEqual(expected)
   })
 
+  it('all compile into hook entries', () => {
+    expect(() => createHintHookMatchers(builtinHints, () => 1)).not.toThrow()
+  })
+
   it('every built-in hint has at least one example here', () => {
     const covered = new Set(CASES.flatMap(([, , names]) => names))
     expect(builtinHints.map((h) => h.name).filter((name) => !covered.has(name))).toEqual([])
@@ -81,5 +84,17 @@ describe('built-in hints: which hints each call triggers', () => {
     for (const id of ['tool-1', 'tool-2']) {
       expect(JSON.stringify(await hook(call, id, { signal: new AbortController().signal }))).toContain('STRONG WARNING')
     }
+  })
+})
+
+describe('BUILTIN_HINTS', () => {
+  it.each([
+    [undefined, true],
+    ['', true],
+    ['1', true],
+    ['0', false],
+    [' FALSE ', false],
+  ])('BUILTIN_HINTS=%s → enabled %s', (value, expected) => {
+    expect(builtinHintsEnabled(value)).toBe(expected)
   })
 })
