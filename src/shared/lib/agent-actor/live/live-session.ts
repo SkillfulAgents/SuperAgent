@@ -1422,7 +1422,8 @@ export class LiveSession {
   /**
    * The socket to the container closed. Mid-turn and not stopped, the
    * runtime may have died: recovery decides. Otherwise ask the container
-   * whether the session still runs, and reattach or settle.
+   * whether the session still runs, and reattach or settle. Settling
+   * detaches the dead socket, so the next send subscribes again.
    */
   private connectionClosed(): void {
     if (this.isActive && !this.isInterrupted) {
@@ -1442,18 +1443,21 @@ export class LiveSession {
         if (!this.ctx.isCurrent()) return
         if (!session) {
           console.log(`[LiveSession] Session ${this.ctx.sessionId} not found in container, marking inactive`)
+          this.ctx.detachTransport()
           this.markInactive()
         } else if ((session as { isRunning?: boolean }).isRunning) {
           console.log(`[LiveSession] Session ${this.ctx.sessionId} still running, re-subscribing`)
           this.ctx.reattachTransport(client)
         } else {
           console.log(`[LiveSession] Session ${this.ctx.sessionId} not running in container, marking inactive`)
+          this.ctx.detachTransport()
           this.markInactive()
         }
       })
       .catch((error) => {
         if (!this.ctx.isCurrent()) return
         console.error(`[LiveSession] Failed to check container for session ${this.ctx.sessionId}:`, error)
+        this.ctx.detachTransport()
         this.markInactive()
       })
   }
