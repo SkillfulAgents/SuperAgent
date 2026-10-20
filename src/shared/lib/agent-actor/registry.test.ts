@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WebSocket } from 'ws'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
 import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
@@ -51,7 +50,6 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: vi.fn(),
 }))
 vi.mock('@shared/lib/services/usage-service', () => ({ loadDailyUsageData: vi.fn(), loadSessionUsageTotals: vi.fn() }))
-vi.mock('ws', () => ({ WebSocket: vi.fn() }))
 
 type FakeRequest = {
   id: string
@@ -184,7 +182,6 @@ describe('createAgentRegistry', () => {
     vi.restoreAllMocks()
     userInputRequestManager.reset()
     fake = fakeDeps()
-    vi.mocked(WebSocket).mockClear()
   })
 
   it('returns one stable handle per slug, created on first get', () => {
@@ -332,28 +329,27 @@ describe('createAgentRegistry', () => {
       expect(otherSyncAwaiting).not.toHaveBeenCalled()
     })
 
-    it('container.openWebSocket targets this agent\'s container and adds its auth headers last', () => {
+    it('container.webSocketTarget targets this agent\'s container and adds its auth headers last', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(fake.containerHost.runtime).not.toHaveBeenCalled()
 
-      actor.container.openWebSocket('/browser/stream', {
+      expect(await actor.container.webSocketTarget('/browser/stream', {
         search: '?since=1',
         protocols: ['p1'],
         headers: { 'x-forwarded': 'yes', 'x-host': 'spoofed' },
-      })
-
-      expect(fake.runtimes.get('a')?.getCachedInfo).toHaveBeenCalledTimes(1)
-      expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
-      expect(vi.mocked(WebSocket)).toHaveBeenCalledWith('ws://127.0.0.1:4321/browser/stream?since=1', ['p1'], {
+      })).toEqual({
+        url: 'ws://127.0.0.1:4321/browser/stream?since=1',
+        protocols: ['p1'],
         headers: { 'x-forwarded': 'yes', 'x-host': '1' },
       })
+      expect(fake.runtimes.get('a')?.getCachedInfo).toHaveBeenCalledTimes(1)
+      expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
     })
 
-    it('container.openWebSocket refuses while the container is not running', () => {
+    it('container.webSocketTarget has none while the container is not running', async () => {
       fake.containerHost.runtime('a').getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
       const actor = createAgentRegistry(fake.deps).get('a')
-      expect(() => actor.container.openWebSocket('/browser/stream')).toThrow(/not running/)
-      expect(vi.mocked(WebSocket)).not.toHaveBeenCalled()
+      expect(await actor.container.webSocketTarget('/browser/stream')).toBeNull()
     })
 
     it('container.syncConnectionEnvironment pushes one projection through this agent\'s runtime', async () => {

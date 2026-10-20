@@ -41,7 +41,6 @@ import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
 import type { ActiveSubagentSnapshot } from './live/subagents'
 import type { WireFrame } from './live/session-channel'
-import type { WebSocket } from 'ws'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
@@ -236,11 +235,12 @@ export interface ContainerOps {
   /** `client.fetch` — an HTTP request to the container API. Counted by the lint fence until its direct callers move inward. */
   fetch(path: string, init?: RequestInit): Promise<Response>
   /**
-   * A WebSocket to the container API at `path`, authenticated the way `fetch`
-   * is. Returned before it opens so the caller attaches its own listeners.
-   * Throws when the container is not running.
+   * Where to open a WebSocket to the container API at `path`, authenticated
+   * the way `fetch` is: the URL, the subprotocols to offer and the headers
+   * (`init.headers` with the container's auth headers added after, which
+   * win). The caller opens the socket. Null when the container is not running.
    */
-  openWebSocket(path: string, init?: OpenWebSocketInit): WebSocket
+  webSocketTarget(path: string, init?: OpenWebSocketInit): Promise<WebSocketTarget | null>
 
   // Host capabilities. These describe the machine running the API, not the
   // container's transport: an actor whose container is elsewhere answers
@@ -250,6 +250,12 @@ export interface ContainerOps {
   hostBridgeIp(): string | null
   /** `client.probeHostPortFromRunner` — whether the container's network can reach a port on this host. */
   probeHostPort(host: string, port: number): Promise<HostPortProbeResult>
+}
+
+export interface WebSocketTarget {
+  url: string
+  protocols?: string | string[]
+  headers: Record<string, string>
 }
 
 export interface OpenWebSocketInit {

@@ -20,7 +20,6 @@ import { runComputerUse, runScript } from './host-runs'
 import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
-import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
@@ -176,15 +175,15 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
     syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind, runtime()),
     fetch: (...args) => client().fetch(...args),
-    openWebSocket: (path, init) => {
+    webSocketTarget: async (path, init) => {
       const info = runtime().getCachedInfo()
-      if (info.status !== 'running' || !info.port) {
-        throw new Error(`Container for agent ${slug} is not running`)
-      }
+      if (info.status !== 'running' || !info.port) return null
       const c = client()
-      return new WebSocket(`${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`, init?.protocols, {
+      return {
+        url: `${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`,
+        ...(init?.protocols !== undefined ? { protocols: init.protocols } : {}),
         headers: { ...init?.headers, ...c.getHostAuthHeaders() },
-      })
+      }
     },
     hostBridgeIp: () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),

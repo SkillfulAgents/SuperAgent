@@ -58,6 +58,7 @@ export type {
   OpenFile,
   SubagentRef,
   OpenWebSocketInit,
+  WebSocketTarget,
   ReviewOps,
   SessionOps,
   StartSessionRequest,
