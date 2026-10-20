@@ -482,7 +482,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   getMountsWithHealth: vi.fn(async () => []),
   addMount: vi.fn(),
   attachMount: vi.fn(async () => ({ id: 'm1', volumeId: 'v1', volumeName: 'code' })),
-  removeMount: vi.fn(async () => {}),
+  removeMount: vi.fn(async () => true),
   setMountReadOnly: vi.fn(async () => true),
   volumeSummary: () => ({ type: 'local', name: 'code' }),
 }))
@@ -783,6 +783,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole, listAgentMembers } from '@shared/lib/services/agent-members-service'
+import { removeMount } from '@shared/lib/services/mount-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -11242,5 +11243,11 @@ describe('drive changes on a running agent', () => {
     expect((await changes[0][1](createApp(), 'drives-restart', true)).ok).toBe(true)
     expect(mockRestartContainer).toHaveBeenCalledOnce()
     expect(agentRegistry.get('drives-restart').container.stale()).toBe(false)
+  })
+
+  it('answers 404 to removing a drive the agent has no own copy of, and leaves it unmarked', async () => {
+    vi.mocked(removeMount).mockResolvedValueOnce(false)
+    expect((await changes[2][1](createApp(), 'drives-global')).status).toBe(404)
+    expect(agentRegistry.get('drives-global').container.stale()).toBe(false)
   })
 })

@@ -20,11 +20,14 @@ export interface VolumeSummaryWithHealth extends VolumeSummary {
   health: 'ok' | 'missing'
 }
 
+export type GlobalAccess = 'read' | 'write'
+
 /** The saved definition available in Settings and the attachment picker. */
 export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
   userId: string | null
   canManage: boolean
   attachmentCount: number
+  globalAccess: GlobalAccess | null
 }
 
 /** An agent's attachment, whose id and name are independent of the definition. */
@@ -32,12 +35,14 @@ export interface MountedVolume extends StoredVolume {
   volumeId: string
   volumeName: string
   readOnly: boolean
+  global?: true // from the drive's global setting, not an attachment row
 }
 
 export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
   volumeId: string
   volumeName: string
   readOnly: boolean
+  global?: true
 }
 
 /** Source latency determines the container cache policy, independently of its provider. */

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { ChevronLeft, Globe, Lock, Trash2 } from 'lucide-react'
-import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
+import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { useHideSettingsHeader, useFullWidthSettingsContent } from '@renderer/components/settings/settings-page'
 import { AgentAssignmentList } from '@renderer/components/agents/agent-assignment-list'
 import { AppLink } from '@renderer/components/ui/app-link'
@@ -12,10 +12,51 @@ import { useUser } from '@renderer/context/user-context'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
 import { useSaveVolumeDefinition, useVolumeAgents } from '@renderer/hooks/use-volume-definitions'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
+import { Switch } from '@renderer/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
 import { VolumeDetailsFields } from './volume-setup-layout'
 import { parseVolumeName, type VolumeDetails } from './volume-details-schema'
 import { VolumeIcon } from './volume-icon'
 import { VolumeFileBrowser } from './volume-file-browser'
+
+const LEVEL_LABEL: Record<GlobalAccess, string> = { read: 'Read-only', write: 'Can write' }
+
+function GlobalSetting({ volume }: { volume: VolumeDefinitionSummary }) {
+  const save = useSaveVolumeDefinition()
+  const current = volume.globalAccess
+  const [level, setLevel] = useState<GlobalAccess>(current ?? 'read')
+  const [confirming, setConfirming] = useState(false)
+  const shown = current ?? level
+  const apply = () => save.mutate({ id: volume.id, global: current ? null : level }, {
+    onError: error => toast.error('Failed to update drive', { description: error instanceof Error ? error.message : 'Please try again.' }),
+  })
+  return <div className="space-y-2" data-testid="global-drive-setting">
+    <div className="flex items-center gap-3">
+      <p className="min-w-0 flex-1 text-sm font-medium">Global</p>
+      <Select value={shown} disabled={current !== null || save.isPending}
+        onValueChange={value => { if (value === 'read' || value === 'write') setLevel(value) }}>
+        <SelectTrigger className="h-8 w-[120px]" aria-label="Access on every agent" title={current ? 'Turn off global to change access' : undefined}><SelectValue /></SelectTrigger>
+        <SelectContent>{(['read', 'write'] as const).map(item => <SelectItem key={item} value={item}>{LEVEL_LABEL[item]}</SelectItem>)}</SelectContent>
+      </Select>
+      <Switch className="shrink-0" aria-label="Global drive" checked={current !== null} disabled={save.isPending} onCheckedChange={() => setConfirming(true)} />
+    </div>
+    <p className="text-xs text-muted-foreground">Gives every agent this drive. Agents that also have it as their own drive keep their own access.</p>
+    {shown === 'write' && <p className="text-xs text-orange-600 dark:text-orange-400">Every agent can edit and delete files in this drive.</p>}
+    <AlertDialog open={confirming} onOpenChange={setConfirming}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{current ? `Remove ${volume.name} from every agent that has it only as a global drive?` : `Add ${volume.name} to every agent as ${LEVEL_LABEL[level]}?`}</AlertDialogTitle>
+          <AlertDialogDescription>{current ? 'Agents that have it as their own drive keep it.' : 'Agents get it on their next start.'}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction data-testid="global-drive-confirm" onClick={apply}>{current ? 'Remove' : 'Add'}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </div>
+}
 
 function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
   const { isAuthMode, rolesReady, canUseAgent } = useUser()
@@ -63,6 +104,7 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
       <VolumeDetailsFields showName={false} value={{ name: volume.name, visibility }} onChange={next => { setVisibility(next.visibility); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
         <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
       </VolumeDetailsFields>
+      {volume.userId === null && <div className="border-t pt-4"><GlobalSetting volume={volume} /></div>}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={onDelete}
@@ -112,7 +154,12 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
     </div>
     <div className="grid gap-6 items-start grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] pt-4">
       <div className="min-w-0 space-y-6">
-        <VolumeAgentsList volume={volume} />
+        {volume.globalAccess
+          ? <section className="min-w-0 space-y-3" aria-label="Drive agents">
+            <p className="text-xs text-muted-foreground">Running agents pick up drive changes after a restart.</p>
+            <p className="text-sm font-medium">Every agent has this drive</p>
+          </section>
+          : <VolumeAgentsList volume={volume} />}
         {volume.canManage && <VolumeSettingsForm volume={volume} onDelete={onDelete} />}
       </div>
       <VolumeFileBrowser volumeId={volume.id} />

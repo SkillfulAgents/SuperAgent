@@ -50,6 +50,23 @@ describe('volume ownership', () => {
     const privateId = await createVolumeDefinition(input(), bob)
     await expect(updateVolumeDefinition(privateId, { name: 'Notes', visibility: 'public' }, bob)).rejects.toMatchObject({ status: 403 })
   })
+  it('makes only public drives global, and a drive going private stops being global', async () => {
+    const privateId = await createVolumeDefinition(input(), alice)
+    await expect(updateVolumeDefinition(privateId, { global: 'read' }, alice)).rejects.toMatchObject({ status: 400 })
+    const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    await expect(updateVolumeDefinition(id, { global: 'read' }, bob)).rejects.toMatchObject({ status: 404 })
+    await expect(updateVolumeDefinition(id, { visibility: 'private', global: 'read' }, admin)).rejects.toMatchObject({ status: 400 })
+    await updateVolumeDefinition(id, { global: 'write' }, admin)
+    expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, globalAccess: 'write' }])
+    await updateVolumeDefinition(id, { visibility: 'private' }, admin)
+    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, userId: 'admin', globalAccess: null }])
+  })
+  it('deletes a global drive that no agent has as its own', async () => {
+    const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    await updateVolumeDefinition(id, { global: 'read' }, admin)
+    await deleteVolumeDefinition(id, admin)
+    expect(await listVolumeDefinitions(admin)).toEqual([])
+  })
   it('blocks deletion and changes of scope until attachments are removed, but permits renames', async () => {
     const id = await createVolumeDefinition(input(), admin)
     const mount = await attachMount('agent', id, admin)

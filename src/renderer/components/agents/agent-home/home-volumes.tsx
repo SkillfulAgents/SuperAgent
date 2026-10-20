@@ -66,7 +66,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               onSetReadOnly={(readOnly) => volumes.handleSetReadOnly(mount.id, readOnly)}
               isRemovingMount={volumes.isRemovingMount}
               isUpdatingMount={volumes.isUpdatingMount}
-              canRemove={volumes.canModifyMounts}
+              canRemove={volumes.canModifyMounts && !mount.global}
             />
           ))}
         </div>
@@ -233,6 +233,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                 Read only
               </span>
             )}
+            {mount.global && <span className="inline-flex items-center text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">Global</span>}
           </>}
         </div>
         {subtitle && (

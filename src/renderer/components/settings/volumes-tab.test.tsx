@@ -30,7 +30,7 @@ beforeEach(() => {
   state.from = undefined
   state.host = true
   state.isAdmin = true
-  state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok' }]
+  state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
   window.electronAPI = { openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
 })
 afterEach(() => {
