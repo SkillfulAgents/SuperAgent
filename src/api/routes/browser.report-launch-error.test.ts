@@ -37,7 +37,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { broadcastGlobal: vi.fn() },
+  messagePersister: {},
 }))
 
 // auth.ts dependencies — use the REAL IsAgent() so the token → slug binding is

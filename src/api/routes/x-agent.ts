@@ -32,7 +32,7 @@ import {
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import type { FileOps } from '@shared/lib/agent-actor/types'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
@@ -324,7 +324,7 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
   }
 
   // Announce only after ACL inheritance so live stream filters admit owners.
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'agent_created',
     agentSlug: agent.slug,
   })
@@ -1104,7 +1104,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // not miss a fast result. Publish a metadata-aware update now that the
         // x-agent provenance exists, allowing the target's trigger/history UI
         // to appear immediately instead of waiting for its polling interval.
-        messagePersister.broadcastGlobal({
+        globalFeed.publish({
           type: 'session_updated',
           sessionId: newSessionId,
           agentSlug: targetSlug,

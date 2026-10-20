@@ -18,10 +18,11 @@ import {
   deleteNotification,
   getAccessibleAgentSlugs,
 } from '@shared/lib/services/notification-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
+import { createAgentAccessGate, type AgentAccessGate } from '../lib/agent-access-gate'
 
 const notificationsRouter = new Hono()
 
@@ -55,31 +56,36 @@ notificationsRouter.get('/stream', async (c) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
     let unsubscribe: (() => void) | null = null
     let unsubscribeCollaboration: (() => void) | undefined
+    let gate: AgentAccessGate | null = null
+
+    const write = (event: GlobalFeedEvent): void => {
+      stream.writeSSE({ data: JSON.stringify(event), event: 'message' }).catch((error) => {
+        console.error('Error sending global notification SSE:', error)
+      })
+    }
 
     try {
-      // Subscribe to global notifications
-      unsubscribe = messagePersister.addGlobalNotificationClient(async (data) => {
-        try {
-          // In auth mode, filter events by agent access (admins included)
-          if (isAuthMode() && user) {
-            const agentSlug = (data as Record<string, unknown>)?.agentSlug as string | undefined
-            if (agentSlug) {
-              const accessible = await getAccessibleAgentSlugs(user.id)
-              if (!accessible.includes(agentSlug)) return
-            }
-          }
-
-          await stream.writeSSE({
-            data: JSON.stringify(data),
-            event: 'message',
-          })
-        } catch (error) {
-          console.error('Error sending global notification SSE:', error)
-        }
-      })
+      // In auth mode the stream carries only the agents the user can access
+      // (admins included). Without a user there is nothing to scope by.
+      if (isAuthMode() && user) {
+        gate = createAgentAccessGate({
+          load: () => getAccessibleAgentSlugs(user.id),
+          deliver: write,
+          onLoadError: (error) => {
+            // Without the list nothing about an agent can be judged; the
+            // client reconnects and the next stream loads it again.
+            console.error('Failed to load accessible agents for the notifications stream:', error)
+            stream.abort()
+          },
+        })
+      }
+      const scoped = gate
+      unsubscribe = globalFeed.subscribe(scoped ? (event) => scoped.push(event) : write)
 
       if (user) {
         unsubscribeCollaboration = subscribeCollaborationEvents(user.id, async (data) => {
+          // A membership change can grant or revoke this user's access.
+          scoped?.refresh()
           await stream.writeSSE({ data: JSON.stringify(data), event: 'message' })
         })
       }
@@ -107,6 +113,7 @@ notificationsRouter.get('/stream', async (c) => {
       if (pingInterval) clearInterval(pingInterval)
       if (unsubscribe) unsubscribe()
       unsubscribeCollaboration?.()
+      gate?.dispose()
     }
   })
 })

@@ -13,7 +13,7 @@
 
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { captureException } from '@shared/lib/error-reporting'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
@@ -184,7 +184,7 @@ class PlatformNotificationsManager {
     const record = parsed.data
 
     // An open inbox page updates live regardless of OS-notification dedup.
-    messagePersister.broadcastGlobal({ type: 'platform_notifications_changed' })
+    globalFeed.publish({ type: 'platform_notifications_changed' })
 
     // Dedup: the in-session id-set survives reconnect replays; the persisted
     // watermark survives restarts and suppresses backdated inserts.
@@ -202,7 +202,7 @@ class PlatformNotificationsManager {
     // Fire straight from the record (notifications are plain data, not a
     // claimable work queue — no re-poll). No agentSlug/sessionId: clicking
     // opens the notification detail route instead of a session.
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'os_notification',
       notificationType: 'platform_notification',
       platformNotificationId: record.id,

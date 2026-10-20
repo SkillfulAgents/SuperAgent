@@ -228,6 +228,7 @@ import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-mem
 // the persister routes to through the singletons.
 attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import * as toolRegistry from '@shared/lib/tools/registry'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -4118,7 +4119,7 @@ describe('MessagePersister', () => {
     // Helper to collect global notification events
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         events.push(data)
       })
       return { events, cleanup }
@@ -5155,7 +5156,7 @@ describe('MessagePersister', () => {
 
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         events.push(data)
       })
       return { events, cleanup }
@@ -6337,7 +6338,7 @@ describe('MessagePersister', () => {
   describe('webhook trigger tool handling', () => {
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         events.push(data)
       })
       return { events, cleanup }
@@ -7373,7 +7374,7 @@ describe('MessagePersister', () => {
   describe('scheduled task tool handling', () => {
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         events.push(data)
       })
       return { events, cleanup }
@@ -9710,7 +9711,7 @@ describe('MessagePersister connection lost mid-turn', () => {
 
   it('also announces the mid-turn death on the global stream (sidebar/notifications)', async () => {
     const globalEvents: any[] = []
-    const removeGlobal = messagePersister.addGlobalNotificationClient((data) => {
+    const removeGlobal = globalFeed.subscribe((data) => {
       globalEvents.push(data)
     })
     try {

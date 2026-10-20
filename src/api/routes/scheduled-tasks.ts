@@ -28,7 +28,7 @@ import {
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
@@ -91,7 +91,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
 
     // Cancelling a session wake changes that session's list/badge state.
     if (task!.resumeSessionId) {
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'session_updated',
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,

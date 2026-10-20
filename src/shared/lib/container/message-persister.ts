@@ -84,6 +84,7 @@ import {
 import { isHiddenAutomatedSession, isAgentIntegrationSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
@@ -488,8 +489,6 @@ class MessagePersister {
   private sseClients: Map<SessionKey, Set<(data: unknown) => void>> = new Map()
   // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
   private workflowTailers: Map<`${SessionKey}::${string}`, WorkflowJournalTailer> = new Map()
-  // Global notification subscribers (e.g., Electron main process)
-  private globalNotificationClients: Set<(data: unknown) => void> = new Set()
   // Track container clients per session for reconnection
   private containerClients: Map<SessionKey, ContainerClient> = new Map()
   // Callback to request stopping a container (registered by the container host)
@@ -1582,26 +1581,10 @@ class MessagePersister {
     this.containerClients.delete(sessionKeyOf(agentSlug, sessionId))
   }
 
-  // Broadcast to global notification clients only (e.g., sidebar updates, Electron main process)
-  // Does NOT broadcast to session-specific SSE clients — use broadcastToSSE for that.
-  broadcastGlobal(data: unknown): void {
-    for (const client of this.globalNotificationClients) {
-      try {
-        client(data)
-      } catch (error) {
-        console.error('[SSE] Error sending to global notification client:', error)
-      }
-    }
-  }
-
-  // Add a global notification subscriber (receives all os_notification events)
-  addGlobalNotificationClient(callback: (data: unknown) => void): () => void {
-    this.globalNotificationClients.add(callback)
-
-    // Return unsubscribe function
-    return () => {
-      this.globalNotificationClients.delete(callback)
-    }
+  // The app-wide feed (sidebar status, Electron main, chat integrations). Does
+  // NOT reach the session's own stream — use broadcastToSSE for that.
+  private broadcastGlobal(event: GlobalFeedEvent): void {
+    globalFeed.publish(event)
   }
 
   // Register callback for when a container should be stopped (e.g., on OOM)

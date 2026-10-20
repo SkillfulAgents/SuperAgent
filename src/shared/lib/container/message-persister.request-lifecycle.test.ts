@@ -174,6 +174,7 @@ import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-mem
 // the persister routes to through the singletons.
 attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 function createMockClient(): ContainerClient & {
@@ -532,7 +533,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it('the route clear flips awaiting and broadcasts when it was the last blocking wait', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         globalEvents.push(data)
       })
       try {
@@ -1202,7 +1203,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it('a clean success mid-turn re-derives awaiting instead of blind-clearing it', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         globalEvents.push(data)
       })
       try {
@@ -1237,7 +1238,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it('a runtime-started turn picks up an already-parked agent review', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const globalEvents: any[] = []
-      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+      const cleanup = globalFeed.subscribe((data) => {
         globalEvents.push(data)
       })
       try {
@@ -1555,7 +1556,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
     beforeEach(() => {
       globalEvents = []
-      globalCleanup = messagePersister.addGlobalNotificationClient((data) => {
+      globalCleanup = globalFeed.subscribe((data) => {
         globalEvents.push(data)
       })
     })

@@ -52,8 +52,12 @@ const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
 const mockIsSubscribed = vi.fn()
 const mockCancelAwaitingInput = vi.fn()
-const mockBroadcastGlobal = vi.fn()
+const mockPublishGlobal = vi.fn()
 const mockBroadcastSessionUpdate = vi.fn()
+
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
+}))
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -67,7 +71,6 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
     isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
     cancelAwaitingInput: (...args: unknown[]) => mockCancelAwaitingInput(...args),
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
     broadcastSessionUpdate: (...args: unknown[]) => mockBroadcastSessionUpdate(...args),
   },
 }))

@@ -113,7 +113,6 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     markSessionActive: vi.fn(),
     setSlashCommands: vi.fn(),
-    broadcastGlobal: vi.fn(),
     broadcastSessionUpdate: vi.fn(),
     broadcastSessionEvent: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),

@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 
 // The registry attaches the real stores; these tests drive the persister alone.
@@ -72,7 +73,7 @@ describe('proxy review session awaiting', () => {
 
   it('clears awaiting on timeout and announces the settlement', async () => {
     const globalEvents: Array<Record<string, unknown>> = []
-    const unsub = messagePersister.addGlobalNotificationClient((e) => {
+    const unsub = globalFeed.subscribe((e) => {
       globalEvents.push(e as Record<string, unknown>)
     })
 

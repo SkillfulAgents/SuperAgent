@@ -254,10 +254,13 @@ vi.mock('@shared/lib/container/container-host', async () => {
   return { containerHost: host }
 })
 
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
+}))
+
 // Message persister
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: vi.fn(),
     broadcastSessionUpdate: vi.fn(),
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
@@ -782,6 +785,7 @@ import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, 
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -4447,7 +4451,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-haiku-4-5',
     })
     expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'session_updated',
       sessionId: 'sess-1',
       agentSlug: 'test-agent',
@@ -4482,7 +4486,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(getSessionMetadata).toHaveBeenCalledTimes(1)
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
-    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 
   it('broadcasts when any one option differs from the stored metadata', async () => {
@@ -4505,7 +4509,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       effort: 'high',
     })
     expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'session_updated',
       sessionId: 'sess-1',
       agentSlug: 'test-agent',
@@ -10875,7 +10879,7 @@ describe('PUT /api/agents/:id/avatar', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(avatar)
     expect(updateAgentAvatar).toHaveBeenCalledWith('test-agent', avatar)
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
   })
 
   it.each([
@@ -10893,7 +10897,7 @@ describe('PUT /api/agents/:id/avatar', () => {
     })
     expect(response.status).toBe(400)
     expect(updateAgentAvatar).not.toHaveBeenCalled()
-    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 })
 

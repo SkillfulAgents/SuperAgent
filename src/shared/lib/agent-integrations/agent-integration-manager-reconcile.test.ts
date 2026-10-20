@@ -56,7 +56,6 @@ vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    addGlobalNotificationClient: vi.fn().mockReturnValue(() => {}),
     getSessionActivity: vi.fn(),
   },
 }))

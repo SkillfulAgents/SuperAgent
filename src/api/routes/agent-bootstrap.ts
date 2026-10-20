@@ -5,7 +5,8 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { readBootstrapEnv } from '@shared/lib/container/agent-bootstrap-env-store'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { getSettings } from '@shared/lib/config/settings'
@@ -69,7 +70,7 @@ agentBootstrap.post('/:agentSlug/events/dashboard-screenshot-ready', async (c) =
   const parsed = DashboardScreenshotReadySchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid dashboard screenshot event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'dashboard_screenshot_ready',
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
@@ -91,7 +92,7 @@ agentBootstrap.post('/:agentSlug/events/dashboard-status-changed', async (c) => 
   const parsed = DashboardStatusChangedSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid dashboard status event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'dashboard_status_changed',
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
@@ -114,7 +115,7 @@ agentBootstrap.post('/:agentSlug/events/widget-snapshot-ready', async (c) => {
   const parsed = widgetSnapshotReadyEventSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid widget snapshot event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'widget_snapshot_ready',
     agentSlug,
     ...parsed.data,
@@ -140,8 +141,8 @@ agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
   const containerRunner = getSettings().container?.containerRunner ?? 'unknown'
   // Only a host that still shows the turn as working on a socket it thinks is
   // open is stuck; anything else already settled or detached on purpose.
-  const hostStuck = messagePersister.isSessionActive(agentSlug, report.sessionId) &&
-    messagePersister.isSubscribed(agentSlug, report.sessionId)
+  const { sessions } = agentRegistry.get(agentSlug)
+  const hostStuck = sessions.isActive(report.sessionId) && sessions.isStreamSubscribed(report.sessionId)
   console.warn(
     `[AgentBootstrap] Session ${report.sessionId} (${agentSlug}) ended a turn with no stream subscriber ` +
     `(runner=${containerRunner}, closeCode=${closeCode}, hostStuck=${hostStuck})`,

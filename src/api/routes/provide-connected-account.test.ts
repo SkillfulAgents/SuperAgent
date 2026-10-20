@@ -36,7 +36,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
 // Message persister
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: vi.fn(),
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
     completeInputRequest: vi.fn(),

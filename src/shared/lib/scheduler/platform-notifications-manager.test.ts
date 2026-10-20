@@ -29,11 +29,9 @@ vi.mock('@shared/lib/config/settings', () => ({
   mutateSettings: (mutator: (s: Record<string, unknown>) => void) => mockMutateSettings(mutator),
 }))
 
-const mockBroadcastGlobal = vi.fn()
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
-  },
+const mockPublishGlobal = vi.fn()
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -114,13 +112,13 @@ function record(id: string, createdAt: string, overrides: Record<string, unknown
 }
 
 function osNotificationBroadcasts() {
-  return mockBroadcastGlobal.mock.calls.filter(
+  return mockPublishGlobal.mock.calls.filter(
     (call) => (call[0] as { type?: string }).type === 'os_notification',
   )
 }
 
 function changedBroadcasts() {
-  return mockBroadcastGlobal.mock.calls.filter(
+  return mockPublishGlobal.mock.calls.filter(
     (call) => (call[0] as { type?: string }).type === 'platform_notifications_changed',
   )
 }

@@ -97,7 +97,6 @@ vi.mock('@shared/lib/config/data-dir', () => ({
 
 vi.mock('./message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: vi.fn(),
     setStopContainerCallback: vi.fn(),
     setUnexpectedDeathCallback: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),

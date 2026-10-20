@@ -30,6 +30,7 @@ import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-p
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
@@ -92,7 +93,7 @@ function showNotMounted(slug: string, notMounted: NotMountedVolume[]): void {
   if (notMounted.length > 0) {
     console.warn(`[ContainerRuntime] ${notMounted.length} volume(s) not mounted for ${slug}:`, notMounted.map((v) => `${v.name} (${v.reason})`))
   }
-  messagePersister.broadcastGlobal({ type: 'mount_health_warning', agentSlug: slug, notMounted })
+  globalFeed.publish({ type: 'mount_health_warning', agentSlug: slug, notMounted })
 }
 
 async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[], port: number | null): Promise<NotMountedVolume[]> {
@@ -231,7 +232,7 @@ export class ContainerRuntime {
           console.error(`[ContainerRuntime] Failed to sync status after connection error:`, err)
           this.markAsStopped()
           messagePersister.markAllSessionsInactiveForAgent(slug)
-          messagePersister.broadcastGlobal({
+          globalFeed.publish({
             type: 'agent_status_changed',
             agentSlug: slug,
             status: 'stopped',
@@ -272,7 +273,7 @@ export class ContainerRuntime {
     // Dead generation had live sessions; clear isActive before the new start
     // (same as stopContainer — replace does not go through stopContainer).
     messagePersister.markAllSessionsInactiveForAgent(this.slug)
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'agent_status_changed',
       agentSlug: this.slug,
       status: 'stopped',
@@ -411,7 +412,7 @@ export class ContainerRuntime {
         }
 
         // Broadcast status change so UI updates
-        messagePersister.broadcastGlobal({
+        globalFeed.publish({
           type: 'agent_status_changed',
           agentSlug: slug,
           status: 'stopped',
@@ -471,7 +472,7 @@ export class ContainerRuntime {
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {
       console.log(`[ContainerRuntime] Status changed for ${slug}: ${previousStatus} -> ${info.status}`)
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'agent_status_changed',
         agentSlug: slug,
         status: info.status,
@@ -508,7 +509,7 @@ export class ContainerRuntime {
     this.healthWarnings = warnings
 
     if (changed) {
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'container_health_changed',
         agentSlug: this.slug,
         warnings,
@@ -708,7 +709,7 @@ export class ContainerRuntime {
     this.activity.started()
 
     // Broadcast agent status change globally
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'agent_status_changed',
       agentSlug: slug,
       status: info.status,

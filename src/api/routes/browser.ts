@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import { getActiveProvider, setOnExternalClose } from '../../main/host-browser'
 import { getSettings } from '@shared/lib/config/settings'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { IsAgent } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 import { hostBrowserRequestSchema, browserLaunchErrorReportSchema } from './browser-schema'
@@ -139,7 +139,7 @@ setOnExternalClose(async (instanceId: string) => {
   console.log(`[Browser] Host browser for instance ${instanceId} closed externally`)
 
   // Broadcast to all frontend SSE clients with the agentSlug so UI can scope it
-  messagePersister.broadcastGlobal({ type: 'browser_active', active: false, agentSlug: instanceId })
+  globalFeed.publish({ type: 'browser_active', active: false, agentSlug: instanceId })
 
   // Notify the affected container to clean up its internal browser state.
   try {

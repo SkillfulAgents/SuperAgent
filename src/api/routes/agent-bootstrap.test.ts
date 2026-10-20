@@ -1,18 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const validateProxyToken = vi.fn(async (_token: string): Promise<string | null> => null)
-const broadcastGlobal = vi.fn()
+const publish = vi.fn()
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (t: string) => validateProxyToken(t),
 }))
-const isSessionActive = vi.fn(() => false)
-const isSubscribed = vi.fn(() => false)
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: (...args: unknown[]) => broadcastGlobal(...args),
-    isSessionActive: (...args: unknown[]) => isSessionActive(...(args as [])),
-    isSubscribed: (...args: unknown[]) => isSubscribed(...(args as [])),
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => publish(...args) },
+}))
+const isActive = vi.fn((_sessionId: string) => false)
+const isStreamSubscribed = vi.fn((_sessionId: string) => false)
+const getActor = vi.fn((_slug: string) => ({
+  sessions: {
+    isActive: (sessionId: string) => isActive(sessionId),
+    isStreamSubscribed: (sessionId: string) => isStreamSubscribed(sessionId),
   },
+}))
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentRegistry: { get: (slug: string) => getActor(slug) },
 }))
 const captureException = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -39,10 +44,10 @@ function post(path: string, body: unknown, headers: Record<string, string> = {})
 
 beforeEach(() => {
   validateProxyToken.mockReset().mockResolvedValue(null)
-  broadcastGlobal.mockReset()
+  publish.mockReset()
   captureException.mockReset()
-  isSessionActive.mockReset().mockReturnValue(false)
-  isSubscribed.mockReset().mockReturnValue(false)
+  isActive.mockReset().mockReturnValue(false)
+  isStreamSubscribed.mockReset().mockReturnValue(false)
   resetBootstrapEnvStoreForTests()
 })
 
@@ -104,7 +109,7 @@ describe('POST /:agentSlug/events/dashboard-screenshot-ready', () => {
     )
 
     expect(res.status).toBe(204)
-    expect(broadcastGlobal).toHaveBeenCalledWith({
+    expect(publish).toHaveBeenCalledWith({
       type: 'dashboard_screenshot_ready',
       agentSlug: 'agent-1',
       dashboardSlug: 'sales-dashboard',
@@ -121,7 +126,7 @@ describe('POST /:agentSlug/events/dashboard-screenshot-ready', () => {
     )
 
     expect(res.status).toBe(403)
-    expect(broadcastGlobal).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
   })
 
   it('rejects unsafe dashboard slugs', async () => {
@@ -134,7 +139,7 @@ describe('POST /:agentSlug/events/dashboard-screenshot-ready', () => {
     )
 
     expect(res.status).toBe(400)
-    expect(broadcastGlobal).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
   })
 })
 
@@ -149,7 +154,7 @@ describe('POST /:agentSlug/events/dashboard-status-changed', () => {
     )
 
     expect(res.status).toBe(204)
-    expect(broadcastGlobal).toHaveBeenCalledWith({
+    expect(publish).toHaveBeenCalledWith({
       type: 'dashboard_status_changed',
       agentSlug: 'agent-1',
       dashboardSlug: 'sales-dashboard',
@@ -167,7 +172,7 @@ describe('POST /:agentSlug/events/dashboard-status-changed', () => {
     )
 
     expect(res.status).toBe(403)
-    expect(broadcastGlobal).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
   })
 
   it('rejects non-terminal statuses', async () => {
@@ -180,7 +185,7 @@ describe('POST /:agentSlug/events/dashboard-status-changed', () => {
     )
 
     expect(res.status).toBe(400)
-    expect(broadcastGlobal).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
   })
 
   it('rejects unsafe dashboard slugs', async () => {
@@ -193,7 +198,7 @@ describe('POST /:agentSlug/events/dashboard-status-changed', () => {
     )
 
     expect(res.status).toBe(400)
-    expect(broadcastGlobal).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
   })
 })
 
@@ -212,8 +217,8 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
 
   it('reports a turn the host is still stuck on', async () => {
     validateProxyToken.mockResolvedValue('agent-1')
-    isSessionActive.mockReturnValue(true)
-    isSubscribed.mockReturnValue(true)
+    isActive.mockReturnValue(true)
+    isStreamSubscribed.mockReturnValue(true)
 
     const res = await post('/agent-1/events/undelivered-turn', report, { Authorization: 'Bearer synth_x' })
 
@@ -221,7 +226,8 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
     expect(captureException).toHaveBeenCalledTimes(1)
     const [err, context] = captureException.mock.calls[0]
     expect((err as Error).message).toBe('Session turn ended after its stream socket dropped')
-    expect(isSessionActive).toHaveBeenCalledWith('agent-1', 'session-1')
+    expect(getActor).toHaveBeenCalledWith('agent-1')
+    expect(isActive).toHaveBeenCalledWith('session-1')
     expect(context).toEqual({
       tags: {
         component: 'container',
@@ -249,8 +255,8 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
     { active: false, subscribed: false },
   ])('does not report when the host is not stuck (%j)', async ({ active, subscribed }) => {
     validateProxyToken.mockResolvedValue('agent-1')
-    isSessionActive.mockReturnValue(active)
-    isSubscribed.mockReturnValue(subscribed)
+    isActive.mockReturnValue(active)
+    isStreamSubscribed.mockReturnValue(subscribed)
 
     const res = await post('/agent-1/events/undelivered-turn', report, { Authorization: 'Bearer synth_x' })
 
@@ -260,8 +266,8 @@ describe('POST /:agentSlug/events/undelivered-turn', () => {
 
   it('accepts a report from an older agent image without the socket details', async () => {
     validateProxyToken.mockResolvedValue('agent-1')
-    isSessionActive.mockReturnValue(true)
-    isSubscribed.mockReturnValue(true)
+    isActive.mockReturnValue(true)
+    isStreamSubscribed.mockReturnValue(true)
 
     const res = await post(
       '/agent-1/events/undelivered-turn',

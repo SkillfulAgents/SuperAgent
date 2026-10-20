@@ -85,7 +85,6 @@ const mockHasAwaiting = vi.fn(() => false)
 
 vi.mock('./message-persister', () => ({
   messagePersister: {
-    broadcastGlobal: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
     hasActiveSessionsForAgent: () => mockHasActive(),
     hasSessionsAwaitingInputForAgent: () => mockHasAwaiting(),

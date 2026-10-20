@@ -87,8 +87,12 @@ const mockMessagePersister = vi.hoisted(() => ({
   markSessionIdle: vi.fn(),
   isSubscribed: vi.fn(() => false),
   cancelAwaitingInput: vi.fn(() => Promise.resolve()),
-  broadcastGlobal: vi.fn(),
   broadcastSessionUpdate: vi.fn(),
+}))
+
+const mockPublishGlobal = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: mockPublishGlobal, subscribe: () => () => {} },
 }))
 
 vi.mock('@shared/lib/container/message-persister', () => ({
@@ -361,7 +365,7 @@ describe('scheduled-tasks route', () => {
         })
       )
       expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'sleeping-session-1')
-      expect(mockMessagePersister.broadcastGlobal).toHaveBeenCalledWith(
+      expect(mockPublishGlobal).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'session_updated', sessionId: 'sleeping-session-1' })
       )
     })
@@ -375,7 +379,7 @@ describe('scheduled-tasks route', () => {
       })
 
       expect(res.status).toBe(204)
-      expect(mockMessagePersister.broadcastGlobal).toHaveBeenCalledWith(
+      expect(mockPublishGlobal).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'session_updated', sessionId: 'sleeping-session-1' })
       )
     })
@@ -389,7 +393,7 @@ describe('scheduled-tasks route', () => {
       })
 
       expect(res.status).toBe(204)
-      expect(mockMessagePersister.broadcastGlobal).not.toHaveBeenCalledWith(
+      expect(mockPublishGlobal).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'session_updated' })
       )
     })

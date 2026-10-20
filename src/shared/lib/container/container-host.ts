@@ -31,6 +31,7 @@ import {
 import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import path from 'path'
@@ -191,7 +192,7 @@ export class ContainerHost {
    */
   watchWebhookRelay(relay: WebhookRelayService): () => void {
     return watchWebhookRelay(relay, {
-      broadcast: (status) => messagePersister.broadcastGlobal({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
+      broadcast: (status) => globalFeed.publish({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
       reconcileAgents: (available) => this.reconcileWebhookRelay(available),
     })
   }
@@ -381,7 +382,7 @@ export class ContainerHost {
       if (otherId === slug) continue
       this.runtime(otherId).markAsStopped()
       messagePersister.markAllSessionsInactiveForAgent(otherId, { settleRecovering: true })
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'agent_status_changed',
         agentSlug: otherId,
         status: 'stopped',
@@ -389,7 +390,7 @@ export class ContainerHost {
     }
 
     // Alert the user that we had to kill the VM
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'system_alert',
       level: 'warning',
       title: 'Container runtime restarting',
@@ -463,7 +464,7 @@ export class ContainerHost {
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'runtime_readiness_changed',
       readiness,
     })
