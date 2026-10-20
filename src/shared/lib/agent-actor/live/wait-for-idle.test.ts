@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { waitForIdle, WaitForIdleTimeoutError } from './wait-for-idle'
+import { waitForIdle } from './wait-for-idle'
 
 const POLL_MS = 250
 
@@ -20,11 +20,12 @@ function session(initiallyActive: boolean) {
 }
 
 /** Settles a promise into a readable state, so a test can check it without awaiting it. */
-function track(promise: Promise<void>) {
-  const state: { status: 'pending' | 'resolved' | 'rejected'; error?: unknown } = { status: 'pending' }
+function track<T>(promise: Promise<T>) {
+  const state: { status: 'pending' | 'resolved' | 'rejected'; value?: T; error?: unknown } = { status: 'pending' }
   promise.then(
-    () => {
+    (value) => {
       state.status = 'resolved'
+      state.value = value
     },
     (error: unknown) => {
       state.status = 'rejected'
@@ -94,7 +95,6 @@ describe('waitForIdle', () => {
 
     expect(result.status).toBe('rejected')
     expect(result.error).toBeInstanceOf(Error)
-    expect(result.error).not.toBeInstanceOf(WaitForIdleTimeoutError)
     expect((result.error as Error).message).toBe('waitForIdle: session never became active')
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -125,7 +125,7 @@ describe('waitForIdle', () => {
     expect(result.status).toBe('resolved')
   })
 
-  it('times out with WaitForIdleTimeoutError when the session stays active', async () => {
+  it('answers timeout when the session stays active', async () => {
     const s = session(true)
     const result = track(waitForIdle(s.isActive, { timeoutMs: 1_000 }))
 
@@ -134,10 +134,8 @@ describe('waitForIdle', () => {
 
     await vi.advanceTimersByTimeAsync(POLL_MS)
 
-    expect(result.status).toBe('rejected')
-    expect(result.error).toBeInstanceOf(WaitForIdleTimeoutError)
-    expect((result.error as Error).name).toBe('WaitForIdleTimeoutError')
-    expect((result.error as Error).message).toBe('waitForIdle timeout after 1000ms')
+    expect(result.status).toBe('resolved')
+    expect(result.value).toBe('timeout')
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -149,7 +147,7 @@ describe('waitForIdle', () => {
     expect(result.status).toBe('pending')
 
     await vi.advanceTimersByTimeAsync(POLL_MS)
-    expect(result.error).toBeInstanceOf(WaitForIdleTimeoutError)
+    expect(result.value).toBe('timeout')
   })
 
   it('rejects at once, without polling, when the signal is already aborted', async () => {
@@ -198,7 +196,7 @@ describe('waitForIdle', () => {
     it('resolves at once for a session that is already idle', async () => {
       const s = session(false)
 
-      await expect(waitForIdle(s.isActive, { requireActiveFirst: false })).resolves.toBeUndefined()
+      await expect(waitForIdle(s.isActive, { requireActiveFirst: false })).resolves.toBe('idle')
 
       expect(s.reads()).toBe(1)
       expect(vi.getTimerCount()).toBe(0)

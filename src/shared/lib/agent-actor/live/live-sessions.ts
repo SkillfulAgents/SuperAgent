@@ -620,8 +620,8 @@ export class LiveSessions {
     return { queued: before.wasActive, rollback: () => this.states.get(sessionId)?.sendFailed(before, marked) }
   }
 
-  /** Resolve once the session is no longer active; see `waitForIdle`. */
-  waitForIdle(sessionId: string, opts?: WaitForIdleOptions): Promise<void> {
+  /** Resolve once the session is no longer active, or past the timeout; see `waitForIdle`. */
+  waitForIdle(sessionId: string, opts?: WaitForIdleOptions): Promise<'idle' | 'timeout'> {
     return waitForIdle(() => this.isActive(sessionId), opts)
   }
 

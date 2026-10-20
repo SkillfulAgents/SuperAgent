@@ -487,18 +487,10 @@ async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
   }
 }
 
-// Matched by name rather than instanceof: the error class belongs to the
-// agent's live sessions (`agent-actor/live/wait-for-idle`), which routes reach
-// only through the registry, not by import.
-function isWaitForIdleTimeout(error: unknown): boolean {
-  return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
-}
-
 /**
  * Wait for the target turn to finish within what's left of the caller's sync
  * budget (deadline is stamped at handler entry). Returns 'timeout' when the
- * budget is exhausted — before or during the wait — and rethrows any other
- * waitForIdle failure.
+ * budget is exhausted, before or during the wait.
  *
  * requireActiveFirst is off: every sync caller marks the session active before
  * the prompt is delivered (invoke) or checks isSessionActive just before
@@ -517,16 +509,11 @@ async function waitForTurnWithinBudget(
     // finished turn 'running' and make the caller poll for a result it has.
     return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
   }
-  try {
-    await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
-      timeoutMs: remainingMs,
-      requireActiveFirst: false,
-    })
-    return 'completed'
-  } catch (error) {
-    if (isWaitForIdleTimeout(error)) return 'timeout'
-    throw error
-  }
+  const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
+    timeoutMs: remainingMs,
+    requireActiveFirst: false,
+  })
+  return outcome === 'idle' ? 'completed' : 'timeout'
 }
 
 function syncWaitPromotedNote(timeoutMs: number): string {

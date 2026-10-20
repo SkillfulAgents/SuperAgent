@@ -63,7 +63,7 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   dropCoalesced: () => false,
   inDeliveryTurn: (_sessionId, work) => work(),
   markSending: () => ({ queued: false, rollback: () => {} }),
-  waitForIdle: async () => {},
+  waitForIdle: async () => 'idle',
   syncAwaiting: () => {},
   recoverAwaitingInput: () => {},
   grantCapability: () => {},

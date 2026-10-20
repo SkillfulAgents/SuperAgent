@@ -373,11 +373,14 @@ export interface SessionOps {
   isWaitingBackground(sessionId: string): boolean
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
-  /** `LiveSessions.waitForIdle` */
+  /**
+   * `LiveSessions.waitForIdle`: `'idle'` once the session is no longer
+   * active, `'timeout'` when it still is after `timeoutMs`.
+   */
   waitForIdle(
     sessionId: string,
-    opts?: { timeoutMs?: number; signal?: AbortSignal; requireActiveFirst?: boolean; observeMs?: number },
-  ): Promise<void>
+    opts?: { timeoutMs?: number; requireActiveFirst?: boolean; observeMs?: number },
+  ): Promise<'idle' | 'timeout'>
   /** `LiveSessions.activeIds` */
   activeIds(): string[]
   /** `LiveSessions.hasActive` */

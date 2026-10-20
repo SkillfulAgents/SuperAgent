@@ -41,7 +41,6 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { SessionNotification } from '../host-port'
-import { WaitForIdleTimeoutError } from './wait-for-idle'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
@@ -1371,7 +1370,7 @@ describe('waitForIdle', () => {
   it('resolves immediately for missing state when requireActiveFirst=false', async () => {
     await expect(
       sessions().waitForIdle(WAIT_SESSION, { requireActiveFirst: false }),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe('idle')
   })
 
   it('rejects with "aborted" when the abort signal fires mid-wait', async () => {
@@ -1393,19 +1392,13 @@ describe('waitForIdle', () => {
     ).rejects.toThrow(/aborted/)
   })
 
-  it('rejects with timeout when an active session never goes idle', async () => {
+  it('answers timeout when an active session never goes idle', async () => {
     // Once the session is active, observeMs no longer applies — timeoutMs is
     // the stop-gap. Verifies the timeout branch (not the never-active branch).
+    // Data, not an error class: the x-agent routes promote a sync invoke to
+    // async on it, and an error's class does not survive a transport.
     sessions().markActive(WAIT_SESSION)
-    const err: unknown = await sessions()
-      .waitForIdle(WAIT_SESSION, { timeoutMs: 200 })
-      .then(() => null, (e: unknown) => e)
-    expect(err).toBeInstanceOf(WaitForIdleTimeoutError)
-    // The x-agent routes distinguish timeout from other failures by error
-    // NAME (their tests mock this module wholesale, so instanceof is out).
-    // If this name changes, sync invoke stops promoting to async on timeout.
-    expect((err as Error).name).toBe('WaitForIdleTimeoutError')
-    expect((err as Error).message).toMatch(/timeout after 200ms/)
+    expect(await sessions().waitForIdle(WAIT_SESSION, { timeoutMs: 200 })).toBe('timeout')
   })
 
   it('resolves once an active session goes idle (and preserves isActive across subscribe)', async () => {
@@ -1419,7 +1412,7 @@ describe('waitForIdle', () => {
 
     const promise = sessions().waitForIdle(WAIT_SESSION, { observeMs: 1000 })
     setTimeout(() => client.emit({ type: 'result', subtype: 'success' }), 50)
-    await expect(promise).resolves.toBeUndefined()
+    await expect(promise).resolves.toBe('idle')
   })
 })
 

@@ -1,13 +1,5 @@
-/** Thrown by `waitForIdle` when the session is still active past its timeout. */
-export class WaitForIdleTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`waitForIdle timeout after ${timeoutMs}ms`)
-    this.name = 'WaitForIdleTimeoutError'
-  }
-}
-
 export interface WaitForIdleOptions {
-  /** Give up (with `WaitForIdleTimeoutError`) after this long. Default 10 minutes. */
+  /** Give up (resolving `'timeout'`) after this long. Default 10 minutes. */
   timeoutMs?: number
   signal?: AbortSignal
   /** The session must be seen active first (default): one that never started is an error. */
@@ -19,15 +11,16 @@ export interface WaitForIdleOptions {
 const POLL_MS = 250
 
 /**
- * Resolve once `isActive` reads false (a result, a stop or a lost connection
- * ended the session). Polled, so a turn that starts and ends between two
- * reads still counts once it has been seen active.
+ * Resolve `'idle'` once `isActive` reads false (a result, a stop or a lost
+ * connection ended the session), or `'timeout'` when it still reads true
+ * past the timeout. Polled, so a turn that starts and ends between two reads
+ * still counts once it has been seen active.
  */
-export function waitForIdle(isActive: () => boolean, opts: WaitForIdleOptions = {}): Promise<void> {
+export function waitForIdle(isActive: () => boolean, opts: WaitForIdleOptions = {}): Promise<'idle' | 'timeout'> {
   const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000
   const requireActiveFirst = opts.requireActiveFirst ?? true
   const observeMs = opts.observeMs ?? 2000
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<'idle' | 'timeout'>((resolve, reject) => {
     const startedAt = Date.now()
     let everActive = false
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -52,7 +45,7 @@ export function waitForIdle(isActive: () => boolean, opts: WaitForIdleOptions = 
       if (!active) {
         if (!requireActiveFirst || everActive) {
           cleanup()
-          resolve()
+          resolve('idle')
           return
         }
         if (Date.now() - startedAt > observeMs) {
@@ -63,7 +56,7 @@ export function waitForIdle(isActive: () => boolean, opts: WaitForIdleOptions = 
       }
       if (Date.now() - startedAt > timeoutMs) {
         cleanup()
-        reject(new WaitForIdleTimeoutError(timeoutMs))
+        resolve('timeout')
         return
       }
       timer = setTimeout(tick, POLL_MS)

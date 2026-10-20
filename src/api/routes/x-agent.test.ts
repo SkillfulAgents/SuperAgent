@@ -19,7 +19,6 @@ import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
 import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { WaitForIdleTimeoutError } from '@shared/lib/agent-actor/live/wait-for-idle'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as schema from '@shared/lib/db/schema'
 
@@ -159,12 +158,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 // Live sessions
-// The real error the live sessions' waitForIdle throws: the routes match
-// timeout errors on error.name, so this holds them to the real class.
-function waitForIdleTimeoutError(): Error {
-  return new WaitForIdleTimeoutError(120_000)
-}
-
 // Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
 // entry minus pre-wait work), so the exact timeoutMs varies — assert the shape
 // and that it stays within (0, 120s]. requireActiveFirst is off because sync
@@ -181,7 +174,7 @@ function expectBoundedSyncWait(sessionId: string): void {
 }
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
-const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
+const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
 const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
 const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
@@ -373,7 +366,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   mockIsSessionActive.mockReturnValue(false)
   mockIsSessionAwaitingInput.mockReturnValue(false)
-  mockWaitForIdle.mockResolvedValue(undefined)
+  mockWaitForIdle.mockResolvedValue('idle')
   mockSessionIsKnown.mockResolvedValue(true)
   mockReadAgentPreferences.mockResolvedValue({})
   mockGetSessionMetadata.mockResolvedValue(null)
@@ -1214,7 +1207,7 @@ describe('/invoke', () => {
     // rather than re-invoke. Left as a plain network error, callers retried the
     // invoke and spawned duplicate runs (retry storm).
     reviewDecisions.push('allow')
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'long-running task',
@@ -1240,7 +1233,7 @@ describe('/invoke', () => {
   it('promotes sync=true on an existing session to async when the wait times out', async () => {
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(false)
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'follow-up',
@@ -1343,6 +1336,7 @@ describe('/invoke', () => {
     mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
@@ -1994,6 +1988,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockImplementation(() => true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     mockGetTranscript.mockResolvedValue([])
     const res = await authedFetch('/x-agent/get-transcript', {
@@ -2013,7 +2008,7 @@ describe('/get-transcript', () => {
     // current transcript and can call again with sync=true to keep waiting.
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(true)
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     mockGetTranscript.mockResolvedValue([
       { type: 'user', message: { role: 'user', content: 'hello' } },
     ])
@@ -2047,6 +2042,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,
@@ -2075,7 +2071,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementationOnce(async () => {
       mockIsSessionActive.mockReturnValue(false) // turn ended...
-      throw waitForIdleTimeoutError() // ...but the wait had already timed out
+      return 'timeout' as const // ...but the wait had already timed out
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,
