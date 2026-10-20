@@ -26,11 +26,11 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['uv run without env file', bash('uv run --with requests fetch.py'), ['uv-run-env-file']],
   ['uv run after cd', bash('cd /workspace && uv run fetch.py'), ['uv-run-env-file']],
   ['uvx', bash('uvx ruff check'), []],
-  ['uv run with env file', bash('uv run --env-file .env --with requests fetch.py'), []],
+  ['uv run with env file (reminder still shows)', bash('uv run --env-file .env --with requests fetch.py'), ['uv-run-env-file']],
   ['write a skill script', wrote('/workspace/.claude/skills/fetch-weather/weather.py'), ['update-skill-md']],
   ['edit a skill script', edited('/workspace/.claude/skills/fetch-weather/weather.py'), ['update-skill-md']],
   ['write outside skills', wrote('/workspace/reports/weather.py'), []],
-  ['edit SKILL.md itself', edited('/workspace/.claude/skills/fetch-weather/SKILL.md'), []],
+  ['edit SKILL.md itself', edited('/workspace/.claude/skills/fetch-weather/SKILL.md'), ['update-skill-md']],
   ['agent-browser and uv run in one command', bash('agent-browser snapshot && uv run report.py'), ['agent-browser-bash', 'uv-run-env-file']],
 ]
 
