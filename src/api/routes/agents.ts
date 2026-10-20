@@ -51,6 +51,7 @@ import {
   agentExists,
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
+import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '@shared/lib/services/agent-identity-schema'
 import {
   agentRegistry,
   containerHost,
@@ -1163,7 +1164,7 @@ agents.get('/my-roles', async (c) => {
   }
 })
 
-// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
+// POST /api/agents/generate-name - Generate an agent name and one-line description from a prompt using a lightweight LLM
 // Collection-level route: keep this before the /:id/* agent-existence middleware.
 // TODO: Migrate remaining route handlers to use zValidator for consistent request validation
 const generateNameBodySchema = z.object({
@@ -1174,7 +1175,7 @@ const generateNameBodySchema = z.object({
 // anyway (the old max_tokens: 50 doubled as a truncator); clamp to one line
 // and a sidebar-sized length before using it.
 function clampGeneratedName(raw: string): string {
-  return raw.split('\n')[0].trim().substring(0, 80)
+  return raw.split('\n')[0].trim().substring(0, AGENT_NAME_MAX_LENGTH)
 }
 
 agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
@@ -1183,27 +1184,33 @@ agents.post('/generate-name', zValidator('json', generateNameBodySchema), async 
     const truncatedPrompt = prompt.trim().substring(0, 10_000)
 
     const anthropic = await getLlmClient()
-    const rawName = (
+    const raw = (
       await createSummarizerText(anthropic, {
         model: getSummarizerModel(),
         messages: [
           {
             role: 'user',
-            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
+            content: `Based on what the user wants an agent to do, write two lines:
+Line 1: a short, descriptive agent name (2-4 words max).
+Line 2: one sentence (under 20 words) saying what the agent is for.
+
+The user's description is:
 
 "${truncatedPrompt}"
 
-Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
+Respond with ONLY those two lines. No labels, no quotes, no explanation.`,
           },
         ],
       })
     )?.trim()
-    const name = rawName ? clampGeneratedName(rawName) : undefined
+    const [nameLine, descriptionLine] = (raw ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
+    const name = nameLine ? clampGeneratedName(nameLine) : undefined
     if (!name) {
       return c.json({ error: 'Failed to generate name' }, 500)
     }
+    const description = descriptionLine?.substring(0, AGENT_DESCRIPTION_MAX_LENGTH)
 
-    return c.json({ name })
+    return c.json(description ? { name, description } : { name })
   } catch (error) {
     console.error('Failed to generate agent name:', error)
     return c.json({ error: 'Failed to generate name' }, 500)
