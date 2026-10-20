@@ -438,7 +438,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     const failures = {
       blocked: { status: 403, policyDecision: 'block', body: {
         error: 'blocked_by_policy', message: 'This request was blocked by your MCP access policy.',
-        tool: toolName, settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
+        tool: toolName, settingsHint: `You can change this on the agent's Connections page: open ${mcp.descriptor.name} and edit its Permissions.`,
       } },
       denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.', rules: access.rules ?? [] } },
       review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.', rules: access.rules ?? [] } },

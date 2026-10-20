@@ -11,6 +11,7 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
+import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { hasDotSegment } from '@shared/lib/proxy/rules/patterns'
@@ -294,7 +295,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       message: 'This request was blocked by your API access policy.',
       scopes: policyResult.matchedScopes,
       toolkit: account.toolkitSlug,
-      settingsHint: 'You can adjust policies in Settings > Accounts > Policies',
+      settingsHint: `You can change this on the agent's Connections page: open ${getProviderDisplayName(account.toolkitSlug)} and edit its Permissions.`,
     }, 403)
   }
 
