@@ -8,5 +8,6 @@ triggers:
       command: uv run *
     unless:
       command: "*--env-file*"
+repeat: turn
 ---
 Secrets are stored in `/workspace/.env`. Run Python scripts with `uv run --env-file .env ...` so they can read them from environment variables.
