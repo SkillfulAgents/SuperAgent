@@ -6,7 +6,6 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
-import type { ChipContext } from './composer-chips'
 
 const state = vi.hoisted(() => ({
   isAuthMode: true,
@@ -32,25 +31,35 @@ vi.mock('@renderer/lib/api', () => ({
 }))
 
 import { MarkdownComposerEditor } from './markdown-composer-editor'
+import { useMentionDirectory } from './mention-chip'
 
 const me = { id: 'me', name: 'Dana Lee', email: 'dana@acme.com', image: null, role: 'owner' as const }
 const mike = { id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com', image: null, role: 'user' as const }
 const support = { slug: 'support01x', displaySlug: 'support-agent-support01x', name: 'Support Agent', avatar: null }
 const minutes = { slug: 'minutes01x', displaySlug: 'minutes-bot-minutes01x', name: 'Minutes Bot', avatar: null }
 
-function Composer({ context }: { context?: ChipContext }) {
+function Editor({ pickers }: { pickers: boolean }) {
   const [value, setValue] = useState('')
+  const directory = useMentionDirectory(support.slug)
   return (
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <>
       <MarkdownComposerEditor
         value={value}
         onChange={setValue}
         placeholder="Write a message"
         dataTestId="markdown-editor"
-        chipContext={context ?? { agentSlug: support.slug }}
-        mentions
+        chipContext={{ agentSlug: support.slug, ...directory }}
+        pickers={pickers}
       />
       <output data-testid="markdown-value">{value}</output>
+    </>
+  )
+}
+
+function Composer({ pickers = true }: { pickers?: boolean }) {
+  return (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Editor pickers={pickers} />
     </QueryClientProvider>
   )
 }
@@ -148,6 +157,14 @@ describe('the @ menu', () => {
     await user.type(screen.getByTestId('markdown-editor'), '@')
 
     expect(listed()).toEqual(['mention-option-agent-minutes01x'])
+  })
+
+  it('does not open in a composer with no room for it', async () => {
+    const user = userEvent.setup()
+    render(<Composer pickers={false} />)
+    await user.type(screen.getByTestId('markdown-editor'), '@')
+
+    expect(screen.queryByTestId('mention-menu')).toBeNull()
   })
 
   it('does not open inside code or mid-word', async () => {

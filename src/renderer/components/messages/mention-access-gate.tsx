@@ -1,11 +1,10 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { AgentRole } from '@shared/lib/types/agent'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
 import { apiFetch } from '@renderer/lib/api'
 import { loadAgentMembers } from '@renderer/lib/agent-members-loader'
 import type { Chip } from '@renderer/lib/chip-marker'
-import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -18,7 +17,7 @@ import {
 import { Label } from '@renderer/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { RoleSelectItems } from '@renderer/components/agents/agent-share-popover'
-import { chipsIn, type ChipContext } from './composer-chips'
+import type { ChipContext, ChipSend } from './composer-chips'
 import { agentForSlug } from './mention-chip'
 
 type Decision = 'allow' | 'review' | 'block'
@@ -52,7 +51,6 @@ function effective(policies: Policy[], operation: Operation, target: string): De
     ?? 'review'
 }
 
-const uniqueChips = (chips: Chip[]) => [...new Map(chips.map((chip) => [chip.referent, chip])).values()]
 const names = (chips: Chip[]) => chips.map((chip) => chip.label).join(', ')
 
 function fetchMembers(queryClient: QueryClient, agentSlug: string, staleTime: number): Promise<AgentMember[]> {
@@ -63,73 +61,48 @@ function fetchMembers(queryClient: QueryClient, agentSlug: string, staleTime: nu
   })
 }
 
-type Question =
-  | { kind: 'share'; people: Chip[] }
-  | { kind: 'reach'; agents: Chip[]; blocked: Map<string, Operation[]>; callerName: string | undefined }
+/**
+ * The user chip's check before a send: a teammate who cannot open the agent is
+ * offered a share, and the message goes with the fresh roster. Only someone who
+ * manages the agent is asked; anyone else sends as is.
+ */
+export async function offerShare(people: Chip[], { agentSlug, context, isAuthMode, manages, queryClient, ask }: ChipSend): Promise<ChipContext | null> {
+  if (!isAuthMode || !manages) return context
+  const members = new Set((await fetchMembers(queryClient, agentSlug, 30_000)).map((member) => member.id))
+  const outside = people.filter((chip) => !members.has(chip.referent))
+  if (outside.length === 0) return context
+  if (!(await ask((done) => <ShareDialog agentSlug={agentSlug} people={outside} onDone={done} />))) return null
+  const fresh = await fetchMembers(queryClient, agentSlug, 0)
+  return { ...context, members: new Map(fresh.map((member) => [member.id, member])) }
+}
 
 /**
- * Before a message that tags someone is sent: a teammate who cannot open the
- * agent is offered a share, and an agent this one cannot reach without asking
- * is offered access. Only someone who manages the agent is asked; anyone else
- * sends as is, and the agent asks at call time.
+ * The agent chip's check before a send: an agent this one cannot reach without
+ * asking is offered access. Only someone who manages the agent is asked; anyone
+ * else sends as is, and the agent asks at call time.
  */
-export function useMentionAccessGate(agentSlug: string): {
-  /** The context to send with, or null when the person backed out. */
-  confirm: (content: string, context: ChipContext, options: { silent: boolean }) => Promise<ChipContext | null>
-  dialog: ReactNode
-} {
-  const queryClient = useQueryClient()
-  const { isAuthMode, isAdmin, canAdminAgent } = useUser()
-  const canManage = !isAuthMode || isAdmin || canAdminAgent(agentSlug)
-  const [question, setQuestion] = useState<(Question & { answer: (ok: boolean) => void }) | null>(null)
-
-  const ask = (next: Question) => new Promise<boolean>((resolve) => setQuestion({ ...next, answer: resolve }))
-
-  const confirm = useCallback(async (content: string, context: ChipContext, { silent }: { silent: boolean }) => {
-    if (!canManage) return context
-    const chips = chipsIn(content)
-    let next = context
-
-    const people = uniqueChips(chips.filter((chip) => chip.kind === 'user'))
-    if (isAuthMode && people.length > 0) {
-      const members = new Set((await fetchMembers(queryClient, agentSlug, 30_000)).map((member) => member.id))
-      const outside = people.filter((chip) => !members.has(chip.referent))
-      if (outside.length > 0) {
-        if (!(await ask({ kind: 'share', people: outside }))) return null
-        const fresh = await fetchMembers(queryClient, agentSlug, 0)
-        next = { ...next, members: new Map(fresh.map((member) => [member.id, member])) }
-      }
-    }
-
-    // A silent message runs no turn, so there is nothing to reach yet.
-    const agents = silent ? [] : uniqueChips(chips.filter((chip) => chip.kind === 'agent' && agentForSlug(context.agents, chip.referent)))
-    if (agents.length > 0) {
-      const { policies } = await queryClient.fetchQuery<{ policies: Policy[] }>({
-        queryKey: ['x-agent-policies', agentSlug],
-        queryFn: async () => {
-          const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`)
-          if (!res.ok) throw new Error('Failed to fetch policies')
-          return res.json()
-        },
-      })
-      const unreachable = agents.filter((chip) =>
-        effective(policies, 'read', chip.referent) !== 'allow' && effective(policies, 'invoke', chip.referent) !== 'allow')
-      const blocked = new Map(unreachable.map((chip) => [chip.referent,
-        (['read', 'invoke'] as const).filter((operation) => effective(policies, operation, chip.referent) === 'block')]))
-      const callerName = agentForSlug(context.agents, agentSlug)?.name
-      if (unreachable.length > 0 && !(await ask({ kind: 'reach', agents: unreachable, blocked, callerName }))) return null
-    }
-    return next
-  }, [agentSlug, canManage, isAuthMode, queryClient])
-
-  const close = (ok: boolean) => {
-    question?.answer(ok)
-    setQuestion(null)
-  }
-  const dialog = question && (question.kind === 'share'
-    ? <ShareDialog agentSlug={agentSlug} people={question.people} onDone={close} />
-    : <ReachDialog agentSlug={agentSlug} agentName={question.callerName} agents={question.agents} blocked={question.blocked} onDone={close} />)
-  return { confirm, dialog }
+export async function offerReach(tagged: Chip[], { agentSlug, context, silent, manages, queryClient, ask }: ChipSend): Promise<ChipContext | null> {
+  // A silent message runs no turn, so there is nothing to reach yet.
+  const agents = tagged.filter((chip) => agentForSlug(context.agents, chip.referent))
+  if (silent || !manages || agents.length === 0) return context
+  const { policies } = await queryClient.fetchQuery<{ policies: Policy[] }>({
+    queryKey: ['x-agent-policies', agentSlug],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`)
+      if (!res.ok) throw new Error('Failed to fetch policies')
+      return res.json()
+    },
+  })
+  const unreachable = agents.filter((chip) =>
+    effective(policies, 'read', chip.referent) !== 'allow' && effective(policies, 'invoke', chip.referent) !== 'allow')
+  if (unreachable.length === 0) return context
+  const blocked = new Map(unreachable.map((chip) => [chip.referent,
+    (['read', 'invoke'] as const).filter((operation) => effective(policies, operation, chip.referent) === 'block')]))
+  const agentName = agentForSlug(context.agents, agentSlug)?.name
+  const allowed = await ask((done) => (
+    <ReachDialog agentSlug={agentSlug} agentName={agentName} agents={unreachable} blocked={blocked} onDone={done} />
+  ))
+  return allowed ? context : null
 }
 
 interface GateDialogProps {

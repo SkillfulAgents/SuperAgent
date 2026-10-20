@@ -34,7 +34,6 @@ import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
-import { useComposerMentions } from '@renderer/hooks/use-composer-mentions'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
@@ -203,7 +202,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const mentions = useComposerMentions(agent.slug, { silent: false })
   const composer = useMessageComposer({
     agentSlug: agent.slug,
     uploadFile: useCallback(({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
@@ -238,7 +236,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
-    mentions,
     initialAttachments: carryover?.attachments,
   })
 
@@ -471,7 +468,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 onChoice={composer.mountDialog.onChoice}
                 folderName={composer.mountDialog.folderName}
               />
-              {mentions.dialog}
+              {composer.chipDialog}
               <form
                 onSubmit={composer.handleSubmit}
                 className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
@@ -498,7 +495,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                     onSecure: composer.securePotentialSecret,
                   }}
                   chipContext={composer.chipContext}
-                  mentions
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>

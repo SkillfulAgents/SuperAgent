@@ -1,10 +1,11 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ForwardRefExoticComponent, ReactNode, RefAttributes } from 'react'
 import type { DOMOutputSpec } from 'prosemirror-model'
+import type { QueryClient } from '@tanstack/react-query'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { appendMentions, parseMentions, type Mention } from '@shared/lib/utils/mentions'
 import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
-import { agentChip, userChip } from './mention-chips'
+import { agentChip, mentionTrigger, userChip } from './mention-chips'
 
 /** Someone who can open the agent. */
 export interface ChipPerson {
@@ -46,6 +47,22 @@ export interface ChipMenuProps {
   onClose: () => void
 }
 
+/** What a kind's `beforeSend` works with. */
+export interface ChipSend {
+  /** The agent the draft is for. */
+  agentSlug: string
+  /** What the composer knows, with what the checks before this one learned. */
+  context: ChipContext
+  /** The message only notifies: it runs no turn. */
+  silent: boolean
+  isAuthMode: boolean
+  /** Whether the person may share the agent and set what it may reach. */
+  manages: boolean
+  queryClient: QueryClient
+  /** Shows a dialog until it calls `done`; resolves with whether the person went ahead. */
+  ask: (dialog: (done: (ok: boolean) => void) => ReactNode) => Promise<boolean>
+}
+
 /**
  * One kind of inline chip in the composer. The editor paints it as an atom, the
  * draft stores it as its marker, and send swaps the marker for `toAgentText`.
@@ -73,9 +90,53 @@ export interface ComposerChipKind {
   isBacked?: (chip: Chip, context: ChipContext) => boolean
   /** The chip's right-click menu, built on `ChipMenuAt`. Omitted, the browser's own. */
   Menu?: ComponentType<ChipMenuProps>
+  /**
+   * Before a draft with chips of this kind is sent, given its distinct ones:
+   * may check them and ask the person something (offer access). Resolves to
+   * the context to send with, or null to keep the draft.
+   */
+  beforeSend?: (chips: Chip[], send: ChipSend) => Promise<ChipContext | null>
+  /**
+   * A draft that opens on this kind's chip only notifies who it names: it joins
+   * the transcript and the agent does not run, where the composer allows that.
+   */
+  opensSilently?: boolean
 }
 
 export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind[] = [secretChip, userChip, agentChip]
+
+/** What a trigger's picker receives. It shows at the caret while the query is typed. */
+export interface ChipPickerProps {
+  /** What was typed after the trigger character. */
+  query: string
+  context: ChipContext
+  /** Where the trigger character sits. */
+  anchor: { getBoundingClientRect: () => DOMRect }
+  /** Puts the chip where the trigger and its query were. */
+  onPick: (chip: Chip) => void
+  /** Closes the picker until the caret leaves this trigger. */
+  onDismiss: () => void
+}
+
+/** An open picker sees the editor's keys first. */
+export interface ChipPickerHandle {
+  /** True when the picker took the key. */
+  onKeyDown: (event: KeyboardEvent) => boolean
+}
+
+/**
+ * A character that, typed at the start of a line or after a space, opens a
+ * picker of chips to put in its place. A new trigger is a line in
+ * `COMPOSER_CHIP_TRIGGERS`; its picker can offer chips of several kinds.
+ */
+export interface ComposerChipTrigger {
+  char: string
+  /** Whether the composer has anything to pick from. */
+  available: (context: ChipContext) => boolean
+  Picker: ForwardRefExoticComponent<ChipPickerProps & RefAttributes<ChipPickerHandle>>
+}
+
+export const COMPOSER_CHIP_TRIGGERS: readonly ComposerChipTrigger[] = [mentionTrigger]
 
 const kindsByName = new Map(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, kind]))
 
@@ -106,10 +167,27 @@ export function chipsIn(text: string): Chip[] {
   return [...text.matchAll(CHIP_MARKER)].flatMap((match) => registeredChip(match) ?? [])
 }
 
-/** The teammate a draft opens on: such a draft only notifies them, where the composer allows that. */
-export function openingTeammate(text: string): Chip | null {
+/** The chip a draft opens on, when its kind makes the draft only notify (`opensSilently`). */
+export function silentOpener(text: string): Chip | null {
   const opening = chipAt(text.trimStart())?.chip
-  return opening?.kind === userChip.kind ? opening : null
+  return opening && getChipKind(opening)?.opensSilently ? opening : null
+}
+
+/**
+ * Runs each kind's `beforeSend` on the draft's chips of that kind, in
+ * `COMPOSER_CHIP_KINDS` order, each with the context the one before resolved
+ * to. Null when one of them kept the draft.
+ */
+export async function checkBeforeSend(text: string, send: ChipSend): Promise<ChipContext | null> {
+  const chips = [...new Map(chipsIn(text).map((chip) => [`${chip.kind}:${chip.referent}`, chip])).values()]
+  let context: ChipContext | null = send.context
+  for (const kind of COMPOSER_CHIP_KINDS) {
+    const own = chips.filter((chip) => chip.kind === kind.kind)
+    if (!kind.beforeSend || own.length === 0) continue
+    context = await kind.beforeSend(own, { ...send, context })
+    if (!context) return null
+  }
+  return context
 }
 
 /**
@@ -130,7 +208,7 @@ export function chipsToAgentText(text: string, context: ChipContext, { silent = 
   return appendMentions(body, [...mentions.values()], { silent })
 }
 
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /**
  * A sent message as a draft again, for one that comes back to the composer:

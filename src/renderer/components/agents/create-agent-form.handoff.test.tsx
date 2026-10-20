@@ -45,6 +45,11 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
   }),
 }))
 
+// No agent yet: nothing for chips to load, and nothing to check before a send.
+vi.mock('@renderer/hooks/use-composer-chips', () => {
+  const context = {}
+  return { useComposerChips: () => ({ context, check: async () => context, dialog: null }) }
+})
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => ({
     data: {

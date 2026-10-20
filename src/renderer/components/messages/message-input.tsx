@@ -35,9 +35,7 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
-import { useComposerMentions } from '@renderer/hooks/use-composer-mentions'
-import { openingTeammate } from './composer-chips'
-import { parseMentions } from '@shared/lib/utils/mentions'
+import { silentOpener } from './composer-chips'
 import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
@@ -190,7 +188,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const isSending = sessionId ? sendMessage.isPending : createSession.isPending
   const sendError = sessionId ? sendMessage.error : createSession.error
 
-  const mentions = useComposerMentions(agentSlug, { silent: !!sessionId })
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
@@ -201,7 +198,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       ({ sourcePath }) => uploadFolder.mutateAsync({ sessionId: sessionId ?? undefined, agentSlug, sourcePath }),
       [uploadFolder, sessionId, agentSlug]
     ),
-    onSubmit: useCallback(async (content: string) => {
+    onSubmit: useCallback(async (content: string, { silent }: { silent: boolean }) => {
       if (!sessionId) return createFirstTurn(content)
       // Local correlation id for the optimistic copy; the server-assigned
       // message uuid arrives with the POST response (the server always
@@ -209,9 +206,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       const localId = crypto.randomUUID()
       const inputMode = voiceSendRef.current ? 'voice' : 'text'
       voiceSendRef.current = false
-      // A message that opens on a teammate only notifies them: it joins the
-      // transcript and no turn runs, so it is never queued behind one.
-      const silent = parseMentions(content).silent
+      // A message that only notifies joins the transcript and runs no turn,
+      // so it is never queued behind one.
       // Mid-turn sends are queued by the agent loop (SDK streaming input) and
       // picked up after the current step. They must not carry model/effort —
       // a parameter change would interrupt/restart the in-flight query.
@@ -246,9 +242,9 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,
     keepMessageUntilComplete: !sessionId,
     draftKey: sessionId ? `session:${sessionId}` : `new-session:${agentSlug}`,
-    mentions,
+    silentSends: !!sessionId,
   })
-  const notifiesOnly = sessionId ? openingTeammate(composer.message) : null
+  const notifiesOnly = sessionId ? silentOpener(composer.message) : null
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { warmStart } = useWarmStartOnType({
@@ -615,7 +611,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
-      {mentions.dialog}
+      {composer.chipDialog}
       <SlashCommandMenu
         commands={filteredCommands}
         selectedIndex={slashMenuIndex}
@@ -654,7 +650,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
           onSecure: composer.securePotentialSecret,
         }}
         chipContext={composer.chipContext}
-        mentions
         leftActions={(
           <>
             <AttachmentPicker

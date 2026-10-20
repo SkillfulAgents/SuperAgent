@@ -70,8 +70,6 @@ interface ChatComposerBoxProps {
   secureSecrets?: SecureSecretsProps
   /** What the composer knows about its agent, so chips whose referent is gone are flagged. */
   chipContext?: ChipContext
-  /** Typing `@` offers the agent's teammates and the other agents. */
-  mentions?: boolean
 }
 
 export function ChatComposerBox({
@@ -99,7 +97,6 @@ export function ChatComposerBox({
   textareaClassName,
   secureSecrets,
   chipContext,
-  mentions,
 }: ChatComposerBoxProps) {
   const internalEditorRef = useRef<HTMLDivElement | null>(null)
   const setEditorRef = useCallback((node: HTMLDivElement | null) => {
@@ -138,7 +135,6 @@ export function ChatComposerBox({
           className={cn('max-h-[200px]', textareaClassName)}
           potentialSecrets={potentialSecrets}
           chipContext={chipContext}
-          mentions={mentions}
           onEditorElement={setEditorRef}
         />
       </div>

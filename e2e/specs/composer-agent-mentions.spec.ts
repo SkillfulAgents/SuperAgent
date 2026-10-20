@@ -64,8 +64,10 @@ test.describe('composer agent mentions', () => {
     await dialog.getByRole('button', { name: 'Allow and send' }).click()
 
     // The bubble draws the chip; the agent reads the name, and the slug to reach it by.
+    // The pending copy can sit beside the sent one for a render before it is cleared.
     const bubble = page.getByTestId('message-user').filter({ hasText: 'and summarize them' })
-    await expect(bubble.getByTestId('agent-mention')).toContainText(`@Billing ${tag}`, { timeout: 15_000 })
+    await expect(bubble.getByTestId('agent-mention').first()).toContainText(`@Billing ${tag}`, { timeout: 15_000 })
+    await expect(page.getByTestId('pending-user-message')).toHaveCount(0)
     await expect(bubble).not.toContainText('Mentioned')
     const record = await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.agentSlug === support.slug)
     expect(record.initialMessage).toBe(
@@ -84,7 +86,7 @@ test.describe('composer agent mentions', () => {
     await page.keyboard.press('Enter')
     await sessionInput.pressSequentially('for me')
     await page.keyboard.press('Enter')
-    await expect(page.getByTestId('message-user').filter({ hasText: 'for me' }).getByTestId('agent-mention')).toBeVisible()
+    await expect(page.getByTestId('message-user').filter({ hasText: 'for me' }).getByTestId('agent-mention').first()).toBeVisible()
     await expect(page.getByTestId('mention-access-dialog')).toHaveCount(0)
     await recorder.waitFor((candidate) => candidate.type === 'sendMessage' && candidate.agentSlug === support.slug
       && !!candidate.content?.startsWith(`Thank @Billing ${tag} for me`))

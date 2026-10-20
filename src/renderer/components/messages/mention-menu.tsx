@@ -6,11 +6,10 @@ import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
 import type { Chip } from '@renderer/lib/chip-marker'
 import { useUser } from '@renderer/context/user-context'
-import { useAgents } from '@renderer/hooks/use-agents'
-import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import type { ChipContext, ChipPickerHandle, ChipPickerProps } from './composer-chips'
 
 export type MentionCandidate =
   | { kind: 'user'; id: string; name: string; email: string; image: string | null; hasAccess: boolean }
@@ -33,9 +32,8 @@ function rank(query: string, name: string, secondary: string): number | null {
  * anyone it could be shared with), alongside the other agents. Teammates
  * exist in auth mode only.
  */
-export function useMentionCandidates(agentSlug: string, query: string): MentionCandidate[] {
+function useMentionCandidates({ agentSlug = '', members, agents }: ChipContext, query: string): MentionCandidate[] {
   const { user, isAuthMode, isAdmin, canAdminAgent } = useUser()
-  const { data: members } = useAgentMembers(agentSlug)
   const canShare = isAuthMode && (isAdmin || canAdminAgent(agentSlug))
 
   const [searched, setSearched] = useState(query)
@@ -55,22 +53,21 @@ export function useMentionCandidates(agentSlug: string, query: string): MentionC
     enabled: canShare,
     placeholderData: (previous) => previous,
   })
-  const { data: agents } = useAgents({ poll: false })
 
   return useMemo(() => {
     const lowerQuery = query.toLowerCase()
     const ranked: Array<{ candidate: MentionCandidate; rank: number }> = []
-    const memberIds = new Set(members?.map((member) => member.id))
     const people = [
-      ...(members ?? []).map((member) => ({ ...member, hasAccess: true })),
-      ...(outsiders ?? []).filter((person) => !memberIds.has(person.id)).map((person) => ({ ...person, hasAccess: false })),
+      ...[...(members?.values() ?? [])].map((member) => ({ ...member, hasAccess: true })),
+      ...(outsiders ?? []).filter((person) => !members?.has(person.id)).map((person) => ({ ...person, hasAccess: false })),
     ]
     for (const person of people) {
       if (person.id === user?.id) continue
-      const score = rank(lowerQuery, person.name, person.email)
-      if (score !== null) ranked.push({ candidate: { kind: 'user', id: person.id, name: person.name, email: person.email, image: person.image, hasAccess: person.hasAccess }, rank: score })
+      const email = person.email ?? ''
+      const score = rank(lowerQuery, person.name, email)
+      if (score !== null) ranked.push({ candidate: { kind: 'user', id: person.id, name: person.name, email, image: person.image ?? null, hasAccess: person.hasAccess }, rank: score })
     }
-    for (const agent of agents ?? []) {
+    for (const agent of agents?.values() ?? []) {
       if (agent.slug === agentSlug || agent.displaySlug === agentSlug) continue
       const score = rank(lowerQuery, agent.name, agent.displaySlug)
       if (score !== null) ranked.push({ candidate: { kind: 'agent', slug: agent.slug, displaySlug: agent.displaySlug, name: agent.name, avatar: agent.avatar }, rank: score })
@@ -83,32 +80,18 @@ export function useMentionCandidates(agentSlug: string, query: string): MentionC
   }, [query, members, outsiders, agents, user?.id, agentSlug])
 }
 
-export function candidateChip(candidate: MentionCandidate): Chip {
+function candidateChip(candidate: MentionCandidate): Chip {
   return candidate.kind === 'user'
     ? { kind: 'user', referent: candidate.id, label: candidate.name }
     : { kind: 'agent', referent: candidate.slug, label: candidate.name }
 }
 
-export interface MentionMenuHandle {
-  /** The editor's keydown, while the menu is open. True when the menu took the key. */
-  onKeyDown: (event: KeyboardEvent) => boolean
-}
-
-interface MentionMenuProps {
-  agentSlug: string
-  query: string
-  /** Where the `@` was typed. */
-  anchor: { getBoundingClientRect: () => DOMRect }
-  onPick: (chip: Chip) => void
-  onDismiss: () => void
-}
-
 /** The `@` picker: teammates and agents in one list, at the caret. */
-export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(function MentionMenu(
-  { agentSlug, query, anchor, onPick, onDismiss },
+export const MentionMenu = forwardRef<ChipPickerHandle, ChipPickerProps>(function MentionMenu(
+  { query, context, anchor, onPick, onDismiss },
   ref,
 ) {
-  const candidates = useMentionCandidates(agentSlug, query)
+  const candidates = useMentionCandidates(context, query)
   const [selected, setSelected] = useState(0)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   useEffect(() => setSelected(0), [query])

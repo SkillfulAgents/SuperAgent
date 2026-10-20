@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
@@ -88,7 +88,22 @@ vi.mock('./use-secrets', () => ({
   useAgentSecrets: () => ({ data: mockSavedSecrets }),
 }))
 
-const mockConfirmMentions = vi.fn(async (_content: string, context: ChipContext, _options: { silent: boolean }): Promise<ChipContext | null> => context)
+const mockChips = vi.hoisted(() => ({
+  directory: {} as Pick<ChipContext, 'members' | 'agents'>,
+}))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: true, isAdmin: false, canAdminAgent: () => true }),
+}))
+vi.mock('@renderer/components/messages/mention-chip', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/components/messages/mention-chip')>()),
+  useMentionDirectory: () => mockChips.directory,
+}))
+const mockCheckBeforeSend = vi.hoisted(() =>
+  vi.fn(async (_text: string, send: { context: ChipContext }): Promise<ChipContext | null> => send.context))
+vi.mock('@renderer/components/messages/composer-chips', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/components/messages/composer-chips')>()),
+  checkBeforeSend: mockCheckBeforeSend,
+}))
 
 vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@renderer/lib/file-utils')>()),
@@ -212,8 +227,8 @@ describe('useMessageComposer', () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN] please')
-    expect(opts.onSubmit).not.toHaveBeenCalledWith(expect.stringContaining(key))
+    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN] please', { silent: false })
+    expect(opts.onSubmit).not.toHaveBeenCalledWith(expect.stringContaining(key), expect.anything())
   })
 
   describe('mentions', () => {
@@ -224,40 +239,47 @@ describe('useMessageComposer', () => {
       members: new Map([['mike-id', { id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }]]),
       agents: new Map([['k3j4h5g6f7', { slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }]]),
     }
-    const mentions = (silent = false) => ({ directory, silent, confirm: mockConfirmMentions, dialog: null })
+    beforeEach(() => { mockChips.directory = directory })
+    afterEach(() => { mockChips.directory = {} })
 
     it('sends each mention as its name and lists who it is after the message', async () => {
       const opts = defaultOptions()
-      const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions(true) }), { wrapper: createWrapper() })
+      const { result } = renderHook(() => useMessageComposer({ ...opts, silentSends: true }), { wrapper: createWrapper() })
       act(() => result.current.setMessage(`ping ${mike} once ${billing} has the numbers`))
       await act(async () => {
         await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
       })
 
-      expect(mockConfirmMentions).toHaveBeenCalledWith(`ping ${mike} once ${billing} has the numbers`, expect.anything(), { silent: false })
+      expect(mockCheckBeforeSend).toHaveBeenCalledWith(
+        `ping ${mike} once ${billing} has the numbers`,
+        expect.objectContaining({ agentSlug: 'test-agent', silent: false, context: expect.objectContaining(directory) }),
+      )
       expect(opts.onSubmit).toHaveBeenCalledWith(
         'ping @Mike Smith once @Billing Agent has the numbers\n\n[Mentioned:]\n'
         + '- @Mike Smith: teammate, mike@acme.com (user id mike-id)\n'
         + '- @Billing Agent: agent, slug billing-agent-k3j4h5g6f7 (call it by this slug with the agents tools, no need to list agents first)',
+        { silent: false },
       )
     })
 
     it('marks a draft that opens on a teammate silent, where the composer allows it', async () => {
-      for (const silentMentions of [true, false]) {
+      for (const silentSends of [true, false]) {
         const opts = defaultOptions()
-        const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions(silentMentions) }), { wrapper: createWrapper() })
+        const { result } = renderHook(() => useMessageComposer({ ...opts, silentSends }), { wrapper: createWrapper() })
         act(() => result.current.setMessage(`${mike} look at this`))
         await act(async () => {
           await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
         })
-        expect(parseMentions(opts.onSubmit.mock.calls[0][0]).silent).toBe(silentMentions)
+        const [content, options] = opts.onSubmit.mock.calls[0]
+        expect(parseMentions(content).silent).toBe(silentSends)
+        expect(options).toEqual({ silent: silentSends })
       }
     })
 
     it('keeps the draft when the person backs out of the access prompt', async () => {
-      mockConfirmMentions.mockResolvedValueOnce(null)
+      mockCheckBeforeSend.mockResolvedValueOnce(null)
       const opts = defaultOptions()
-      const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions() }), { wrapper: createWrapper() })
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       act(() => result.current.setMessage(`ask ${billing}`))
       await act(async () => {
         await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
@@ -269,10 +291,10 @@ describe('useMessageComposer', () => {
 
     it('sends once when Enter is pressed again while the access check runs', async () => {
       let finish = () => {}
-      mockConfirmMentions.mockImplementationOnce((_content: string, context: ChipContext) =>
+      mockCheckBeforeSend.mockImplementationOnce((_text: string, { context }: { context: ChipContext }) =>
         new Promise<ChipContext>((resolve) => { finish = () => resolve(context) }))
       const opts = defaultOptions()
-      const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions() }), { wrapper: createWrapper() })
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       act(() => result.current.setMessage(`ask ${billing}`))
 
       let first: Promise<void> = Promise.resolve()
@@ -285,7 +307,7 @@ describe('useMessageComposer', () => {
         await first
       })
 
-      expect(mockConfirmMentions).toHaveBeenCalledTimes(1)
+      expect(mockCheckBeforeSend).toHaveBeenCalledTimes(1)
       expect(opts.onSubmit).toHaveBeenCalledTimes(1)
     })
   })
@@ -300,7 +322,7 @@ describe('useMessageComposer', () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith(`Use ${marker}`)
+    expect(opts.onSubmit).toHaveBeenCalledWith(`Use ${marker}`, { silent: false })
   })
 
   it('stops trusting a key secured in this composer after a refreshed list removes it', async () => {
@@ -316,7 +338,7 @@ describe('useMessageComposer', () => {
     await act(async () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
-    expect(opts.onSubmit).toHaveBeenCalledWith('[[secret:API_KEY|My%20Key]]')
+    expect(opts.onSubmit).toHaveBeenCalledWith('[[secret:API_KEY|My%20Key]]', { silent: false })
   })
 
   it('rewrites a pasted secret marker the agent already has', async () => {
@@ -330,7 +352,7 @@ describe('useMessageComposer', () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN]')
+    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN]', { silent: false })
   })
 
   it('rewrites a secret marker while the saved keys are still loading', async () => {
@@ -343,7 +365,7 @@ describe('useMessageComposer', () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN]')
+    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN]', { silent: false })
   })
 
   // --- canSubmit ---
@@ -401,7 +423,7 @@ describe('useMessageComposer', () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith('Hello world')
+    expect(opts.onSubmit).toHaveBeenCalledWith('Hello world', { silent: false })
     expect(result.current.message).toBe('')
     expect(mockQueue.clear).toHaveBeenCalled()
   })
@@ -444,7 +466,7 @@ describe('useMessageComposer', () => {
     })
 
     expect(mockVoiceInput.stopRecording).toHaveBeenCalled()
-    expect(opts.onSubmit).toHaveBeenCalledWith('voice transcription')
+    expect(opts.onSubmit).toHaveBeenCalledWith('voice transcription', { silent: false })
   })
 
   it('stops voice recording when connecting on submit', async () => {
@@ -458,7 +480,7 @@ describe('useMessageComposer', () => {
     })
 
     expect(mockVoiceInput.stopRecording).toHaveBeenCalled()
-    expect(opts.onSubmit).toHaveBeenCalledWith('partial text')
+    expect(opts.onSubmit).toHaveBeenCalledWith('partial text', { silent: false })
   })
 
   it('awaits the async stop so a late-flushed transcript is the submitted text', async () => {
@@ -477,7 +499,7 @@ describe('useMessageComposer', () => {
       await submit
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith('flushed tail text')
+    expect(opts.onSubmit).toHaveBeenCalledWith('flushed tail text', { silent: false })
   })
 
   describe('upload lifecycle', () => {
@@ -546,7 +568,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       act(() => result.current.setMessage('go'))
       await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
-      expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/a'))
+      expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/a'), { silent: false })
     })
 
     it('submit omits a path that belongs to a different agent', async () => {
@@ -560,7 +582,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       act(() => result.current.setMessage('go'))
       await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
-      expect(opts.onSubmit).toHaveBeenCalledWith('go')
+      expect(opts.onSubmit).toHaveBeenCalledWith('go', { silent: false })
     })
 
     it('submit uses the live list when the chip has no path yet', async () => {
@@ -570,7 +592,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       act(() => result.current.setMessage('go'))
       await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
-      expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/workspace/a.txt'))
+      expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/workspace/a.txt'), { silent: false })
     })
 
     it('submit omits a live-list path that belongs to a different agent', async () => {
@@ -580,7 +602,7 @@ describe('useMessageComposer', () => {
       const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
       act(() => result.current.setMessage('go'))
       await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
-      expect(opts.onSubmit).toHaveBeenCalledWith('go')
+      expect(opts.onSubmit).toHaveBeenCalledWith('go', { silent: false })
     })
 
     it('a mount failure sets the banner and stops the send', async () => {
@@ -624,7 +646,7 @@ describe('useMessageComposer', () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
     })
 
-    expect(opts.onSubmit).toHaveBeenCalledWith('Important message')
+    expect(opts.onSubmit).toHaveBeenCalledWith('Important message', { silent: false })
     // Message should NOT be cleared since onSubmit failed
     expect(result.current.message).toBe('Important message')
   })

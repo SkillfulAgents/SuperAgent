@@ -1,8 +1,10 @@
 import type { DOMOutputSpec } from 'prosemirror-model'
 import { mentionName } from '@shared/lib/utils/mentions'
 import type { Chip } from '@renderer/lib/chip-marker'
-import type { ComposerChipKind } from './composer-chips'
+import type { ComposerChipKind, ComposerChipTrigger } from './composer-chips'
 import { AgentMentionIcon, MENTION_CHIP_CLASS, UserMentionIcon, agentForSlug } from './mention-chip'
+import { offerReach, offerShare } from './mention-access-gate'
+import { MentionMenu } from './mention-menu'
 
 function renderMention(testId: string) {
   return (chip: Chip): DOMOutputSpec => ['span', { 'data-testid': testId, class: MENTION_CHIP_CLASS },
@@ -25,6 +27,9 @@ export const userChip: ComposerChipKind = {
     const email = members?.get(chip.referent)?.email
     return { kind: 'user', id: chip.referent, name: chip.label, ...(email ? { email } : {}) }
   },
+  beforeSend: offerShare,
+  // "@Mike look at this" is for Mike, not the agent.
+  opensSilently: true,
 }
 
 /** Another agent: the referent is its id, the label its name. */
@@ -41,4 +46,12 @@ export const agentChip: ComposerChipKind = {
     name: chip.label,
   }),
   isBacked: (chip, { agents }) => !agents || !!agentForSlug(agents, chip.referent),
+  beforeSend: offerReach,
+}
+
+/** `@` picks a teammate or another agent. */
+export const mentionTrigger: ComposerChipTrigger = {
+  char: '@',
+  available: ({ agentSlug }) => !!agentSlug,
+  Picker: MentionMenu,
 }

@@ -6,6 +6,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import type { ChipContext } from './composer-chips'
 
+const directory = vi.hoisted(() => ({
+  agents: new Map([
+    ['support01x', { slug: 'support01x', displaySlug: 'support-agent-support01x', name: 'Support Agent' }],
+    ['billing01x', { slug: 'billing01x', displaySlug: 'billing-agent-billing01x', name: 'Billing Agent' }],
+  ]),
+}))
 const state = vi.hoisted(() => ({
   isAuthMode: true,
   canAdmin: true,
@@ -16,6 +22,11 @@ const state = vi.hoisted(() => ({
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ isAuthMode: state.isAuthMode, isAdmin: false, canAdminAgent: () => state.canAdmin }),
+}))
+vi.mock('@renderer/hooks/use-secrets', () => ({ useAgentSecrets: () => ({ data: undefined }) }))
+vi.mock('./mention-chip', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./mention-chip')>()),
+  useMentionDirectory: () => directory,
 }))
 vi.mock('@renderer/lib/agent-members-loader', () => ({
   loadAgentMembers: async () => state.members,
@@ -34,34 +45,27 @@ vi.mock('@renderer/lib/api', () => ({
   }),
 }))
 
-import { useMentionAccessGate } from './mention-access-gate'
+import { useComposerChips } from '@renderer/hooks/use-composer-chips'
 
 const sara = formatChipMarker({ kind: 'user', referent: 'sara-id', label: 'Sara Kim' })
 const mike = formatChipMarker({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
 const billing = formatChipMarker({ kind: 'agent', referent: 'billing01x', label: 'Billing Agent' })
-const context: ChipContext = {
-  agentSlug: 'support01x',
-  agents: new Map([
-    ['support01x', { slug: 'support01x', displaySlug: 'support-agent-support01x', name: 'Support Agent' }],
-    ['billing01x', { slug: 'billing01x', displaySlug: 'billing-agent-billing01x', name: 'Billing Agent' }],
-  ]),
-}
 
-let gate: ReturnType<typeof useMentionAccessGate>
+let chips: ReturnType<typeof useComposerChips>
 function Harness() {
-  gate = useMentionAccessGate('support01x')
-  return <>{gate.dialog}</>
+  chips = useComposerChips('support01x')
+  return <>{chips.dialog}</>
 }
 
 function confirm(content: string, silent = false) {
   let result: Promise<ChipContext | null>
-  act(() => { result = gate.confirm(content, context, { silent }) })
+  act(() => { result = chips.check(content, { silent }) })
   return result!
 }
 
 const writes = () => state.requests.filter((request) => request.method !== 'GET')
 
-describe('useMentionAccessGate', () => {
+describe('the user and agent chips before a send', () => {
   beforeAll(() => {
     HTMLElement.prototype.hasPointerCapture = () => false
     HTMLElement.prototype.scrollIntoView = () => {}
@@ -81,7 +85,7 @@ describe('useMentionAccessGate', () => {
 
   it('sends at once when everyone tagged can see the agent', async () => {
     mount()
-    await expect(confirm(`${mike} look`)).resolves.toBe(context)
+    await expect(confirm(`${mike} look`)).resolves.toBe(chips.context)
     expect(screen.queryByTestId('mention-access-dialog')).toBeNull()
   })
 
@@ -115,7 +119,7 @@ describe('useMentionAccessGate', () => {
     expect(await screen.findByText('Let Support Agent reach Billing Agent?')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Allow and send' }))
 
-    await expect(result).resolves.toBe(context)
+    await expect(result).resolves.toBe(chips.context)
     expect(writes().map((request) => request.body)).toEqual([
       { operation: 'read', targetSlug: 'billing01x', decision: 'allow' },
       { operation: 'invoke', targetSlug: 'billing01x', decision: 'allow' },
@@ -129,7 +133,7 @@ describe('useMentionAccessGate', () => {
     await userEvent.click(screen.getByRole('option', { name: 'Ask me each time' }))
     await userEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await expect(result).resolves.toBe(context)
+    await expect(result).resolves.toBe(chips.context)
     expect(writes()).toEqual([])
   })
 
@@ -145,7 +149,7 @@ describe('useMentionAccessGate', () => {
     await userEvent.click(screen.getByRole('option', { name: 'Ask me each time' }))
     await userEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await expect(result).resolves.toBe(context)
+    await expect(result).resolves.toBe(chips.context)
     expect(writes().map((request) => request.body)).toEqual([
       { operation: 'read', targetSlug: 'billing01x', decision: 'review' },
       { operation: 'invoke', targetSlug: 'billing01x', decision: 'review' },
@@ -156,21 +160,35 @@ describe('useMentionAccessGate', () => {
     mount()
     for (const targetAgentSlug of ['billing01x', null]) {
       state.policies = [{ operation: 'invoke', targetAgentSlug, decision: 'allow' }]
-      await expect(confirm(`ask ${billing}`)).resolves.toBe(context)
+      await expect(confirm(`ask ${billing}`)).resolves.toBe(chips.context)
       expect(screen.queryByTestId('mention-access-dialog')).toBeNull()
     }
   })
 
   it('asks nothing about agents for a message that runs no turn', async () => {
     mount()
-    await expect(confirm(`${mike} see what ${billing} said`, true)).resolves.toBe(context)
+    await expect(confirm(`${mike} see what ${billing} said`, true)).resolves.toBe(chips.context)
     expect(state.requests.some((request) => request.url.includes('x-agent-policies'))).toBe(false)
+  })
+
+  it('asks about the teammates first, then the agents', async () => {
+    mount()
+    const result = confirm(`${sara} ask ${billing}`)
+    await userEvent.click(await screen.findByRole('button', { name: 'Share and send' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Allow and send' }))
+
+    expect((await result)?.members?.has('sara-id')).toBe(true)
+    expect(writes().map((request) => request.url)).toEqual([
+      '/api/agents/support01x/access',
+      '/api/agents/support01x/x-agent-policies',
+      '/api/agents/support01x/x-agent-policies',
+    ])
   })
 
   it('asks nothing of someone who cannot manage the agent', async () => {
     state.canAdmin = false
     mount()
-    await expect(confirm(`${sara} ask ${billing}`)).resolves.toBe(context)
+    await expect(confirm(`${sara} ask ${billing}`)).resolves.toBe(chips.context)
     await waitFor(() => expect(state.requests).toEqual([]))
   })
 })

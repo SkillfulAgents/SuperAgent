@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
-import { chipAt, chipsToAgentText, draftFromAgentText, openingTeammate, type ChipContext } from './composer-chips'
+import { chipAt, chipsToAgentText, draftFromAgentText, silentOpener, type ChipContext } from './composer-chips'
 import { secretMarker } from './secret-chip'
 
 const saved = (...envVars: string[]) => ({ secretEnvVars: new Set(envVars) })
@@ -79,10 +79,10 @@ describe('composer chips', () => {
       expect(chipsToAgentText(`ask ${billing}`, { agents: new Map() })).toBe(`ask ${billing}`)
     })
 
-    it('knows the teammate a draft opens on', () => {
-      expect(openingTeammate(`  ${mike} look`)).toEqual({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
-      expect(openingTeammate(`look ${mike}`)).toBeNull()
-      expect(openingTeammate(`${billing} look`)).toBeNull()
+    it('knows a draft that opens on a teammate only notifies them', () => {
+      expect(silentOpener(`  ${mike} look`)).toEqual({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
+      expect(silentOpener(`look ${mike}`)).toBeNull()
+      expect(silentOpener(`${billing} look`)).toBeNull()
     })
 
     it('turns a sent message back into the draft it was sent from', () => {
