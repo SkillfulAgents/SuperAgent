@@ -2,32 +2,14 @@ import { isQueuedSessionSend } from './session-send-context'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
 import { WebSocketServer } from 'ws'
-import { describeWebhookRelayUnavailable } from '@shared/lib/webhook-relay/errors'
-import type { WebhookRelayUnavailableReason } from '@shared/lib/webhook-relay/types'
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SchedMockFn = (...args: any[]) => any
-const mockListPendingScheduledTasks = vi.fn<SchedMockFn>(() => Promise.resolve([]))
-const mockGetScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(null))
-const mockCancelScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
-const mockPauseScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
-const mockResumeScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
-const mockPatchScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
-const mockCreateScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve('task_new_id'))
-const mockCreateSessionWake = vi.fn<SchedMockFn>(() =>
-  Promise.resolve({ taskId: 'wake_new_id', replaced: null })
-)
 
 // Mock external dependencies before importing
-vi.mock('@shared/lib/services/scheduled-task-service', () => ({
-  createScheduledTask: (...args: unknown[]) => mockCreateScheduledTask(...args),
-  createSessionWake: (...args: unknown[]) => mockCreateSessionWake(...args),
-  listPendingScheduledTasks: (...args: unknown[]) => mockListPendingScheduledTasks(...args),
-  getScheduledTask: (...args: unknown[]) => mockGetScheduledTask(...args),
-  cancelScheduledTask: (...args: unknown[]) => mockCancelScheduledTask(...args),
-  pauseScheduledTask: (...args: unknown[]) => mockPauseScheduledTask(...args),
-  resumeScheduledTask: (...args: unknown[]) => mockResumeScheduledTask(...args),
-  patchScheduledTask: (...args: unknown[]) => mockPatchScheduledTask(...args),
+
+// The host tools are tested beside their handlers (src/shared/lib/host/tools);
+// here they are the host's business. A tool call that reaches the real local
+// host port gets this stand-in, so no test runs one against real services.
+vi.mock('@shared/lib/host/tools', () => ({
+  runHostTool: vi.fn(() => Promise.resolve({ status: 'resolved', value: '' })),
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
@@ -49,9 +31,6 @@ vi.mock('@shared/lib/services/session-summary-cache', () => ({
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
-}))
-vi.mock('@shared/lib/services/timezone-resolver', () => ({
-  resolveTimezoneForAgent: vi.fn(() => 'UTC'),
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
@@ -116,81 +95,21 @@ vi.mock('@shared/lib/computer-use/types', () => ({
   TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
 
-// Mock webhook trigger dependencies
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MockFn = (...args: any[]) => any
-const mockCreateWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve('trigger_new_id'))
-const mockListActiveWebhookTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
-const mockCancelWebhookTriggerWithCleanup = vi.fn<MockFn>(() => Promise.resolve(true))
-const mockGetWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve(null))
-const mockUpdateWebhookTriggerName = vi.fn<MockFn>(() => Promise.resolve())
-const mockUpdateWebhookTriggerPrompt = vi.fn<MockFn>(() => Promise.resolve(true))
-const mockResolvePlatformMemberForCandidates = vi.fn<MockFn>(() => null)
-vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
-  createWebhookTrigger: (...args: unknown[]) => mockCreateWebhookTrigger(...args),
-  listActiveWebhookTriggers: (...args: unknown[]) => mockListActiveWebhookTriggers(...args),
-  cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
-  getWebhookTrigger: (...args: unknown[]) => mockGetWebhookTrigger(...args),
-  updateWebhookTriggerName: (...args: unknown[]) => mockUpdateWebhookTriggerName(...args),
-  updateWebhookTriggerPrompt: (...args: unknown[]) => mockUpdateWebhookTriggerPrompt(...args),
-  resolvePlatformMemberForCandidates: (...args: unknown[]) => mockResolvePlatformMemberForCandidates(...args),
-}))
 
-const mockCreateRelayEndpoint = vi.fn<MockFn>()
-const mockUpdateRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
-const mockDisableRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve())
-const mockListRelayEndpointEvents = vi.fn<MockFn>(() => Promise.resolve({ filterExp: null, events: [] }))
-const mockTestRelayEndpointFilter = vi.fn<MockFn>()
-// Receiving by default: the webhook tools gate on the relay's availability
-// (NOT on Composio mode — custom endpoints must work with a personal Composio
-// key).
-const mockRelayUnavailableReason = vi.fn(() => null as WebhookRelayUnavailableReason | null)
-vi.mock('@shared/lib/webhook-relay', () => ({
-  webhooksUnavailableMessage: (what: string) => {
-    const reason = mockRelayUnavailableReason()
-    return reason ? describeWebhookRelayUnavailable(what, reason) : null
-  },
-  getWebhookRelay: () => ({
-    createEndpoint: (...args: unknown[]) => mockCreateRelayEndpoint(...args),
-    updateEndpoint: (...args: unknown[]) => mockUpdateRelayEndpoint(...args),
-    disableEndpoint: (...args: unknown[]) => mockDisableRelayEndpoint(...args),
-    listEndpointEvents: (...args: unknown[]) => mockListRelayEndpointEvents(...args),
-    testEndpointFilter: (...args: unknown[]) => mockTestRelayEndpointFilter(...args),
-  }),
-}))
-
-const mockGetPlatformAccessToken = vi.fn(() => 'opaque_token' as string | null)
-const mockGetStoredPlatformMemberId = vi.fn(() => null as string | null)
+// Read by modules the persister loads (PlatformLlmProvider, platform
+// attribution): no platform member, an opaque access key.
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
-  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
+  getStoredPlatformMemberId: () => null,
+  getPlatformAccessToken: () => 'opaque_token',
   // Read by PlatformLlmProvider when it resolves the billing link for a provider error.
   getPlatformAuthStatus: () => ({ connected: false, orgId: null }),
 }))
 
-const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
-const mockEnableComposioTrigger = vi.fn<MockFn>(() => Promise.resolve('composio_trigger_id'))
-const mockDeleteComposioTrigger = vi.fn<MockFn>(() => Promise.resolve())
-vi.mock('@shared/lib/composio/triggers', () => ({
-  getAvailableTriggers: (...args: unknown[]) => mockGetAvailableTriggers(...args),
-  enableComposioTrigger: (...args: unknown[]) => mockEnableComposioTrigger(...args),
-  deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
-}))
-
-const mockIsPlatformComposioActive = vi.fn(() => true)
-vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => mockIsPlatformComposioActive(),
-}))
-
-const mockDbSelect = vi.fn<MockFn>()
-vi.mock('@shared/lib/db', () => ({
-  db: {
-    select: (...args: unknown[]) => mockDbSelect(...args),
-  },
-}))
-vi.mock('@shared/lib/db/schema', () => ({
-  connectedAccounts: { id: 'id', providerConnectionId: 'provider_connection_id', providerName: 'provider_name', toolkitSlug: 'toolkit_slug' },
-}))
+// Modules the persister loads import the database; no test here opens one.
+vi.mock('@shared/lib/db', () => ({ db: {} }))
+vi.mock('@shared/lib/db/schema', () => ({}))
 
 // Mock container-host (used by resolveContainerInput / rejectContainerInput)
 const mockContainerClientFetch = vi.fn<MockFn>(() => Promise.resolve({ ok: true }))
@@ -232,14 +151,37 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import * as toolRegistry from '@shared/lib/tools/registry'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { attribution } from '@shared/lib/platform-attribution'
+import { localHostPort } from '@shared/lib/host/local-host-port'
+import type { HostCalls, HostPort, HostScriptOutput, HostToolResult } from '@shared/lib/agent-actor/host-port'
 
-// An org-scoped platform JWT (the mode where every proxy call must carry an
-// acting member); the payload only has to decode, the signature is never checked.
-function buildOrgToken(orgId: string): string {
-  const header = Buffer.from('{"alg":"none"}').toString('base64url')
-  const payload = Buffer.from(JSON.stringify({ orgId })).toString('base64url')
-  return `${header}.${payload}.sig`
+/**
+ * A host port that records every call and answers the machine work and the
+ * host tools itself (running a script, driving an app, a tool's outcome);
+ * everything else goes to the real local handlers, over this file's mocked
+ * services.
+ */
+function recordingHost(answers: {
+  hostScript?: HostScriptOutput
+  computerUse?: string | (() => Promise<string>)
+  hostTool?: HostToolResult | (() => Promise<HostToolResult>)
+}): { port: HostPort; calls: Array<[keyof HostCalls, unknown]> } {
+  const calls: Array<[keyof HostCalls, unknown]> = []
+  const call = async (name: keyof HostCalls, request: unknown): Promise<unknown> => {
+    calls.push([name, request])
+    if (name === 'computerUsePermissions') return null
+    if (name === 'computerUse' && answers.computerUse !== undefined) {
+      return typeof answers.computerUse === 'function' ? answers.computerUse() : answers.computerUse
+    }
+    if (name === 'hostScript' && answers.hostScript) return answers.hostScript
+    if (name === 'hostTool' && answers.hostTool !== undefined) {
+      return typeof answers.hostTool === 'function' ? answers.hostTool() : answers.hostTool
+    }
+    return localHostPort.call(name, request as never)
+  }
+  return {
+    calls,
+    port: { call: call as HostPort['call'], send: (name, event) => localHostPort.send(name, event) },
+  }
 }
 
 describe('redactStreamedToolInput', () => {
@@ -334,6 +276,10 @@ function collectSSEEvents(agentSlug: string, sessionId: string): { events: any[]
   })
   return { events, cleanup }
 }
+
+// A turn's completion notification goes out once the transcript's end is
+// known (an async stat); let that settle before asserting on it, either way.
+const flushNotifications = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('MessagePersister', () => {
   const SESSION_ID = 'test-session-1'
@@ -704,6 +650,7 @@ describe('MessagePersister', () => {
         usage: { input_tokens: 1, output_tokens: 1 },
       })
 
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
       mockClient._sendMessage({
         type: 'system',
@@ -711,10 +658,11 @@ describe('MessagePersister', () => {
         state: 'idle',
       })
 
+      await flushNotifications()
       const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
       expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
       expect(call?.[2]?.responseText).toBe('Final answer.')
-      await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+      expect(call?.[2]?.responseTranscriptEndOffset).toBe(12_345)
     })
 
     it('ignores the synthetic "No response requested." placeholder as a response candidate', async () => {
@@ -758,17 +706,12 @@ describe('MessagePersister', () => {
         state: 'idle',
       })
 
+      await flushNotifications()
       const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
       expect(call?.[2]?.responseText).toBe('Real answer.')
     })
 
-    it('dispatches completion without waiting for the transcript stat', async () => {
-      let resolveStat: ((value: { kind: 'file'; size: number; mtimeMs: number }) => void) | undefined
-      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockImplementationOnce(
-        () => new Promise((resolve) => {
-          resolveStat = resolve
-        }),
-      )
+    const finishTurn = () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'assistant',
@@ -785,15 +728,73 @@ describe('MessagePersister', () => {
         num_turns: 1,
         usage: { input_tokens: 1, output_tokens: 1 },
       })
+    }
 
-      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
-      const offset = vi.mocked(notificationManager.triggerSessionComplete)
-        .mock.calls[0][2]?.responseTranscriptEndOffset
+    it('bounds the completion by where the transcript ended when the turn did', async () => {
+      let resolveStat: ((value: { kind: 'file'; size: number; mtimeMs: number }) => void) | undefined
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockImplementationOnce(
+        () => new Promise((resolve) => {
+          resolveStat = resolve
+        }),
+      )
+      finishTurn()
+      // Read at the turn's end; sent once known.
+      await flushNotifications()
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
       resolveStat?.({ kind: 'file', size: 99, mtimeMs: 0 })
-      await expect(offset).resolves.toBe(99)
+      await vi.waitFor(() => expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(notificationManager.triggerSessionComplete).mock.calls[0]).toEqual([
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: 'Finished.', responseTranscriptEndOffset: 99 },
+      ])
     })
 
-    it('does not reuse working text when the newest assistant item is tool-only', () => {
+    it('does not hold the completion for a transcript stat that never answers', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockImplementationOnce(() => new Promise(() => {}))
+        finishTurn()
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(SESSION_ID, AGENT_SLUG, {
+          responseText: 'Finished.',
+          responseTranscriptEndOffset: null,
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('announces a session\'s turns in the order they ended, whichever transcript read finishes first', async () => {
+      const finishTurnWith = (answer: string, id: string) => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({ type: 'assistant', uuid: `${id}-entry`, message: { id: `msg-${id}`, content: [{ type: 'text', text: answer }] } })
+        mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+      }
+      let resolveFirst: ((value: { kind: 'file'; size: number; mtimeMs: number }) => void) | undefined
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat')
+        .mockImplementationOnce(() => new Promise((resolve) => {
+          resolveFirst = resolve
+        }))
+        .mockImplementationOnce(async () => ({ kind: 'file', size: 200, mtimeMs: 0 }))
+
+      finishTurnWith('First answer.', 'first')
+      finishTurnWith('Second answer.', 'second')
+      await flushNotifications()
+      // The second turn's read is done, but the first turn has not been announced yet.
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+
+      resolveFirst?.({ kind: 'file', size: 100, mtimeMs: 0 })
+      await vi.waitFor(() => expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(2))
+      expect(vi.mocked(notificationManager.triggerSessionComplete).mock.calls.map((call) => call[2])).toEqual([
+        { responseText: 'First answer.', responseTranscriptEndOffset: 100 },
+        { responseText: 'Second answer.', responseTranscriptEndOffset: 200 },
+      ])
+      // The session's queue is let go once it has sent everything.
+      await vi.waitFor(() => expect((messagePersister as any).completionSends.size).toBe(0))
+    })
+
+    it('does not reuse working text when the newest assistant item is tool-only', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'assistant',
@@ -821,17 +822,18 @@ describe('MessagePersister', () => {
         usage: { input_tokens: 1, output_tokens: 1 },
       })
 
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
         {
           responseText: '',
-          responseTranscriptEndOffset: expect.any(Promise),
+          responseTranscriptEndOffset: null,
         },
       )
     })
 
-    it('does not reuse the prior answer when a queued turn produces no assistant item', () => {
+    it('does not reuse the prior answer when a queued turn produces no assistant item', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -880,11 +882,12 @@ describe('MessagePersister', () => {
         state: 'idle',
       })
 
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+        { responseText: '', responseTranscriptEndOffset: null },
       )
     })
 
@@ -937,7 +940,7 @@ describe('MessagePersister', () => {
       expect(state.resetAssistantBeforeNextTurnOutput).toBe(true)
     })
 
-    it('settles a self-healed running event followed by idle without a new result', () => {
+    it('settles a self-healed running event followed by idle without a new result', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -964,6 +967,7 @@ describe('MessagePersister', () => {
         subtype: 'session_state_changed',
         state: 'idle',
       })
+      await flushNotifications()
       vi.mocked(notificationManager.triggerSessionComplete).mockClear()
 
       mockClient._sendMessage({
@@ -978,15 +982,16 @@ describe('MessagePersister', () => {
       })
 
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
         SESSION_ID,
         AGENT_SLUG,
-        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+        { responseText: '', responseTranscriptEndOffset: null },
       )
     })
 
-    it('does not notify for a modern success-subtype error result', () => {
+    it('does not notify for a modern success-subtype error result', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -1008,10 +1013,11 @@ describe('MessagePersister', () => {
         state: 'idle',
       })
 
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     })
 
-    it('does not notify when a legacy turn exits for resume', () => {
+    it('does not notify when a legacy turn exits for resume', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'assistant',
@@ -1029,6 +1035,7 @@ describe('MessagePersister', () => {
         usage: { input_tokens: 1, output_tokens: 1 },
       })
 
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     })
   })
@@ -3105,6 +3112,7 @@ describe('MessagePersister', () => {
       }
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledOnce()
     })
 
@@ -3117,6 +3125,7 @@ describe('MessagePersister', () => {
         throw new Error('send failed')
       })).rejects.toThrow('send failed')
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      await flushNotifications()
       expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
       expect(sseEvents.filter(e => e.type === 'session_error')).toHaveLength(1)
     })
@@ -3338,6 +3347,7 @@ describe('MessagePersister', () => {
         socket.send(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }))
         socket.send(JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'idle' }))
         await replyReceived
+        await flushNotifications()
         expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(SESSION_ID, AGENT_SLUG,
           expect.objectContaining({ responseText: 'The new reply' }))
         expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
@@ -3468,149 +3478,184 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
-  // schedule_resume tool handling
+  // Host tool dispatch (the tools themselves: src/shared/lib/host/tools)
   // ============================================================================
 
-  describe('schedule_resume tool handling', () => {
-    function simulateScheduleResumeToolUse(toolId: string, input: Record<string, unknown>) {
+  describe('host tool dispatch', () => {
+    function streamToolUse(toolName: string, toolId: string, partialJson: string[], parentToolUseId?: string) {
+      const frame = parentToolUseId ? { parent_tool_use_id: parentToolUseId } : {}
       mockClient._sendMessage({
         type: 'stream_event',
-        event: {
-          type: 'content_block_start',
-          content_block: { type: 'tool_use', id: toolId, name: 'mcp__user-input__schedule_resume' },
-        },
+        ...frame,
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: toolId, name: toolName } },
       })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
-        },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_stop' },
-      })
+      for (const partial_json of partialJson) {
+        mockClient._sendMessage({
+          type: 'stream_event',
+          ...frame,
+          event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json } },
+        })
+      }
     }
 
-    function resolveCalls() {
-      return mockContainerClientFetch.mock.calls.filter((c) =>
-        String(c[0]).includes('/resolve')
-      )
+    function stopToolUse(parentToolUseId?: string) {
+      const frame = parentToolUseId ? { parent_tool_use_id: parentToolUseId } : {}
+      mockClient._sendMessage({ type: 'stream_event', ...frame, event: { type: 'content_block_stop' } })
     }
 
-    function rejectCalls() {
-      return mockContainerClientFetch.mock.calls.filter((c) =>
-        String(c[0]).includes('/reject')
-      )
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>, parentToolUseId?: string) {
+      streamToolUse(toolName, toolId, [JSON.stringify(input)], parentToolUseId)
+      stopToolUse(parentToolUseId)
     }
 
-    beforeEach(() => {
-      mockCreateSessionWake.mockResolvedValue({ taskId: 'wake_new_id', replaced: null })
+    let host: ReturnType<typeof recordingHost>
+    const hostToolCalls = () => host.calls.filter(([name]) => name === 'hostTool')
+    // What the persister sent to the container's pending input for this call.
+    const inputCalls = (toolUseId: string) =>
+      mockContainerClientFetch.mock.calls.filter(([path]) => String(path).startsWith(`/inputs/${toolUseId}/`))
+    const post = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+    function attach(answer: HostToolResult | (() => Promise<HostToolResult>)) {
+      host = recordingHost({ hostTool: answer })
+      messagePersister.attachHost(host.port)
+    }
+
+    afterEach(() => {
+      messagePersister.attachHost(localHostPort)
+      mockContainerClientFetch.mockImplementation(() => Promise.resolve({ ok: true }))
     })
 
-    it('creates a session wake and resolves the tool with the note echoed back', async () => {
-      simulateScheduleResumeToolUse('wake-tool-1', {
-        wakeTime: 'at tomorrow 9am',
-        note: 'Check whether Dana replied',
-      })
+    it('hands a finished tool call to the host with its bare name and raw streamed input', async () => {
+      attach({ status: 'resolved', value: 'Scheduled.' })
+      const secretInput = '{"name":"gh","prompt":"Handle it","verification":{"secret":"whsec_supersecret"}}'
 
-      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      // The input streams in pieces; nothing goes to the host until the block ends.
+      streamToolUse('mcp__user-input__create_webhook_endpoint', 'tool-host-1', [secretInput.slice(0, 40), secretInput.slice(40)])
+      expect(hostToolCalls()).toEqual([])
+      stopToolUse()
 
-      expect(mockCreateSessionWake).toHaveBeenCalledWith({
-        agentSlug: AGENT_SLUG,
-        scheduleExpression: 'at tomorrow 9am',
-        note: 'Check whether Dana replied',
-        sessionId: SESSION_ID,
-        createdByUserId: undefined,
-        timezone: 'UTC',
-      })
-
-      const body = JSON.parse(resolveCalls()[0][1].body)
-      expect(body.value).toContain('Check whether Dana replied')
-      expect(body.value).toContain('auto-resume')
+      // All of it, as streamed: the redaction is for the session stream, not the tool.
+      expect(JSON.stringify(sseEvents)).not.toContain('whsec_supersecret')
+      expect(hostToolCalls()).toEqual([
+        ['hostTool', {
+          agentSlug: AGENT_SLUG,
+          sessionId: SESSION_ID,
+          toolUseId: 'tool-host-1',
+          toolName: 'create_webhook_endpoint',
+          input: secretInput,
+        }],
+      ])
+      await vi.waitFor(() => expect(inputCalls('tool-host-1')).toHaveLength(1))
     })
 
-    it('normalizes a wakeTime without the "at " prefix', async () => {
-      simulateScheduleResumeToolUse('wake-tool-2', {
-        wakeTime: 'in 72 hours',
-        note: 'Check app review status',
-      })
+    it('rejects the pending input with the reason when the host rejects', async () => {
+      attach({ status: 'rejected', reason: 'Missing required fields: wakeTime and note are required' })
 
-      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      simulateToolUse('mcp__user-input__schedule_resume', 'tool-host-reject', { note: 'A note' })
 
-      expect(mockCreateSessionWake).toHaveBeenCalledWith(
-        expect.objectContaining({ scheduleExpression: 'at in 72 hours' })
-      )
+      await vi.waitFor(() => expect(inputCalls('tool-host-reject')).toHaveLength(1))
+      expect(inputCalls('tool-host-reject')).toEqual([
+        ['/inputs/tool-host-reject/reject', post({ reason: 'Missing required fields: wakeTime and note are required' })],
+      ])
     })
 
-    it('mentions the replaced wake in the tool result', async () => {
-      mockCreateSessionWake.mockResolvedValue({
-        taskId: 'wake_new_id',
-        replaced: {
-          id: 'wake_old_id',
-          nextExecutionAt: new Date('2027-01-01T09:00:00.000Z'),
-          prompt: 'Old note',
-        },
+    it("puts the result's session events on the session stream, in order, before resolving the input with its value", async () => {
+      const sessionEvents = [
+        { type: 'scheduled_task_created', toolUseId: 'tool-host-resolve', taskId: 'wake_1', scheduleType: 'at', agentSlug: AGENT_SLUG },
+        { type: 'session_updated' },
+      ]
+      attach({ status: 'resolved', value: 'Scheduled this session to auto-resume.', sessionEvents })
+      const hostEventTypes = new Set(sessionEvents.map((e) => e.type))
+      let streamedBeforeResolve: unknown[] | undefined
+      mockContainerClientFetch.mockImplementation((path: string) => {
+        if (path.endsWith('/resolve')) streamedBeforeResolve = sseEvents.filter((e) => hostEventTypes.has(e.type))
+        return Promise.resolve({ ok: true })
       })
-
-      simulateScheduleResumeToolUse('wake-tool-3', {
-        wakeTime: 'at tomorrow 9am',
-        note: 'New plan',
-      })
-
-      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
-
-      const body = JSON.parse(resolveCalls()[0][1].body)
-      expect(body.value).toContain('Replaced')
-      expect(body.value).toContain('2027-01-01T09:00:00.000Z')
-    })
-
-    it('rejects when the note is missing', async () => {
-      simulateScheduleResumeToolUse('wake-tool-4', {
-        wakeTime: 'at tomorrow 9am',
-        note: '   ',
-      })
-
-      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
-      expect(mockCreateSessionWake).not.toHaveBeenCalled()
-    })
-
-    it('rejects when the wakeTime is missing', async () => {
-      simulateScheduleResumeToolUse('wake-tool-5', { note: 'A note' })
-
-      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
-      expect(mockCreateSessionWake).not.toHaveBeenCalled()
-    })
-
-    it('rejects when wake creation fails (e.g. time in the past)', async () => {
-      mockCreateSessionWake.mockRejectedValue(
-        new Error('Scheduled time "at yesterday" is in the past')
-      )
-
-      simulateScheduleResumeToolUse('wake-tool-6', {
-        wakeTime: 'at yesterday',
-        note: 'Impossible wake',
-      })
-
-      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
-      const body = JSON.parse(rejectCalls()[0][1].body)
-      expect(body.reason).toContain('in the past')
-    })
-
-    it('broadcasts scheduled_task_created and session_updated', async () => {
       sseEvents.length = 0
 
-      simulateScheduleResumeToolUse('wake-tool-7', {
-        wakeTime: 'at tomorrow 9am',
-        note: 'Check back',
-      })
+      simulateToolUse('mcp__user-input__schedule_resume', 'tool-host-resolve', { wakeTime: 'at tomorrow 9am', note: 'Check back' })
 
-      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
-      await vi.waitFor(() => {
-        expect(sseEvents.filter((e) => e.type === 'scheduled_task_created')).toHaveLength(1)
-        expect(sseEvents.filter((e) => e.type === 'session_updated')).toHaveLength(1)
-      })
+      await vi.waitFor(() => expect(inputCalls('tool-host-resolve')).toHaveLength(1))
+      expect(inputCalls('tool-host-resolve')).toEqual([
+        ['/inputs/tool-host-resolve/resolve', post({ value: 'Scheduled this session to auto-resume.' })],
+      ])
+      expect(streamedBeforeResolve).toEqual(sessionEvents)
+      expect(sseEvents.filter((e) => hostEventTypes.has(e.type))).toEqual(sessionEvents)
+    })
+
+    it('only logs a result it could not deliver: a saved schedule is never reported as failed', async () => {
+      // Rejecting now would tell the agent the schedule failed, and it would
+      // retry into a duplicate recurring task.
+      attach({ status: 'resolved', value: 'Scheduled recurring task "Daily report" (ID: task_new_id).' })
+      const deliveryError = new Error('container unreachable')
+      mockContainerClientFetch.mockImplementation((path: string) =>
+        path.endsWith('/resolve') ? Promise.reject(deliveryError) : Promise.resolve({ ok: true }),
+      )
+      const consoleError = vi.spyOn(console, 'error')
+
+      try {
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-host-undelivered', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await vi.waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+          '[MessagePersister] schedule_task succeeded but its result was not delivered:',
+          deliveryError,
+        ))
+        expect(inputCalls('tool-host-undelivered')).toEqual([
+          ['/inputs/tool-host-undelivered/resolve', expect.objectContaining({ method: 'POST' })],
+        ])
+      } finally {
+        consoleError.mockRestore()
+      }
+    })
+
+    it('rejects the pending input when the host call itself fails', async () => {
+      attach(() => Promise.reject(new Error('host unreachable')))
+
+      simulateToolUse('mcp__user-input__cancel_trigger', 'tool-host-throws', { trigger_id: 'trigger_1' })
+
+      await vi.waitFor(() => expect(inputCalls('tool-host-throws')).toHaveLength(1))
+      expect(inputCalls('tool-host-throws')).toEqual([
+        ['/inputs/tool-host-throws/reject', post({ reason: 'Failed to run cancel_trigger: host unreachable' })],
+      ])
+    })
+
+    it('never hands the host a tool it does not run', async () => {
+      attach({ status: 'resolved', value: 'should not be asked' })
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+
+      // A user-input tool the container parks for the user, and a same-named
+      // tool from another MCP server.
+      simulateToolUse('mcp__user-input__request_secret', 'tool-not-host-1', { secretName: 'API_KEY' })
+      simulateToolUse('mcp__other-server__schedule_task', 'tool-not-host-2', { scheduleType: 'cron' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(hostToolCalls()).toEqual([])
+      expect(inputCalls('tool-not-host-1')).toEqual([])
+      expect(inputCalls('tool-not-host-2')).toEqual([])
+      // The secret request is the user's to answer, as before.
+      expect(openStreamRequestIds()).toContain('tool-not-host-1')
+    })
+
+    it('dispatches host tools from the main stream only, never from a subagent frame', async () => {
+      attach({ status: 'resolved', value: 'should not be asked' })
+
+      simulateToolUse('mcp__user-input__schedule_task', 'tool-sub-host', {
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * 1-5',
+        prompt: 'Send the daily report',
+      }, 'agent-tool-1')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      // The subagent's stream saw the finished call; the host never did.
+      expect(sseEvents.filter((e) => e.type === 'subagent_tool_use_ready')).toEqual([
+        expect.objectContaining({ parentToolId: 'agent-tool-1', toolId: 'tool-sub-host', toolName: 'mcp__user-input__schedule_task' }),
+      ])
+      expect(hostToolCalls()).toEqual([])
+      expect(inputCalls('tool-sub-host')).toEqual([])
     })
   })
 
@@ -5972,41 +6017,40 @@ describe('MessagePersister', () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
       mockCheckPermission.mockReturnValue('granted')
       sseEvents.length = 0
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response))
-      vi.stubGlobal('fetch', fetchMock)
+      const host = recordingHost({ hostScript: { exitCode: 0, stdout: 'ProductName: macOS', stderr: '' } })
+      messagePersister.attachHost(host.port)
       const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
       triggerSpy.mockClear()
 
-      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
-        script: 'sw_vers',
-        explanation: 'Check macOS version',
-        scriptType: 'shell',
-      })
+      try {
+        simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
+          script: 'sw_vers',
+          explanation: 'Check macOS version',
+          scriptType: 'shell',
+        })
 
-      // Still registered, flagged auto-approved so the UI suppresses its prompt.
-      const scriptEvents = requestCards('script_run')
-      expect(scriptEvents).toHaveLength(1)
-      expect(scriptEvents[0].request).toMatchObject({
-        id: 'tool-sr-granted',
-        autoApproved: true,
-      })
+        // Still registered, flagged auto-approved so the UI suppresses its prompt.
+        const scriptEvents = requestCards('script_run')
+        expect(scriptEvents).toHaveLength(1)
+        expect(scriptEvents[0].request).toMatchObject({
+          id: 'tool-sr-granted',
+          autoApproved: true,
+        })
 
-      // No "user attention required" notification when auto-approved.
-      expect(triggerSpy).not.toHaveBeenCalled()
+        // No "user attention required" notification when auto-approved.
+        expect(triggerSpy).not.toHaveBeenCalled()
 
-      // Posted to internal /run-script endpoint with the script payload.
-      expect(fetchMock).toHaveBeenCalledTimes(1)
-      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-      expect(url).toContain(`/api/agents/${AGENT_SLUG}/sessions/_auto/run-script`)
-      expect(init.method).toBe('POST')
-      const body = JSON.parse(init.body as string)
-      expect(body).toEqual({
-        toolUseId: 'tool-sr-granted',
-        script: 'sw_vers',
-        scriptType: 'shell',
-      })
-
-      vi.unstubAllGlobals()
+        // The host runs the script; its output goes to the container's pending input.
+        await vi.waitFor(() => expect(openStreamRequestIds()).not.toContain('tool-sr-granted'))
+        expect(host.calls).toEqual([['hostScript', { script: 'sw_vers', scriptType: 'shell' }]])
+        expect(mockContainerClientFetch).toHaveBeenCalledWith('/inputs/tool-sr-granted/resolve', expect.objectContaining({
+          body: JSON.stringify({ value: 'Exit code: 0\n\nstdout:\nProductName: macOS' }),
+        }))
+        // Nobody was shown the request, so no tab is told it settled.
+        expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(0)
+      } finally {
+        messagePersister.attachHost(localHostPort)
+      }
     })
 
     it('registers a script_run even without prior permission (prompts user)', () => {
@@ -6111,8 +6155,8 @@ describe('MessagePersister', () => {
       process.env.E2E_MOCK = 'true'
       mockCheckPermission.mockReturnValue('granted')
       sseEvents.length = 0
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response))
-      vi.stubGlobal('fetch', fetchMock)
+      const host = recordingHost({ computerUse: 'Calculator, Finder' })
+      messagePersister.attachHost(host.port)
       const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
       triggerSpy.mockClear()
 
@@ -6122,8 +6166,14 @@ describe('MessagePersister', () => {
         })
 
         await vi.waitFor(() => {
-          expect(fetchMock).toHaveBeenCalledTimes(1)
+          expect(mockContainerClientFetch).toHaveBeenCalledWith('/inputs/tool-cu-granted/resolve', expect.objectContaining({
+            body: JSON.stringify({ value: 'Calculator, Finder' }),
+          }))
         })
+        expect(host.calls).toEqual([
+          ['computerUsePermissions', {}],
+          ['computerUse', { method: 'apps', params: { includeHidden: false } }],
+        ])
 
         const computerUseEvents = requestCards('computer_use')
         expect(computerUseEvents).toHaveLength(1)
@@ -6141,21 +6191,42 @@ describe('MessagePersister', () => {
         expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
         expect(messagePersister.getPendingComputerUseRequests(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
         expect(triggerSpy).not.toHaveBeenCalled()
-
-        const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-        expect(url).toContain(`/api/agents/${AGENT_SLUG}/sessions/_auto/computer-use`)
-        expect(init.method).toBe('POST')
-        const body = JSON.parse(init.body as string)
-        expect(body).toEqual({
-          toolUseId: 'tool-cu-granted',
-          method: 'apps',
-          params: { includeHidden: false },
-          permissionLevel: 'list_apps_windows',
-        })
+        // Settled once the result was delivered.
+        expect(userInputRequestManager.getOpenRequest('tool-cu-granted', AGENT_SLUG)).toBeNull()
       } finally {
         if (originalE2eMock === undefined) delete process.env.E2E_MOCK
         else process.env.E2E_MOCK = originalE2eMock
-        vi.unstubAllGlobals()
+        messagePersister.attachHost(localHostPort)
+      }
+    })
+
+    it('runs an auto-approved command once when its tool call is delivered twice', async () => {
+      const originalE2eMock = process.env.E2E_MOCK
+      process.env.E2E_MOCK = 'true'
+      mockCheckPermission.mockReturnValue('granted')
+      let finishCommand!: (output: string) => void
+      const host = recordingHost({
+        computerUse: () => new Promise<string>((resolve) => {
+          finishCommand = resolve
+        }),
+      })
+      messagePersister.attachHost(host.port)
+      try {
+        // A subagent's tool call arrives on its stream events and again in its
+        // complete message; the second delivery finds the first run holding it.
+        simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
+        simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
+        await vi.waitFor(() => expect(host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1))
+        finishCommand('clicked')
+        await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest('tool-cu-twice', AGENT_SLUG)).toBeNull())
+        expect(host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1)
+        expect(mockContainerClientFetch.mock.calls.filter(([path]) => String(path).includes('tool-cu-twice'))).toEqual([
+          ['/inputs/tool-cu-twice/resolve', expect.objectContaining({ body: JSON.stringify({ value: 'clicked' }) })],
+        ])
+      } finally {
+        if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+        else process.env.E2E_MOCK = originalE2eMock
+        messagePersister.attachHost(localHostPort)
       }
     })
 
@@ -6403,1662 +6474,6 @@ describe('MessagePersister', () => {
       // Should NOT broadcast stream_api_error
       const apiErrorEvents = sseEvents.filter(e => e.type === 'stream_api_error')
       expect(apiErrorEvents).toHaveLength(0)
-    })
-  })
-
-  // ============================================================================
-  // Webhook trigger tool handling
-  // ============================================================================
-
-  describe('webhook trigger tool handling', () => {
-    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
-      const events: any[] = []
-      const cleanup = globalFeed.subscribe((data) => {
-        events.push(data)
-      })
-      return { events, cleanup }
-    }
-
-    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_start',
-          content_block: { type: 'tool_use', id: toolId, name: toolName },
-        },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
-        },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_stop' },
-      })
-    }
-
-    // Helper to set up the db.select() mock chain for connected account lookups
-    function mockDbSelectAccount(account: { id: string; providerConnectionId: string; providerName: string; toolkitSlug: string } | null) {
-      const result = account ? [account] : []
-      mockDbSelect.mockReturnValue({
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve(result),
-          }),
-        }),
-      })
-    }
-
-    // Wait for the fire-and-forget handler to resolve or reject the exact
-    // blocking tool input this test emitted. Fixed sleeps were flaky under
-    // coverage instrumentation because the async handler chains DB and service
-    // promises before calling the container.
-    async function flushHandlers(expectedPath: string) {
-      const deadline = Date.now() + 3000
-      while (Date.now() < deadline) {
-        const call = mockContainerClientFetch.mock.calls.find((c) => c[0] === expectedPath)
-        if (call) return call
-        await new Promise((resolve) => setTimeout(resolve, 10))
-      }
-      const paths = mockContainerClientFetch.mock.calls.map((c) => String(c[0])).join(', ')
-      throw new Error(`Timed out waiting for ${expectedPath}; observed container fetches: ${paths || '<none>'}`)
-    }
-
-    beforeEach(() => {
-      mockContainerClientFetch.mockClear()
-      mockCreateWebhookTrigger.mockClear()
-      mockCancelWebhookTriggerWithCleanup.mockClear()
-      mockGetAvailableTriggers.mockClear()
-      mockEnableComposioTrigger.mockClear()
-      mockDeleteComposioTrigger.mockClear()
-      mockListActiveWebhookTriggers.mockClear()
-      mockGetWebhookTrigger.mockClear()
-      mockUpdateWebhookTriggerPrompt.mockClear()
-      mockDbSelect.mockClear()
-
-      mockIsPlatformComposioActive.mockReturnValue(true)
-      mockGetPlatformAccessToken.mockReturnValue('opaque_token')
-      mockRelayUnavailableReason.mockReturnValue(null)
-      mockGetStoredPlatformMemberId.mockReturnValue(null)
-      mockResolvePlatformMemberForCandidates.mockReturnValue(null)
-      mockContainerClientFetch.mockResolvedValue({ ok: true })
-      mockCreateWebhookTrigger.mockResolvedValue('trigger_new_id')
-      mockCancelWebhookTriggerWithCleanup.mockResolvedValue(true)
-      mockGetWebhookTrigger.mockResolvedValue(null)
-      mockUpdateWebhookTriggerPrompt.mockResolvedValue(true)
-      mockGetAvailableTriggers.mockResolvedValue([
-        { slug: 'GMAIL_NEW_EMAIL', name: 'New Email', description: 'Fires on new email', type: 'webhook' },
-        { slug: 'SLACK_NEW_MESSAGE', name: 'New Message', description: 'Fires on new Slack message', type: 'webhook' },
-      ])
-      mockDbSelectAccount({ id: 'ca_1', providerConnectionId: 'composio_ca_1', providerName: 'composio', toolkitSlug: 'gmail' })
-    })
-
-    describe('setup_trigger', () => {
-      it('broadcasts webhook_trigger_created on success', async () => {
-        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-1', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Summarize this email',
-          name: 'Email Handler',
-        })
-
-        await flushHandlers('/inputs/tool-setup-1/resolve')
-
-        const sseCreated = sseEvents.filter(e => e.type === 'webhook_trigger_created')
-        expect(sseCreated).toHaveLength(1)
-        expect(sseCreated[0].triggerId).toBe('trigger_new_id')
-        expect(sseCreated[0].triggerType).toBe('GMAIL_NEW_EMAIL')
-        expect(sseCreated[0].name).toBe('Email Handler')
-        expect(sseCreated[0].agentSlug).toBe(AGENT_SLUG)
-
-        const globalCreated = globalEvents.filter(e => e.type === 'webhook_trigger_created')
-        expect(globalCreated).toHaveLength(1)
-        expect(globalCreated[0].triggerId).toBe('trigger_new_id')
-
-        // Verify resolve was called
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-setup-1/resolve',
-          expect.objectContaining({ method: 'POST' }),
-        )
-
-        globalCleanup()
-      })
-
-      it('validates trigger type against available triggers', async () => {
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-bad', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'NONEXISTENT_TRIGGER',
-          prompt: 'Test',
-        })
-
-        await flushHandlers('/inputs/tool-setup-bad/reject')
-
-        // Should reject with helpful error
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-setup-bad/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('Invalid trigger type'),
-          }),
-        )
-
-        // Should NOT broadcast creation
-        const sseCreated = sseEvents.filter(e => e.type === 'webhook_trigger_created')
-        expect(sseCreated).toHaveLength(0)
-      })
-
-      it('rejects when platform Composio is not active', async () => {
-        mockIsPlatformComposioActive.mockReturnValue(false)
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-noplatform', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Test',
-        })
-
-        await flushHandlers('/inputs/tool-setup-noplatform/reject')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-setup-noplatform/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('only available with platform Composio'),
-          }),
-        )
-      })
-
-      it('rejects while the relay that delivers its events is unavailable', async () => {
-        mockRelayUnavailableReason.mockReturnValue('stopped')
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-norelay', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Test',
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-setup-norelay/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toBe('Webhook triggers are unavailable: the webhook relay is not running')
-        expect(mockEnableComposioTrigger).not.toHaveBeenCalled()
-      })
-
-      it('rejects when connected account not found', async () => {
-        mockDbSelectAccount(null)
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-noaccount', {
-          connected_account_id: 'ca_nonexistent',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Test',
-        })
-
-        await flushHandlers('/inputs/tool-setup-noaccount/reject')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-setup-noaccount/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('not found'),
-          }),
-        )
-      })
-
-      // SUP-765: the row must record the member the proxy actually scoped the
-      // subscription to. Tool handlers run off the stream loop with no
-      // guaranteed ALS scope, so the mint has to establish one itself.
-      it('mints under the session member and records it when no ambient attribution is active', async () => {
-        mockGetPlatformAccessToken.mockReturnValue(buildOrgToken('org_test'))
-        mockGetStoredPlatformMemberId.mockReturnValue('sub_session')
-        let mintKey: string | null | undefined
-        mockEnableComposioTrigger.mockImplementation(async () => {
-          mintKey = (await attribution.current())?.getKey() ?? null
-          return 'composio_trigger_id'
-        })
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-minted', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Summarize this email',
-        })
-
-        await flushHandlers('/inputs/tool-setup-minted/resolve')
-
-        expect(mintKey).toBe('member:sub_session')
-        expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
-          expect.objectContaining({ mintedByMemberId: 'sub_session' }),
-        )
-      })
-
-      it('never mints as the opaque-key placeholder member', async () => {
-        // Nothing resolves: the bearer must stay the bare token, not `token::local`.
-        let mintKey: string | null | undefined
-        mockEnableComposioTrigger.mockImplementation(async () => {
-          mintKey = (await attribution.current())?.getKey() ?? null
-          return 'composio_trigger_id'
-        })
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-local', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Summarize this email',
-        })
-
-        await flushHandlers('/inputs/tool-setup-local/resolve')
-
-        expect(mintKey).toBeNull()
-        expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
-          expect.objectContaining({ mintedByMemberId: undefined }),
-        )
-      })
-
-      it('rolls back Composio trigger if SQLite save fails', async () => {
-        mockCreateWebhookTrigger.mockRejectedValue(new Error('DB write failed'))
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-dbfail', {
-          connected_account_id: 'ca_1',
-          trigger_type: 'GMAIL_NEW_EMAIL',
-          prompt: 'Test',
-        })
-
-        await flushHandlers('/inputs/tool-setup-dbfail/reject')
-
-        expect(mockEnableComposioTrigger).toHaveBeenCalled()
-        expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('composio_trigger_id')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-setup-dbfail/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('Failed to save trigger locally'),
-          }),
-        )
-      })
-    })
-
-    describe('cancel_trigger', () => {
-      it('broadcasts webhook_trigger_cancelled on success', async () => {
-        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-1', {
-          trigger_id: 'trigger_existing',
-        })
-
-        await flushHandlers('/inputs/tool-cancel-1/resolve')
-
-        const sseCancelled = sseEvents.filter(e => e.type === 'webhook_trigger_cancelled')
-        expect(sseCancelled).toHaveLength(1)
-        expect(sseCancelled[0].triggerId).toBe('trigger_existing')
-        expect(sseCancelled[0].agentSlug).toBe(AGENT_SLUG)
-
-        const globalCancelled = globalEvents.filter(e => e.type === 'webhook_trigger_cancelled')
-        expect(globalCancelled).toHaveLength(1)
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-cancel-1/resolve',
-          expect.objectContaining({ method: 'POST' }),
-        )
-
-        globalCleanup()
-      })
-
-      it('rejects when trigger not found or already cancelled', async () => {
-        mockCancelWebhookTriggerWithCleanup.mockResolvedValue(false)
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-notfound', {
-          trigger_id: 'trigger_gone',
-        })
-
-        await flushHandlers('/inputs/tool-cancel-notfound/reject')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-cancel-notfound/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('not found or already cancelled'),
-          }),
-        )
-
-        const sseCancelled = sseEvents.filter(e => e.type === 'webhook_trigger_cancelled')
-        expect(sseCancelled).toHaveLength(0)
-      })
-
-      it('rejects when trigger_id is missing', async () => {
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-noid', {})
-
-        await flushHandlers('/inputs/tool-cancel-noid/reject')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-cancel-noid/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('Missing required field'),
-          }),
-        )
-      })
-    })
-
-    describe('list_triggers', () => {
-      it('resolves with formatted trigger list', async () => {
-        mockListActiveWebhookTriggers.mockResolvedValue([
-          {
-            id: 't1', name: 'Email Handler', triggerType: 'GMAIL_NEW_EMAIL',
-            connectedAccountId: 'ca_1', fireCount: 3, prompt: 'Summarize email',
-          },
-          {
-            id: 't2', name: null, triggerType: 'SLACK_NEW_MESSAGE',
-            connectedAccountId: 'ca_2', fireCount: 0, prompt: 'Handle slack message',
-          },
-        ])
-
-        simulateToolUse('mcp__user-input__list_triggers', 'tool-list-1', {})
-
-        await flushHandlers('/inputs/tool-list-1/resolve')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-list-1/resolve',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('Email Handler'),
-          }),
-        )
-        // Verify both triggers appear in the resolved body
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (c) => c[0] === '/inputs/tool-list-1/resolve'
-        )
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('GMAIL_NEW_EMAIL')
-        expect(body.value).toContain('SLACK_NEW_MESSAGE')
-      })
-
-      it('resolves with empty message when no triggers', async () => {
-        mockListActiveWebhookTriggers.mockResolvedValue([])
-
-        simulateToolUse('mcp__user-input__list_triggers', 'tool-list-empty', {})
-
-        await flushHandlers('/inputs/tool-list-empty/resolve')
-
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (c) => c[0] === '/inputs/tool-list-empty/resolve'
-        )
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('No active webhook triggers')
-      })
-    })
-
-    describe('update_trigger', () => {
-      it('updates the prompt in place and broadcasts the change', async () => {
-        const { events: globalEvents, cleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-        mockGetWebhookTrigger.mockResolvedValue({
-          id: 'trigger_existing',
-          agentSlug: AGENT_SLUG,
-          status: 'active',
-          fireCount: 4,
-          lastSessionId: 'previous-session',
-        })
-
-        simulateToolUse('mcp__user-input__update_trigger', 'tool-trigger-update-1', {
-          trigger_id: 'trigger_existing',
-          prompt: 'Handle future emails differently',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-trigger-update-1/resolve')
-        expect(mockUpdateWebhookTriggerPrompt).toHaveBeenCalledWith(
-          'trigger_existing',
-          'Handle future emails differently',
-        )
-        expect(JSON.parse(resolveCall[1].body).value).toContain('firing history were preserved')
-        expect(sseEvents.filter((e) => e.type === 'webhook_trigger_updated')).toHaveLength(1)
-        expect(globalEvents.filter((e) => e.type === 'webhook_trigger_updated')).toHaveLength(1)
-        cleanup()
-      })
-
-      it('does not update a trigger owned by another agent', async () => {
-        mockGetWebhookTrigger.mockResolvedValue({
-          id: 'trigger_foreign',
-          agentSlug: 'other-agent',
-          status: 'active',
-        })
-
-        simulateToolUse('mcp__user-input__update_trigger', 'tool-trigger-update-foreign', {
-          trigger_id: 'trigger_foreign',
-          prompt: 'Take over this trigger',
-        })
-
-        await flushHandlers('/inputs/tool-trigger-update-foreign/reject')
-        expect(mockUpdateWebhookTriggerPrompt).not.toHaveBeenCalled()
-      })
-
-      it('rejects an empty prompt at the host validation boundary', async () => {
-        simulateToolUse('mcp__user-input__update_trigger', 'tool-trigger-update-empty', {
-          trigger_id: 'trigger_existing',
-          prompt: '   ',
-        })
-
-        await flushHandlers('/inputs/tool-trigger-update-empty/reject')
-        expect(mockGetWebhookTrigger).not.toHaveBeenCalled()
-        expect(mockUpdateWebhookTriggerPrompt).not.toHaveBeenCalled()
-      })
-    })
-
-    describe('create_webhook_endpoint', () => {
-      const ENDPOINT = {
-        id: 'whep_11111111-2222-4333-8444-555555555555',
-        url: 'https://proxy.test/v1/hooks/whep_11111111-2222-4333-8444-555555555555',
-        name: 'Deploy hook',
-        status: 'active',
-        verification: null,
-        receive_count: 0,
-        rejected_count: 0,
-        last_received_at: null,
-        created_at: '2026-07-06T00:00:00Z',
-      }
-
-      beforeEach(() => {
-        mockCreateRelayEndpoint.mockClear()
-        mockDisableRelayEndpoint.mockClear()
-        mockCreateRelayEndpoint.mockResolvedValue(ENDPOINT)
-      })
-
-      it('mints on the platform, saves a kind=custom trigger row, and resolves with the URL', async () => {
-        const { events: globalEvents, cleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-1', {
-          name: 'Deploy hook',
-          prompt: 'Summarize the deploy result',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-mint-1/resolve')
-
-        expect(mockCreateRelayEndpoint).toHaveBeenCalledTimes(1)
-        expect(mockCreateRelayEndpoint.mock.calls[0][1]).toEqual({ name: 'Deploy hook' })
-
-        expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
-          expect.objectContaining({
-            kind: 'custom',
-            composioTriggerId: ENDPOINT.id,
-            triggerType: 'CUSTOM_WEBHOOK',
-            prompt: 'Summarize the deploy result',
-            name: 'Deploy hook',
-          }),
-        )
-        const triggerConfig = JSON.parse(
-          mockCreateWebhookTrigger.mock.calls[0][0].triggerConfig,
-        )
-        expect(triggerConfig.url).toBe(ENDPOINT.url)
-
-        const body = JSON.parse(resolveCall[1].body)
-        expect(body.value).toContain(ENDPOINT.url)
-        expect(body.value).toContain('UNVERIFIED')
-        // Registration guidance: agent-does-it-first (API → browser), user
-        // walkthrough only as the fallback.
-        expect(body.value).toContain('YOURSELF')
-        expect(body.value).toContain('browser')
-        expect(body.value).toContain('walkthrough')
-
-        expect(sseEvents.filter((e) => e.type === 'webhook_trigger_created')).toHaveLength(1)
-        expect(globalEvents.filter((e) => e.type === 'webhook_trigger_created')).toHaveLength(1)
-        cleanup()
-      })
-
-      it('passes a valid verification profile through to the platform', async () => {
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-2', {
-          name: 'Signed hook',
-          prompt: 'Handle it',
-          verification: {
-            algorithm: 'hmac-sha256',
-            encoding: 'hex',
-            header: 'x-hub-signature-256',
-            prefix: 'sha256=',
-            template: '{body}',
-            secret: 'shh',
-          },
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-mint-2/resolve')
-        expect(mockCreateRelayEndpoint.mock.calls[0][1].verification.secret).toBe('shh')
-        const body = JSON.parse(resolveCall[1].body)
-        expect(body.value).not.toContain('UNVERIFIED')
-      })
-
-      it('rejects an invalid verification profile before any platform call', async () => {
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-3', {
-          name: 'Bad profile',
-          prompt: 'Handle it',
-          verification: { algorithm: 'rot13' },
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-mint-3/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('Invalid tool input: verification.')
-        expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
-      })
-
-      it('disables the platform endpoint when the local save fails (rollback)', async () => {
-        mockCreateWebhookTrigger.mockRejectedValueOnce(new Error('disk full'))
-
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-4', {
-          name: 'Doomed hook',
-          prompt: 'Handle it',
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-mint-4/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('Failed to save trigger locally')
-        expect(mockDisableRelayEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
-      })
-
-      it('rejects with the reason while the relay is unavailable', async () => {
-        mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
-
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-5', {
-          name: 'No platform',
-          prompt: 'Handle it',
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-mint-5/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toBe(
-          'Custom webhook endpoints are unavailable: the platform is not connected',
-        )
-        expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
-      })
-
-      it('mints with a personal Composio key as long as the relay is available', async () => {
-        // Custom endpoints live on the platform proxy, not Composio — a user
-        // who brings their own Composio key must still be able to mint.
-        mockIsPlatformComposioActive.mockReturnValue(false)
-
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-6', {
-          name: 'Own composio key',
-          prompt: 'Handle it',
-        })
-
-        await flushHandlers('/inputs/tool-mint-6/resolve')
-        expect(mockCreateRelayEndpoint).toHaveBeenCalled()
-      })
-
-      it('passes filter_exp through to the relay and confirms it in the result', async () => {
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-7', {
-          name: 'Filtered hook',
-          prompt: 'Handle assigned issues',
-          filter_exp: 'headers["linear-event"] == "Issue" && has(body.updatedFrom.assigneeId)',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-mint-7/resolve')
-        expect(mockCreateRelayEndpoint.mock.calls[0][1].filterExp).toBe(
-          'headers["linear-event"] == "Issue" && has(body.updatedFrom.assigneeId)',
-        )
-        const body = JSON.parse(resolveCall[1].body)
-        expect(body.value).toContain('Delivery filter active')
-        expect(body.value).toContain('inspect_webhook_events')
-      })
-
-      it('teaches the filter loop when minting WITHOUT a filter', async () => {
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-8', {
-          name: 'Unfiltered hook',
-          prompt: 'Handle it',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-mint-8/resolve')
-        expect(mockCreateRelayEndpoint.mock.calls[0][1].filterExp).toBeUndefined()
-        const body = JSON.parse(resolveCall[1].body)
-        // No filter → the result must make filtering an explicit decision
-        // (compare subscription breadth vs the prompt) and point at
-        // filter_exp + the dry-run tool.
-        expect(body.value).toContain('decide whether you need one')
-        expect(body.value).toContain('filter_exp')
-        expect(body.value).toContain('update_webhook_endpoint')
-        expect(body.value).toContain('test_filter_exp')
-      })
-
-      it('rejects an over-length filter_exp before any platform call', async () => {
-        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-9', {
-          name: 'Too long',
-          prompt: 'Handle it',
-          filter_exp: `body.a == "${'x'.repeat(2100)}"`,
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-mint-9/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('filter_exp')
-        expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
-      })
-    })
-
-    describe('update_webhook_endpoint', () => {
-      const customTrigger = {
-        id: 'trigger_custom_1',
-        agentSlug: 'test-agent',
-        kind: 'custom',
-        composioTriggerId: 'whep_11111111-2222-4333-8444-555555555555',
-        status: 'active',
-      }
-
-      beforeEach(() => {
-        mockUpdateRelayEndpoint.mockClear()
-        mockGetWebhookTrigger.mockResolvedValue(customTrigger)
-      })
-
-      it('attaches verification post-mint (the secret-arrives-later flow)', async () => {
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-1', {
-          trigger_id: 'trigger_custom_1',
-          verification: {
-            algorithm: 'hmac-sha256',
-            encoding: 'base64',
-            header: 'webhook-signature',
-            template: '{webhook_id}.{timestamp}.{body}',
-            timestamp_header: 'webhook-timestamp',
-            secret: 'whsec_abc',
-            secret_encoding: 'base64',
-          },
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-upd-1/resolve')
-        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
-          expect.any(String),
-          customTrigger.composioTriggerId,
-          expect.objectContaining({ verification: expect.objectContaining({ secret: 'whsec_abc' }) }),
-        )
-        expect(JSON.parse(resolveCall[1].body).value).toContain('signature-verified')
-      })
-
-      // SUP-765: the endpoint is scoped to whoever minted it, so a PATCH under
-      // the session creator's member 404s at the proxy.
-      it('patches as the recorded minting member, not the trigger creator', async () => {
-        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
-        mockResolvePlatformMemberForCandidates.mockReturnValue({ userId: 'u1', memberId: 'sub_creator' })
-
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-minted', {
-          trigger_id: 'trigger_custom_1',
-          name: 'renamed',
-        })
-
-        await flushHandlers('/inputs/tool-upd-minted/resolve')
-        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
-          'sub_minted',
-          customTrigger.composioTriggerId,
-          { name: 'renamed' },
-        )
-      })
-
-      it('falls back to the creator member for rows minted before the column existed', async () => {
-        mockResolvePlatformMemberForCandidates.mockReturnValue({ userId: 'u1', memberId: 'sub_creator' })
-
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-precolumn', {
-          trigger_id: 'trigger_custom_1',
-          name: 'renamed',
-        })
-
-        await flushHandlers('/inputs/tool-upd-precolumn/resolve')
-        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
-          'sub_creator',
-          customTrigger.composioTriggerId,
-          { name: 'renamed' },
-        )
-      })
-
-      it('rejects for a non-custom trigger', async () => {
-        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
-
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-2', {
-          trigger_id: 'trigger_custom_1',
-          name: 'renamed',
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-upd-2/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('No custom webhook endpoint')
-        expect(mockUpdateRelayEndpoint).not.toHaveBeenCalled()
-      })
-
-      it('rejects an unknown trigger id', async () => {
-        mockGetWebhookTrigger.mockResolvedValue(null)
-
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-3', {
-          trigger_id: 'nope',
-          name: 'renamed',
-        })
-
-        await flushHandlers('/inputs/tool-upd-3/reject')
-        expect(mockUpdateRelayEndpoint).not.toHaveBeenCalled()
-      })
-
-      it('sets a filter_exp and explains the filtered-events semantics', async () => {
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-4', {
-          trigger_id: 'trigger_custom_1',
-          filter_exp: 'body.action == "update"',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-upd-4/resolve')
-        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
-          expect.any(String),
-          customTrigger.composioTriggerId,
-          { filterExp: 'body.action == "update"' },
-        )
-        const value = JSON.parse(resolveCall[1].body).value
-        expect(value).toContain('filter set')
-        expect(value).toContain('fail open')
-      })
-
-      it('clears the filter with filter_exp: null', async () => {
-        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-5', {
-          trigger_id: 'trigger_custom_1',
-          filter_exp: null,
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-upd-5/resolve')
-        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
-          expect.any(String),
-          customTrigger.composioTriggerId,
-          { filterExp: null },
-        )
-        const value = JSON.parse(resolveCall[1].body).value
-        expect(value).toContain('filter removed')
-      })
-    })
-
-    describe('inspect_webhook_events', () => {
-      const customTrigger = {
-        id: 'trigger_custom_1',
-        agentSlug: 'test-agent',
-        kind: 'custom',
-        composioTriggerId: 'whep_11111111-2222-4333-8444-555555555555',
-        status: 'active',
-      }
-
-      beforeEach(() => {
-        mockListRelayEndpointEvents.mockClear()
-        mockTestRelayEndpointFilter.mockClear()
-        mockGetWebhookTrigger.mockResolvedValue(customTrigger)
-        mockListRelayEndpointEvents.mockResolvedValue({ filterExp: null, events: [] })
-      })
-
-      // SUP-765: same scoping as update/teardown — a read under the creator's
-      // member 404s for anything minted by someone else.
-      it('reads as the recorded minting member, not the trigger creator', async () => {
-        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
-        mockResolvePlatformMemberForCandidates.mockReturnValue({ userId: 'u1', memberId: 'sub_creator' })
-
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-minted', {
-          trigger_id: 'trigger_custom_1',
-        })
-
-        await flushHandlers('/inputs/tool-insp-minted/resolve')
-        expect(mockListRelayEndpointEvents).toHaveBeenCalledWith(
-          'sub_minted',
-          customTrigger.composioTriggerId,
-          undefined,
-        )
-      })
-
-      it('dry-runs a filter as the recorded minting member too', async () => {
-        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
-        mockTestRelayEndpointFilter.mockResolvedValue({
-          filter_exp: 'body.action == "update"',
-          evaluated: 0,
-          summary: { passed: 0, filtered: 0, error: 0, skipped: 0 },
-          results: [],
-        })
-
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-minted-filter', {
-          trigger_id: 'trigger_custom_1',
-          test_filter_exp: 'body.action == "update"',
-        })
-
-        await flushHandlers('/inputs/tool-insp-minted-filter/resolve')
-        expect(mockTestRelayEndpointFilter).toHaveBeenCalledWith(
-          'sub_minted',
-          customTrigger.composioTriggerId,
-          'body.action == "update"',
-          undefined,
-        )
-      })
-
-      it('lists recent deliveries with filter verdicts and body previews', async () => {
-        mockListRelayEndpointEvents.mockResolvedValue({
-          filterExp: 'body.action == "update"',
-          events: [
-            {
-              id: 'whe_1',
-              created_at: '2026-07-07T20:45:19Z',
-              status: 'consumed',
-              kind: 'event',
-              verified: true,
-              filter: { outcome: 'passed' },
-              method: 'POST',
-              content_type: 'application/json',
-              body: '{"action":"update"}',
-            },
-            {
-              id: 'whe_2',
-              created_at: '2026-07-07T20:44:00Z',
-              status: 'filtered',
-              kind: 'event',
-              verified: true,
-              filter: { outcome: 'filtered' },
-              method: 'POST',
-              content_type: 'application/json',
-              body: `{"action":"create","pad":"${'x'.repeat(500)}"}`,
-            },
-            {
-              id: 'whe_3',
-              created_at: '2026-07-07T20:43:00Z',
-              status: 'pending',
-              kind: 'event',
-              verified: false,
-              filter: { outcome: 'error', error: 'No such key: parent' },
-              method: 'POST',
-              content_type: 'application/json',
-              body: '{"other":1}',
-            },
-          ],
-        })
-
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-1', {
-          trigger_id: 'trigger_custom_1',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-insp-1/resolve')
-        expect(mockListRelayEndpointEvents).toHaveBeenCalledWith(
-          expect.any(String),
-          customTrigger.composioTriggerId,
-          undefined,
-        )
-        const value = JSON.parse(resolveCall[1].body).value as string
-        expect(value).toContain('body.action == "update"')
-        expect(value).toContain('whe_1')
-        expect(value).toContain('filter: passed')
-        expect(value).toContain('filter: filtered')
-        expect(value).toContain('No such key: parent')
-        // Body previews are capped so 50 events can't crowd the context.
-        expect(value.length).toBeLessThan(2000)
-      })
-
-      it('reports when no deliveries exist yet', async () => {
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-2', {
-          trigger_id: 'trigger_custom_1',
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-insp-2/resolve')
-        const value = JSON.parse(resolveCall[1].body).value as string
-        expect(value).toContain('No deliveries recorded yet')
-      })
-
-      it('dry-runs a candidate filter and summarizes the verdicts', async () => {
-        mockTestRelayEndpointFilter.mockResolvedValue({
-          filter_exp: 'body.action == "update"',
-          evaluated: 3,
-          summary: { passed: 1, filtered: 1, error: 1, skipped: 0 },
-          results: [
-            { event_id: 'whe_1', created_at: '2026-07-07T20:45:19Z', stored_status: 'consumed', outcome: 'passed' },
-            { event_id: 'whe_2', created_at: '2026-07-07T20:44:00Z', stored_status: 'filtered', outcome: 'filtered' },
-            { event_id: 'whe_3', created_at: '2026-07-07T20:43:00Z', stored_status: 'pending', outcome: 'error', error: 'No such key: action' },
-          ],
-        })
-
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-3', {
-          trigger_id: 'trigger_custom_1',
-          test_filter_exp: 'body.action == "update"',
-          limit: 10,
-        })
-
-        const resolveCall = await flushHandlers('/inputs/tool-insp-3/resolve')
-        expect(mockTestRelayEndpointFilter).toHaveBeenCalledWith(
-          expect.any(String),
-          customTrigger.composioTriggerId,
-          'body.action == "update"',
-          10,
-        )
-        expect(mockListRelayEndpointEvents).not.toHaveBeenCalled()
-        const value = JSON.parse(resolveCall[1].body).value as string
-        expect(value).toContain('1 would pass')
-        expect(value).toContain('No such key: action')
-        expect(value).toContain('Nothing was changed')
-        expect(value).toContain('update_webhook_endpoint')
-      })
-
-      it('surfaces the platform 400 (CEL parser message) for an invalid candidate', async () => {
-        mockTestRelayEndpointFilter.mockRejectedValue(
-          new Error('Webhook endpoints API error 400: Invalid filter expression: invalid CEL expression: Unexpected token: EOF'),
-        )
-
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-4', {
-          trigger_id: 'trigger_custom_1',
-          test_filter_exp: 'has(body.x) &&',
-        })
-
-        const rejectCall = await flushHandlers('/inputs/tool-insp-4/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('Unexpected token')
-      })
-
-      it('rejects non-custom triggers, and everything while the relay is unavailable', async () => {
-        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-5', {
-          trigger_id: 'trigger_custom_1',
-        })
-        await flushHandlers('/inputs/tool-insp-5/reject')
-        expect(mockListRelayEndpointEvents).not.toHaveBeenCalled()
-
-        mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
-        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-6', {
-          trigger_id: 'trigger_custom_1',
-        })
-        const rejectCall = await flushHandlers('/inputs/tool-insp-6/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
-      })
-    })
-
-    describe('get_available_triggers', () => {
-      it('resolves with formatted available triggers', async () => {
-        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-1', {
-          connected_account_id: 'ca_1',
-        })
-
-        await flushHandlers('/inputs/tool-avail-1/resolve')
-
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (c) => c[0] === '/inputs/tool-avail-1/resolve'
-        )
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('GMAIL_NEW_EMAIL')
-        expect(body.value).toContain('SLACK_NEW_MESSAGE')
-        expect(body.value).toContain('setup_trigger')
-        // Custom endpoints surfaced as complementary, not a replacement.
-        expect(body.value).toContain('create_webhook_endpoint')
-        expect(body.value).toContain('side by side')
-      })
-
-      it('rejects when connected account not found', async () => {
-        mockDbSelectAccount(null)
-
-        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-noaccount', {
-          connected_account_id: 'ca_missing',
-        })
-
-        await flushHandlers('/inputs/tool-avail-noaccount/reject')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-avail-noaccount/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('not found'),
-          }),
-        )
-      })
-
-      it('rejects when platform Composio is not active', async () => {
-        mockIsPlatformComposioActive.mockReturnValue(false)
-
-        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-noplatform', {
-          connected_account_id: 'ca_1',
-        })
-
-        await flushHandlers('/inputs/tool-avail-noplatform/reject')
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-avail-noplatform/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('only available with platform Composio'),
-          }),
-        )
-      })
-
-      it('resolves with empty message when no triggers available', async () => {
-        mockGetAvailableTriggers.mockResolvedValue([])
-
-        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-empty', {
-          connected_account_id: 'ca_1',
-        })
-
-        await flushHandlers('/inputs/tool-avail-empty/resolve')
-
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (c) => c[0] === '/inputs/tool-avail-empty/resolve'
-        )
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('No webhook triggers available')
-        // Dead end must redirect to the custom-endpoint path.
-        expect(body.value).toContain('create_webhook_endpoint')
-        expect(body.value).toContain('update_webhook_endpoint')
-        // ...including the filter step for over-broad vendor webhooks.
-        expect(body.value).toContain('filter_exp')
-        expect(body.value).toContain('inspect_webhook_events')
-      })
-    })
-  })
-
-  // ============================================================================
-  // Scheduled task tool handling (list_scheduled_tasks / cancel_scheduled_task)
-  // ============================================================================
-
-  describe('scheduled task tool handling', () => {
-    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
-      const events: any[] = []
-      const cleanup = globalFeed.subscribe((data) => {
-        events.push(data)
-      })
-      return { events, cleanup }
-    }
-
-    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_start',
-          content_block: { type: 'tool_use', id: toolId, name: toolName },
-        },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
-        },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_stop' },
-      })
-    }
-
-    // Handlers are fire-and-forget via ;(async () => {...})() — let them settle.
-    async function flushHandlers() {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-
-    beforeEach(() => {
-      mockContainerClientFetch.mockClear()
-      mockListPendingScheduledTasks.mockClear()
-      mockGetScheduledTask.mockClear()
-      mockCancelScheduledTask.mockClear()
-      mockPauseScheduledTask.mockClear()
-      mockResumeScheduledTask.mockClear()
-      mockPatchScheduledTask.mockClear()
-      mockCreateScheduledTask.mockReset()
-
-      mockContainerClientFetch.mockResolvedValue({ ok: true })
-      mockListPendingScheduledTasks.mockResolvedValue([])
-      mockGetScheduledTask.mockResolvedValue(null)
-      mockCancelScheduledTask.mockResolvedValue(true)
-      mockPauseScheduledTask.mockResolvedValue(true)
-      mockResumeScheduledTask.mockResolvedValue(true)
-      mockPatchScheduledTask.mockResolvedValue(true)
-      mockCreateScheduledTask.mockResolvedValue('task_new_id')
-    })
-
-    describe('schedule_task (blocking)', () => {
-      function findFetchCall(suffix: string) {
-        return mockContainerClientFetch.mock.calls.find((c) => c[0] === suffix)
-      }
-
-      it('persists then resolves the tool with a success message', async () => {
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-1', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-          name: 'Daily report',
-        })
-
-        await flushHandlers()
-
-        expect(mockCreateScheduledTask).toHaveBeenCalledWith(
-          expect.objectContaining({
-            agentSlug: AGENT_SLUG,
-            scheduleType: 'cron',
-            scheduleExpression: '0 9 * * 1-5',
-            prompt: 'Send the daily report',
-          })
-        )
-
-        const resolveCall = findFetchCall('/inputs/tool-sched-create-1/resolve')
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('Daily report')
-        expect(body.value).toContain('task_new_id')
-        // Daily (well above threshold) — no frequency warning.
-        expect(body.value).not.toContain('Frequent schedule warning')
-      })
-
-      it('rejects (no false success) when persistence throws', async () => {
-        mockCreateScheduledTask.mockRejectedValue(new Error('disk full'))
-
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-fail', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-        })
-
-        await flushHandlers()
-
-        expect(findFetchCall('/inputs/tool-sched-create-fail/resolve')).toBeUndefined()
-        const rejectCall = findFetchCall('/inputs/tool-sched-create-fail/reject')
-        expect(rejectCall).toBeDefined()
-        expect(JSON.parse(rejectCall![1].body).reason).toContain('disk full')
-      })
-
-      it('appends a frequency warning for sub-threshold recurring schedules', async () => {
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-freq', {
-          scheduleType: 'cron',
-          scheduleExpression: '* * * * *',
-          prompt: 'Poll something',
-        })
-
-        await flushHandlers()
-
-        const resolveCall = findFetchCall('/inputs/tool-sched-create-freq/resolve')
-        expect(resolveCall).toBeDefined()
-        expect(JSON.parse(resolveCall![1].body).value).toContain('Frequent schedule warning')
-      })
-
-      it('does not warn for one-time (at) schedules', async () => {
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-at', {
-          scheduleType: 'at',
-          scheduleExpression: 'at now + 1 hour',
-          prompt: 'One-off reminder',
-        })
-
-        await flushHandlers()
-
-        const resolveCall = findFetchCall('/inputs/tool-sched-create-at/resolve')
-        expect(resolveCall).toBeDefined()
-        expect(JSON.parse(resolveCall![1].body).value).not.toContain('Frequent schedule warning')
-      })
-
-      it('rejects when required fields are missing', async () => {
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-missing', {
-          scheduleType: 'cron',
-        })
-
-        await flushHandlers()
-
-        expect(mockCreateScheduledTask).not.toHaveBeenCalled()
-        const rejectCall = findFetchCall('/inputs/tool-sched-create-missing/reject')
-        expect(rejectCall).toBeDefined()
-        expect(JSON.parse(rejectCall![1].body).reason).toContain('Missing required fields')
-      })
-
-      it('rejects a whitespace-only prompt without persisting', async () => {
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-ws', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: '   ',
-        })
-
-        await flushHandlers()
-
-        // Container and host must agree: a blank prompt is rejected, never persisted.
-        expect(mockCreateScheduledTask).not.toHaveBeenCalled()
-        const rejectCall = findFetchCall('/inputs/tool-sched-create-ws/reject')
-        expect(rejectCall).toBeDefined()
-        expect(JSON.parse(rejectCall![1].body).reason).toContain('Missing required fields')
-      })
-
-      it('does not reject (no false failure) when result delivery fails after persistence', async () => {
-        // Persistence succeeds, but the resolve fetch to the container fails. The
-        // agent must NOT be told the schedule failed — otherwise it retries into a
-        // duplicate recurring task.
-        mockContainerClientFetch.mockImplementation((url: string) =>
-          url.endsWith('/resolve')
-            ? Promise.reject(new Error('container unreachable'))
-            : Promise.resolve({ ok: true })
-        )
-
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-deliver-fail', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-        })
-
-        await flushHandlers()
-
-        expect(mockCreateScheduledTask).toHaveBeenCalled()
-        expect(findFetchCall('/inputs/tool-sched-deliver-fail/reject')).toBeUndefined()
-      })
-
-      // Soft-cap (SUP-332): the result always carries the active-schedule count +
-      // list; a warning is appended above the warn band and a critical warning
-      // above the critical band. We never block creation.
-      function makeActiveTasks(n: number): unknown[] {
-        return Array.from({ length: n }, (_, i) => ({
-          id: `task_${i}`,
-          name: `Task ${i}`,
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          status: 'pending',
-          nextExecutionAt: new Date('2026-06-04T09:00:00Z'),
-          timezone: 'America/New_York',
-          prompt: 'do a thing',
-        }))
-      }
-
-      it('always returns the active-schedule count and list with no warning at or below the warn band', async () => {
-        mockListPendingScheduledTasks.mockResolvedValue(makeActiveTasks(4))
-
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-ok', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-        })
-
-        await flushHandlers()
-
-        const resolveCall = findFetchCall('/inputs/tool-sched-band-ok/resolve')
-        expect(resolveCall).toBeDefined()
-        const value = JSON.parse(resolveCall![1].body).value
-        expect(value).toContain('Active schedules for this agent: 4')
-        expect(value).toContain('task_0') // full list is present
-        expect(value).toContain('task_3')
-        expect(value).not.toContain('Schedule count warning')
-        expect(value).not.toContain('CRITICAL')
-      })
-
-      it('appends a (non-critical) warning above the warn band', async () => {
-        mockListPendingScheduledTasks.mockResolvedValue(makeActiveTasks(5))
-
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-warn', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-        })
-
-        await flushHandlers()
-
-        const value = JSON.parse(findFetchCall('/inputs/tool-sched-band-warn/resolve')![1].body).value
-        expect(value).toContain('Active schedules for this agent: 5')
-        expect(value).toContain('Schedule count warning')
-        expect(value).not.toContain('CRITICAL')
-        expect(value).toContain('task_4') // full list still included
-      })
-
-      it('appends a critical warning above the critical band', async () => {
-        mockListPendingScheduledTasks.mockResolvedValue(makeActiveTasks(7))
-
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-crit', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-        })
-
-        await flushHandlers()
-
-        const value = JSON.parse(findFetchCall('/inputs/tool-sched-band-crit/resolve')![1].body).value
-        expect(value).toContain('Active schedules for this agent: 7')
-        expect(value).toContain('CRITICAL')
-      })
-
-      it('still resolves with the base success when the active-list lookup fails', async () => {
-        // Enrichment is best-effort: a failure reading the active list must not
-        // block resolving the already-persisted (blocking) tool.
-        mockListPendingScheduledTasks.mockRejectedValue(new Error('db unavailable'))
-
-        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-fail', {
-          scheduleType: 'cron',
-          scheduleExpression: '0 9 * * 1-5',
-          prompt: 'Send the daily report',
-        })
-
-        await flushHandlers()
-
-        const resolveCall = findFetchCall('/inputs/tool-sched-band-fail/resolve')
-        expect(resolveCall).toBeDefined()
-        const value = JSON.parse(resolveCall![1].body).value
-        expect(value).toContain('task_new_id') // base success preserved
-        expect(value).not.toContain('Active schedules for this agent') // enrichment skipped
-        expect(findFetchCall('/inputs/tool-sched-band-fail/reject')).toBeUndefined()
-      })
-    })
-
-    describe('list_scheduled_tasks', () => {
-      it('resolves with a formatted task list', async () => {
-        mockListPendingScheduledTasks.mockResolvedValue([
-          {
-            id: 'task_1', name: 'Daily report', scheduleType: 'cron',
-            scheduleExpression: '0 9 * * 1-5', status: 'pending',
-            nextExecutionAt: new Date('2026-06-04T09:00:00Z'), timezone: 'America/New_York',
-            prompt: 'Send the daily report',
-          },
-          {
-            id: 'task_2', name: null, scheduleType: 'at',
-            scheduleExpression: 'at tomorrow 9am', status: 'paused',
-            nextExecutionAt: new Date('2026-06-04T13:00:00Z'), timezone: null,
-            prompt: 'One-off reminder',
-          },
-        ])
-
-        simulateToolUse('mcp__user-input__list_scheduled_tasks', 'tool-sched-list-1', {})
-
-        await flushHandlers()
-
-        expect(mockListPendingScheduledTasks).toHaveBeenCalledWith(AGENT_SLUG)
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (c) => c[0] === '/inputs/tool-sched-list-1/resolve'
-        )
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('task_1')
-        expect(body.value).toContain('Daily report')
-        expect(body.value).toContain('0 9 * * 1-5')
-        expect(body.value).toContain('America/New_York')
-        expect(body.value).toContain('[PAUSED]')
-      })
-
-      it('resolves with empty message when no tasks', async () => {
-        mockListPendingScheduledTasks.mockResolvedValue([])
-
-        simulateToolUse('mcp__user-input__list_scheduled_tasks', 'tool-sched-list-empty', {})
-
-        await flushHandlers()
-
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (c) => c[0] === '/inputs/tool-sched-list-empty/resolve'
-        )
-        expect(resolveCall).toBeDefined()
-        const body = JSON.parse(resolveCall![1].body)
-        expect(body.value).toContain('No scheduled tasks')
-      })
-    })
-
-    describe('update_scheduled_task', () => {
-      it('updates schedule and prompt in one mutation and preserves the task ID', async () => {
-        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({
-          id: 'task_existing',
-          agentSlug: AGENT_SLUG,
-          scheduleType: 'cron',
-          scheduleExpression: '0 18 * * *',
-          timezone: 'UTC',
-          nextExecutionAt: new Date('2026-06-04T18:00:00Z'),
-        })
-
-        simulateToolUse('mcp__user-input__update_scheduled_task', 'tool-sched-update-1', {
-          task_id: 'task_existing',
-          schedule_expression: '0 18 * * *',
-          prompt: 'Send the revised report',
-        })
-
-        await flushHandlers()
-        expect(mockPatchScheduledTask).toHaveBeenCalledWith('task_existing', {
-          scheduleExpression: '0 18 * * *',
-          prompt: 'Send the revised report',
-        })
-        const resolveCall = mockContainerClientFetch.mock.calls.find(
-          (call) => call[0] === '/inputs/tool-sched-update-1/resolve',
-        )
-        expect(resolveCall).toBeDefined()
-        expect(JSON.parse(resolveCall![1].body).value).toContain('execution history were preserved')
-        expect(sseEvents.filter((event) => event.type === 'scheduled_task_updated')).toHaveLength(1)
-        expect(globalEvents.filter((event) => event.type === 'scheduled_task_updated')).toHaveLength(1)
-        globalCleanup()
-      })
-
-      it('rejects an expression that does not match the existing schedule type', async () => {
-        mockGetScheduledTask.mockResolvedValue({
-          id: 'task_existing',
-          agentSlug: AGENT_SLUG,
-          scheduleType: 'cron',
-          timezone: 'UTC',
-        })
-
-        simulateToolUse('mcp__user-input__update_scheduled_task', 'tool-sched-update-invalid', {
-          task_id: 'task_existing',
-          schedule_expression: 'at tomorrow 9am',
-        })
-
-        await flushHandlers()
-        expect(mockPatchScheduledTask).not.toHaveBeenCalled()
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-update-invalid/reject',
-          expect.objectContaining({ body: expect.stringContaining('Invalid cron schedule expression') }),
-        )
-      })
-
-      it('does not update a task owned by another agent', async () => {
-        mockGetScheduledTask.mockResolvedValue({
-          id: 'task_foreign',
-          agentSlug: 'other-agent',
-          scheduleType: 'cron',
-        })
-
-        simulateToolUse('mcp__user-input__update_scheduled_task', 'tool-sched-update-foreign', {
-          task_id: 'task_foreign',
-          prompt: 'Take over this task',
-        })
-
-        await flushHandlers()
-        expect(mockPatchScheduledTask).not.toHaveBeenCalled()
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-update-foreign/reject',
-          expect.objectContaining({ body: expect.stringContaining('not found') }),
-        )
-      })
-    })
-
-    describe('cancel_scheduled_task', () => {
-      it('broadcasts scheduled_task_cancelled on success', async () => {
-        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_existing', agentSlug: AGENT_SLUG })
-
-        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-1', {
-          task_id: 'task_existing',
-        })
-
-        await flushHandlers()
-
-        expect(mockCancelScheduledTask).toHaveBeenCalledWith('task_existing')
-
-        const sseCancelled = sseEvents.filter(e => e.type === 'scheduled_task_cancelled')
-        expect(sseCancelled).toHaveLength(1)
-        expect(sseCancelled[0].taskId).toBe('task_existing')
-        expect(sseCancelled[0].agentSlug).toBe(AGENT_SLUG)
-
-        const globalCancelled = globalEvents.filter(e => e.type === 'scheduled_task_cancelled')
-        expect(globalCancelled).toHaveLength(1)
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-cancel-1/resolve',
-          expect.objectContaining({ method: 'POST' }),
-        )
-
-        globalCleanup()
-      })
-
-      it('rejects when task belongs to a different agent', async () => {
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_other', agentSlug: 'someone-else' })
-
-        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-foreign', {
-          task_id: 'task_other',
-        })
-
-        await flushHandlers()
-
-        expect(mockCancelScheduledTask).not.toHaveBeenCalled()
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-cancel-foreign/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('not found'),
-          }),
-        )
-        const sseCancelled = sseEvents.filter(e => e.type === 'scheduled_task_cancelled')
-        expect(sseCancelled).toHaveLength(0)
-      })
-
-      it('rejects when the task cannot be cancelled (already executed/cancelled)', async () => {
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_done', agentSlug: AGENT_SLUG })
-        mockCancelScheduledTask.mockResolvedValue(false)
-
-        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-done', {
-          task_id: 'task_done',
-        })
-
-        await flushHandlers()
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-cancel-done/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('could not be cancelled'),
-          }),
-        )
-      })
-
-      it('rejects when task_id is missing', async () => {
-        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-noid', {})
-
-        await flushHandlers()
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-cancel-noid/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('Missing required field'),
-          }),
-        )
-      })
-    })
-
-    describe('pause_scheduled_task', () => {
-      it('broadcasts scheduled_task_updated on success', async () => {
-        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_cron', agentSlug: AGENT_SLUG })
-
-        simulateToolUse('mcp__user-input__pause_scheduled_task', 'tool-sched-pause-1', {
-          task_id: 'task_cron',
-        })
-
-        await flushHandlers()
-
-        expect(mockPauseScheduledTask).toHaveBeenCalledWith('task_cron')
-
-        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
-        expect(sseUpdated).toHaveLength(1)
-        expect(sseUpdated[0].taskId).toBe('task_cron')
-        expect(sseUpdated[0].agentSlug).toBe(AGENT_SLUG)
-
-        const globalUpdated = globalEvents.filter(e => e.type === 'scheduled_task_updated')
-        expect(globalUpdated).toHaveLength(1)
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-pause-1/resolve',
-          expect.objectContaining({ method: 'POST' }),
-        )
-
-        globalCleanup()
-      })
-
-      it('rejects when the task cannot be paused (not an active recurring task)', async () => {
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_at', agentSlug: AGENT_SLUG })
-        mockPauseScheduledTask.mockResolvedValue(false)
-
-        simulateToolUse('mcp__user-input__pause_scheduled_task', 'tool-sched-pause-bad', {
-          task_id: 'task_at',
-        })
-
-        await flushHandlers()
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-pause-bad/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('could not be paused'),
-          }),
-        )
-        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
-        expect(sseUpdated).toHaveLength(0)
-      })
-
-      it('rejects when task belongs to a different agent', async () => {
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_other', agentSlug: 'someone-else' })
-
-        simulateToolUse('mcp__user-input__pause_scheduled_task', 'tool-sched-pause-foreign', {
-          task_id: 'task_other',
-        })
-
-        await flushHandlers()
-
-        expect(mockPauseScheduledTask).not.toHaveBeenCalled()
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-pause-foreign/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('not found'),
-          }),
-        )
-      })
-    })
-
-    describe('resume_scheduled_task', () => {
-      it('broadcasts scheduled_task_updated on success', async () => {
-        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_paused', agentSlug: AGENT_SLUG })
-
-        simulateToolUse('mcp__user-input__resume_scheduled_task', 'tool-sched-resume-1', {
-          task_id: 'task_paused',
-        })
-
-        await flushHandlers()
-
-        expect(mockResumeScheduledTask).toHaveBeenCalledWith('task_paused')
-
-        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
-        expect(sseUpdated).toHaveLength(1)
-        expect(sseUpdated[0].taskId).toBe('task_paused')
-        expect(sseUpdated[0].agentSlug).toBe(AGENT_SLUG)
-
-        const globalUpdated = globalEvents.filter(e => e.type === 'scheduled_task_updated')
-        expect(globalUpdated).toHaveLength(1)
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-resume-1/resolve',
-          expect.objectContaining({ method: 'POST' }),
-        )
-
-        globalCleanup()
-      })
-
-      it('rejects when the task cannot be resumed (not paused)', async () => {
-        sseEvents.length = 0
-        mockGetScheduledTask.mockResolvedValue({ id: 'task_active', agentSlug: AGENT_SLUG })
-        mockResumeScheduledTask.mockResolvedValue(false)
-
-        simulateToolUse('mcp__user-input__resume_scheduled_task', 'tool-sched-resume-bad', {
-          task_id: 'task_active',
-        })
-
-        await flushHandlers()
-
-        expect(mockContainerClientFetch).toHaveBeenCalledWith(
-          '/inputs/tool-sched-resume-bad/reject',
-          expect.objectContaining({
-            method: 'POST',
-            body: expect.stringContaining('could not be resumed'),
-          }),
-        )
-        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
-        expect(sseUpdated).toHaveLength(0)
-      })
     })
   })
 

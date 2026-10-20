@@ -16,6 +16,7 @@ import {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
+import { localHostPort } from '@shared/lib/host/local-host-port'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import type { AgentState } from './agent-state'
 import type { AgentStoreDirectory } from './store-directory'
@@ -92,6 +93,7 @@ export function createAgentRegistry(
     if (attached) return
     attached = true
     deps.messagePersister.attachSessionStores?.((slug) => get(slug).store)
+    deps.messagePersister.attachHost?.(deps.host)
   }
 
   // The routers over the actors' stores get the same: one directory each,
@@ -209,6 +211,9 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
   get loadSessionUsageTotals() {
     return loadSessionUsageTotals
+  },
+  get host() {
+    return localHostPort
   },
 }, { states: agentActorStates })
 

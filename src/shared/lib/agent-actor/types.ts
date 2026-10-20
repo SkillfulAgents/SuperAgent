@@ -73,6 +73,7 @@ import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-mana
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
+import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
 
 /** The agent's directory-name slug. Not the URL `displaySlug`. */
 export type AgentSlug = string
@@ -569,6 +570,13 @@ export interface ComputerUseOps {
   revokeGrant(level: ComputerUsePermissionLevel, appName?: string): void
   /** `messagePersister.clearPendingComputerUseRequest` */
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
+  /**
+   * Run an approved computer-use request: claim it, run the command on the
+   * host, record the grab, deliver the result and settle it. See `host-runs`.
+   */
+  run(run: ComputerUseRun): Promise<HostRunOutcome>
+  /** Run an approved host-script request the same way. */
+  runScript(run: ScriptRun): Promise<HostRunOutcome>
 }
 
 /** Remote MCP re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */

@@ -16,6 +16,8 @@ import type {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
+import type { HostPort } from './host-port'
+import { runComputerUse, runScript, type HostRunActor } from './host-runs'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
@@ -70,6 +72,8 @@ export interface LocalActorDeps {
   readonly syncAgentConnectionEnvironment: typeof syncAgentConnectionEnvironment
   readonly loadDailyUsageData: typeof loadDailyUsageData
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
+  /** The host this agent asks for host tools, machine work and side effects. */
+  readonly host: HostPort
 }
 
 /**
@@ -125,7 +129,7 @@ export class LocalAgentActor implements AgentActor {
     this.container = createContainerOps(slug, deps)
     this.sessions = createSessionOps(slug, this.store, deps)
     this.messages = createMessageOps(slug, this.store, deps)
-    this.inputs = createInputOps(slug, this.state, deps)
+    this.inputs = createInputOps(slug, this.state, deps, this)
     this.usage = createUsageOps(this.store, deps)
   }
 
@@ -288,7 +292,7 @@ function createMessageOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
   }
 }
 
-function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): InputOps {
+function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps, actor: HostRunActor): InputOps {
   const requests = state.inputRequests
   return {
     register: (input) => requests.register(input),
@@ -309,7 +313,7 @@ function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps
     settled: (sessionId) => deps.messagePersister.getSettledInputRequests(slug, sessionId),
 
     reviews: createReviewOps(slug, deps),
-    computerUse: createComputerUseOps(slug, state, deps),
+    computerUse: createComputerUseOps(slug, state, deps, actor),
     mcpReauth: createMcpReauthOps(slug, deps),
     accountReauth: createAccountReauthOps(slug, deps),
   }
@@ -337,7 +341,7 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   }
 }
 
-function createComputerUseOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): ComputerUseOps {
+function createComputerUseOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps, actor: HostRunActor): ComputerUseOps {
   const computerUse = state.computerUse
   return {
     grabbedApp: () => computerUse.grabbed(),
@@ -347,6 +351,8 @@ function createComputerUseOps(slug: AgentSlug, state: AgentState, deps: LocalAct
     consumeOnce: (...args) => computerUse.consumeOnce(...args),
     revokeGrant: (...args) => computerUse.revoke(...args),
     clearPending: (...args) => deps.messagePersister.clearPendingComputerUseRequest(slug, ...args),
+    run: (run) => runComputerUse(actor, deps.host, run),
+    runScript: (run) => runScript(actor, deps.host, run),
   }
 }
 

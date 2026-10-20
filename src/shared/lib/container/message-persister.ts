@@ -26,54 +26,6 @@ import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind 
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
-import {
-  createScheduledTask,
-  createSessionWake,
-  listPendingScheduledTasks,
-  getScheduledTask,
-  cancelScheduledTask,
-  pauseScheduledTask,
-  resumeScheduledTask,
-  patchScheduledTask,
-  type ScheduledTask,
-} from '@shared/lib/services/scheduled-task-service'
-import {
-  createWebhookTrigger,
-  listActiveWebhookTriggers,
-  cancelWebhookTriggerWithCleanup,
-  getWebhookTrigger,
-  resolvePlatformMemberForCandidates,
-  updateWebhookTriggerName,
-  updateWebhookTriggerPrompt,
-} from '@shared/lib/services/webhook-trigger-service'
-import {
-  updateScheduledTaskInputSchema,
-  updateWebhookTriggerInputSchema,
-  type ScheduledTaskUpdateInput,
-  type WebhookTriggerUpdateInput,
-} from '@shared/lib/services/automation-update-schema'
-import { getWebhookRelay, webhooksUnavailableMessage } from '@shared/lib/webhook-relay'
-import {
-  createWebhookEndpointInputSchema,
-  updateWebhookEndpointInputSchema,
-  inspectWebhookEventsInputSchema,
-  extractEndpointUrl,
-  CUSTOM_WEBHOOK_TRIGGER_TYPE,
-  type WebhookEndpointEvent,
-} from '@shared/lib/services/webhook-endpoint-schema'
-import { getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
-import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
-import {
-  getAvailableTriggers,
-  enableComposioTrigger,
-  deleteComposioTrigger,
-} from '@shared/lib/composio/triggers'
-import { isPlatformComposioActive } from '@shared/lib/composio/client'
-import { db } from '@shared/lib/db'
-import { connectedAccounts } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
-import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import {
   recordProvisionalSessionActivity,
@@ -83,16 +35,17 @@ import {
 } from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession, isAgentIntegrationSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
-import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import { getLlmProvider, getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
-import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
+import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
+import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult } from '@shared/lib/agent-actor/host-port'
+import { OrderedSends } from '@shared/lib/agent-actor/ordered-sends'
+import { runAutoApproved, type HostRunActor } from '@shared/lib/agent-actor/host-runs'
+import { localHostPort } from '@shared/lib/host/local-host-port'
 import { sessionFilePath, transcriptPath, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -431,24 +384,6 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
   'update_webhook_endpoint',
 ])
 
-// One inspection line per stored delivery. Bodies are already previews
-// (proxy caps at 2KB); cap harder here — this text lands in the agent's
-// context and 50 events × 2KB would crowd out the actual work.
-const INSPECT_BODY_PREVIEW_CHARS = 200
-
-export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
-  const filterNote = event.filter
-    ? ` · filter: ${event.filter.outcome}${event.filter.outcome === 'error' && event.filter.error ? ` (${event.filter.error})` : ''}`
-    : ''
-  const kindNote = event.kind === 'handshake' ? ' · handshake' : ''
-  const verifiedNote = event.kind === 'event' ? (event.verified ? ' · verified' : ' · unverified') : ''
-  const body = typeof event.body === 'string' && event.body
-    ? event.body.slice(0, INSPECT_BODY_PREVIEW_CHARS) +
-      (event.body.length > INSPECT_BODY_PREVIEW_CHARS || event.body_truncated ? '…' : '')
-    : '(empty body)'
-  return `- ${event.id} · ${event.created_at} · ${event.status}${kindNote}${verifiedNote}${filterNote}\n  ${event.method ?? 'POST'} ${event.content_type ?? ''} — ${body}`
-}
-
 /**
  * Mask the value of a `secret` field in (possibly still-streaming) tool-input
  * JSON. Idempotent across deltas: the whole accumulated buffer is re-masked
@@ -501,6 +436,15 @@ class MessagePersister {
   // persister stats, appends to and tails transcripts, and reaches them only
   // through the agent's session store, never by a path of its own.
   private sessionStores: ((agentSlug: string) => SessionStore) | null = null
+  // The host: host tools, machine work, and the side effects the rest of the
+  // app reacts to (global feed, notifications, analytics). The registry
+  // attaches it; until then the local port, read at use: it is not
+  // initialized yet when an entry point loads local-host-port first (it
+  // reaches this module through the registry).
+  private attachedHost: HostPort | null = null
+  private get host(): HostPort {
+    return this.attachedHost ?? localHostPort
+  }
 
   // In-flight subscribe promises, keyed by sessionId. Concurrent
   // subscribeToSession() calls for the same session share the underlying
@@ -558,18 +502,14 @@ class MessagePersister {
       const sessionId = request.scope.sessionId ?? this.getActiveSessionIdsForAgent(agentSlug)[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
-      notificationManager
-        .triggerSessionApiReviewWaiting(
-          sessionId,
-          agentSlug,
-          request.id,
-          typeof payload.displayText === 'string' ? payload.displayText : 'API request review',
-          undefined,
-          request.kind === 'x_agent_review' ? 'agent_action' : 'api_request',
-        )
-        .catch((err) => {
-          console.error('[MessagePersister] Failed to trigger API review notification:', err)
-        })
+      this.host.send('notification', {
+        kind: 'api_review_waiting',
+        agentSlug,
+        sessionId,
+        reviewId: request.id,
+        displayText: typeof payload.displayText === 'string' ? payload.displayText : 'API request review',
+        reviewKind: request.kind === 'x_agent_review' ? 'agent_action' : 'api_request',
+      })
       return
     }
 
@@ -581,9 +521,7 @@ class MessagePersister {
     // re-auth invariant; these kinds are not accepted notification categories.
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
     const { kind, payload } = request
-    notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, { kind, payload }).catch((err) => {
-      console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-    })
+    this.host.send('notification', { kind: 'session_waiting_input', agentSlug, sessionId, request: { kind, payload } })
   }
 
   private broadcastRequestTransition(transition: UserInputRequestTransition): void {
@@ -996,15 +934,7 @@ class MessagePersister {
         // Completion notification at the real end of the work. Skip
         // resume-exits: the session is pausing for a resume, not done.
         if (state.lastResultSubtype === 'success' && state.agentSlug) {
-          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
-            responseText: state.lastAssistantText,
-            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
-              state.agentSlug,
-              sessionId,
-            ),
-          }).catch((err) => {
-            console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-          })
+          this.notifySessionComplete(state.agentSlug, sessionId, state.lastAssistantText)
         }
       }
     } else if (!state.isActive && state.lastResultSubtype !== null) {
@@ -1588,10 +1518,11 @@ class MessagePersister {
     this.containerClients.delete(sessionKeyOf(agentSlug, sessionId))
   }
 
-  // The app-wide feed (sidebar status, Electron main, chat integrations). Does
-  // NOT reach the session's own stream — use broadcastToSSE for that.
+  // The app-wide feed (sidebar status, Electron main, chat integrations),
+  // which the host owns. Does NOT reach the session's own stream — use
+  // broadcastToSSE for that.
   private broadcastGlobal(event: GlobalFeedEvent): void {
-    globalFeed.publish(event)
+    this.host.send('global', event)
   }
 
   // Register callback for when a container should be stopped (e.g., on OOM)
@@ -1742,6 +1673,11 @@ class MessagePersister {
     this.sessionStores = resolve
   }
 
+  /** Hand the persister the host port its sessions use (the agent registry's). */
+  attachHost(host: HostPort): void {
+    this.attachedHost = host
+  }
+
   private storeOf(agentSlug: string): SessionStore {
     if (!this.sessionStores) {
       throw new Error(`No session store for agent ${agentSlug}: the agent registry has not attached them`)
@@ -1758,6 +1694,40 @@ class MessagePersister {
     state.lastAssistantMessageId = null
     state.lastAssistantText = ''
   }
+
+  /**
+   * The turn finished: tell the host, with the answer the notification shows.
+   * The transcript's end is read now, as the turn ends, and sent once known,
+   * so the notification's context lookup stops where this turn did. A read
+   * that takes too long is not waited for: the notification goes without the
+   * bound rather than late or never.
+   */
+  private notifySessionComplete(agentSlug: string, sessionId: string, responseText: string): void {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tooSlow = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), MessagePersister.TRANSCRIPT_END_WAIT_MS)
+    })
+    const transcriptEnd = Promise.race([this.getSessionTranscriptEndOffset(agentSlug, sessionId), tooSlow]).finally(() => clearTimeout(timer))
+    // A session's completions are announced in turn order, though each waits on its own read.
+    const key = sessionKeyOf(agentSlug, sessionId)
+    let sends = this.completionSends.get(key)
+    if (!sends) {
+      // Let go of the session's queue once it has sent everything it was given.
+      const created: OrderedSends = new OrderedSends(() => {
+        if (this.completionSends.get(key) === created) this.completionSends.delete(key)
+      })
+      sends = created
+      this.completionSends.set(key, sends)
+    }
+    sends.after(transcriptEnd, (responseTranscriptEndOffset) => {
+      this.host.send('notification', { kind: 'session_complete', agentSlug, sessionId, responseText, responseTranscriptEndOffset })
+    })
+  }
+
+  // Each session's completion notifications, in turn order.
+  private completionSends = new Map<SessionKey, OrderedSends>()
+
+  private static readonly TRANSCRIPT_END_WAIT_MS = 1000
 
   /**
    * Start a non-blocking snapshot of the transcript's observed byte boundary
@@ -3094,15 +3064,7 @@ class MessagePersister {
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
         // session is pausing for a resume, not truly finished.
         if (content.subtype !== 'resume' && state.agentSlug) {
-          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
-            responseText: state.lastAssistantText,
-            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
-              state.agentSlug,
-              sessionId,
-            ),
-          }).catch((err) => {
-            console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-          })
+          this.notifySessionComplete(state.agentSlug, sessionId, state.lastAssistantText)
         }
         break
       }
@@ -4157,10 +4119,10 @@ class MessagePersister {
         if (state.currentToolUse) {
           // Track agent-emitted user request blocks
           if (state.currentToolUse.name === 'AskUserQuestion') {
-            trackServerEvent('agent_requested_input', { agentSlug: state.agentSlug })
+            this.host.send('analytics', { event: 'agent_requested_input', properties: { agentSlug: state.agentSlug } })
           } else if (state.currentToolUse.name.startsWith('mcp__user-input__')) {
             const action = state.currentToolUse.name.replace('mcp__user-input__', '')
-            trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
+            this.host.send('analytics', { event: `agent_${action}`, properties: { agentSlug: state.agentSlug } })
           }
 
           this.dispatchBlockingUserInputTool(
@@ -4171,117 +4133,10 @@ class MessagePersister {
             state.agentSlug,
           )
 
-          // Check if this is a schedule task tool
-          if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
-            this.handleScheduleTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Schedule resume (session wake) tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__schedule_resume') {
-            this.handleScheduleResumeTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // List scheduled tasks tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__list_scheduled_tasks') {
-            this.handleListScheduledTasksTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          if (state.currentToolUse.name === 'mcp__user-input__update_scheduled_task') {
-            this.handleUpdateScheduledTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Cancel scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__cancel_scheduled_task') {
-            this.handleCancelScheduledTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Pause scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__pause_scheduled_task') {
-            this.handlePauseResumeScheduledTaskTool(
-              'pause',
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Resume scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__resume_scheduled_task') {
-            this.handlePauseResumeScheduledTaskTool(
-              'resume',
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Webhook trigger tools
-          if (state.currentToolUse.name === 'mcp__user-input__get_available_triggers') {
-            this.handleGetAvailableTriggersTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__setup_trigger') {
-            this.handleSetupTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__list_triggers') {
-            this.handleListTriggersTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__update_trigger') {
-            this.handleUpdateTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__cancel_trigger') {
-            this.handleCancelTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__create_webhook_endpoint') {
-            this.handleCreateWebhookEndpointTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__update_webhook_endpoint') {
-            this.handleUpdateWebhookEndpointTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__inspect_webhook_events') {
-            this.handleInspectWebhookEventsTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
+          // Schedules, triggers and webhook endpoints are the host's to run.
+          const hostTool = hostToolNameOf(state.currentToolUse.name)
+          if (hostTool) {
+            this.runHostTool(agentSlug, sessionId, state.currentToolUse.id, hostTool, state.currentToolInput)
           }
 
           if (getToolDefinition(state.currentToolUse.name)?.request?.kind === 'script_run') {
@@ -4455,557 +4310,31 @@ class MessagePersister {
     }
   }
 
-  // Handle schedule task tool - blocking: persist to database, then resolve the
-  // container tool only after the task is actually saved (fixes the false-success
-  // bug where the tool reported success while persistence ran/failed in the
-  // background). Also appends a warning for too-frequent recurring schedules.
-  private handleScheduleTaskTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-
-      // Parse the tool input
-      let input: {
-        scheduleType: 'at' | 'cron'
-        scheduleExpression: string
-        prompt: string
-        name?: string
-        timezone?: string
-        model?: string
-        effort?: string
-        speed?: string
-      }
-      try {
-        input = JSON.parse(toolInput)
-      } catch {
-        console.error('[MessagePersister] Failed to parse schedule task input:', toolInput)
-        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
-        return
-      }
-
-      // Trim-aware required-field check, matching the container tool's own
-      // validation (a whitespace-only prompt/expression is empty). Without the
-      // trim the host would persist a task the container already told the agent
-      // was rejected.
-      if (!input.scheduleType || !input.scheduleExpression?.trim() || !input.prompt?.trim()) {
-        await this.rejectContainerInput(
-          agentSlug,
-          toolUseId,
-          'Missing required fields: scheduleType, scheduleExpression, and prompt are required'
-        ).catch(console.error)
-        return
-      }
-
-      // Persist the task. A failure here must reject — the agent is never told a
-      // false success.
-      let taskId: string
-      let timezone: string | undefined
-      try {
-        // Resolve timezone: agent tool override > agent owner's timezone
-        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
-        const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-        taskId = await createScheduledTask({
-          agentSlug,
-          scheduleType: input.scheduleType,
-          scheduleExpression: input.scheduleExpression,
-          prompt: input.prompt,
-          name: input.name,
-          createdBySessionId: sessionId,
-          createdByUserId: sessionOwnerId ?? undefined,
-          timezone,
-          model: input.model,
-          effort: input.effort,
-          speed: input.speed,
-        })
-      } catch (error) {
-        console.error('[MessagePersister] Error handling schedule task:', error)
-        const msg = error instanceof Error ? error.message : String(error)
-        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to schedule task: ${msg}`).catch(console.error)
-        return
-      }
-
-      // The task is persisted. Everything past here is best-effort: a failure
-      // delivering the result must NOT reject the tool, or the agent could be told
-      // a real success failed and retry into a duplicate schedule.
-      try {
-        // Broadcast the scheduled task created event to session-specific SSE clients
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'scheduled_task_created',
-          toolUseId,
-          taskId,
-          scheduleType: input.scheduleType,
-          scheduleExpression: input.scheduleExpression,
-          name: input.name,
-          agentSlug,
-        })
-
-        // Also broadcast globally so scheduled task list updates regardless of which session is viewed
-        this.broadcastGlobal({
-          type: 'scheduled_task_created',
-          taskId,
-          agentSlug,
-        })
-
-        // Build the agent-facing result: base success + any frequency warning,
-        // then enrich with the agent's active-schedule count, a soft-cap warning,
-        // and the full active list so a runaway loop or duplicate schedules are
-        // visible. The enrichment is best-effort — if reading the active list
-        // throws we still resolve with the base success so the blocking tool never
-        // hangs.
-        let resultMessage = this.formatScheduleTaskResult(input, taskId, timezone)
-        try {
-          const activeTasks = await listPendingScheduledTasks(agentSlug)
-          resultMessage += this.formatActiveScheduleSummary(activeTasks)
-        } catch (summaryError) {
-          console.error('[MessagePersister] Failed to build active-schedule summary:', summaryError)
-        }
-
-        // Resolve the blocking tool with the (possibly enriched) success message.
-        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
-      } catch (deliveryError) {
-        console.error('[MessagePersister] Schedule persisted but result delivery failed:', deliveryError)
-      }
-    })()
-  }
-
   /**
-   * Handle schedule_resume: persist a session wake (a one-shot scheduled task
-   * that resumes THIS session instead of creating a new one), then resolve the
-   * blocking container tool. Mirrors handleScheduleTaskTool's persist-then-
-   * resolve contract: a persistence failure rejects; a delivery failure after
-   * persistence never does.
+   * A host tool the agent called: the host does the work, and its result goes
+   * back to the container's pending input. Once the host has decided, a failed
+   * delivery is only logged: rejecting then could tell the agent a saved
+   * schedule failed, and it would retry into a duplicate.
    */
-  private handleScheduleResumeTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
+  private runHostTool(agentSlug: string, sessionId: string, toolUseId: string, toolName: HostToolName, input: string): void {
     void (async () => {
-      let input: { wakeTime?: string; note?: string; timezone?: string }
+      let result: HostToolResult
       try {
-        input = JSON.parse(toolInput)
-      } catch {
-        console.error('[MessagePersister] Failed to parse schedule resume input:', toolInput)
-        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        result = await this.host.call('hostTool', { agentSlug, sessionId, toolUseId, toolName, input })
+      } catch (error) {
+        console.error(`[MessagePersister] Host tool ${toolName} failed:`, error)
+        result = { status: 'rejected', reason: `Failed to run ${toolName}: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      if (result.status === 'rejected') {
+        await this.rejectContainerInput(agentSlug, toolUseId, result.reason).catch(console.error)
         return
       }
-
-      if (!input.wakeTime?.trim() || !input.note?.trim()) {
-        await this.rejectContainerInput(
-          agentSlug,
-          toolUseId,
-          'Missing required fields: wakeTime and note are required'
-        ).catch(console.error)
-        return
-      }
-
-      // Accept both "at tomorrow 9am" and bare "tomorrow 9am" — the parser's
-      // 'at' syntax needs the prefix.
-      const trimmed = input.wakeTime.trim()
-      const scheduleExpression = /^at\s/i.test(trimmed) ? trimmed : `at ${trimmed}`
-
-      let taskId: string
-      let replaced: ScheduledTask | null
-      let timezone: string | undefined
-      try {
-        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
-        const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-        ;({ taskId, replaced } = await createSessionWake({
-          agentSlug,
-          scheduleExpression,
-          note: input.note,
-          sessionId,
-          createdByUserId: sessionOwnerId ?? undefined,
-          timezone,
-        }))
-      } catch (error) {
-        console.error('[MessagePersister] Error handling schedule resume:', error)
-        const msg = error instanceof Error ? error.message : String(error)
-        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to schedule resume: ${msg}`).catch(console.error)
-        return
-      }
-
-      // Persisted — everything past here is best-effort delivery.
-      try {
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'scheduled_task_created',
-          toolUseId,
-          taskId,
-          scheduleType: 'at',
-          scheduleExpression,
-          agentSlug,
-          resumeSessionId: sessionId,
-        })
-        this.broadcastGlobal({
-          type: 'scheduled_task_created',
-          taskId,
-          agentSlug,
-          resumeSessionId: sessionId,
-        })
-        // The pending wake is session-level state (badges, resume banner) —
-        // nudge session lists to refetch.
-        this.broadcastToSSE(agentSlug, sessionId, { type: 'session_updated' })
-        this.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
-
-        const parsed = validateScheduleExpression('at', scheduleExpression, timezone)
-        const resolvedTime = parsed.nextTime ? parsed.nextTime.toISOString() : scheduleExpression
-        let resultMessage =
-          `Scheduled this session to auto-resume at ${resolvedTime}${timezone ? ` (${timezone})` : ''} (wake ID: ${taskId}).\n\n` +
-          `Your note (echoed back to you on wake): "${input.note}"`
-        if (replaced) {
-          resultMessage += `\n\nReplaced this session's previous pending wake (was scheduled for ${replaced.nextExecutionAt.toISOString()}). A session holds at most one pending wake.`
-        }
-        resultMessage +=
-          '\n\nEnd your turn now. This conversation will resume automatically at the scheduled time with full context; while sleeping it costs nothing and survives restarts.'
-
-        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
-      } catch (deliveryError) {
-        console.error('[MessagePersister] Wake persisted but result delivery failed:', deliveryError)
-      }
+      for (const event of result.sessionEvents ?? []) this.broadcastToSSE(agentSlug, sessionId, event)
+      await this.resolveContainerInput(agentSlug, toolUseId, result.value).catch((error) => {
+        console.error(`[MessagePersister] ${toolName} succeeded but its result was not delivered:`, error)
+      })
     })()
   }
-
-  /**
-   * Build the success message returned to the agent after a schedule is persisted,
-   * appending a too-frequent-interval warning for recurring schedules below the
-   * recommended minimum.
-   */
-  private formatScheduleTaskResult(
-    input: {
-      scheduleType: 'at' | 'cron'
-      scheduleExpression: string
-      prompt: string
-      name?: string
-    },
-    taskId: string,
-    timezone?: string
-  ): string {
-    const taskType = input.scheduleType === 'cron' ? 'recurring' : 'one-time'
-    const taskName = input.name || 'Scheduled Task'
-    const parsed = validateScheduleExpression(input.scheduleType, input.scheduleExpression, timezone)
-    const nextRun = parsed.nextTime ? `\nNext run: ${parsed.nextTime.toISOString()}` : ''
-    const continuation =
-      input.scheduleType === 'cron'
-        ? 'This recurring task will continue until cancelled.'
-        : 'This one-time task will be removed after execution.'
-
-    let result = `Scheduled ${taskType} task "${taskName}" (ID: ${taskId}).
-
-Schedule: ${input.scheduleExpression}${timezone ? ` (${timezone})` : ''}${nextRun}
-
-${continuation}`
-
-    const warning = getFrequencyWarning(input.scheduleType, input.scheduleExpression, timezone)
-    if (warning) {
-      result += `\n\n${warning}`
-    }
-
-    return result
-  }
-
-  /**
-   * Build the active-schedule summary appended to a schedule_task result: the
-   * agent's current count of active schedules (pending + paused), a soft-cap
-   * warning when the count is high, and the full list (id, name, schedule
-   * expression, next run) so the agent can spot duplicates/overlaps and
-   * self-correct. Always returns the count + list; the warning is conditional.
-   */
-  private formatActiveScheduleSummary(tasks: ScheduledTask[]): string {
-    const count = tasks.length
-    let summary = `\n\nActive schedules for this agent: ${count}`
-
-    const warning = getScheduleCountWarning(count)
-    if (warning) {
-      summary += `\n\n${warning}`
-    }
-
-    if (count > 0) {
-      const list = tasks
-        .map((t) => {
-          const kind = t.resumeSessionId
-            ? 'session wake'
-            : t.scheduleType === 'cron' ? 'recurring' : 'one-time'
-          const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
-          const status = t.status === 'paused' ? ' [PAUSED]' : ''
-          return `- **${t.name || (t.resumeSessionId ? 'Session Wake' : 'Scheduled Task')}** (ID: ${t.id})${status} — ${kind} (${t.scheduleExpression}), next run ${next}${t.timezone ? ` (${t.timezone})` : ''}`
-        })
-        .join('\n')
-      summary += `\n\n${list}`
-    }
-
-    return summary
-  }
-
-  // Handle list_scheduled_tasks - blocking: read from SQLite and resolve
-  private handleListScheduledTasksTool(
-    _sessionId: string,
-    toolUseId: string,
-    _toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] list_scheduled_tasks missing agentSlug')
-          return
-        }
-
-        const tasks = await listPendingScheduledTasks(agentSlug)
-        const formatted = tasks.length === 0
-          ? 'No scheduled tasks on the schedule for this agent.'
-          : `Scheduled tasks:\n\n${tasks.map((t) => {
-              const kind = t.resumeSessionId
-                ? `session wake (resumes session ${t.resumeSessionId})`
-                : t.scheduleType === 'cron' ? 'recurring' : 'one-time'
-              const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
-              const status = t.status === 'paused' ? ' [PAUSED]' : ''
-              return `- **${t.name || (t.resumeSessionId ? 'Session Wake' : 'Scheduled Task')}** (ID: ${t.id})${status}\n  Type: ${kind} (${t.scheduleExpression})\n  Next run: ${next}${t.timezone ? ` (${t.timezone})` : ''}\n  ${t.resumeSessionId ? 'Note' : 'Prompt'}: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
-            }).join('\n\n')}`
-
-        await this.resolveContainerInput(agentSlug, toolUseId, formatted)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling list_scheduled_tasks:', error)
-        if (agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle update_scheduled_task - blocking: patch one row so timing and prompt
-  // change atomically without replacing its ID or execution history.
-  private handleUpdateScheduledTaskTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        let input: ScheduledTaskUpdateInput
-        try {
-          input = updateScheduledTaskInputSchema.parse(JSON.parse(toolInput))
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Invalid tool input'
-          await this.rejectContainerInput(agentSlug, toolUseId, `Invalid tool input: ${message}`)
-          return
-        }
-
-        const task = await getScheduledTask(input.task_id)
-        if (!task || task.agentSlug !== agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
-          return
-        }
-
-        if (input.schedule_expression !== undefined) {
-          const parsed = validateScheduleExpression(
-            task.scheduleType,
-            input.schedule_expression,
-            task.timezone || undefined,
-          )
-          if (!parsed.valid) {
-            await this.rejectContainerInput(
-              agentSlug,
-              toolUseId,
-              `Invalid ${task.scheduleType} schedule expression: ${parsed.error ?? input.schedule_expression}`,
-            )
-            return
-          }
-        }
-
-        const updated = await patchScheduledTask(input.task_id, {
-          ...(input.schedule_expression !== undefined
-            ? { scheduleExpression: input.schedule_expression }
-            : {}),
-          ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
-        })
-        if (!updated) {
-          await this.rejectContainerInput(
-            agentSlug,
-            toolUseId,
-            `Scheduled task ${input.task_id} could not be updated — only pending or paused tasks are editable`,
-          )
-          return
-        }
-
-        const refreshed = await getScheduledTask(input.task_id)
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'scheduled_task_updated',
-          toolUseId,
-          taskId: input.task_id,
-          agentSlug,
-        })
-        this.broadcastGlobal({
-          type: 'scheduled_task_updated',
-          taskId: input.task_id,
-          agentSlug,
-        })
-
-        const changed = [
-          input.schedule_expression !== undefined ? 'schedule' : null,
-          input.prompt !== undefined ? 'prompt' : null,
-        ].filter(Boolean).join(' and ')
-        let result = `Updated the ${changed} for scheduled task ${input.task_id}. Its ID and execution history were preserved.`
-        if (refreshed && input.schedule_expression !== undefined) {
-          result += `\n\nSchedule: ${refreshed.scheduleExpression}\nNext run: ${refreshed.nextExecutionAt.toISOString()}`
-          const warning = getFrequencyWarning(
-            refreshed.scheduleType,
-            refreshed.scheduleExpression,
-            refreshed.timezone || undefined,
-          )
-          if (warning) result += `\n\n${warning}`
-        }
-        await this.resolveContainerInput(agentSlug, toolUseId, result)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling update_scheduled_task:', error)
-        const msg = error instanceof Error ? error.message : String(error)
-        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update scheduled task: ${msg}`).catch(console.error)
-      }
-    })()
-  }
-
-  // Handle cancel_scheduled_task - blocking: cancel in SQLite, then resolve
-  private handleCancelScheduledTaskTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        let input: { task_id: string }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        if (!input.task_id) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required field: task_id')
-          return
-        }
-
-        // Verify the task exists and belongs to this agent before cancelling, so
-        // an agent can't cancel another agent's scheduled tasks by guessing IDs.
-        const task = await getScheduledTask(input.task_id)
-        if (!task || task.agentSlug !== agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
-          return
-        }
-
-        const cancelled = await cancelScheduledTask(input.task_id)
-        if (!cancelled) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} could not be cancelled — it may have already executed or been cancelled`)
-          return
-        }
-
-        // Broadcast so the scheduled task list updates in the UI
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'scheduled_task_cancelled',
-          toolUseId,
-          taskId: input.task_id,
-          agentSlug,
-        })
-
-        this.broadcastGlobal({
-          type: 'scheduled_task_cancelled',
-          taskId: input.task_id,
-          agentSlug,
-        })
-
-        await this.resolveContainerInput(agentSlug, toolUseId,
-          `Scheduled task ${input.task_id} has been cancelled. It will no longer execute.`)
-
-        console.log(`[MessagePersister] Scheduled task ${input.task_id} cancelled`)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling cancel_scheduled_task:', error)
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to cancel scheduled task: ${msg}`).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle pause_scheduled_task / resume_scheduled_task - blocking: update SQLite, then resolve
-  private handlePauseResumeScheduledTaskTool(
-    action: 'pause' | 'resume',
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        let input: { task_id: string }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        if (!input.task_id) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required field: task_id')
-          return
-        }
-
-        // Verify the task exists and belongs to this agent before mutating it.
-        const task = await getScheduledTask(input.task_id)
-        if (!task || task.agentSlug !== agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
-          return
-        }
-
-        const ok = action === 'pause'
-          ? await pauseScheduledTask(input.task_id)
-          : await resumeScheduledTask(input.task_id)
-
-        if (!ok) {
-          const reason = action === 'pause'
-            ? `Scheduled task ${input.task_id} could not be paused — only active recurring tasks can be paused`
-            : `Scheduled task ${input.task_id} could not be resumed — only paused recurring tasks can be resumed`
-          await this.rejectContainerInput(agentSlug, toolUseId, reason)
-          return
-        }
-
-        // Broadcast so the scheduled task list updates in the UI
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'scheduled_task_updated',
-          toolUseId,
-          taskId: input.task_id,
-          agentSlug,
-        })
-
-        this.broadcastGlobal({
-          type: 'scheduled_task_updated',
-          taskId: input.task_id,
-          agentSlug,
-        })
-
-        const verb = action === 'pause' ? 'paused' : 'resumed'
-        await this.resolveContainerInput(agentSlug, toolUseId,
-          `Scheduled task ${input.task_id} has been ${verb}.${action === 'pause' ? ' It will not execute until resumed.' : ' Its next run was recomputed from the schedule.'}`)
-
-        console.log(`[MessagePersister] Scheduled task ${input.task_id} ${verb}`)
-      } catch (error) {
-        console.error(`[MessagePersister] Error handling ${action}_scheduled_task:`, error)
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to ${action} scheduled task: ${msg}`).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // ============================================================================
-  // Webhook Trigger Tool Handlers
-  // ============================================================================
 
   /**
    * Resolve a blocking tool in the container with a string value.
@@ -5031,12 +4360,6 @@ ${continuation}`
     })
   }
 
-  /**
-   * Interrupt the running query in the container (abort + resume) by POSTing the same
-   * `/sessions/:id/interrupt` endpoint the explicit interrupt route hits. Uses `client.fetch`
-   * (not the `client.interruptSession` helper that route calls) to stay on the proxy-routed path
-   * the rest of MessagePersister's container calls use, e.g. `rejectContainerInput`.
-   */
   // A sidechain frame from a background (or resumed) subagent that survived a
   // soft interrupt. Foreground subagents are dropped from the map when the
   // turn is stopped, and a restart clears it, so a frame that still resolves
@@ -5048,6 +4371,12 @@ ${continuation}`
     return !!sub && (sub.isBackground || sub.isResumed)
   }
 
+  /**
+   * Interrupt the running query in the container (abort + resume) by POSTing the same
+   * `/sessions/:id/interrupt` endpoint the explicit interrupt route hits. Uses `client.fetch`
+   * (not the `client.interruptSession` helper that route calls) to stay on the proxy-routed path
+   * the rest of MessagePersister's container calls use, e.g. `rejectContainerInput`.
+   */
   private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<{ processKept: boolean }> {
     const client = (await getContainerHost()).runtime(agentSlug).getClient()
     // Same escalation as the interrupt route: a turn stop cannot settle a
@@ -5068,707 +4397,6 @@ ${continuation}`
     }
     const body = interruptContainerResponseSchema.safeParse(raw)
     return { processKept: body.success && body.data.processKept === true }
-  }
-
-  // Handle get_available_triggers - blocking: fetch from Composio and resolve
-  private handleGetAvailableTriggersTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        if (!isPlatformComposioActive()) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
-          return
-        }
-        // Composio delivers trigger events through the relay.
-        const relayUnavailable = webhooksUnavailableMessage('Webhook triggers')
-        if (relayUnavailable) {
-          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
-          return
-        }
-
-        let input: { connected_account_id: string }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        // Look up the connected account to get its toolkit slug
-        const [account] = await db
-          .select()
-          .from(connectedAccounts)
-          .where(eq(connectedAccounts.id, input.connected_account_id))
-          .limit(1)
-
-        if (!account) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Connected account ${input.connected_account_id} not found`)
-          return
-        }
-
-        const triggers = await getAvailableTriggers(account.toolkitSlug)
-        const formatted = triggers.length === 0
-          ? 'No webhook triggers available for this account.\n\n' +
-            'You can still react to events from this service with a custom webhook endpoint:\n' +
-            '1. Call create_webhook_endpoint to mint a public URL (with a prompt describing what to do per event).\n' +
-            `2. Register that URL with the service — most expose webhook registration via their API (use the connected ${account.toolkitSlug} account) or a settings page.\n` +
-            '3. If the service provides a signing secret, attach it with update_webhook_endpoint so deliveries are verified.\n' +
-            '4. If the service\'s webhook events are broader than what you need (most are), add a CEL filter_exp so only matching events start a session — dry-run candidates against real deliveries with inspect_webhook_events first.'
-          : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
-              `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
-            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe. ` +
-            'For events this catalog does not cover, you can also mint a custom webhook endpoint (create_webhook_endpoint) and register its URL with the service directly — both kinds can run side by side.'
-
-        await this.resolveContainerInput(agentSlug, toolUseId, formatted)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling get_available_triggers:', error)
-        if (agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle setup_trigger - blocking: dual-write to Composio + SQLite, then resolve
-  private handleSetupTriggerTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        if (!isPlatformComposioActive()) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
-          return
-        }
-        // Composio delivers trigger events through the relay.
-        const relayUnavailable = webhooksUnavailableMessage('Webhook triggers')
-        if (relayUnavailable) {
-          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
-          return
-        }
-
-        let input: {
-          connected_account_id: string
-          trigger_type: string
-          prompt: string
-          name?: string
-          trigger_config?: Record<string, unknown>
-          model?: string
-          effort?: string
-          speed?: string
-        }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        if (!input.connected_account_id || !input.trigger_type || !input.prompt) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required fields: connected_account_id, trigger_type, and prompt are required')
-          return
-        }
-
-        // Resolve local SQLite account ID → Composio connection ID
-        const [account] = await db
-          .select()
-          .from(connectedAccounts)
-          .where(eq(connectedAccounts.id, input.connected_account_id))
-          .limit(1)
-
-        if (!account) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Connected account ${input.connected_account_id} not found`)
-          return
-        }
-
-        const providerConnectionId = account.providerConnectionId
-
-        // Validate trigger type against available triggers for this account
-        const availableTriggers = await getAvailableTriggers(account.toolkitSlug)
-        const validSlugs = availableTriggers.map((t) => t.slug)
-        if (!validSlugs.includes(input.trigger_type)) {
-          const suggestion = validSlugs.length > 0
-            ? `\n\nAvailable triggers for ${account.toolkitSlug}: ${validSlugs.join(', ')}`
-            : `\n\nNo triggers are available for ${account.toolkitSlug}.`
-          await this.rejectContainerInput(agentSlug, toolUseId,
-            `Invalid trigger type "${input.trigger_type}" for this account.${suggestion}`)
-          return
-        }
-
-        // The proxy scopes the subscription to the acting member of THIS mint
-        // request (ambient ALS), which is not always the session creator (SUP-765).
-        // Tool handlers run off the stream loop with no guaranteed ALS scope, so
-        // when none is active mint explicitly under the session's member instead
-        // of letting the call go out as a bare org token with nothing recorded.
-        const sessionMemberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
-        const mintAttribution =
-          (await attribution.current()) ??
-          // Never mint as the opaque-key 'local' placeholder — that would send `token::local`.
-          (sessionMemberId === 'local' ? null : attribution.fromMemberId(sessionMemberId))
-        const mintedByMemberId = mintAttribution?.actingMemberId() ?? undefined
-
-        // 1. Enable trigger on Composio via proxy (using Composio's ca_* ID)
-        // Under mintAttribution so the recorded member is the one the proxy
-        // actually scoped the subscription to, not a guess made after the fact.
-        const composioTriggerId = await runWithAttribution(mintAttribution, () =>
-          enableComposioTrigger(
-            input.trigger_type,
-            providerConnectionId,
-            input.trigger_config,
-          ),
-        )
-
-        // 2. Save to SQLite (store the local account ID for app-level lookups)
-        let triggerId: string
-        try {
-          const triggerOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-          triggerId = await createWebhookTrigger({
-            agentSlug,
-            composioTriggerId,
-            connectedAccountId: input.connected_account_id,
-            triggerType: input.trigger_type,
-            triggerConfig: input.trigger_config ? JSON.stringify(input.trigger_config) : undefined,
-            prompt: input.prompt,
-            name: input.name,
-            createdBySessionId: sessionId,
-            createdByUserId: triggerOwnerId ?? undefined,
-            mintedByMemberId,
-            model: input.model,
-            effort: input.effort,
-            speed: input.speed,
-          })
-        } catch (dbError) {
-          // Rollback Composio trigger
-          console.error('[MessagePersister] SQLite save failed, rolling back Composio trigger:', dbError)
-          await deleteComposioTrigger(composioTriggerId).catch(console.error)
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
-          return
-        }
-
-        // 3. Broadcast events
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'webhook_trigger_created',
-          toolUseId,
-          triggerId,
-          triggerType: input.trigger_type,
-          name: input.name,
-          agentSlug,
-        })
-
-        this.broadcastGlobal({
-          type: 'webhook_trigger_created',
-          triggerId,
-          agentSlug,
-        })
-
-        const triggerName = input.name || input.trigger_type
-        await this.resolveContainerInput(agentSlug, toolUseId,
-          `Webhook trigger "${triggerName}" created successfully (ID: ${triggerId}).\n\nTrigger type: ${input.trigger_type}\nConnected account: ${input.connected_account_id}\nPrompt: ${input.prompt.substring(0, 100)}${input.prompt.length > 100 ? '...' : ''}\n\nThe trigger is now active and will fire when the event occurs.`)
-
-        console.log(`[MessagePersister] Webhook trigger ${triggerId} created (composio: ${composioTriggerId})`)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling setup_trigger:', error)
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to set up trigger: ${msg}`).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  /**
-   * Member context for platform webhook-endpoint calls: session owner first,
-   * stored member as fallback, 'local' placeholder last (opaque platform keys
-   * ignore the member suffix entirely).
-   */
-  private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
-    const ownerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-    const resolved = await resolvePlatformMemberForCandidates([ownerId])
-    return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
-  }
-
-  // Handle create_webhook_endpoint - blocking: mint on platform + save SQLite
-  // trigger row (kind='custom'), rolling back the mint if the local save fails.
-  private handleCreateWebhookEndpointTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        // Gate on the relay, not Composio mode: custom endpoints live on the
-        // relay and must keep working when the user brings their own
-        // Composio key.
-        const relayUnavailable = webhooksUnavailableMessage('Custom webhook endpoints')
-        if (relayUnavailable) {
-          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
-          return
-        }
-
-        let rawInput: unknown
-        try {
-          rawInput = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        const parsedInput = createWebhookEndpointInputSchema.safeParse(rawInput)
-        if (!parsedInput.success) {
-          await this.rejectContainerInput(agentSlug, toolUseId,
-            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
-          return
-        }
-        const input = parsedInput.data
-        const verification = input.verification ?? undefined
-        const filterExp = input.filter_exp ?? undefined
-
-        const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
-        // Minted explicitly as `token::memberId` below, so record that when no ALS
-        // attribution is active; never persist the opaque-key 'local' placeholder.
-        const mintedByMemberId =
-          (await attribution.current())?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
-
-        // 1. Mint the endpoint on the webhook relay
-        const endpoint = await getWebhookRelay().createEndpoint(memberId, {
-          name: input.name.trim(),
-          ...(verification ? { verification } : {}),
-          ...(filterExp ? { filterExp } : {}),
-        })
-
-        // 2. Save the local trigger row (rollback the mint on failure)
-        let triggerId: string
-        try {
-          const triggerOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-          triggerId = await createWebhookTrigger({
-            agentSlug,
-            kind: 'custom',
-            composioTriggerId: endpoint.id,
-            triggerType: CUSTOM_WEBHOOK_TRIGGER_TYPE,
-            // The public URL lives platform-side; mirror it here so list/UI
-            // don't need a platform round-trip.
-            triggerConfig: JSON.stringify({ url: endpoint.url, endpointId: endpoint.id }),
-            prompt: input.prompt,
-            name: input.name.trim(),
-            createdBySessionId: sessionId,
-            createdByUserId: triggerOwnerId ?? undefined,
-            mintedByMemberId,
-            model: input.model,
-            effort: input.effort,
-            speed: input.speed,
-          })
-        } catch (dbError) {
-          console.error('[MessagePersister] SQLite save failed, disabling platform endpoint:', dbError)
-          captureException(dbError, {
-            tags: { area: 'webhook-endpoints', op: 'create-local-save' },
-            extra: { endpointId: endpoint.id, agentSlug, sessionId },
-          })
-          await getWebhookRelay().disableEndpoint(memberId, endpoint.id).catch((rollbackError) => {
-            // Mint succeeded, local save failed, and now the rollback failed too:
-            // a live public URL is orphaned with no local row. Loudest signal.
-            console.error('[MessagePersister] Endpoint rollback failed — endpoint orphaned live:', rollbackError)
-            captureException(rollbackError, {
-              tags: { area: 'webhook-endpoints', op: 'create-rollback' },
-              extra: { endpointId: endpoint.id, agentSlug, sessionId, memberId },
-            })
-          })
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
-          return
-        }
-
-        // 3. Broadcast events (same shape as Composio trigger creation)
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'webhook_trigger_created',
-          toolUseId,
-          triggerId,
-          triggerType: CUSTOM_WEBHOOK_TRIGGER_TYPE,
-          name: input.name,
-          agentSlug,
-        })
-
-        this.broadcastGlobal({
-          type: 'webhook_trigger_created',
-          triggerId,
-          agentSlug,
-        })
-
-        await this.resolveContainerInput(agentSlug, toolUseId,
-          `Webhook endpoint "${input.name}" created (trigger ID: ${triggerId}).\n\n` +
-          `Public URL: ${endpoint.url}\n\n` +
-          `Next: register this URL with the third-party service. Do the registration YOURSELF whenever possible — in order of preference:\n` +
-          `1. The service's API: use the connected account through the authenticated proxy, or call it directly (request_secret for an API key if needed).\n` +
-          `2. Offer to do it via the browser (navigate to the service's webhook settings page and fill it in).\n` +
-          `3. Only if the user prefers to do it themselves (or registration requires access you don't have): give them a precise, copy-pasteable walkthrough — the exact settings path for that service, the URL to paste, the content type to pick, which events to enable, and where to put the signing secret.\n\n` +
-          `Registration handshakes (Slack url_verification, Dropbox/Meta challenges, MS Graph validationToken) are answered automatically.\n\n` +
-          `${verification
-            ? 'Signature verification is configured — events with bad signatures are rejected at the edge.'
-            : 'No signature verification is configured yet — events will be marked UNVERIFIED. If the service provides a signing secret (many reveal it only after registration), attach it with update_webhook_endpoint.'}\n\n` +
-          `${filterExp
-            ? `Delivery filter active: only events matching \`${filterExp}\` start a session (filtered events are logged — inspect_webhook_events shows them). After real traffic arrives, verify the filter behaves with inspect_webhook_events.`
-            : 'No delivery filter is set — EVERY event this URL receives will start a session. After registering, decide whether you need one: compare the events the service will actually send against what your prompt handles. If the subscription is broader (it usually is — most services can\'t filter by assignee/status/type at registration), add a CEL filter_exp via update_webhook_endpoint so irrelevant events are dropped at the edge instead of waking you. Once real deliveries exist, dry-run candidates with inspect_webhook_events (test_filter_exp) before applying.'}\n\n` +
-          `Every delivery to this URL starts a session with your prompt plus the request details.`)
-
-        console.log(`[MessagePersister] Custom webhook endpoint ${endpoint.id} created (trigger: ${triggerId})`)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling create_webhook_endpoint:', error)
-        // Agent-visible via the reject below, but capture so a recurring
-        // platform-integration regression surfaces in aggregate. Never attach
-        // the tool input — it carries the HMAC secret.
-        captureException(error, {
-          tags: { area: 'webhook-endpoints', op: 'create' },
-          extra: { agentSlug, sessionId, toolUseId },
-        })
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to create webhook endpoint: ${msg}`).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle update_webhook_endpoint - blocking: PATCH the platform endpoint
-  // (verification is usually attached AFTER registration reveals the secret).
-  private handleUpdateWebhookEndpointTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        // Gate on the relay, not Composio mode: custom endpoints live on the
-        // relay and must keep working when the user brings their own
-        // Composio key.
-        const relayUnavailable = webhooksUnavailableMessage('Custom webhook endpoints')
-        if (relayUnavailable) {
-          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
-          return
-        }
-
-        let rawInput: unknown
-        try {
-          rawInput = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        const parsedInput = updateWebhookEndpointInputSchema.safeParse(rawInput)
-        if (!parsedInput.success) {
-          await this.rejectContainerInput(agentSlug, toolUseId,
-            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
-          return
-        }
-        const input = parsedInput.data
-
-        const trigger = await getWebhookTrigger(input.trigger_id)
-        if (!trigger || trigger.agentSlug !== agentSlug || trigger.kind !== 'custom' || !trigger.composioTriggerId) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `No custom webhook endpoint found for trigger ${input.trigger_id}`)
-          return
-        }
-        if (trigger.status === 'cancelled') {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} is cancelled; create a new endpoint instead`)
-          return
-        }
-
-        const patch: {
-          name?: string
-          verification?: import('@shared/lib/services/webhook-endpoint-schema').VerificationProfile | null
-          filter_exp?: string | null
-        } = {}
-        if (input.name) patch.name = input.name
-        if (input.verification !== undefined) patch.verification = input.verification
-        if (input.filter_exp !== undefined) patch.filter_exp = input.filter_exp
-        if (Object.keys(patch).length === 0) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Nothing to update: pass name, verification, and/or filter_exp')
-          return
-        }
-
-        // Minting-member-first resolution, matching teardown: the endpoint is
-        // scoped to whoever minted it, not to whoever created the session that
-        // runs the update (SUP-765). Pre-column rows fall back to the creator.
-        const memberId =
-          trigger.mintedByMemberId ??
-          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
-          (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
-        await getWebhookRelay().updateEndpoint(memberId, trigger.composioTriggerId, {
-          ...(patch.name !== undefined ? { name: patch.name } : {}),
-          ...(patch.verification !== undefined ? { verification: patch.verification } : {}),
-          ...(patch.filter_exp !== undefined ? { filterExp: patch.filter_exp } : {}),
-        })
-
-        // Keep the local row in sync so list_triggers/UI don't show a stale name.
-        if (patch.name) {
-          await updateWebhookTriggerName(trigger.id, patch.name)
-        }
-
-        const changed = [
-          patch.name ? 'name' : null,
-          patch.verification === null ? 'verification removed' : patch.verification ? 'verification attached' : null,
-          patch.filter_exp === null ? 'filter removed' : patch.filter_exp ? 'filter set' : null,
-        ].filter(Boolean).join(', ')
-        await this.resolveContainerInput(agentSlug, toolUseId,
-          `Webhook endpoint updated (${changed}).${patch.verification
-            ? ' Incoming requests are now signature-verified at the edge; events with bad signatures are rejected.'
-            : ''}${patch.filter_exp
-            ? ` Only deliveries matching \`${patch.filter_exp}\` will start a session; non-matching ones are logged as filtered (inspect_webhook_events shows them, including any filter eval errors — errors fail open and still deliver).`
-            : patch.filter_exp === null
-              ? ' The delivery filter was removed — every event starts a session again.'
-              : ''}`)
-
-        console.log(`[MessagePersister] Custom webhook endpoint ${trigger.composioTriggerId} updated (${changed})`)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling update_webhook_endpoint:', error)
-        // Never attach the tool input — it carries the HMAC secret.
-        captureException(error, {
-          tags: { area: 'webhook-endpoints', op: 'update' },
-          extra: { agentSlug, sessionId, toolUseId },
-        })
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update webhook endpoint: ${msg}`).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle inspect_webhook_events - blocking: read recent stored deliveries
-  // (including filter-withheld rows) from the platform, or dry-run a candidate
-  // filter expression against them. Read-only on both sides.
-  private handleInspectWebhookEventsTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        const relayUnavailable = webhooksUnavailableMessage('Custom webhook endpoints')
-        if (relayUnavailable) {
-          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
-          return
-        }
-
-        let rawInput: unknown
-        try {
-          rawInput = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        const parsedInput = inspectWebhookEventsInputSchema.safeParse(rawInput)
-        if (!parsedInput.success) {
-          await this.rejectContainerInput(agentSlug, toolUseId,
-            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
-          return
-        }
-        const input = parsedInput.data
-
-        // Cancelled triggers stay inspectable on purpose: the stored events
-        // outlive the endpoint and post-mortems are a legitimate use.
-        const trigger = await getWebhookTrigger(input.trigger_id)
-        if (!trigger || trigger.agentSlug !== agentSlug || trigger.kind !== 'custom' || !trigger.composioTriggerId) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `No custom webhook endpoint found for trigger ${input.trigger_id}`)
-          return
-        }
-
-        // Minting-member-first resolution, same as update/teardown (SUP-765).
-        const memberId =
-          trigger.mintedByMemberId ??
-          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
-          (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
-
-        if (input.test_filter_exp) {
-          const result = await getWebhookRelay().testEndpointFilter(
-            memberId, trigger.composioTriggerId, input.test_filter_exp, input.limit)
-          const lines = result.results.map((r) => {
-            const stored = r.stored_status ? ` (stored: ${r.stored_status})` : ''
-            const detail = r.outcome === 'error' && r.error ? ` — ${r.error}` : ''
-            return `- ${r.event_id} · ${r.created_at}${stored}: ${r.outcome.toUpperCase()}${detail}`
-          })
-          await this.resolveContainerInput(agentSlug, toolUseId,
-            `Dry-run of \`${result.filter_exp}\` against the ${result.evaluated} most recent deliveries — ` +
-            `${result.summary.passed} would pass, ${result.summary.filtered} filtered out, ` +
-            `${result.summary.error} errored (errors fail open = delivered), ${result.summary.skipped} skipped (handshakes/scrubbed).\n\n` +
-            `${lines.length ? lines.join('\n') : 'No stored deliveries to evaluate yet — send a test event first.'}\n\n` +
-            `Nothing was changed. When the verdicts look right, apply it with update_webhook_endpoint (filter_exp).`)
-        } else {
-          const { filterExp, events } = await getWebhookRelay().listEndpointEvents(
-            memberId, trigger.composioTriggerId, input.limit)
-          await this.resolveContainerInput(agentSlug, toolUseId,
-            `Active filter: ${filterExp ? `\`${filterExp}\`` : 'none (every event delivers)'}\n\n` +
-            `${events.length
-              ? `Recent deliveries (newest first):\n${events.map(formatWebhookEventLine).join('\n')}`
-              : 'No deliveries recorded yet for this endpoint.'}`)
-        }
-
-        console.log(`[MessagePersister] Inspected webhook events for ${trigger.composioTriggerId}`)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling inspect_webhook_events:', error)
-        captureException(error, {
-          tags: { area: 'webhook-endpoints', op: 'inspect' },
-          extra: { agentSlug, sessionId, toolUseId },
-        })
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to inspect webhook events: ${msg}`).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle list_triggers - blocking: read from SQLite and resolve
-  private handleListTriggersTool(
-    _sessionId: string,
-    toolUseId: string,
-    _toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        const triggers = await listActiveWebhookTriggers(agentSlug)
-        const formatted = triggers.length === 0
-          ? 'No active webhook triggers for this agent.'
-          : `Active webhook triggers:\n\n${triggers.map((t) => {
-              const source = t.kind === 'custom'
-                ? `URL: ${extractEndpointUrl(t.triggerConfig) ?? '(unknown)'}`
-                : `Account: ${t.connectedAccountId}`
-              return `- **${t.name || t.triggerType}** (ID: ${t.id})\n  Type: ${t.triggerType}${t.kind === 'custom' ? ' (custom endpoint)' : ''}\n  ${source}\n  Fires: ${t.fireCount} time(s)\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
-            }).join('\n\n')}`
-
-        await this.resolveContainerInput(agentSlug, toolUseId, formatted)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling list_triggers:', error)
-        if (agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
-        }
-      }
-    })()
-  }
-
-  // Handle update_trigger - blocking: update the local prompt for either a
-  // Composio trigger or custom endpoint while retaining its identity/history.
-  private handleUpdateTriggerTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        let input: WebhookTriggerUpdateInput
-        try {
-          input = updateWebhookTriggerInputSchema.parse(JSON.parse(toolInput))
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Invalid tool input'
-          await this.rejectContainerInput(agentSlug, toolUseId, `Invalid tool input: ${message}`)
-          return
-        }
-
-        const trigger = await getWebhookTrigger(input.trigger_id)
-        if (!trigger || trigger.agentSlug !== agentSlug) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} not found`)
-          return
-        }
-
-        const updated = await updateWebhookTriggerPrompt(input.trigger_id, input.prompt)
-        if (!updated) {
-          await this.rejectContainerInput(
-            agentSlug,
-            toolUseId,
-            `Trigger ${input.trigger_id} could not be updated — cancelled triggers are not editable`,
-          )
-          return
-        }
-
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'webhook_trigger_updated',
-          toolUseId,
-          triggerId: input.trigger_id,
-          agentSlug,
-        })
-        this.broadcastGlobal({
-          type: 'webhook_trigger_updated',
-          triggerId: input.trigger_id,
-          agentSlug,
-        })
-        await this.resolveContainerInput(
-          agentSlug,
-          toolUseId,
-          `Updated the prompt for trigger ${input.trigger_id}. Its ID and firing history were preserved.`,
-        )
-      } catch (error) {
-        console.error('[MessagePersister] Error handling update_trigger:', error)
-        const msg = error instanceof Error ? error.message : String(error)
-        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update trigger: ${msg}`).catch(console.error)
-      }
-    })()
-  }
-
-  // Handle cancel_trigger - blocking: dual-delete from Composio + SQLite, then resolve
-  private handleCancelTriggerTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug: string
-  ): void {
-    void (async () => {
-      try {
-        let input: { trigger_id: string }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
-          return
-        }
-
-        if (!input.trigger_id) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required field: trigger_id')
-          return
-        }
-
-        // Scope to the calling agent so it can't cancel (and, for custom kind,
-        // disable the public endpoint of) another agent's trigger by id.
-        const cancelled = await cancelWebhookTriggerWithCleanup(input.trigger_id, agentSlug)
-        if (!cancelled) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} not found or already cancelled`)
-          return
-        }
-
-        // Broadcast events
-        this.broadcastToSSE(agentSlug, sessionId, {
-          type: 'webhook_trigger_cancelled',
-          toolUseId,
-          triggerId: input.trigger_id,
-          agentSlug,
-        })
-
-        this.broadcastGlobal({
-          type: 'webhook_trigger_cancelled',
-          triggerId: input.trigger_id,
-          agentSlug,
-        })
-
-        await this.resolveContainerInput(agentSlug, toolUseId,
-          `Trigger ${input.trigger_id} has been cancelled. It will no longer fire webhook events.`)
-
-        console.log(`[MessagePersister] Webhook trigger ${input.trigger_id} cancelled`)
-      } catch (error) {
-        console.error('[MessagePersister] Error handling cancel_trigger:', error)
-        if (agentSlug) {
-          const msg = error instanceof Error ? error.message : String(error)
-          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to cancel trigger: ${msg}`).catch(console.error)
-        }
-      }
-    })()
   }
 
   // Handle AskUserQuestion tool - broadcast to SSE clients so they can show the UI
@@ -6025,16 +4653,37 @@ ${continuation}`
   /** Auto-reject a pending input request on the container with a reason message. */
   private autoRejectInput(agentSlug: string | undefined, toolUseId: string, reason: string): void {
     if (!agentSlug) return
-    getContainerHost().then((host) =>
-      host.runtime(agentSlug).getClient()
-        .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
-        })
-    ).catch((err: Error) => {
+    this.rejectContainerInput(agentSlug, toolUseId, reason).catch((err: Error) => {
       console.error('[MessagePersister] Failed to auto-reject input request:', err)
     })
+  }
+
+  /**
+   * The agent's actor as an approved computer-use or script run needs it,
+   * over the persister's own request routing and container client.
+   */
+  private hostRunActor(agentSlug: string): HostRunActor {
+    return {
+      inputs: {
+        claim: (id) => userInputRequestManager.claimRequest(id, agentSlug),
+        releaseClaim: (id) => userInputRequestManager.releaseClaim(id, agentSlug),
+        resolve: (id, outcome) => userInputRequestManager.resolve(id, outcome, agentSlug),
+        complete: (sessionId, id, outcome) => this.completeInputRequest(agentSlug, sessionId, id, outcome),
+        computerUse: {
+          grant: (level, grantType, appName) => computerUsePermissionManager.grantPermission(agentSlug, level, grantType, appName),
+          consumeOnce: (level, appName) => computerUsePermissionManager.consumeOnceGrant(agentSlug, level, appName),
+          setGrabbedApp: (appName) => computerUsePermissionManager.setGrabbedApp(agentSlug, appName),
+          clearGrabbedApp: () => computerUsePermissionManager.clearGrabbedApp(agentSlug),
+          clearPending: (sessionId, id, outcome) => this.clearPendingComputerUseRequest(agentSlug, sessionId, id, outcome),
+        },
+      },
+      container: {
+        fetch: async (path, init) => (await getContainerHost()).runtime(agentSlug).getClient().fetch(path, init),
+      },
+      messages: {
+        broadcastEvent: (sessionId, event) => this.broadcastToSSE(agentSlug, sessionId, event),
+      },
+    }
   }
 
   // Handle script run request tool - broadcast to SSE clients or auto-reject
@@ -6076,15 +4725,9 @@ ${continuation}`
       // We still broadcast (with autoApproved: true) so the client can suppress any
       // messages-based fallback prompt for this toolUseId during the brief window
       // between tool_use being persisted and tool_result coming back.
-      let autoApproved = false
-      if (agentSlug) {
-        const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, 'use_host_shell')
-        if (permissionResult === 'granted') {
-          autoApproved = true
-          this.autoExecuteScriptRun(agentSlug, toolUseId, input.script, input.scriptType)
-        }
-      }
+      const autoApproved = !!agentSlug && computerUsePermissionManager.checkPermission(agentSlug, 'use_host_shell') === 'granted'
 
+      // Registered before an auto-run starts: the run claims the request.
       this.registerStreamRequest(
         sessionId,
         'script_run',
@@ -6092,6 +4735,15 @@ ${continuation}`
         { script: input.script, explanation: input.explanation, scriptType: input.scriptType },
         { agentSlug, parentToolUseId, autoApproved },
       )
+      if (autoApproved) {
+        void runAutoApproved(this.hostRunActor(agentSlug), this.host, {
+          kind: 'script',
+          sessionId,
+          toolUseId,
+          script: input.script,
+          scriptType: input.scriptType,
+        })
+      }
 
       // Only flip the global "awaiting input" status (which drives the orange agent-status
       // pill in the sidebar / tray) when the user actually has to respond.
@@ -6148,7 +4800,7 @@ ${continuation}`
       // so that failures here don't leave orphaned pending entries.
       if (method === 'grab' && !appName && params.ref && typeof params.ref === 'string') {
         try {
-          appName = await resolveAppFromWindowRef(params.ref)
+          appName = await this.host.call('computerUseWindowApp', { ref: params.ref })
         } catch {
           // Non-fatal — proceed without app name
         }
@@ -6161,9 +4813,8 @@ ${continuation}`
         if (permissionResult === 'granted') {
           // Auto-execute: permission already granted. Registered anyway —
           // flagged autoApproved so no projection treats it as a user-facing
-          // wait — because the /computer-use route's already-settled gate only
-          // acts on requests the registry holds open, and auto-execution goes
-          // through that same route.
+          // wait — because the run claims the request it settles, exactly as
+          // a decision in the app does.
           userInputRequestManager.register({
             id: toolUseId,
             kind: 'computer_use',
@@ -6173,7 +4824,15 @@ ${continuation}`
             parentToolUseId,
             payload: { method, params, permissionLevel, appName },
           })
-          this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
+          void runAutoApproved(this.hostRunActor(agentSlug), this.host, {
+            kind: 'computerUse',
+            sessionId,
+            toolUseId,
+            method,
+            params,
+            permissionLevel,
+            appName,
+          })
           return
         }
       }
@@ -6194,109 +4853,6 @@ ${continuation}`
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }
-  }
-
-  /**
-   * Auto-execute a host script when use_host_shell permission is already cached.
-   * Calls the internal /run-script API endpoint which executes and resolves the input.
-   */
-  private autoExecuteScriptRun(
-    agentSlug: string,
-    toolUseId: string,
-    script: string,
-    scriptType: string,
-  ): void {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 35_000)
-    fetch(`http://localhost:${process.env.PORT || '3000'}/api/agents/${encodeURIComponent(agentSlug)}/sessions/_auto/run-script`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ toolUseId, script, scriptType }),
-      signal: controller.signal,
-    })
-      .then((res) => {
-        clearTimeout(timeout)
-        if (!res.ok) {
-          console.error('[MessagePersister] Auto-execute script run failed:', res.status)
-        }
-      })
-      .catch((err: Error) => {
-        clearTimeout(timeout)
-        console.error('[MessagePersister] Failed to auto-execute script run:', err)
-        getContainerHost().then((host) =>
-          host.runtime(agentSlug).getClient()
-            .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
-            })
-        ).catch((rejectErr: Error) => {
-          console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
-        })
-      })
-  }
-
-  /**
-   * Auto-execute a computer use command when permission is already cached.
-   * Calls the internal /computer-use API endpoint which handles AC execution.
-   */
-  private autoExecuteComputerUseCommand(
-    sessionId: string,
-    agentSlug: string,
-    toolUseId: string,
-    method: string,
-    params: Record<string, unknown>,
-    permissionLevel: ComputerUsePermissionLevel,
-    appName?: string,
-  ): void {
-    // Use the same API endpoint the UI calls, but with _auto session
-    // since permission is already verified
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 30_000)
-    fetch(`http://localhost:${process.env.PORT || '3000'}/api/agents/${encodeURIComponent(agentSlug)}/sessions/_auto/computer-use`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ toolUseId, method, params, permissionLevel, appName }),
-      signal: controller.signal,
-    })
-      .then((res) => {
-        clearTimeout(timeout)
-        if (!res.ok) {
-          console.error('[MessagePersister] Auto-execute computer use failed:', res.status)
-          return
-        }
-        // Broadcast grab state change to the real session SSE clients
-        if (method === 'grab' || method === 'launch') {
-          const targetApp = appName || (params.name as string) || (params.app as string)
-          if (targetApp) {
-            this.broadcastToSSE(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: targetApp })
-            // Resolve icon async and send update
-            import('@shared/lib/computer-use/app-icon').then(({ getAppIconBase64 }) =>
-              getAppIconBase64(targetApp).then((icon) => {
-                if (icon) {
-                  this.broadcastToSSE(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
-                }
-              })
-            ).catch(() => {})
-          }
-        } else if (method === 'ungrab' || method === 'quit') {
-          this.broadcastToSSE(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: null })
-        }
-      })
-      .catch((err: Error) => {
-        clearTimeout(timeout)
-        console.error('[MessagePersister] Failed to auto-execute computer use command:', err)
-        getContainerHost().then((host) =>
-          host.runtime(agentSlug).getClient()
-            .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
-            })
-        ).catch((rejectErr: Error) => {
-          console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
-        })
-      })
   }
 
   // Broadcast context usage from an assistant message's per-call usage field.

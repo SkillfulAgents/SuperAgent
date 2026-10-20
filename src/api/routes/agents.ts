@@ -204,8 +204,9 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
-import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
-import { resolveTargetApp } from '@shared/lib/computer-use/types'
+import { ungrabAC } from '@shared/lib/computer-use/executor'
+import type { PermissionGrantType } from '@shared/lib/computer-use/types'
+import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { getActiveLlmProvider, getLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
@@ -3522,11 +3523,9 @@ agents.post('/:id/sessions/:sessionId/tasks/:taskId/stop', AgentUser(), async (c
  * request's identity has to be re-checked against the URL before the route
  * acts on it (or reports on it): its kind, its agent, and its session.
  *
- * agentSlug is matched unconditionally and exactly — including for `_auto`,
- * which is an internal auto-execute caller that names the real agent in its
- * URL. A request whose scope carries no agent is unattributable and matches
- * nothing; every registration path (stream handlers, computer-use, recovery)
- * supplies one.
+ * agentSlug is matched unconditionally and exactly. A request whose scope
+ * carries no agent is unattributable and matches nothing; every registration
+ * path (stream handlers, computer-use, recovery) supplies one.
  */
 function requestMatchesRoute(
   request: { kind: UserInputRequestKind; scope: UserInputRequestScope },
@@ -3536,10 +3535,6 @@ function requestMatchesRoute(
 ): boolean {
   if (request.kind !== kind) return false
   if (!request.scope.agentSlug || request.scope.agentSlug !== agentSlug) return false
-  // Auto-execute paths post to /sessions/_auto/… while the request stays
-  // scoped to the real session that streamed it — the ONLY dimension `_auto`
-  // waives.
-  if (sessionId === '_auto') return true
   return request.scope.sessionId === sessionId
 }
 
@@ -4411,10 +4406,62 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
   }
 })
 
+// What a run's outcome means to the client that approved it.
+function hostRunResponse(c: Context, outcome: HostRunOutcome, what: 'script run' | 'computer use'): Response {
+  switch (outcome.status) {
+    case 'resolved':
+      return c.json({ success: true })
+    case 'claimed':
+      return c.json({ error: `This ${what} request is already being handled` }, 409)
+    case 'missing_permissions':
+      return c.json({ success: false, missingPermissions: outcome.permissions }, 428)
+    case 'failed':
+      // The agent got the error as its tool's result; the approval itself went through.
+      return c.json({ success: true, error: outcome.error })
+    case 'undeliverable':
+      console.error(`[${what}] Failed to resolve: ${outcome.detail}`)
+      return c.json({ error: `Failed to resolve ${what} request` }, 500)
+  }
+}
+
+const GRANT_TYPES: readonly PermissionGrantType[] = ['once', 'timed', 'always']
+const grantTypeOf = (value: unknown): PermissionGrantType | undefined =>
+  GRANT_TYPES.includes(value as PermissionGrantType) ? (value as PermissionGrantType) : undefined
+
+/**
+ * Decline a script-run or computer-use request: fail the agent's call with the
+ * user's reason, then settle the request. Claimed first, so a decline cannot
+ * race an approval of the same card.
+ */
+async function declineHostRun(
+  c: Context,
+  toolUseId: string,
+  reason: string,
+  settle: () => void,
+  what: 'script run' | 'computer use',
+): Promise<Response> {
+  const actor = agentRegistry.get(getAgentId(c))
+  if (!actor.inputs.claim(toolUseId)) {
+    return c.json({ error: `This ${what} request is already being handled` }, 409)
+  }
+  try {
+    const rejectResponse = await rejectInput(actor, toolUseId, reason)
+    if (!rejectResponse.ok) {
+      console.error(`[${what}] Failed to reject: ${rejectResponse.status} ${await rejectResponse.text().catch(() => '')}`)
+      return c.json({ error: `Failed to reject ${what} request` }, 500)
+    }
+    settle()
+    return c.json({ success: true, declined: true })
+  } finally {
+    actor.inputs.releaseClaim(toolUseId)
+  }
+}
+
 // POST /api/agents/:id/sessions/:sessionId/run-script - Run or deny a script execution request
 agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
     const { toolUseId, script, scriptType, decline, declineReason } = body
 
@@ -4428,124 +4475,29 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
-      const reason = declineReason || 'User denied script execution'
-
-      const rejectResponse = await actor.container.fetch(
-        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
-        }
-      )
-
-      if (!rejectResponse.ok) {
-        let errorDetails = 'Unknown error'
-        try {
-          const error = await rejectResponse.json()
-          errorDetails = JSON.stringify(error)
-        } catch {
-          errorDetails = await rejectResponse.text()
-        }
-        console.error(`[run-script] Failed to reject: ${errorDetails}`)
-        return c.json({ error: 'Failed to reject script run request' }, 500)
-      }
-
-      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
-      trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
-      return c.json({ success: true, declined: true })
-    }
-
-    // Run path: validate platform, execute script
-    // Permission is now managed by ComputerUsePermissionManager (use_host_shell level)
-    // The permission grant happens when the user clicks "Allow" in the UI
-    // Record permission grant if grantType is provided
-    if (body.grantType && ['once', 'timed', 'always'].includes(body.grantType)) {
-      agentRegistry.get(agentSlug).inputs.computerUse.grant('use_host_shell', body.grantType)
+      return await declineHostRun(c, toolUseId, declineReason || 'User denied script execution', () => {
+        actor.inputs.complete(sessionId, toolUseId, 'declined')
+        trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
+      }, 'script run')
     }
 
     if (!script || !scriptType) {
       return c.json({ error: 'script and scriptType are required' }, 400)
     }
-
-    // Validate scriptType against platform
-    const platform = process.platform
-    if (!VALID_SCRIPT_TYPES[platform]?.includes(scriptType)) {
-      return c.json({ error: `Script type "${scriptType}" is not supported on ${platform}` }, 400)
+    if (!VALID_SCRIPT_TYPES[process.platform]?.includes(scriptType)) {
+      return c.json({ error: `Script type "${scriptType}" is not supported on ${process.platform}` }, 400)
     }
 
-    // Execute the script with a 30s timeout
-    const { exec, execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execAsync = promisify(exec)
-    const execFileAsync = promisify(execFile)
-
-    let stdout = ''
-    let stderr = ''
-    let exitCode = 0
-
-    try {
-      if (scriptType === 'applescript') {
-        // Use execFile to avoid shell escaping issues with quotes/newlines.
-        // Split into one -e arg per line (how osascript handles multi-line scripts).
-        const lines = script.split('\n').filter((l: string) => l.trim())
-        const args = lines.flatMap((line: string) => ['-e', line])
-        const result = await execFileAsync('osascript', args, { timeout: 30000 })
-        stdout = result.stdout || ''
-        stderr = result.stderr || ''
-      } else if (scriptType === 'shell') {
-        const result = await execAsync(script, { timeout: 30000, shell: '/bin/zsh' })
-        stdout = result.stdout || ''
-        stderr = result.stderr || ''
-      } else {
-        // powershell — use execFile to avoid shell escaping issues
-        const result = await execFileAsync('powershell.exe', ['-Command', script], { timeout: 30000 })
-        stdout = result.stdout || ''
-        stderr = result.stderr || ''
-      }
-    } catch (execError: any) {
-      stdout = execError.stdout || ''
-      stderr = execError.stderr || ''
-      exitCode = execError.code ?? 1
-    }
-
-    // Consume "once" grant after use
-    if (body.grantType === 'once') {
-      agentRegistry.get(agentSlug).inputs.computerUse.consumeOnce('use_host_shell')
-    }
-
-    // Format output for the agent
-    const output = [
-      `Exit code: ${exitCode}`,
-      stdout ? `stdout:\n${stdout}` : '',
-      stderr ? `stderr:\n${stderr}` : '',
-    ].filter(Boolean).join('\n\n')
-
-    // Resolve the pending input
-    const resolveResponse = await actor.container.fetch(
-      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: output }),
-      }
-    )
-
-    if (!resolveResponse.ok) {
-      let errorDetails = 'Unknown error'
-      try {
-        const error = await resolveResponse.json()
-        errorDetails = JSON.stringify(error)
-      } catch {
-        errorDetails = await resolveResponse.text()
-      }
-      console.error(`[run-script] Failed to resolve: ${errorDetails}`)
-      return c.json({ error: 'Failed to resolve script run request' }, 500)
-    }
-
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
-    trackServerEvent('script_executed', { scriptType, exitCode })
-    return c.json({ success: true })
+    // The permission is ComputerUsePermissionManager's (use_host_shell level);
+    // an "Allow" in the app records the grant with this run.
+    const outcome = await actor.inputs.computerUse.runScript({
+      sessionId,
+      toolUseId,
+      script,
+      scriptType,
+      grantType: grantTypeOf(body.grantType),
+    })
+    return hostRunResponse(c, outcome, 'script run')
   } catch (error) {
     console.error('Failed to run script:', error)
     return c.json({ error: 'Failed to run script' }, 500)
@@ -4568,151 +4520,31 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     if (gated) return gated
 
     const actor = agentRegistry.get(agentSlug)
-    // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
-    if (sessionId !== '_auto') {
-      if (!(await actor.sessions.isKnown(sessionId))) {
-        return c.json({ error: 'Session not found' }, 404)
-      }
+    if (!(await actor.sessions.isKnown(sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
     }
 
     if (decline) {
-      const reason = declineReason || 'User denied computer use request'
-
-      const rejectResponse = await actor.container.fetch(
-        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
-        }
-      )
-
-      if (!rejectResponse.ok) {
-        let errorDetails = 'Unknown error'
-        try {
-          const error = await rejectResponse.json()
-          errorDetails = JSON.stringify(error)
-        } catch {
-          errorDetails = await rejectResponse.text()
-        }
-        console.error(`[computer-use] Failed to reject: ${errorDetails}`)
-        return c.json({ error: 'Failed to reject computer use request' }, 500)
-      }
-
-      agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'declined')
-      trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
-      return c.json({ success: true, declined: true })
+      return await declineHostRun(c, toolUseId, declineReason || 'User denied computer use request', () => {
+        actor.inputs.computerUse.clearPending(sessionId, toolUseId, 'declined')
+        trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
+      }, 'computer use')
     }
 
-    // Approve path: grant permission, execute, resolve
     if (!method) {
       return c.json({ error: 'method is required for execution' }, 400)
     }
 
-    // In E2E mock mode, skip actual execution — just resolve the input directly
-    if (process.env.E2E_MOCK === 'true') {
-      const resolveResponse = await actor.container.fetch(
-        `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value: `[mock] ${method} executed successfully` }),
-        }
-      )
-      if (!resolveResponse.ok) {
-        return c.json({ error: 'Failed to resolve computer use request' }, 500)
-      }
-      agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'answered')
-      return c.json({ success: true })
-    }
-
-    // Check macOS permissions before executing
-    const missingPermissions = await checkACPermissions()
-    if (missingPermissions) {
-      return c.json({
-        success: false,
-        missingPermissions,
-      }, 428)
-    }
-
-    // Record the permission grant
-    if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
-      agentRegistry.get(agentSlug).inputs.computerUse.grant(permissionLevel || 'use_application', grantType, appName)
-    }
-
-    // Execute the computer use command
-    let output: string
-    try {
-      output = await executeComputerUseCommand(method, params || {})
-    } catch (execError: unknown) {
-      // Execution failed — reject the input so the agent sees it as a tool error
-      const errorMsg = execError instanceof Error ? execError.message : String(execError)
-      await actor.container.fetch(
-        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason: `Error executing ${method}: ${errorMsg}` }),
-        }
-      ).catch(() => {})
-      // The user approved but execution blew up — the wait was consumed by a
-      // system failure, not a user decision.
-      agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'invalidated')
-      return c.json({ success: true, error: errorMsg })
-    }
-
-    // Track grab/ungrab state and broadcast to UI
-    // Launch auto-grabs, so treat it like grab
-    if (method === 'grab' || method === 'launch') {
-      // Use appName from the request body (already resolved for grab-by-ref)
-      // and fall back to resolveTargetApp for direct app name params
-      const targetApp = appName || resolveTargetApp(method, params || {})
-      if (targetApp) {
-        agentRegistry.get(agentSlug).inputs.computerUse.setGrabbedApp(targetApp)
-        // Broadcast immediately with app name, then resolve icon async
-        agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
-        const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
-        getAppIconBase64(targetApp).then((icon) => {
-          if (icon) {
-            agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
-          }
-        }).catch(() => {})
-      }
-    } else if (method === 'ungrab' || method === 'quit') {
-      agentRegistry.get(agentSlug).inputs.computerUse.clearGrabbedApp()
-      agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
-    }
-
-    // Consume "once" grant after use
-    if (grantType === 'once') {
-      agentRegistry.get(agentSlug).inputs.computerUse.consumeOnce(permissionLevel || 'use_application', appName)
-    }
-
-    // Resolve the pending input
-    const resolveResponse = await actor.container.fetch(
-      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: output }),
-      }
-    )
-
-    if (!resolveResponse.ok) {
-      let errorDetails = 'Unknown error'
-      try {
-        const error = await resolveResponse.json()
-        errorDetails = JSON.stringify(error)
-      } catch {
-        errorDetails = await resolveResponse.text()
-      }
-      console.error(`[computer-use] Failed to resolve: ${errorDetails}`)
-      return c.json({ error: 'Failed to resolve computer use request' }, 500)
-    }
-
-    agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'answered')
-    trackServerEvent('computer_use_executed', { method, permissionLevel, grantType })
-    return c.json({ success: true })
+    const outcome = await actor.inputs.computerUse.run({
+      sessionId,
+      toolUseId,
+      method,
+      params: params || {},
+      permissionLevel: permissionLevel || 'use_application',
+      appName,
+      grantType: grantTypeOf(grantType),
+    })
+    return hostRunResponse(c, outcome, 'computer use')
   } catch (error) {
     console.error('Failed to execute computer use:', error)
     return c.json({ error: 'Failed to execute computer use' }, 500)

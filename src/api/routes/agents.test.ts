@@ -789,6 +789,7 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { localHostPort } from '@shared/lib/host/local-host-port'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
@@ -6309,18 +6310,17 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 
-  it('the internal _auto session bypasses the session-scope check', async () => {
-    // Auto-execute paths post to /sessions/_auto/... while the request is
-    // scoped to the real session that streamed it.
+  it('_auto is an ordinary session id: it cannot decide another session\'s request', async () => {
+    // Auto-approved runs no longer loop back through this route, so nothing
+    // waives the session check any more.
     parkOpen('tool-gate-auto', 'computer_use', 'sess-real')
     const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
       toolUseId: 'tool-gate-auto',
       decline: true,
     })
-    expect(res.status).toBe(200)
-    const json = (await res.json()) as Record<string, unknown>
-    expect(json.alreadySettled).toBeUndefined()
-    expect(mockContainerFetch).toHaveBeenCalled()
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(userInputRequestManager.getOpenRequest('tool-gate-auto')).not.toBeNull()
   })
 
   it.each(GATE_CASES)(
@@ -6346,7 +6346,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     },
   )
 
-  it('the internal _auto session waives the session check ONLY, never the agent check', async () => {
+  it('_auto cannot decide another agent\'s request either', async () => {
     parkOpen('tool-gate-auto-x', 'computer_use', 'sess-real', {}, 'victim-agent')
     const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
       toolUseId: 'tool-gate-auto-x',
@@ -10471,6 +10471,126 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
     expect(
       computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('granted')
+  })
+})
+
+describe('run-script and computer-use decisions run through the actor', () => {
+  // Both routes hand an approval to the agent's actor, which claims the
+  // request, does the agent's bookkeeping, and has the host do the machine
+  // work. The same path runs a request a held grant already covers, so a
+  // decision and an auto-run (or two clicks) can never drive the machine twice.
+  let app: ReturnType<typeof createApp>
+  const CU_URL = '/api/agents/test-agent/sessions/sess-1/computer-use'
+  const SCRIPT_URL = '/api/agents/test-agent/sessions/sess-1/run-script'
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+    mockContainerFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    userInputRequestManager.reset()
+  })
+
+  function park(id: string, kind: 'computer_use' | 'script_run') {
+    userInputRequestManager.register({
+      id,
+      kind,
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    })
+  }
+
+  /** The machine as the host reports it; any other call fails the test. */
+  function machine(answers: { permissions?: unknown; output?: string; error?: Error }) {
+    return vi.spyOn(localHostPort, 'call').mockImplementation((async (name: string) => {
+      if (name === 'computerUsePermissions') return answers.permissions ?? null
+      if (name === 'computerUse') {
+        if (answers.error) throw answers.error
+        return answers.output ?? ''
+      }
+      throw new Error(`unexpected host call ${name}`)
+    }) as typeof localHostPort.call)
+  }
+
+  it('computer-use: runs the approved command on the host, delivers its output and records the grant', async () => {
+    const host = machine({ output: 'Calculator, Finder' })
+    park('cu-ok', 'computer_use')
+
+    const res = await postJson(app, CU_URL, {
+      toolUseId: 'cu-ok', method: 'apps', params: {}, permissionLevel: 'list_apps_windows', grantType: 'timed',
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true })
+    expect(host).toHaveBeenCalledWith('computerUse', { method: 'apps', params: {} })
+    expect(mockContainerFetch).toHaveBeenCalledWith('/inputs/cu-ok/resolve', expect.objectContaining({
+      body: JSON.stringify({ value: 'Calculator, Finder' }),
+    }))
+    expect(messagePersister.clearPendingComputerUseRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'cu-ok', 'answered')
+    expect(computerUsePermissionManager.checkPermission('test-agent', 'list_apps_windows')).toBe('granted')
+  })
+
+  it('computer-use: answers 428 with the permissions, runs nothing and leaves the request open', async () => {
+    const permissions = { accessibility: false, screen_recording: true }
+    const host = machine({ permissions })
+    park('cu-perm', 'computer_use')
+
+    const res = await postJson(app, CU_URL, { toolUseId: 'cu-perm', method: 'apps', params: {} })
+
+    expect(res.status).toBe(428)
+    expect(await res.json()).toEqual({ success: false, missingPermissions: permissions })
+    expect(host).not.toHaveBeenCalledWith('computerUse', expect.anything())
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(agentRegistry.get('test-agent').inputs.get('cu-perm')).not.toBeNull()
+  })
+
+  it('computer-use: a failed command fails the agent\'s call, and the approval still answers 200', async () => {
+    machine({ error: new Error('window not found') })
+    park('cu-fail', 'computer_use')
+
+    const res = await postJson(app, CU_URL, { toolUseId: 'cu-fail', method: 'click', params: { ref: '@b1' } })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, error: 'window not found' })
+    expect(mockContainerFetch).toHaveBeenCalledWith('/inputs/cu-fail/reject', expect.objectContaining({
+      body: JSON.stringify({ reason: 'Error executing click: window not found' }),
+    }))
+    expect(messagePersister.clearPendingComputerUseRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'cu-fail', 'invalidated')
+  })
+
+  it.each([
+    { label: 'computer-use approval', url: CU_URL, kind: 'computer_use' as const, body: { method: 'apps', params: {} } },
+    { label: 'computer-use decline', url: CU_URL, kind: 'computer_use' as const, body: { decline: true } },
+    { label: 'run-script approval', url: SCRIPT_URL, kind: 'script_run' as const, body: { script: 'echo hi', scriptType: 'shell' } },
+    { label: 'run-script decline', url: SCRIPT_URL, kind: 'script_run' as const, body: { decline: true } },
+  ])('$label while another decision holds the request answers 409 and touches nothing', async ({ url, kind, body }) => {
+    const host = machine({})
+    park('held', kind)
+    agentRegistry.get('test-agent').inputs.claim('held')
+
+    const res = await postJson(app, url, { toolUseId: 'held', ...body })
+
+    expect(res.status).toBe(409)
+    expect(host).not.toHaveBeenCalled()
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(agentRegistry.get('test-agent').inputs.get('held')).not.toBeNull()
+  })
+
+  it('run-script: a malformed approval records no grant', async () => {
+    park('sr-bad', 'script_run')
+    const res = await postJson(app, SCRIPT_URL, { toolUseId: 'sr-bad', scriptType: 'shell', grantType: 'always' })
+    expect(res.status).toBe(400)
+    expect(computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell')).toBe('prompt_needed')
   })
 })
 
