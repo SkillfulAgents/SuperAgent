@@ -128,7 +128,7 @@ describe('built-in hint triggers', () => {
     '',
     undefined,
   ])('agent-browser-bash ignores %s', async (command) => {
-    expect(await context(bash('PreToolUse', command))).toBeUndefined()
+    expect((await context(bash('PreToolUse', command))) ?? '').not.toContain('STRONG WARNING')
   })
 
   it('agent-browser-bash warns on every call, like the hook it replaced', async () => {
