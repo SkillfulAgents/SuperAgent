@@ -1,10 +1,19 @@
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Loader2 } from 'lucide-react'
+import type { VolumeSummaryWithHealth } from '@shared/lib/types/mount'
 
-export function VolumeStatusBadge({ health }: { health: 'ok' | 'missing' }) {
+export function VolumeStatusBadge({ health }: { health: VolumeSummaryWithHealth['health'] }) {
   if (health === 'ok') {
     return (
       <span className="text-2xs px-1.5 py-0 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
         OK
+      </span>
+    )
+  }
+  if (health === 'preparing') {
+    return (
+      <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
+        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+        Preparing
       </span>
     )
   }
