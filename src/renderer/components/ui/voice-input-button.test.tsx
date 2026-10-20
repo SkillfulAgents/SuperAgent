@@ -45,4 +45,27 @@ describe('VoiceInputButton', () => {
     expect(button).not.toHaveClass('bg-background', 'hover:bg-zinc-100')
     expect(screen.getByTestId('mini-waveform')).toHaveAttribute('data-color', 'currentColor')
   })
+
+  it('does not mount the waveform while idle', () => {
+    render(
+      <VoiceInputButton
+        message=""
+        voiceInput={{
+          state: 'idle',
+          isRecording: false,
+          isConnecting: false,
+          isFinalizing: false,
+          error: null,
+          clearError: vi.fn(),
+          isSupported: true,
+          analyserRef: { current: null },
+          startRecording: vi.fn(),
+          stopRecording: vi.fn(),
+        }}
+      />,
+    )
+
+    expect(screen.getByTestId('voice-input-button')).toHaveAccessibleName('Voice input')
+    expect(screen.queryByTestId('mini-waveform')).not.toBeInTheDocument()
+  })
 })
