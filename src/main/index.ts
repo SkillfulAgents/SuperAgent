@@ -32,7 +32,16 @@ if (process.platform !== 'win32') {
 
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
-import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands } from './app-menu'
+import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand } from './app-menu'
+import {
+  handleSpotlightActivity,
+  requestSpotlightSync,
+  resumeSpotlightAfterSwitch,
+  spotlightSwitchDeclined,
+  startSpotlight,
+  stopSpotlight,
+  SPOTLIGHT_ACTIVITY_TYPE,
+} from './spotlight'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
@@ -513,6 +522,9 @@ ipcMain.handle('get-api-target', () => activeApiTarget())
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
+  // Spotlight reads the side the app is leaving one last time, and polls the
+  // side it is moving to.
+  requestSpotlightSync()
 })
 
 // The switch animation, which cannot live in the document the switch reloads.
@@ -694,8 +706,15 @@ ipcMain.handle('flush-pending-notification-events', () => {
 // open-create-agent) that fired while the window was closed and recreated it.
 // The renderer asks once on mount, when its IPC listeners are guaranteed
 // attached, so no command is lost to the webContents.send race (SUP-264).
-ipcMain.handle('flush-pending-menu-commands', () => {
+ipcMain.handle('flush-pending-menu-commands', (event) => {
+  // A Spotlight result from the other Superagent opens once the main window
+  // has switched to it and mounted again, which is what this flush is.
+  if (event.sender === mainWindow?.webContents) resumeSpotlightAfterSwitch()
   return flushPendingMenuCommands()
+})
+
+ipcMain.on('target-switch-declined', (event) => {
+  if (event.sender === mainWindow?.webContents) spotlightSwitchDeclined()
 })
 
 // --- Quick-dispatch launcher IPC ---
@@ -1125,6 +1144,16 @@ app.on('open-url', (event, url) => {
   handleDeepLinkUrl(url)
 })
 
+// A click on one of the app's Spotlight results (see docs/spotlight.md). macOS
+// continues the app with an activity naming the item; both events have to be
+// claimed for the click to be handed over.
+app.on('will-continue-activity', (event, type) => {
+  if (type === SPOTLIGHT_ACTIVITY_TYPE) event.preventDefault()
+})
+app.on('continue-activity', (event, type, userInfo) => {
+  if (handleSpotlightActivity(type, userInfo)) event.preventDefault()
+})
+
 function handleDeepLinkUrl(url: string, fromQueue = false) {
   if (!fromQueue && !canHandleDeepLinkNow(url)) {
     pendingProtocolUrls.push(url)
@@ -1376,6 +1405,11 @@ function startNotificationListener(): void {
         dismissReviewNotification(data.requestId)
       }
 
+      // A session finished, is waiting or was scheduled: its name and recency
+      // may have moved. Only this computer's stream, so the cloud workspace
+      // relies on Spotlight's own poll.
+      if (data.type === 'os_notification') requestSpotlightSync()
+
       if (data.type === 'os_notification') {
         // Only show notification if window is closed/destroyed.
         // When the window is open the renderer drives this via IPC (with the
@@ -1584,6 +1618,25 @@ async function startApp() {
   if (settings.app?.showMenuBarIcon !== false) {
     createTray(mainWindow, () => activeApiTarget().baseUrl)
   }
+
+  // Spotlight indexes both Superagents, not just the active one, so each is
+  // reached by its own base URL (the cloud one through the keyed proxy).
+  startSpotlight({
+    baseUrl: (target) => (target === 'local' ? `http://localhost:${actualApiPort}` : cloudEndpoint()?.baseUrl ?? null),
+    activation: {
+      activeTarget: () => activeApiTarget().target,
+      openAgent: (agentSlug, sessionId) => {
+        showOrCreateMainWindow()
+        sendMenuCommand({ channel: 'navigate-to-agent', agentSlug, sessionId })
+      },
+      openDashboard,
+      showMainWindow: showOrCreateMainWindow,
+      requestTargetSwitch: (target) => {
+        showOrCreateMainWindow()
+        sendMenuCommand({ channel: 'switch-target', target })
+      },
+    },
+  })
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
   const userSettings = await getUserSettings('local')
@@ -1869,6 +1922,7 @@ async function gracefulShutdown() {
 app.on('before-quit', async (event) => {
   if (!isShuttingDown) {
     event.preventDefault()
+    stopSpotlight()
 
     // Hard deadline: force-exit if graceful shutdown hangs (e.g., stuck Lima VM)
     // Covers bounded upload preparation plus the existing stop/kill/force chain.
