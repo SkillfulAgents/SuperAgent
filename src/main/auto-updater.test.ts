@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { app, ipcMain, powerMonitor } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -998,5 +998,31 @@ describe('prerelease setting transitions', () => {
     expect(mockAutoUpdater.channel).toBe('latest')
     expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.1' })
     expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Windows signature check', () => {
+  const platform = process.platform
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    delete mockAutoUpdater.verifyUpdateCodeSignature
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform })
+  })
+
+  it('replaces the 20s-timeout verifier on Windows', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    await boot()
+    const { verifyUpdateSignature } = await import('./update-signature')
+    expect(mockAutoUpdater.verifyUpdateCodeSignature).toBe(verifyUpdateSignature)
+  })
+
+  it('leaves other platforms alone', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    await boot()
+    expect(mockAutoUpdater.verifyUpdateCodeSignature).toBeUndefined()
   })
 })
