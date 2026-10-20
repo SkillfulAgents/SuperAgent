@@ -961,7 +961,17 @@ export class LiveSession {
         // Per-command transitions, keyed by the message's own uuid: the
         // renderer joins terminal states back to its optimistic ghosts.
         const lifecycle = parseCommandLifecycle(content)
-        if (lifecycle) this.ctx.emit({ type: 'command_lifecycle', commandUuid: lifecycle.commandUuid, state: lifecycle.state })
+        if (!lifecycle) return
+        this.ctx.emit({ type: 'command_lifecycle', commandUuid: lifecycle.commandUuid, state: lifecycle.state })
+        // A discarded message never ran, so whoever it tagged is not told.
+        if (lifecycle.state === 'discarded') {
+          this.ctx.host.send('notification', {
+            kind: 'message_discarded',
+            agentSlug: this.ctx.agentSlug,
+            sessionId: this.ctx.sessionId,
+            messageUuid: lifecycle.commandUuid,
+          })
+        }
         return
       }
       case 'result':

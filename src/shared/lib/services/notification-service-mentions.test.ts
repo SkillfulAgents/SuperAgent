@@ -29,6 +29,7 @@ import {
   getUnreadMentionCount,
   markSessionNotificationsRead,
   markAllAsRead,
+  deleteMessageNotifications,
 } from './notification-service'
 import { notifications, agentAcl } from '../db/schema'
 
@@ -118,5 +119,20 @@ describe('targeted mention notifications', () => {
     await expect(mention(MIKE, 'msg-1')).rejects.toThrow()
     await mention(SARA, 'msg-1')
     expect(await testDb.select().from(notifications)).toHaveLength(2)
+  })
+
+  it("withdraws a message's mentions and leaves every other row", async () => {
+    await mention(MIKE, 'msg-1')
+    await mention(SARA, 'msg-1')
+    await mention(MIKE, 'msg-2')
+
+    const withdrawn = await deleteMessageNotifications('msg-1')
+    expect(withdrawn).toEqual(expect.arrayContaining([
+      { recipientUserId: MIKE, agentSlug: AGENT, sessionId: SESSION },
+      { recipientUserId: SARA, agentSlug: AGENT, sessionId: SESSION },
+    ]))
+    expect(withdrawn).toHaveLength(2)
+    expect((await testDb.select().from(notifications)).map((n) => n.messageUuid)).toEqual(['msg-2'])
+    expect(await deleteMessageNotifications('msg-1')).toEqual([])
   })
 })

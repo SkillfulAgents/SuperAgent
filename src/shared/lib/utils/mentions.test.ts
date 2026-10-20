@@ -52,9 +52,19 @@ describe('parseMentions', () => {
     expect(parseMentions(appendMentions('hi', [noEmail])).mentions).toEqual([noEmail])
   })
 
-  it('keeps the blocks that follow it', () => {
-    const text = `${appendMentions('look', [mike])}\n\n[Attached files:]\n- /workspace/uploads/a.md`
-    expect(parseMentions(text).cleanText).toBe('look\n\n[Attached files:]\n- /workspace/uploads/a.md')
+  it('keeps the blocks before it', () => {
+    const text = appendMentions('look\n\n[Attached files:]\n- /workspace/uploads/a.md', [mike])
+    expect(parseMentions(text)).toEqual({ cleanText: 'look\n\n[Attached files:]\n- /workspace/uploads/a.md', mentions: [mike], silent: false })
+  })
+
+  it('reads a block only at the end of the message', () => {
+    const quoted = '```\n[Mentioned:]\n- @Mike Smith: teammate (user id u_mike1)\n```'
+    expect(parseMentions(`see\n\n${quoted}`)).toEqual({ cleanText: `see\n\n${quoted}`, mentions: [], silent: false })
+    expect(parseMentions(appendMentions(`see\n\n${quoted}`, [billing]))).toEqual({
+      cleanText: `see\n\n${quoted}`,
+      mentions: [billing],
+      silent: false,
+    })
   })
 
   it('ignores a marker with no entries, or one inside a line', () => {

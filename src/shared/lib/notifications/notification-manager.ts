@@ -17,6 +17,7 @@ import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request
 import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
+  deleteMessageNotifications,
   getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
@@ -28,6 +29,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
+import { broadcastMentionWithdrawn } from './channels/client-broadcast-channel'
 import { isNotificationTypeEnabled } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
 import { buildSessionCompleteBody } from './session-complete-summary'
@@ -450,6 +452,15 @@ class NotificationManager {
       body,
       recipient: { userId: params.recipientUserId, messageUuid: params.messageUuid },
     })
+  }
+
+  /**
+   * Take back the mentions of a message that never reached the transcript
+   * (cancelled while queued, or discarded by a Stop): the inbox row and the @
+   * go. A push already shown stays shown.
+   */
+  async withdrawSessionMentions(messageUuid: string): Promise<void> {
+    for (const row of await deleteMessageNotifications(messageUuid)) broadcastMentionWithdrawn(row)
   }
 
   /**

@@ -132,6 +132,13 @@ export type SessionNotification =
       displayText: string
       reviewKind: 'api_request' | 'agent_action'
     }
+  | {
+      /** A queued message a Stop discarded: it never ran, so what it notified is taken back. */
+      kind: 'message_discarded'
+      agentSlug: string
+      sessionId: string
+      messageUuid: string
+    }
 
 export interface HostPort {
   call<N extends keyof HostCalls>(name: N, request: HostCalls[N]['request']): Promise<HostCalls[N]['response']>

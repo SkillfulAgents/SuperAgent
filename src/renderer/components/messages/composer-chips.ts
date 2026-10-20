@@ -1,8 +1,8 @@
 import type { ComponentType } from 'react'
 import type { DOMOutputSpec } from 'prosemirror-model'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
-import { appendMentions, type Mention } from '@shared/lib/utils/mentions'
-import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, type Chip } from '@renderer/lib/chip-marker'
+import { appendMentions, parseMentions, type Mention } from '@shared/lib/utils/mentions'
+import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
 import { agentChip, userChip } from './mention-chips'
 
@@ -128,4 +128,23 @@ export function chipsToAgentText(text: string, context: ChipContext, { silent = 
     return chipKind?.toAgentText?.(chip) ?? marker
   })
   return appendMentions(body, [...mentions.values()], { silent })
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * A sent message as a draft again, for one that comes back to the composer:
+ * each `@Name` its mentions block lists is the chip it was, and the block
+ * goes. `agentId` turns the slug the block gives an agent back into its id.
+ */
+export function draftFromAgentText(text: string, agentId: (slug: string) => string): string {
+  const { cleanText, mentions } = parseMentions(text)
+  if (mentions.length === 0) return text
+  const markers = new Map(mentions.map((mention) => [mention.name, formatChipMarker(mention.kind === 'user'
+    ? { kind: userChip.kind, referent: mention.id, label: mention.name }
+    : { kind: agentChip.kind, referent: agentId(mention.slug), label: mention.name })]))
+  // Longer names first, so `@Ann Lee` is not read as `@Ann`.
+  const names = [...markers.keys()].sort((a, b) => b.length - a.length)
+  const pattern = new RegExp(`@(${names.map(escapeRegExp).join('|')})`, 'g')
+  return cleanText.replace(pattern, (_match, name: string) => markers.get(name)!)
 }

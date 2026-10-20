@@ -1284,6 +1284,10 @@ describe('background Bash task tracking', () => {
       { type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' },
       { type: 'command_lifecycle', commandUuid: 'u2', state: 'some_future_state' },
     ])
+    // The discarded message never ran: the host takes its mentions back.
+    expect(live.host.sent('notification')).toEqual([
+      { kind: 'message_discarded', agentSlug: AGENT_SLUG, sessionId: SESSION_ID, messageUuid: 'u1' },
+    ])
   })
 
   it('ignores a malformed background_tasks_changed frame instead of clearing running tasks', () => {

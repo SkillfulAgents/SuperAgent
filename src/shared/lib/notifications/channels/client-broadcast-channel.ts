@@ -29,3 +29,8 @@ export class ClientBroadcastChannel implements NotificationChannel {
     })
   }
 }
+
+/** Tells a recipient's clients that a mention was taken back, so its @ goes. The SSE route sends it to them alone. */
+export function broadcastMentionWithdrawn(row: { recipientUserId: string; agentSlug: string; sessionId: string }): void {
+  globalFeed.publish({ type: 'session_mention_withdrawn', ...row })
+}

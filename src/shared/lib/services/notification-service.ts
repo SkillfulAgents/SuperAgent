@@ -423,6 +423,20 @@ export async function deleteNotificationsBySessionIds(sessionIds: string[]): Pro
 }
 
 /**
+ * Delete the targeted rows a message made (its mentions), for a message that
+ * never reached the transcript. Returns who each row was for.
+ */
+export async function deleteMessageNotifications(messageUuid: string): Promise<Array<{ recipientUserId: string; agentSlug: string; sessionId: string }>> {
+  const rows = await db
+    .select({ recipientUserId: notifications.recipientUserId, agentSlug: notifications.agentSlug, sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(eq(notifications.messageUuid, messageUuid))
+  if (rows.length === 0) return []
+  await db.delete(notifications).where(eq(notifications.messageUuid, messageUuid))
+  return rows.flatMap((row) => row.recipientUserId ? [{ ...row, recipientUserId: row.recipientUserId }] : [])
+}
+
+/**
  * Delete old notifications (older than specified days)
  */
 export async function deleteOldNotifications(olderThanDays: number = 30): Promise<number> {

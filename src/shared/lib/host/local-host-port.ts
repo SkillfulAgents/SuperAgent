@@ -37,6 +37,8 @@ function notify(notification: SessionNotification): Promise<void> {
         undefined,
         notification.reviewKind,
       )
+    case 'message_discarded':
+      return notificationManager.withdrawSessionMentions(notification.messageUuid)
   }
 }
 

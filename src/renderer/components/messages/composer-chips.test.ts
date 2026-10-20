@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
-import { chipAt, chipsToAgentText, openingTeammate, type ChipContext } from './composer-chips'
+import { chipAt, chipsToAgentText, draftFromAgentText, openingTeammate, type ChipContext } from './composer-chips'
 import { secretMarker } from './secret-chip'
 
 const saved = (...envVars: string[]) => ({ secretEnvVars: new Set(envVars) })
@@ -83,6 +83,21 @@ describe('composer chips', () => {
       expect(openingTeammate(`  ${mike} look`)).toEqual({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
       expect(openingTeammate(`look ${mike}`)).toBeNull()
       expect(openingTeammate(`${billing} look`)).toBeNull()
+    })
+
+    it('turns a sent message back into the draft it was sent from', () => {
+      const agentId = (slug: string) => (slug === 'billing-agent-k3j4h5g6f7' ? 'k3j4h5g6f7' : slug)
+      const draft = `${mike} and ${billing}, then ${mike} again`
+      expect(draftFromAgentText(chipsToAgentText(draft, context), agentId)).toBe(draft)
+      expect(draftFromAgentText(chipsToAgentText(`${mike} look`, context, { silent: true }), agentId)).toBe(`${mike} look`)
+      expect(draftFromAgentText('no mentions here', agentId)).toBe('no mentions here')
+    })
+
+    it('reads the longer of two names that share a start', () => {
+      const ann = formatChipMarker({ kind: 'user', referent: 'ann-id', label: 'Ann' })
+      const annLee = formatChipMarker({ kind: 'user', referent: 'ann-lee-id', label: 'Ann Lee' })
+      const draft = `${ann} and ${annLee}`
+      expect(draftFromAgentText(chipsToAgentText(draft, {}), (slug) => slug)).toBe(draft)
     })
   })
 })

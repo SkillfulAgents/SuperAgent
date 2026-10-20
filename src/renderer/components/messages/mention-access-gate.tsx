@@ -22,7 +22,8 @@ import { chipsIn, type ChipContext } from './composer-chips'
 import { agentForSlug } from './mention-chip'
 
 type Decision = 'allow' | 'review' | 'block'
-interface Policy { operation: 'list' | 'read' | 'invoke'; targetAgentSlug: string | null; decision: Decision }
+type Operation = 'read' | 'invoke'
+interface Policy { operation: 'list' | Operation; targetAgentSlug: string | null; decision: Decision }
 
 /** What the agent may do with the agent it was told about. */
 type Reach = 'both' | 'invoke' | 'read' | 'ask'
@@ -32,15 +33,20 @@ const REACH_OPTIONS: { value: Reach; label: string }[] = [
   { value: 'read', label: 'Read its sessions' },
   { value: 'ask', label: 'Ask me each time' },
 ]
-const REACH_OPERATIONS: Record<Reach, Array<'read' | 'invoke'>> = {
+const REACH_OPERATIONS: Record<Exclude<Reach, 'ask'>, Operation[]> = {
   both: ['read', 'invoke'],
   invoke: ['invoke'],
   read: ['read'],
-  ask: [],
+}
+
+/** What a choice sets for one agent: allows what was picked, or makes a blocked operation ask. */
+function reachPolicies(reach: Reach, blocked: Operation[]): Array<{ operation: Operation; decision: Decision }> {
+  if (reach === 'ask') return blocked.map((operation) => ({ operation, decision: 'review' }))
+  return REACH_OPERATIONS[reach].map((operation) => ({ operation, decision: 'allow' }))
 }
 
 /** A target-specific policy, else the caller's global one, else review (x-agent-policy-service evaluate()). */
-function effective(policies: Policy[], operation: 'read' | 'invoke', target: string): Decision {
+function effective(policies: Policy[], operation: Operation, target: string): Decision {
   return policies.find((p) => p.operation === operation && p.targetAgentSlug === target)?.decision
     ?? policies.find((p) => p.operation === operation && p.targetAgentSlug === null)?.decision
     ?? 'review'
@@ -59,7 +65,7 @@ function fetchMembers(queryClient: QueryClient, agentSlug: string, staleTime: nu
 
 type Question =
   | { kind: 'share'; people: Chip[] }
-  | { kind: 'reach'; agents: Chip[]; callerName: string | undefined }
+  | { kind: 'reach'; agents: Chip[]; blocked: Map<string, Operation[]>; callerName: string | undefined }
 
 /**
  * Before a message that tags someone is sent: a teammate who cannot open the
@@ -108,8 +114,10 @@ export function useMentionAccessGate(agentSlug: string): {
       })
       const unreachable = agents.filter((chip) =>
         effective(policies, 'read', chip.referent) !== 'allow' && effective(policies, 'invoke', chip.referent) !== 'allow')
+      const blocked = new Map(unreachable.map((chip) => [chip.referent,
+        (['read', 'invoke'] as const).filter((operation) => effective(policies, operation, chip.referent) === 'block')]))
       const callerName = agentForSlug(context.agents, agentSlug)?.name
-      if (unreachable.length > 0 && !(await ask({ kind: 'reach', agents: unreachable, callerName }))) return null
+      if (unreachable.length > 0 && !(await ask({ kind: 'reach', agents: unreachable, blocked, callerName }))) return null
     }
     return next
   }, [agentSlug, canManage, isAuthMode, queryClient])
@@ -120,7 +128,7 @@ export function useMentionAccessGate(agentSlug: string): {
   }
   const dialog = question && (question.kind === 'share'
     ? <ShareDialog agentSlug={agentSlug} people={question.people} onDone={close} />
-    : <ReachDialog agentSlug={agentSlug} agentName={question.callerName} agents={question.agents} onDone={close} />)
+    : <ReachDialog agentSlug={agentSlug} agentName={question.callerName} agents={question.agents} blocked={question.blocked} onDone={close} />)
   return { confirm, dialog }
 }
 
@@ -212,10 +220,12 @@ function ShareDialog({ agentSlug, people, onDone }: { agentSlug: string; people:
   )
 }
 
-function ReachDialog({ agentSlug, agentName, agents, onDone }: {
+function ReachDialog({ agentSlug, agentName, agents, blocked, onDone }: {
   agentSlug: string
   agentName: string | undefined
   agents: Chip[]
+  /** The operations a policy blocks, per agent; the rest ask first. */
+  blocked: Map<string, Operation[]>
   onDone: (ok: boolean) => void
 }) {
   const queryClient = useQueryClient()
@@ -225,18 +235,19 @@ function ReachDialog({ agentSlug, agentName, agents, onDone }: {
   const grant = async () => {
     try {
       for (const agent of agents) {
-        for (const operation of REACH_OPERATIONS[reach]) {
+        const policies = reachPolicies(reach, blocked.get(agent.referent) ?? [])
+        for (const { operation, decision } of policies) {
           const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ operation, targetSlug: agent.referent, decision: 'allow' }),
+            body: JSON.stringify({ operation, targetSlug: agent.referent, decision }),
           })
           if (!res.ok) {
             const data = await res.json().catch(() => ({}))
-            throw new Error(`${agent.label}: ${data.error || 'Failed to allow access'}`)
+            throw new Error(`${agent.label}: ${data.error || 'Failed to change its access'}`)
           }
         }
-        void queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agent.referent] })
+        if (policies.length > 0) void queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agent.referent] })
       }
     } finally {
       void queryClient.invalidateQueries({ queryKey: ['x-agent-policies', agentSlug] })
@@ -246,7 +257,9 @@ function ReachDialog({ agentSlug, agentName, agents, onDone }: {
   return (
     <GateDialog
       title={`Let ${caller} reach ${targets}?`}
-      description={`${caller} has to ask you before it reads ${targets}'s sessions or sends ${agents.length === 1 ? 'it' : 'them'} a message.`}
+      description={[...blocked.values()].some((operations) => operations.length > 0)
+        ? `${caller} is blocked from reaching ${targets}.`
+        : `${caller} has to ask you before it reads ${targets}'s sessions or sends ${agents.length === 1 ? 'it' : 'them'} a message.`}
       label="Allow it to"
       control={(
         <Select value={reach} onValueChange={(value) => setReach(value as Reach)}>

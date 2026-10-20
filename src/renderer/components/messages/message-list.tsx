@@ -33,6 +33,9 @@ import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { useQueryClient } from '@tanstack/react-query'
+import { resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { draftFromAgentText } from './composer-chips'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
@@ -190,6 +193,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // Imperative draft access for returning a never-ran message's text to the
   // composer (must not re-render this list on every composer keystroke).
   const draftsStore = useDraftsStore()
+  const queryClient = useQueryClient()
+  // A message that never ran goes back to the composer with its chips.
+  const asDraft = useCallback((text: string) => draftFromAgentText(text.trim(), (slug) =>
+    resolveRouteAgentId(slug, queryClient.getQueryData<ApiAgent[]>(['agents'])) ?? slug), [queryClient])
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -353,7 +360,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const dead = new Set(discardedCommandUuids)
     const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
     if (rescued.length > 0) {
-      const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
+      const restored = rescued.map((p) => asDraft(p.text)).filter(Boolean)
       appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
       for (const pending of rescued) {
         onPendingMessageAppeared?.(pending.localId)
@@ -366,7 +373,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         consumeDiscardedCommand(sessionId, peer.uuid)
       }
     }
-  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
+  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared, asDraft])
 
   // A pending message resolves only on proof: the transcript shows its id
   // (materialize effect above), or the host says it never ran (discarded
@@ -965,7 +972,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         const { cancelled } = await cancelQueuedMessage.mutateAsync({ sessionId, agentSlug, uuid })
         if (cancelled) {
           // The host removed it before pickup: it never ran, so its text goes back.
-          appendToSessionDraft(draftsStore, sessionId, text.trim(), { prepend: true })
+          appendToSessionDraft(draftsStore, sessionId, asDraft(text), { prepend: true })
           onPendingMessageAppeared?.(localId)
         } else {
           setPickedUpIds((prev) => new Set(prev).add(localId))
@@ -980,7 +987,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         })
       }
     },
-    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared, draftsStore]
+    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared, draftsStore, asDraft]
   )
 
   // Single render path for both local pending ghosts and peer ghosts.

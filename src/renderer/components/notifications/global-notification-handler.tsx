@@ -305,6 +305,14 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'session_mention_withdrawn': {
+            // The message that tagged this viewer was taken back before it ran.
+            queryClient.invalidateQueries({ queryKey: ['notifications'] })
+            if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
           case 'platform_notifications_changed': {
             // A platform notification INSERT arrived over Realtime — refresh
             // the proxy-live inbox + badge (there is no local copy to update).

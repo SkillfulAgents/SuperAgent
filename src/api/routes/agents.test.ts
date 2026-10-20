@@ -563,6 +563,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
+  deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
 }))
 
 vi.mock('@shared/lib/services/session-unread-service', () => ({
@@ -7056,11 +7057,14 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
   let app: ReturnType<typeof createApp>
   const UUID = '123e4567-e89b-12d3-a456-426614174000'
   const URL = `/api/agents/test-agent/sessions/sess-1/queued-messages/${UUID}`
+  let withdrawSessionMentions: ReturnType<typeof vi.spyOn>
 
   beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
+    withdrawSessionMentions = vi.spyOn(notificationManager, 'withdrawSessionMentions').mockResolvedValue()
   })
+  afterEach(() => withdrawSessionMentions.mockRestore())
 
   it('forwards to the container and returns cancelled: true', async () => {
     mockCancelQueuedMessage.mockResolvedValue(true)
@@ -7069,6 +7073,18 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: true })
     expect(mockCancelQueuedMessage).toHaveBeenCalledWith('sess-1', UUID)
+    expect(withdrawSessionMentions).toHaveBeenCalledWith(UUID)
+  })
+
+  it('reports the cancel even when its mentions cannot be withdrawn', async () => {
+    mockCancelQueuedMessage.mockResolvedValue(true)
+    withdrawSessionMentions.mockRejectedValueOnce(new Error('db down'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: true })
+    consoleError.mockRestore()
   })
 
   it('returns cancelled: false when the message was already picked up', async () => {
@@ -7077,6 +7093,7 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     const res = await deleteReq(app, URL)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: false })
+    expect(withdrawSessionMentions).not.toHaveBeenCalled()
   })
 
   it('rejects a malformed uuid with 400 without calling the container', async () => {
@@ -7093,6 +7110,7 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     expect(await res.json()).toEqual({ cancelled: true })
     expect(mockLiveSessions.dropCoalesced).toHaveBeenCalledWith('test-agent', 'sess-1', UUID)
     expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+    expect(withdrawSessionMentions).toHaveBeenCalledWith(UUID)
   })
 })
 

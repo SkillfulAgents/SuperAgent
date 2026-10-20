@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // references a `vi.fn()` must define it inside `vi.hoisted` to be available.
 const mocks = vi.hoisted(() => ({
   createNotification: vi.fn(async () => 'notif-id'),
+  deleteMessageNotifications: vi.fn(async (_messageUuid: string): Promise<Array<{ recipientUserId: string; agentSlug: string; sessionId: string }>> => []),
   getAgentAccessUserIds: vi.fn(async (_agentSlug: string) => ['user-a']),
   getSessionMetadata: vi.fn(),
   findLastSessionEntry: vi.fn(async () => null),
@@ -29,6 +30,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
+  deleteMessageNotifications: mocks.deleteMessageNotifications,
   getAgentAccessUserIds: mocks.getAgentAccessUserIds,
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
@@ -590,5 +592,27 @@ describe('triggerSessionMention', () => {
     const [{ body }] = mockCreateNotification.mock.calls[0] as unknown as [{ body: string }]
     expect(body).toHaveLength(280)
     expect(body.endsWith('…')).toBe(true)
+  })
+})
+
+describe('withdrawSessionMentions', () => {
+  it('deletes the rows of a message and tells each recipient', async () => {
+    mocks.deleteMessageNotifications.mockResolvedValueOnce([
+      { recipientUserId: 'user-b', agentSlug: 'agent-x', sessionId: 'sess-1' },
+    ])
+    await notificationManager.withdrawSessionMentions('msg-1')
+
+    expect(mocks.deleteMessageNotifications).toHaveBeenCalledWith('msg-1')
+    expect(mockPublishGlobal).toHaveBeenCalledWith({
+      type: 'session_mention_withdrawn',
+      recipientUserId: 'user-b',
+      agentSlug: 'agent-x',
+      sessionId: 'sess-1',
+    })
+  })
+
+  it('broadcasts nothing for a message that tagged no one', async () => {
+    await notificationManager.withdrawSessionMentions('msg-2')
+    expect(mockPublishGlobal).not.toHaveBeenCalled()
   })
 })

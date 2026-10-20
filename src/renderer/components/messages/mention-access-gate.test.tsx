@@ -133,6 +133,25 @@ describe('useMentionAccessGate', () => {
     expect(writes()).toEqual([])
   })
 
+  it('makes a blocked agent ask each time, rather than leave it blocked', async () => {
+    state.policies = [
+      { operation: 'read', targetAgentSlug: 'billing01x', decision: 'block' },
+      { operation: 'invoke', targetAgentSlug: null, decision: 'block' },
+    ]
+    mount()
+    const result = confirm(`ask ${billing}`)
+    expect(await screen.findByText('Support Agent is blocked from reaching Billing Agent.')).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('mention-reach-select'))
+    await userEvent.click(screen.getByRole('option', { name: 'Ask me each time' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await expect(result).resolves.toBe(context)
+    expect(writes().map((request) => request.body)).toEqual([
+      { operation: 'read', targetSlug: 'billing01x', decision: 'review' },
+      { operation: 'invoke', targetSlug: 'billing01x', decision: 'review' },
+    ])
+  })
+
   it('does not ask about an agent it may already message, or one it may reach through a global allow', async () => {
     mount()
     for (const targetAgentSlug of ['billing01x', null]) {

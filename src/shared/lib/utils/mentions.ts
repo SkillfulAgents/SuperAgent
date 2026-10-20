@@ -49,14 +49,18 @@ export interface ParsedMentions {
 
 const NO_MENTIONS = { mentions: [], silent: false }
 
-/** Where the block's marker line starts, or -1. */
+/** Where the last marker line starts, after a blank line, or -1. */
 function blockStart(text: string): number {
-  if (text.startsWith(`${MARKER}\n`)) return 0
-  const at = text.indexOf(`\n${MARKER}\n`)
-  return at === -1 ? -1 : at + 1
+  const at = text.lastIndexOf(`\n\n${MARKER}\n`)
+  if (at !== -1) return at + 2
+  return text.startsWith(`${MARKER}\n`) ? 0 : -1
 }
 
-/** Lift the mentions block out of message text, wherever the app's other blocks put it. */
+/**
+ * Lift the mentions block off the end of message text. The composer writes it
+ * last, so a block with anything after it (one quoted in a code block, say)
+ * is part of the message.
+ */
 export function parseMentions(text: string): ParsedMentions {
   const start = blockStart(text)
   if (start === -1) return { cleanText: text, ...NO_MENTIONS }
@@ -74,9 +78,6 @@ export function parseMentions(text: string): ParsedMentions {
     else break
     end++
   }
-  if (mentions.length === 0) return { cleanText: text, ...NO_MENTIONS }
-
-  const before = text.slice(0, start).trimEnd()
-  const after = lines.slice(end).join('\n').trim()
-  return { cleanText: [before, after].filter(Boolean).join('\n\n'), mentions, silent }
+  if (mentions.length === 0 || lines.slice(end).join('\n').trim()) return { cleanText: text, ...NO_MENTIONS }
+  return { cleanText: text.slice(0, start).trimEnd(), mentions, silent }
 }

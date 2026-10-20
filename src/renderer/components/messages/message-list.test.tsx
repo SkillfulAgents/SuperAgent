@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
+import { appendMentions } from '@shared/lib/utils/mentions'
+import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { MessageList } from './message-list'
 // Resolves to the mocked module's class below — the one the component's
 // instanceof check sees.
@@ -1625,6 +1627,35 @@ describe('MessageList', () => {
     expect(mockCancelQueued).toHaveBeenCalledWith({ sessionId: 's-1', agentSlug: 'agent-1', uuid: 'srv-1' })
     await waitFor(() => expect(onAppeared).toHaveBeenCalledWith('l1'))
     expect(screen.getByTestId('draft-probe')).toHaveTextContent('queued msg')
+  })
+
+  it('returns a cancelled message that tags someone with its chip, not its mentions list', async () => {
+    mockCancelResult = { cancelled: true }
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+    const sent = appendMentions('ask @Mike Smith', [{ kind: 'user', id: 'mike-id', name: 'Mike Smith' }])
+
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
+    renderWithProviders(
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: sent, sentAt: Date.now(), queued: true }]}
+          onPendingMessageAppeared={vi.fn()}
+        />
+        <DraftProbe />
+      </>
+    )
+
+    fireEvent.click(screen.getByTestId('cancel-queued-message'))
+
+    const chip = formatChipMarker({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
+    await waitFor(() => expect(screen.getByTestId('draft-probe').textContent).toBe(`ask ${chip}`))
   })
 
   it('returns both texts when two queued ghosts are cancelled before either answer lands', async () => {

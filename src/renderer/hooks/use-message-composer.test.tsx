@@ -266,6 +266,28 @@ describe('useMessageComposer', () => {
       expect(opts.onSubmit).not.toHaveBeenCalled()
       expect(result.current.message).toBe(`ask ${billing}`)
     })
+
+    it('sends once when Enter is pressed again while the access check runs', async () => {
+      let finish = () => {}
+      mockConfirmMentions.mockImplementationOnce((_content: string, context: ChipContext) =>
+        new Promise<ChipContext>((resolve) => { finish = () => resolve(context) }))
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer({ ...opts, mentions: mentions() }), { wrapper: createWrapper() })
+      act(() => result.current.setMessage(`ask ${billing}`))
+
+      let first: Promise<void> = Promise.resolve()
+      act(() => { first = result.current.handleSubmit({ preventDefault: vi.fn() } as any) })
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+      await act(async () => {
+        finish()
+        await first
+      })
+
+      expect(mockConfirmMentions).toHaveBeenCalledTimes(1)
+      expect(opts.onSubmit).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('does not rewrite a pasted secret marker the agent does not have', async () => {

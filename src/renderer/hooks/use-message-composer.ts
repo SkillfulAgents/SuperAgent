@@ -128,6 +128,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   }, [])
 
   const attachmentsRef = useRef<Attachment[]>([])
+  const confirmingRef = useRef(false)
   const queueRef = useRef<ReturnType<typeof useUploadQueue> | null>(null)
 
   const {
@@ -245,9 +246,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     let content = effectiveMessage.trim()
 
-    // Anyone it tags who could not see it is offered access first.
+    // Anyone it tags who could not see it is offered access first. The draft
+    // stays in the composer meanwhile, so a second Enter is not a second send.
+    if (confirmingRef.current) return false
     const silent = !!mentions?.silent && !!openingTeammate(content)
-    const sendContext = mentions ? await mentions.confirm(content, chipContext, { silent }) : chipContext
+    let sendContext: ChipContext | null = chipContext
+    if (mentions) {
+      confirmingRef.current = true
+      try {
+        sendContext = await mentions.confirm(content, chipContext, { silent })
+      } finally {
+        confirmingRef.current = false
+      }
+    }
     if (!sendContext) return false
 
     if (attachmentsRef.current.some((a) => a.type !== 'mount' && a.error)) {
