@@ -1602,11 +1602,11 @@ export class AgentIntegrationManager {
     // request and both proceed. claimRequest is a synchronous check-and-mark,
     // so exactly one presser wins.
     const actor = agentRegistry.get(integration.agentSlug)
-    let open = actor.inputs.claim(toolUseId)
-    if (!open && await this.recoverOpenQuestion(integration, chatId, toolUseId)) open = actor.inputs.claim(toolUseId)
-    if (!open || open.scope.agentSlug !== integration.agentSlug) {
+    let claim = await actor.inputs.claim(toolUseId)
+    if (!claim && await this.recoverOpenQuestion(integration, chatId, toolUseId)) claim = await actor.inputs.claim(toolUseId)
+    if (!claim || claim.request.scope.agentSlug !== integration.agentSlug) {
       // Wrong agent: release immediately, we never had the right to hold it.
-      if (open) actor.inputs.releaseClaim(toolUseId)
+      if (claim) await actor.inputs.releaseClaim(toolUseId, claim.token)
       await this.replyAlreadyHandled(integrationId, chatId)
       return
     }
@@ -1650,9 +1650,8 @@ export class AgentIntegrationManager {
       // Unconditional: on the success path the claim is already gone (resolve
       // drops it with the entry), so this only matters for the paths that bail
       // — a container that never came up, a failed resolve, a settle that beat
-      // us. A leaked claim would make the request undecidable forever, which is
-      // worse than the race it guards.
-      actor.inputs.releaseClaim(toolUseId)
+      // us. A leaked claim would hold the request until its lease ran out.
+      await actor.inputs.releaseClaim(toolUseId, claim.token)
     }
   }
 

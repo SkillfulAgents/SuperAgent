@@ -6023,8 +6023,8 @@ describe('browser credential broker routes', () => {
       },
     })
     const reclaimed = userInputRequestManager.claimRequest('tool-credential')
-    expect(reclaimed?.id).toBe('tool-credential')
-    userInputRequestManager.releaseClaim('tool-credential')
+    expect(reclaimed?.request.id).toBe('tool-credential')
+    userInputRequestManager.releaseClaim('tool-credential', reclaimed!.token)
   })
 
   it('does not disclose credentials when the page origin changes', async () => {

@@ -65,8 +65,8 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
   // goes through the sessions, so it reaches the session's wire.
   const hostRuns: HostRunActor = {
     inputs: {
-      claim: (id) => inputRequests.claimRequest(id),
-      releaseClaim: (id) => inputRequests.releaseClaim(id),
+      claim: async (id, options) => inputRequests.claimRequest(id, options?.leaseMs),
+      releaseClaim: async (id, token) => inputRequests.releaseClaim(id, token),
       resolve: (id, outcome) => inputRequests.resolve(id, outcome),
       complete: (sessionId, id, outcome) => sessions?.completeRequest(sessionId, id, outcome),
       computerUse: {

@@ -648,10 +648,15 @@ export interface InputOps {
   openForAgent(): PendingUserInputRequest[]
   /** `AgentInputRequests.getOpenRequest` */
   get(id: string): PendingUserInputRequest | null
-  /** `AgentInputRequests.claimRequest` */
-  claim(id: string): PendingUserInputRequest | null
-  /** `AgentInputRequests.releaseClaim` */
-  releaseClaim(id: string): void
+  /**
+   * `AgentInputRequests.claimRequest`: reserve an open request for a
+   * decision. The first caller gets the request and a token, every other one
+   * null, until the claim is released, the request settles or the lease
+   * (`leaseMs`, default `CLAIM_LEASE_MS`) runs out.
+   */
+  claim(id: string, options?: { leaseMs?: number }): Promise<{ token: string; request: PendingUserInputRequest } | null>
+  /** `AgentInputRequests.releaseClaim`: give back the claim this token holds. */
+  releaseClaim(id: string, token: string): Promise<void>
   /** `AgentInputRequests.resolve` */
   resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null
   /** `AgentInputRequests.getRecentResolution` */

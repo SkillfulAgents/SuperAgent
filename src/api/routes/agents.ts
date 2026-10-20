@@ -4005,15 +4005,16 @@ agents.post(
   IsAdmin(),
   zValidator('json', browserCredentialAutofillBodySchema),
   async (c) => {
-  let claimedToolUseId: string | null = null
+  let claimed: { id: string; token: string } | null = null
   try {
     const body = c.req.valid('json')
     const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
     if (gated) return gated
-    if (!agentRegistry.get(getAgentId(c)).inputs.claim(body.toolUseId)) {
+    const claim = await agentRegistry.get(getAgentId(c)).inputs.claim(body.toolUseId)
+    if (!claim) {
       return c.json({ error: 'This browser request is already being handled' }, 409)
     }
-    claimedToolUseId = body.toolUseId
+    claimed = { id: body.toolUseId, token: claim.token }
 
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
@@ -4094,14 +4095,14 @@ agents.post(
   } catch (error) {
     return credentialBrokerErrorResponse(c, error)
   } finally {
-    if (claimedToolUseId) agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimedToolUseId)
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
   }
   },
 )
 
 // POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
 agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
-  let claimedToolUseId: string | null = null
+  let claimed: { id: string; token: string } | null = null
   try {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
@@ -4113,10 +4114,11 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
     const gated = gateRequestDecision(c, toolUseId, 'browser_input')
     if (gated) return gated
-    if (!agentRegistry.get(agentSlug).inputs.claim(toolUseId)) {
+    const claim = await agentRegistry.get(agentSlug).inputs.claim(toolUseId)
+    if (!claim) {
       return c.json({ error: 'This browser request is already being handled' }, 409)
     }
-    claimedToolUseId = toolUseId
+    claimed = { id: toolUseId, token: claim.token }
 
     const actor = agentRegistry.get(agentSlug)
 
@@ -4183,7 +4185,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     console.error('Failed to complete browser input:', error)
     return c.json({ error: 'Failed to complete browser input' }, 500)
   } finally {
-    if (claimedToolUseId) agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimedToolUseId)
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
   }
 })
 
@@ -4222,7 +4224,8 @@ async function declineHostRun(
   what: 'script run' | 'computer use',
 ): Promise<Response> {
   const actor = agentRegistry.get(getAgentId(c))
-  if (!actor.inputs.claim(toolUseId)) {
+  const claim = await actor.inputs.claim(toolUseId)
+  if (!claim) {
     return c.json({ error: `This ${what} request is already being handled` }, 409)
   }
   try {
@@ -4234,7 +4237,7 @@ async function declineHostRun(
     settle()
     return c.json({ success: true, declined: true })
   } finally {
-    actor.inputs.releaseClaim(toolUseId)
+    await actor.inputs.releaseClaim(toolUseId, claim.token)
   }
 }
 

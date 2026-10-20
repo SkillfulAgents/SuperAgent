@@ -490,13 +490,13 @@ describe('createAgentRegistry', () => {
       expect(fake.inputManager.report).toHaveBeenCalledWith({ type: 'created', request: stored })
     })
 
-    it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', () => {
+    it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', async () => {
       const registry = createAgentRegistry(fake.deps)
       const stored = register(registry, 'b', 'rb')
       const a = registry.get('a').inputs
 
       expect(a.get('rb')).toBeNull()
-      expect(a.claim('rb')).toBeNull()
+      expect(await a.claim('rb')).toBeNull()
       expect(a.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(false)
       expect(a.resolve('rb', outcome)).toBeNull()
       expect(a.snapshot()).toEqual([])
@@ -505,13 +505,13 @@ describe('createAgentRegistry', () => {
       expect(stored!.payload).toEqual({})
     })
 
-    it('the owning agent can still see, claim, settle and read back its own request', () => {
+    it('the owning agent can still see, claim, settle and read back its own request', async () => {
       const registry = createAgentRegistry(fake.deps)
       register(registry, 'b', 'rb')
       const b = registry.get('b').inputs
 
       expect(b.get('rb')?.id).toBe('rb')
-      expect(b.claim('rb')?.id).toBe('rb')
+      expect((await b.claim('rb'))?.request.id).toBe('rb')
       expect(b.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(true)
       expect(b.resolve('rb', outcome)?.id).toBe('rb')
       expect(b.recentResolution('rb')?.id).toBe('rb')
@@ -519,16 +519,17 @@ describe('createAgentRegistry', () => {
       expect(registry.get('a').inputs.recentResolution('rb')).toBeUndefined()
     })
 
-    it('releaseClaim only drops a claim this agent could have taken', () => {
+    it('releaseClaim only drops a claim this agent could have taken', async () => {
       const registry = createAgentRegistry(fake.deps)
       register(registry, 'b', 'rb')
-      expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
+      const claim = await registry.get('b').inputs.claim('rb')
+      expect(claim?.request.id).toBe('rb')
 
-      registry.get('a').inputs.releaseClaim('rb')
-      expect(registry.get('b').inputs.claim('rb')).toBeNull()
+      await registry.get('a').inputs.releaseClaim('rb', claim!.token)
+      expect(await registry.get('b').inputs.claim('rb')).toBeNull()
 
-      registry.get('b').inputs.releaseClaim('rb')
-      expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
+      await registry.get('b').inputs.releaseClaim('rb', claim!.token)
+      expect((await registry.get('b').inputs.claim('rb'))?.request.id).toBe('rb')
     })
   })
 

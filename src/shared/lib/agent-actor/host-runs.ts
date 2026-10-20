@@ -198,12 +198,12 @@ async function withClaim(
   toolUseId: string,
   run: (request: PendingUserInputRequest) => Promise<HostRunOutcome>,
 ): Promise<HostRunOutcome> {
-  const request = actor.inputs.claim(toolUseId)
-  if (!request) return { status: 'claimed' }
+  const claim = await actor.inputs.claim(toolUseId)
+  if (!claim) return { status: 'claimed' }
   try {
-    return await run(request)
+    return await run(claim.request)
   } finally {
-    actor.inputs.releaseClaim(toolUseId)
+    await actor.inputs.releaseClaim(toolUseId, claim.token)
   }
 }
 
