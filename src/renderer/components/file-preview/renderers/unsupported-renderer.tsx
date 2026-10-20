@@ -8,9 +8,11 @@ interface UnsupportedRendererProps {
   filePath: string
   agentSlug: string
   downloadUrl?: string
+  /** Why the drawer can't show this file, when it is not the file type. */
+  reason?: string
 }
 
-export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl }: UnsupportedRendererProps) {
+export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl, reason = 'Preview is not available for this file type' }: UnsupportedRendererProps) {
   const file = agentSlug ? describeWorkspaceFile(filePath, agentSlug) : { name: getPathName(filePath), downloadUrl }
 
   return (
@@ -21,7 +23,7 @@ export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl }: Unsupp
           <span className="text-sm font-medium">{file.name}</span>
         </div>
         <p className="text-xs text-muted-foreground">
-          Preview is not available for this file type
+          {reason}
         </p>
       </div>
       {file.downloadUrl && (

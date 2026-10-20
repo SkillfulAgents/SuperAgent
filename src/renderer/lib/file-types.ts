@@ -29,6 +29,7 @@ export type PreviewKind =
   | 'video'
   | 'audio'
   | 'pdf'
+  | 'archive'
 
 interface FileTypeGroup {
   category: FileCategory
@@ -105,10 +106,11 @@ const FILE_TYPES: readonly FileTypeGroup[] = [
   { category: 'audio', preview: 'audio', exts: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'] },
   { category: 'audio', exts: ['aif', 'aiff', 'mid', 'midi', 'wma'] },
 
+  { category: 'archive', preview: 'archive', exts: ['zip'] },
   {
     category: 'archive',
     exts: [
-      'zip', 'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm',
+      'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm',
       'apks', 'xapk', 'aab', 'jar',
     ],
   },

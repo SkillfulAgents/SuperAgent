@@ -2425,6 +2425,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File "output/clip.mp4" (4096 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":4096}',
       'Here is the demo clip.'
     )],
+    ['deliver zip', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/bundle.zip', description: 'Report bundle' },
+      'File "output/bundle.zip" (1024 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":1024}',
+      'Here is the report bundle.'
+    )],
     ['deliver audio', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/voice-note.mp3', description: 'Voice note' },
@@ -2435,8 +2441,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // pointing at the preview. The other deliver scenarios are all previewable.
     ['deliver archive', new ToolUseScenario(
       'mcp__user-input__deliver_file',
-      { filePath: '/workspace/output/bundle.zip', description: 'Project archive' },
-      'File "output/bundle.zip" (8192 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":8192}',
+      { filePath: '/workspace/output/bundle.tar', description: 'Project archive' },
+      'File "output/bundle.tar" (8192 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":8192}',
       'Here is the project archive.'
     )],
     // API error scenarios

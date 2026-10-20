@@ -11,6 +11,13 @@ import { UnsupportedRenderer } from './unsupported-renderer'
 import { previewKind } from '@renderer/lib/file-types'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
+const ArchiveRenderer = lazy(() => import('./archive-renderer').then(m => ({ default: m.ArchiveRenderer })))
+
+const LAZY_FALLBACK = (
+  <div className="flex items-center justify-center py-12">
+    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  </div>
+)
 
 interface FileRendererProps {
   filePath: string
@@ -53,11 +60,7 @@ export function FileRenderer({
 
     case 'pdf':
       return (
-        <Suspense fallback={
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        }>
+        <Suspense fallback={LAZY_FALLBACK}>
           <PdfRenderer
             key={`${filePath}:${fileUrl}`}
             url={fileUrl}
@@ -66,6 +69,13 @@ export function FileRenderer({
             pageNumber={pdfPage}
             onPageChange={onPdfPageChange}
           />
+        </Suspense>
+      )
+
+    case 'archive':
+      return (
+        <Suspense fallback={LAZY_FALLBACK}>
+          <ArchiveRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
         </Suspense>
       )
 

@@ -23,7 +23,7 @@ interface FileDeliveryRowProps {
  * The whole row opens the preview drawer. What sits at its right end says what
  * that will get you: a chevron when the drawer can render the file, pointing at
  * the panel it opens, and a Download button when it cannot, since for a .xlsx or
- * a .zip saving it is the only thing the user can do with it. Files that preview
+ * a .pptx saving it is the only thing the user can do with it. Files that preview
  * can still be downloaded from inside the drawer.
  */
 export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, className }: FileDeliveryRowProps) {
