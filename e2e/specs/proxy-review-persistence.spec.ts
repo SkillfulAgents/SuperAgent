@@ -89,20 +89,6 @@ test.describe('Proxy review policy persistence', () => {
     }, { timeout: 10000 }).toBe(true)
   }
 
-  test('always-allow for a scope persists an allow policy for that scope', async ({ page, request }, testInfo) => {
-    const { accountId, review } = await triggerReview(page, request, testInfo)
-
-    await sessionPage.alwaysAllowScope('chat:write', review.id)
-
-    await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
-    await expectPendingProxyReviewResolved(request, agent, review)
-    // The contract: the choice actually wrote the scope policy, not just resolved the card.
-    await expectPersistedPolicy(request, accountId, 'chat:write', 'allow')
-
-    await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
-  })
-
   test('always-deny for a scope persists a block policy for that scope', async ({ page, request }, testInfo) => {
     const { accountId, review } = await triggerReview(page, request, testInfo)
 

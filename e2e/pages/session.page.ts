@@ -507,9 +507,7 @@ export class SessionPage {
   async allowProxyReview(reviewId?: string) {
     const container = this.getProxyReviewRequests(reviewId).first()
     await this.paginateToCard(container)
-    // The Allow button is now a popover — click it to open, then click "Allow Once"
-    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
-    await this.page.locator('[data-testid="proxy-review-allow-once-menu-btn"]').click()
+    await container.locator('[data-testid="proxy-review-allow-once-btn"]').click()
   }
 
   async denyProxyReview(reviewId?: string) {
@@ -522,15 +520,6 @@ export class SessionPage {
     await expect(
       this.page.locator(`[data-testid="proxy-review-completed"][data-status="${status}"]`).first()
     ).toBeVisible({ timeout })
-  }
-
-  async alwaysAllowScope(scope: string, reviewId?: string) {
-    const container = this.getProxyReviewRequests(reviewId).first()
-    await this.paginateToCard(container)
-    // Open the Allow popover, expand the per-scope disclosure, then click "Always allow <scope>"
-    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
-    await this.page.locator('[data-testid="proxy-review-specific-scope-toggle"]').click()
-    await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
   }
 
   async alwaysAllowLabelGroup(label: 'read' | 'write' | 'destructive', reviewId?: string) {

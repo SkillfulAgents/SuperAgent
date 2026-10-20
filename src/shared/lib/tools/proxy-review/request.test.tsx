@@ -128,13 +128,12 @@ describe('ProxyReviewRequestItem request body', () => {
     expect(screen.queryByTestId('proxy-review-body')).toBeNull()
   })
 
-  it('offers label and scope allows on an API card only when the headline names the call', async () => {
+  it('offers the label allow on an API card only when the headline names the call', async () => {
     const user = userEvent.setup()
     const { unmount } = renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read', 'write'] })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
-    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(await screen.findByTestId('proxy-review-always-allow-all')).toBeInTheDocument()
     expect(screen.queryByTestId('proxy-review-allow-label-read')).toBeNull()
-    expect(screen.queryByTestId('proxy-review-specific-scope-toggle')).toBeNull()
     await user.click(screen.getByTestId('proxy-review-deny-btn-chevron'))
     expect(await screen.findByTestId('proxy-review-deny-reason-input')).toBeInTheDocument()
     expect(screen.getByTestId('proxy-review-always-deny-read')).toBeInTheDocument()
@@ -142,14 +141,19 @@ describe('ProxyReviewRequestItem request body', () => {
     renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
     expect(await screen.findByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
-    expect(screen.getByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
   })
 
-  it('keeps per-tool policies on an MCP card, which never carries an endpoint description', async () => {
+  it('explains a menu option in an info hint that does not choose the option', async () => {
+    mockApiFetch.mockReset()
     const user = userEvent.setup()
-    renderCard({ reviewType: 'mcp', matchedScopes: ['create_issue'] })
+    renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
-    expect(await screen.findByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
+    const [labelHint] = await screen.findAllByTestId('proxy-review-info-hint')
+    expect(labelHint).toHaveAttribute('aria-label', 'Auto-allow every read-level scope for this account')
+    await user.click(labelHint)
+
+    expect(mockApiFetch).not.toHaveBeenCalled()
+    expect(screen.getByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
   })
 
   it('opens a folded body on click, and has nothing to open without one', async () => {
@@ -186,18 +190,15 @@ describe('ProxyReviewRequestItem connection link', () => {
     })
   })
 
-  it('opens the connection page from the header gear and the Allow menu', async () => {
+  it('opens the connection page from the Allow menu', async () => {
     mockAccounts = [{ id: 'acct-or-mcp' }]
     renderCard({ reviewType: 'api' })
     const user = userEvent.setup()
-    await user.click(screen.getByTestId('proxy-review-permissions-btn'))
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
     await user.click(await screen.findByTestId('proxy-review-edit-permissions'))
 
-    expect(mockNavigate).toHaveBeenCalledTimes(2)
-    for (const [arg] of mockNavigate.mock.calls) {
-      expect(arg).toMatchObject({ search: { detail: 'account-acct-or-mcp' } })
-    }
+    expect(mockNavigate).toHaveBeenCalledOnce()
+    expect(mockNavigate.mock.calls[0][0]).toMatchObject({ search: { detail: 'account-acct-or-mcp' } })
   })
 
   it('links the toolkit name on the answered card', async () => {
@@ -205,8 +206,7 @@ describe('ProxyReviewRequestItem connection link', () => {
     mockAccounts = [{ id: 'acct-or-mcp' }]
     renderCard({ reviewType: 'api' })
     const user = userEvent.setup()
-    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
-    await user.click(await screen.findByTestId('proxy-review-allow-once-menu-btn'))
+    await user.click(screen.getByTestId('proxy-review-allow-once-btn'))
     await screen.findByTestId('proxy-review-completed')
     await user.click(screen.getByTestId('proxy-review-connection-link'))
 
@@ -228,7 +228,6 @@ describe('ProxyReviewRequestItem connection link', () => {
     renderCard({ reviewType: 'api' })
 
     expect(screen.queryByTestId('proxy-review-connection-link')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('proxy-review-permissions-btn')).not.toBeInTheDocument()
     expect(screen.getByText('Railway')).toBeInTheDocument()
   })
 })
