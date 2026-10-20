@@ -469,7 +469,8 @@ export function OwnsMcpByParam(param: string): MiddlewareHandler {
 /**
  * HasNotificationAccess — user has access to the notification's agent.
  * Admins can access any notification. Regular users need an agentAcl entry
- * for the notification's agentSlug. Expects `:id` route param.
+ * for the notification's agentSlug. A targeted row (a mention) is its
+ * recipient's alone, admins included. Expects `:id` route param.
  */
 export function HasNotificationAccess(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
@@ -478,16 +479,18 @@ export function HasNotificationAccess(): MiddlewareHandler {
     const refused = refuseMeetingParticipant(c)
     if (refused) return refused
     const user = getUser(c)
-    if (isAdmin(user)) return next()
 
     const notificationId = c.req.param('id')!
     const row = await db
-      .select({ agentSlug: notifications.agentSlug })
+      .select({ agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId })
       .from(notifications)
       .where(eq(notifications.id, notificationId))
       .limit(1)
 
-    if (!row[0]) return c.json({ error: 'Not found' }, 404)
+    if (!row[0] || (row[0].recipientUserId && row[0].recipientUserId !== user.id)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (isAdmin(user)) return next()
 
     const role = await getUserAgentRole(user.id, row[0].agentSlug)
     if (!role) return c.json({ error: 'Forbidden' }, 403)

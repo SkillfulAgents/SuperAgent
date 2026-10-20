@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import MarkdownIt from 'markdown-it'
 import type Token from 'markdown-it/lib/token.mjs'
 import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
@@ -18,21 +19,31 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
+import { DOMSerializer, Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
   splitListItem,
 } from 'prosemirror-schema-list'
 import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Command, type Transaction } from 'prosemirror-state'
-import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
+import { Decoration, DecorationSet, EditorView, type NodeViewConstructor } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
 import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { findPotentialSecrets, type PotentialSecret } from '@renderer/lib/secret-detection'
 import { CHIP_MARKER, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
-import { chipAt, getChipKind, isChipBacked, registeredChip, type ChipContext } from './composer-chips'
+import {
+  COMPOSER_CHIP_TRIGGERS,
+  chipAt,
+  escapeRegExp,
+  getChipKind,
+  isChipBacked,
+  registeredChip,
+  type ChipContext,
+  type ChipPickerHandle,
+  type ComposerChipTrigger,
+} from './composer-chips'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -47,6 +58,8 @@ export interface MarkdownComposerEditorProps {
   className?: string
   potentialSecrets?: PotentialSecret[]
   chipContext?: ChipContext
+  /** False where a chip picker has no room to open. */
+  pickers?: boolean
   onEditorElement?: (element: HTMLDivElement | null) => void
 }
 
@@ -736,6 +749,56 @@ function locateChip(doc: ProseMirrorNode, { chip, pos }: ChipTarget): number | n
   return found
 }
 
+/** The trigger the caret sits after, what was typed since, and the range they cover. */
+interface ChipPick { trigger: ComposerChipTrigger; from: number; to: number; query: string }
+
+// A trigger counts at a line start or after a space or `(`. A chip reads as one
+// placeholder character, so a query never runs into one.
+const TRIGGER_PATTERNS = COMPOSER_CHIP_TRIGGERS.map((trigger) => {
+  const char = escapeRegExp(trigger.char)
+  return { trigger, pattern: new RegExp(`(?:^|[\\s(])${char}([^\\s${char}\\ufffc]{0,30})$`) }
+})
+
+function chipPickAt(state: EditorState): ChipPick | null {
+  const { selection } = state
+  if (!selection.empty) return null
+  const { $from } = selection
+  if ($from.parent.type.spec.code || $from.marks().some((mark) => mark.type.spec.code)) return null
+  const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 40), $from.parentOffset, undefined, '\ufffc')
+  for (const { trigger, pattern } of TRIGGER_PATTERNS) {
+    const match = pattern.exec(before)
+    if (match) return { trigger, from: $from.pos - match[1].length - trigger.char.length, to: $from.pos, query: match[1] }
+  }
+  return null
+}
+
+const samePick = (a: ChipPick | null, b: ChipPick | null) =>
+  a === b || (!!a && !!b && a.trigger === b.trigger && a.from === b.from && a.query === b.query)
+
+/** A zero-width box where the trigger sits, for the picker to hang from. */
+function caretAnchor(view: EditorView, pos: number) {
+  return {
+    getBoundingClientRect: () => {
+      try {
+        const coords = view.coordsAtPos(pos)
+        return new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top)
+      } catch {
+        // No layout (JSDOM).
+        return new DOMRect()
+      }
+    },
+  }
+}
+
+const iconSlotKeys = new WeakMap<HTMLElement, string>()
+let nextIconSlotKey = 0
+/** A stable React key per icon slot element. */
+function iconSlotKey(slot: HTMLElement): string {
+  let key = iconSlotKeys.get(slot)
+  if (!key) iconSlotKeys.set(slot, (key = `chip-icon-${nextIconSlotKey++}`))
+  return key
+}
+
 const composerDecorationsKey = new PluginKey<DecorationSet>('composer-decorations')
 const composerDecorationsMeta = 'composer-decorations:update'
 const editorViews = new WeakMap<HTMLElement, EditorView>()
@@ -824,6 +887,7 @@ export function MarkdownComposerEditor({
   className,
   potentialSecrets = [],
   chipContext = EMPTY_CHIP_CONTEXT,
+  pickers = true,
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
@@ -846,6 +910,12 @@ export function MarkdownComposerEditor({
   const [linkCard, setLinkCard] = useState<{ href: string; anchor: { current: Element } } | null>(null)
   const [chipMenu, setChipMenu] = useState<(ChipTarget & { anchor: { x: number; y: number } }) | null>(null)
   const hadChipMenuRef = useRef(false)
+  const [pick, setPick] = useState<ChipPick | null>(null)
+  // Escape closes the picker until the caret leaves this trigger.
+  const dismissedPickRef = useRef<number | null>(null)
+  const pickerRef = useRef<ChipPickerHandle>(null)
+  // Where each chip's kind draws its React icon (an avatar), keyed by the chip's slot element.
+  const [iconSlots, setIconSlots] = useState<ReadonlyMap<HTMLElement, Chip>>(() => new Map())
 
   latestRef.current = {
     onChange,
@@ -855,6 +925,12 @@ export function MarkdownComposerEditor({
     disabled,
     potentialSecrets,
     chipContext,
+  }
+
+  const updatePick = (state: EditorState) => {
+    const next = chipPickAt(state)
+    if (next?.from !== dismissedPickRef.current) dismissedPickRef.current = null
+    setPick((current) => (samePick(current, next) ? current : next))
   }
 
   useLayoutEffect(() => {
@@ -875,8 +951,29 @@ export function MarkdownComposerEditor({
       ],
     })
 
+    // A chip whose kind has an Icon gets a slot the component fills through a portal.
+    const chipView: NodeViewConstructor = (node) => {
+      const { dom } = DOMSerializer.renderSpec(document, chipNodeSpec.toDOM!(node))
+      const slot = (dom as HTMLElement).querySelector<HTMLElement>('[data-chip-icon]')
+      if (slot && getChipKind(chipOf(node))?.Icon) setIconSlots((slots) => new Map(slots).set(slot, chipOf(node)))
+      return {
+        dom,
+        // React owns the slot's contents.
+        ignoreMutation: () => true,
+        destroy: () => {
+          if (slot) setIconSlots((slots) => {
+            if (!slots.has(slot)) return slots
+            const next = new Map(slots)
+            next.delete(slot)
+            return next
+          })
+        },
+      }
+    }
+
     const view = new EditorView(hostRef.current, {
       state,
+      nodeViews: { chip: chipView },
       editable: () => !latestRef.current.disabled,
       attributes: {
         role: 'textbox',
@@ -894,6 +991,10 @@ export function MarkdownComposerEditor({
       },
       handleDOMEvents: {
         mousedown: () => typeof document.elementFromPoint !== 'function',
+        blur: () => {
+          setPick(null)
+          return false
+        },
         contextmenu: (editorView, event) => {
           const dom = editorView.editable && event.target instanceof Element ? event.target.closest('[data-chip]') : null
           const target = dom && chipForDOM(editorView, dom)
@@ -904,6 +1005,12 @@ export function MarkdownComposerEditor({
         },
         keydown: (editorView, event) => {
           if (event.isComposing) return false
+
+          // An open picker takes its keys (arrows, Enter, Tab, Escape) first.
+          if (pickerRef.current?.onKeyDown(event)) {
+            event.preventDefault()
+            return true
+          }
 
           // Cmd/Ctrl+B belongs to the rich-text editor. Keep it from reaching
           // window-level shortcuts (notably the sidebar toggle) without
@@ -946,6 +1053,7 @@ export function MarkdownComposerEditor({
         const leavesLink = tr.docChanged || (tr.selectionSet && !isInLink(nextState, nextState.selection.head))
         if (leavesLink) setLinkCard(null)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
+        if (tr.docChanged || tr.selectionSet) updatePick(nextState)
         if (!tr.docChanged) return
         const markdown = serializeComposerMarkdown(nextState.doc)
         lastMarkdownRef.current = markdown
@@ -1051,9 +1159,41 @@ export function MarkdownComposerEditor({
   }
   const ChipMenu = chipMenu && getChipKind(chipMenu.chip)?.Menu
 
+  const insertPicked = (chip: Chip) => {
+    const view = viewRef.current
+    const target = view && chipPickAt(view.state)
+    if (!view || !target) return
+    const tr = view.state.tr.replaceWith(target.from, target.to, [
+      markdownSchema.nodes.chip.create(chip),
+      markdownSchema.text(' '),
+    ])
+    view.dispatch(tr.setSelection(TextSelection.create(tr.doc, target.from + 2)).scrollIntoView())
+  }
+  const dismissPick = () => {
+    dismissedPickRef.current = pick?.from ?? null
+    setPick(null)
+  }
+  const openPick = pickers && pick && viewRef.current && dismissedPickRef.current !== pick.from && pick.trigger.available(chipContext)
+    ? pick
+    : null
+
   return (
     <>
       <div ref={hostRef} className="contents" />
+      {[...iconSlots].map(([slot, chip]) => {
+        const Icon = getChipKind(chip)?.Icon
+        return Icon && createPortal(<Icon chip={chip} context={chipContext} />, slot, iconSlotKey(slot))
+      })}
+      {openPick && (
+        <openPick.trigger.Picker
+          ref={pickerRef}
+          query={openPick.query}
+          context={chipContext}
+          anchor={caretAnchor(viewRef.current!, openPick.from)}
+          onPick={insertPicked}
+          onDismiss={dismissPick}
+        />
+      )}
       {chipMenu && ChipMenu && (
         <ChipMenu
           chip={chipMenu.chip}

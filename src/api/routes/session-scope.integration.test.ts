@@ -164,6 +164,8 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
 }))
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(async () => new Set()),
+  getSessionIdsWithUnreadMentions: vi.fn(async () => new Set()),
+  getUnreadMentionsByAgents: vi.fn(async () => new Map()),
   getUnreadNotificationsByAgents: vi.fn(async () => new Map()),
 }))
 vi.mock('@shared/lib/services/agent-template-service', () => ({

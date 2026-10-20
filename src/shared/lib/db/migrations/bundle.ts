@@ -625,5 +625,15 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1792098812435,
     "hash": "e5fea3fe1d8a068040f3db42f3826bc027eef61e032a262fbdfe88b8f05c3c36"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `notifications` ADD `recipient_user_id` text;",
+      "\nALTER TABLE `notifications` ADD `message_uuid` text;",
+      "\nCREATE UNIQUE INDEX `notifications_message_recipient_unique` ON `notifications` (`message_uuid`,`recipient_user_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792435823425,
+    "hash": "2839f95efe6f7fdd06bbf0e4dd0f5c1570fc0466f32ae73c26d59851f12a3ee2"
   }
 ]

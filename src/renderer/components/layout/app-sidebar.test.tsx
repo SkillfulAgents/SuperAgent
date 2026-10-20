@@ -128,7 +128,7 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
   useWebhookTriggers: () => ({ data: [] }),
 }))
 
-const mockUnreadCount = vi.fn(() => ({ data: { count: 0 } }))
+const mockUnreadCount = vi.fn((): { data: { count: number; mentions?: number } } => ({ data: { count: 0 } }))
 vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => mockUnreadCount(),
 }))
@@ -234,7 +234,8 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
   ),
 }))
 
-vi.mock('@renderer/components/agents/status-indicators', () => ({
+vi.mock('@renderer/components/agents/status-indicators', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/components/agents/status-indicators')>()),
   WorkingDots: () => <span data-testid="working-dots" />,
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
 }))
@@ -825,6 +826,35 @@ describe('AppSidebar — agent rows', () => {
     expect(dots.length).toBeGreaterThanOrEqual(1)
   })
 
+  it('draws a purple @ instead of the dot where the viewer was mentioned', () => {
+    mockRouteParams = { slug: 'test-agent' }
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, hasUnreadMention: true })],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ hasUnreadNotifications: true, hasUnreadMention: true })] : [],
+      isLoading: false,
+    }))
+    renderWithProviders(<AppSidebar />)
+
+    // Expanded, so the session row carries it rather than the agent row.
+    const sessionItem = screen.getByTestId('session-item-session-1')
+    expect(within(sessionItem).getByLabelText('mentioned you')).toBeInTheDocument()
+    expect(screen.queryByLabelText('unread notifications')).toBeNull()
+  })
+
+  it('draws the @ on a collapsed agent row too', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, hasUnreadMention: true })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByLabelText('mentioned you')).toBeInTheDocument()
+  })
+
   it('agent with no sessions or dashboards does not render an expand chevron', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ sessionCount: 0, dashboards: [] })],
@@ -948,6 +978,14 @@ describe('AppSidebar — notifications', () => {
     renderWithProviders(<AppSidebar />)
     const button = screen.getByTestId('notifications-button')
     expect(button.querySelector('[aria-label="3 unread"]')).not.toBeNull()
+  })
+
+  it('renders an @ on the bell while a mention is unread', () => {
+    mockUnreadCount.mockReturnValue({ data: { count: 3, mentions: 1 } })
+    renderWithProviders(<AppSidebar />)
+    const button = screen.getByTestId('notifications-button')
+    expect(button.querySelector('[aria-label="mentioned you"]')).not.toBeNull()
+    expect(button.querySelector('[aria-label="3 unread"]')).toBeNull()
   })
 
   it('Notifications links to the notifications route', () => {

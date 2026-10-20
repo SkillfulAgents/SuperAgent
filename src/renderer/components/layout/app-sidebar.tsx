@@ -6,6 +6,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -280,7 +281,7 @@ function SessionSubItem({
                 ) : isWorking ? (
                   <WorkingDots />
                 ) : hasUnread ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+                  <UnreadDot mention={session.hasUnreadMention} />
                 ) : null}
               </span>
             )}
@@ -461,8 +462,8 @@ function AgentRowIndicator({
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (
-      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      <span className="flex items-center w-4 justify-center">
+        <UnreadDot mention={agent.hasUnreadMention} />
       </span>
     )
   }
@@ -801,6 +802,7 @@ function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const { data: platformCountData } = usePlatformUnreadCount()
   const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
+  const unreadMentions = countData?.mentions ?? 0
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 
@@ -809,7 +811,9 @@ function NotificationsMenuButton() {
       <AppLink to="/notifications">
         <Bell className="h-4 w-4" />
         <span>Notifications</span>
-        {unreadCount > 0 && (
+        {unreadMentions > 0 ? (
+          <UnreadDot mention className="ml-auto" />
+        ) : unreadCount > 0 && (
           <span
             className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
             aria-label={`${unreadCount} unread`}

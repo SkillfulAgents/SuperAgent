@@ -23,7 +23,14 @@ export class ClientBroadcastChannel implements NotificationChannel {
       body: event.body,
       ...(event.actions ? { actions: event.actions } : {}),
       ...(event.actionContext ? { actionContext: event.actionContext } : {}),
+      // The SSE route sends a targeted frame to its recipient only.
+      ...(event.recipientUserId ? { recipientUserId: event.recipientUserId } : {}),
       ...event.extra,
     })
   }
+}
+
+/** Tells a recipient's clients that a mention was taken back, so its @ goes. The SSE route sends it to them alone. */
+export function broadcastMentionWithdrawn(row: { recipientUserId: string; agentSlug: string; sessionId: string }): void {
+  globalFeed.publish({ type: 'session_mention_withdrawn', ...row })
 }

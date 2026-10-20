@@ -720,6 +720,24 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
   })
 
+  it('session_mention_withdrawn refreshes the inbox, the session list and the agent rows', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_mention_withdrawn', agentSlug: 'agent-x', sessionId: 'sess-1', recipientUserId: 'user-b',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notifications'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-x'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
   it('webhook_relay_changed replaces the cached relay status', () => {
     render(
       <QueryClientProvider client={queryClient}>

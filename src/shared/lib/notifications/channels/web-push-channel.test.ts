@@ -242,6 +242,20 @@ describe('auth-mode agent access gate', () => {
 
     expect(mocks.sendNotification).not.toHaveBeenCalled()
   })
+
+  it('pushes a mention to its recipient only', async () => {
+    mocks.listPushSubscriptions.mockReturnValue([
+      makeSubscription({ id: 'sub-a', userId: 'user-a' }),
+      makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
+    ])
+    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+
+    await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'user-b' }))
+
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
+    const [target] = mocks.sendNotification.mock.calls[0] as unknown as [{ endpoint: string }]
+    expect(target.endpoint).toBe('https://push/b')
+  })
 })
 
 describe('failure handling', () => {

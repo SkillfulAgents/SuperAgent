@@ -9,6 +9,8 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
+import { notifySessionMentions, readSessionMentions } from './session-mentions'
+import { parseMentions } from '@shared/lib/utils/mentions'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -157,7 +159,8 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
@@ -734,9 +737,11 @@ async function enrichAgentsWithSummary(
 
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs),
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+    getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
+    // Only auth mode has people to mention.
+    isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
   ])
 
   const limit = pLimit(5)
@@ -745,6 +750,7 @@ async function enrichAgentsWithSummary(
       // Union of the two sources, so every projection below sees one set.
       const notifiedIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const markedIds = markedUnreadByAgent.get(agent.slug) ?? new Set<string>()
+      const mentionedIds = mentionsByAgent.get(agent.slug) ?? new Set<string>()
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
@@ -782,6 +788,8 @@ async function enrichAgentsWithSummary(
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
+      // An unread notification that tags the viewer: drawn as an @, not a dot.
+      let hasUnreadMention = false
       const hasAgentLevelReviews = agentRegistry.get(agent.slug).inputs.reviews.pending().length > 0
       for (const sessionId of sessionSummary.sessionIds) {
         const isActive = agentRegistry.get(agent.slug).sessions.isActive(sessionId)
@@ -793,6 +801,7 @@ async function enrichAgentsWithSummary(
         }
         if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
           hasUnreadNotifications = true
+          if (mentionedIds.has(sessionId)) hasUnreadMention = true
         }
       }
 
@@ -815,6 +824,7 @@ async function enrichAgentsWithSummary(
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
+        hasUnreadMention,
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({
@@ -1288,9 +1298,11 @@ function nameSessionFromFirstHumanMessage(agentSlug: string, sessionId: string, 
 async function generateAndUpdateSessionNameAsync(
   agentSlug: string,
   sessionId: string,
-  message: string,
+  firstMessage: string,
   agentName: string
 ): Promise<void> {
+  // Named from what the person wrote, without the block that tells the agent who it tags.
+  const message = parseMentions(firstMessage).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -1916,9 +1928,10 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       // and note that neither touches the filesystem. That matters here: with
       // nothing notable the id set is empty, listSessionsByIds returns before
       // it stats anything, and the whole request stays off disk.
-      const [unreadIds, markedUnreadIds] = await Promise.all([
-        getSessionIdsWithUnreadNotifications(slug),
+      const [unreadIds, markedUnreadIds, mentionedIds] = await Promise.all([
+        getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
         getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
+        isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
       ])
       const activeIds = agentRegistry.get(slug).sessions.activeIds()
       const infos = await actor.sessions.listByIds(
@@ -1934,6 +1947,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           // against every active session of the agent — no review special-case.
           isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
           hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
+          hasUnreadMention: mentionedIds.has(session.id),
         }
       })
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
@@ -1953,15 +1967,16 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // Independent lookups (filesystem summary, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
-    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes] = await Promise.all([
+    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
       actor.sessions.listFromSummary({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
       }),
-      getSessionIdsWithUnreadNotifications(slug),
+      getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
       getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
+      isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
@@ -1975,6 +1990,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
+        hasUnreadMention: mentionedSessionIds.has(session.id),
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2055,6 +2071,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
+
+    // Refused before the session exists. A first message always runs the agent:
+    // the teammates it tags are notified, and it is never notify-only.
+    const mentions = await readSessionMentions(c, slug, message.trim())
+    if ('error' in mentions) return c.json({ error: mentions.error }, 400)
 
     const actor = agentRegistry.get(slug)
 
@@ -2173,6 +2194,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
       agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
     }
+
+    await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
     if (isSystemMessageText(message.trim())) {
       sessionsAwaitingHumanName.add(`${slug}/${sessionId}`)
@@ -2793,6 +2816,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    // Refused before anything is written. A message that opens on a teammate
+    // only notifies them: it joins the transcript, and no turn runs.
+    const mentions = await readSessionMentions(c, agentSlug, content.trim())
+    if ('error' in mentions) return c.json({ error: mentions.error }, 400)
+    if (mentions.silent) runtimeOptions.shouldQuery = false
+
     // The session's metadata, read once for the whole send: the promotion
     // check, the stream's lifecycle, the runtime selection and the container's
     // provider binding all work from it. Marked first, so the selection turn
@@ -2817,6 +2846,10 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const text = content.trim()
     // Every path below hands the agent this same attributed text.
     const agentText = await attributedForAgent(c, agentSlug, text)
+    // Every path below tells the teammates it tags once it is sent.
+    const notifyMentions = () => notifySessionMentions(c, mentions, {
+      agentSlug, agentName: agent.name, sessionId, sessionName: metadata?.name, messageUuid,
+    })
 
     if (agentRegistry.get(agentSlug).messages.coalesceIfRecovering(sessionId, {
       uuid: messageUuid,
@@ -2830,6 +2863,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         content: text,
         queued: true,
       })
+      await notifyMentions()
       return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
@@ -2863,6 +2897,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       await actor.messages.send(sessionId, agentText, messageUuid, { shouldQuery: false, preserveRuntime: true })
       // No stream frames follow an append, so the warm summary is told directly.
       actor.sessions.recordActivity(sessionId)
+      await notifyMentions()
       return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
     }
 
@@ -2937,6 +2972,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         throw error
       }
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
+      await notifyMentions()
       const updates: Partial<SessionMetadata> = { ...fields }
       // The container client resolves the pair, including inherited fallback
       // after deletion. Do not overwrite it with a stale request pair.
@@ -3002,11 +3038,18 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
       return c.json({ error: 'Session not found' }, 404)
     }
 
+    // A message taken back never ran, so whoever it tagged is not told. The
+    // cancel stands either way.
+    const withdrawMentions = () => notificationManager.withdrawSessionMentions(uuidParam.data).catch((error) => {
+      console.error('Failed to withdraw mentions:', error)
+    })
     if (agentRegistry.get(agentSlug).messages.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
+      await withdrawMentions()
       return c.json({ cancelled: true })
     }
 
     const cancelled = await actor.messages.cancelQueued(sessionId, uuidParam.data)
+    if (cancelled) await withdrawMentions()
     return c.json({ cancelled })
   } catch (error) {
     console.error('Failed to cancel queued message:', error)

@@ -4,6 +4,7 @@ import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
+import { appendMentions } from '@shared/lib/utils/mentions'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
@@ -122,6 +123,17 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutate: vi.fn() }),
 }))
 
+// Mention chips look their people and agents up for avatars.
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: () => ({ data: [{ id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com', image: null, role: 'user' }] }),
+}))
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgents: (options?: { select?: (agents: unknown[]) => unknown }) => {
+    const agents = [{ slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent', avatar: null }]
+    return { data: options?.select ? options.select(agents) : agents }
+  },
+}))
+
 describe('MessageItem', () => {
   beforeEach(() => {
     platformAuth.connected = false
@@ -132,6 +144,40 @@ describe('MessageItem', () => {
     readAloudState.toggle.mockReset()
     readAloudState.pause.mockReset()
     readAloudState.resume.mockReset()
+  })
+
+  describe('mentions', () => {
+    const mike = { kind: 'user' as const, id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }
+    const billing = { kind: 'agent' as const, slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }
+
+    it('draws each mention as a chip where its name stands, without the list the agent reads', () => {
+      const text = appendMentions('Ask @Billing Agent, then ping @Mike Smith', [billing, mike])
+      render(<MessageItem message={createUserMessage({ content: { text } })} agentSlug="support01x" />)
+
+      const bubble = screen.getByTestId('message-user')
+      expect(bubble).not.toHaveTextContent('Mentioned')
+      expect(screen.getByTestId('agent-mention')).toHaveTextContent('@Billing Agent')
+      // The avatar's initials and then the name.
+      expect(screen.getByTestId('user-mention')).toHaveTextContent('MS@Mike Smith')
+      expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
+      expect(screen.queryByTestId('mention-notified')).toBeNull()
+    })
+
+    it('leaves a name inside code as typed', () => {
+      const text = appendMentions('run `@Mike Smith` as is', [mike])
+      render(<MessageItem message={createUserMessage({ content: { text } })} />)
+
+      expect(screen.queryByTestId('user-mention')).toBeNull()
+      expect(screen.getByText('@Mike Smith').tagName).toBe('CODE')
+    })
+
+    it('marks a message that only notified the teammates it tags', () => {
+      const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
+      render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
+
+      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Notified Mike Smith')
+      expect(screen.getByTestId('user-mention').closest('.border-dashed')).not.toBeNull()
+    })
   })
 
   describe('user messages', () => {

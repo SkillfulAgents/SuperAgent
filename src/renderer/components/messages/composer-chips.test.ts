@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
-import { chipAt, chipsToAgentText } from './composer-chips'
+import { chipAt, chipsToAgentText, draftFromAgentText, silentOpener, type ChipContext } from './composer-chips'
 import { secretMarker } from './secret-chip'
 
 const saved = (...envVars: string[]) => ({ secretEnvVars: new Set(envVars) })
@@ -49,5 +49,55 @@ describe('composer chips', () => {
 
   it('treats every secret as saved until the list loads', () => {
     expect(chipsToAgentText(secretMarker({ envVar: 'K', key: 'Name' }), {})).toBe('[Key saved to .env - K]')
+  })
+
+  describe('mentions', () => {
+    const mike = formatChipMarker({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
+    const billing = formatChipMarker({ kind: 'agent', referent: 'k3j4h5g6f7', label: 'Billing Agent' })
+    const context: ChipContext = {
+      members: new Map([['mike-id', { id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }]]),
+      agents: new Map([['k3j4h5g6f7', { slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }]]),
+    }
+
+    it('sends each mention as its name, listed once after the message', () => {
+      expect(chipsToAgentText(`${mike} and ${billing}, then ${mike} again`, context)).toBe(
+        '@Mike Smith and @Billing Agent, then @Mike Smith again\n\n[Mentioned:]\n'
+        + '- @Mike Smith: teammate, mike@acme.com (user id mike-id)\n'
+        + '- @Billing Agent: agent, slug billing-agent-k3j4h5g6f7 (call it by this slug with the agents tools, no need to list agents first)',
+      )
+    })
+
+    it('says when a message only notified the teammates it tags', () => {
+      expect(chipsToAgentText(`${mike} look`, context, { silent: true })).toMatch(/\(This message only notifies the teammates it tags/)
+    })
+
+    it('lists a teammate without an email until the roster has one', () => {
+      expect(chipsToAgentText(mike, {})).toContain('- @Mike Smith: teammate (user id mike-id)')
+    })
+
+    it('sends a mention of a deleted agent as its marker, unlisted', () => {
+      expect(chipsToAgentText(`ask ${billing}`, { agents: new Map() })).toBe(`ask ${billing}`)
+    })
+
+    it('knows a draft that opens on a teammate only notifies them', () => {
+      expect(silentOpener(`  ${mike} look`)).toEqual({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
+      expect(silentOpener(`look ${mike}`)).toBeNull()
+      expect(silentOpener(`${billing} look`)).toBeNull()
+    })
+
+    it('turns a sent message back into the draft it was sent from', () => {
+      const agentId = (slug: string) => (slug === 'billing-agent-k3j4h5g6f7' ? 'k3j4h5g6f7' : slug)
+      const draft = `${mike} and ${billing}, then ${mike} again`
+      expect(draftFromAgentText(chipsToAgentText(draft, context), agentId)).toBe(draft)
+      expect(draftFromAgentText(chipsToAgentText(`${mike} look`, context, { silent: true }), agentId)).toBe(`${mike} look`)
+      expect(draftFromAgentText('no mentions here', agentId)).toBe('no mentions here')
+    })
+
+    it('reads the longer of two names that share a start', () => {
+      const ann = formatChipMarker({ kind: 'user', referent: 'ann-id', label: 'Ann' })
+      const annLee = formatChipMarker({ kind: 'user', referent: 'ann-lee-id', label: 'Ann Lee' })
+      const draft = `${ann} and ${annLee}`
+      expect(draftFromAgentText(chipsToAgentText(draft, {}), (slug) => slug)).toBe(draft)
+    })
   })
 })

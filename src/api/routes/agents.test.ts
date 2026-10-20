@@ -559,8 +559,11 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
+  deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
 }))
 
 vi.mock('@shared/lib/services/session-unread-service', () => ({
@@ -779,11 +782,13 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
-import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
+import { countMembersWithMinRole, listAgentMembers } from '@shared/lib/services/agent-members-service'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -6910,6 +6915,93 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
   })
 })
 
+describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sessions', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  const mike = { kind: 'user' as const, id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }
+  const member = (id: string, name: string) => ({ id, name, email: `${id}@acme.com`, image: null, role: 'user' as const })
+  let triggerSessionMention: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User'), member('mike-id', 'Mike Smith')])
+    mockSendMessage.mockResolvedValue({})
+    triggerSessionMention = vi.spyOn(notificationManager, 'triggerSessionMention').mockResolvedValue()
+  })
+
+  afterEach(() => triggerSessionMention.mockRestore())
+
+  it('a message that opens on a teammate joins the transcript without a turn, and notifies them', async () => {
+    const content = appendMentions('@Mike Smith look at this', [mike], { silent: true })
+    const res = await postJson(app, URL, { content, model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    const { uuid } = await res.json()
+
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', content, uuid, { shouldQuery: false, preserveRuntime: true })
+    expect(mockLiveSessions.markActive).not.toHaveBeenCalled()
+    expect(triggerSessionMention).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+      messageUuid: uuid,
+      recipientUserId: 'mike-id',
+      senderName: 'Test User',
+      text: '@Mike Smith look at this',
+    })
+  })
+
+  it('a mid-message mention runs the agent as usual, and notifies the teammate', async () => {
+    const content = appendMentions('ping @Mike Smith when you are done', [mike])
+    const res = await postJson(app, URL, { content })
+    expect(res.status).toBe(201)
+
+    const [, sentText, , options] = mockSendMessage.mock.calls[0]
+    expect(sentText).toBe(content)
+    expect(options).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'mike-id' }))
+  })
+
+  it('refuses a teammate who cannot open the agent, before anything is written', async () => {
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User')])
+    const res = await postJson(app, URL, { content: appendMentions('@Mike Smith look', [mike], { silent: true }) })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Mike Smith can't open this agent. Share it with them first.")
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalled()
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('never notifies the sender, so tagging only yourself is an ordinary turn', async () => {
+    const me = { kind: 'user' as const, id: 'test-user-id', name: 'Test User' }
+    const res = await postJson(app, URL, { content: appendMentions('@Test User remember this', [me], { silent: true }) })
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage.mock.calls[0][3]).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('has no teammates to tag outside auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    const res = await postJson(app, URL, { content: appendMentions('@Mike Smith look', [mike], { silent: true }) })
+    expect(res.status).toBe(201)
+
+    expect(listAgentMembers).not.toHaveBeenCalled()
+    expect(mockSendMessage.mock.calls[0][3]).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('a first message refuses a teammate without access, before the session exists', async () => {
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User')])
+    const res = await postJson(app, '/api/agents/test-agent/sessions', { message: appendMentions('ask @Mike Smith', [mike]) })
+
+    expect(res.status).toBe(400)
+    expect(mockClientCreateSession).not.toHaveBeenCalled()
+  })
+})
+
 describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
@@ -6965,11 +7057,14 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
   let app: ReturnType<typeof createApp>
   const UUID = '123e4567-e89b-12d3-a456-426614174000'
   const URL = `/api/agents/test-agent/sessions/sess-1/queued-messages/${UUID}`
+  let withdrawSessionMentions: ReturnType<typeof vi.spyOn>
 
   beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
+    withdrawSessionMentions = vi.spyOn(notificationManager, 'withdrawSessionMentions').mockResolvedValue()
   })
+  afterEach(() => withdrawSessionMentions.mockRestore())
 
   it('forwards to the container and returns cancelled: true', async () => {
     mockCancelQueuedMessage.mockResolvedValue(true)
@@ -6978,6 +7073,18 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: true })
     expect(mockCancelQueuedMessage).toHaveBeenCalledWith('sess-1', UUID)
+    expect(withdrawSessionMentions).toHaveBeenCalledWith(UUID)
+  })
+
+  it('reports the cancel even when its mentions cannot be withdrawn', async () => {
+    mockCancelQueuedMessage.mockResolvedValue(true)
+    withdrawSessionMentions.mockRejectedValueOnce(new Error('db down'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: true })
+    consoleError.mockRestore()
   })
 
   it('returns cancelled: false when the message was already picked up', async () => {
@@ -6986,6 +7093,7 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     const res = await deleteReq(app, URL)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: false })
+    expect(withdrawSessionMentions).not.toHaveBeenCalled()
   })
 
   it('rejects a malformed uuid with 400 without calling the container', async () => {
@@ -7002,6 +7110,7 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     expect(await res.json()).toEqual({ cancelled: true })
     expect(mockLiveSessions.dropCoalesced).toHaveBeenCalledWith('test-agent', 'sess-1', UUID)
     expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+    expect(withdrawSessionMentions).toHaveBeenCalledWith(UUID)
   })
 })
 
@@ -7896,6 +8005,25 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+    expect(body[0].hasUnreadMention).toBe(false)
+  })
+
+  it('raises hasUnreadMention when the unread one tags the viewer (auth mode)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadMentionsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(getUnreadMentionsByAgents).toHaveBeenCalledWith(['agent-1'], 'test-user-id')
+    expect(body[0].hasUnreadMention).toBe(true)
   })
 
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
@@ -9599,6 +9727,17 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     mockFsReadFile.mockReset()
   })
 
+  it('names a session from what was written, not the block that lists who it tags', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Launch Plan Review' }] })
+    const message = appendMentions('ask @Billing Agent about the launch plan', [{ kind: 'agent', slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }])
+
+    expect((await postJson(app, SESSIONS_URL, { message })).status).toBe(201)
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Launch Plan Review'))
+    const prompt = String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)
+    expect(prompt).toContain('ask @Billing Agent about the launch plan')
+    expect(prompt).not.toContain('[Mentioned:]')
+  })
+
   it('a session opened by a system notice is named by the first message a person sends, not the notice', async () => {
     mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Weather Chat' }] })
 
@@ -10098,6 +10237,20 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it("marks a session where the viewer was mentioned, in both session lists", async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+      { id: 'sess-1', agentSlug: 'test-agent', name: 'One', createdAt: new Date(), lastActivityAt: new Date() },
+      { id: 'sess-2', agentSlug: 'test-agent', name: 'Two', createdAt: new Date(), lastActivityAt: new Date() },
+    ])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['sess-1', 'sess-2']))
+    vi.mocked(getSessionIdsWithUnreadMentions).mockResolvedValue(new Set(['sess-1']))
+
+    const body = await (await getReq(app, '/api/agents/test-agent/sessions')).json()
+    expect(body.map((session: { hasUnreadMention: boolean }) => session.hasUnreadMention)).toEqual([true, false])
+    expect(getSessionIdsWithUnreadMentions).toHaveBeenCalledWith('test-agent', 'test-user-id')
   })
 
   // Marks are per-user, so the projections must ask for the acting user's —

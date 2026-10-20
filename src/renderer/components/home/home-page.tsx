@@ -201,6 +201,7 @@ interface NotableSession {
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  hasUnreadMention?: boolean
   lastActivityAt?: Date | string
 }
 
@@ -239,28 +240,32 @@ function compactAgo(date: Date | string | undefined): string | null {
   return `${Math.round(hours / 24)}d`
 }
 
-type SessionState = 'awaiting' | 'working' | 'unread'
+type SessionState = 'awaiting' | 'working' | 'mention' | 'unread'
 
 // Notification-row prefix describing what happened in the session.
 const SESSION_STATE_PREFIX: Record<SessionState, string> = {
   awaiting: 'Input needed',
   working: 'Working',
+  mention: 'Mentioned you',
   unread: 'New message',
 }
 
 function sessionState(s: NotableSession): SessionState {
   if (s.isAwaitingInput) return 'awaiting'
   if (s.isActive) return 'working'
-  return 'unread'
+  return s.hasUnreadMention ? 'mention' : 'unread'
 }
 
 function SessionStateDot({ state }: { state: SessionState }) {
-  // The three dots have different intrinsic footprints (awaiting reserves 12px
-  // for its ping halo, unread is a bare 6px). Center each in one fixed 12px box
-  // so the dot centers — and the text start — align across rows.
+  // The dots have different intrinsic footprints (awaiting reserves 12px for
+  // its ping halo, the mention @ is 14px, unread is a bare 6px). Center each
+  // in one fixed 14px box so the dot centers — and the text start — align
+  // across rows.
   const dot =
-    state === 'awaiting' ? <AwaitingDot /> : state === 'working' ? <WorkingDots dotClassName="bg-foreground" /> : <UnreadDot />
-  return <span className="flex h-3 w-3 shrink-0 items-center justify-center">{dot}</span>
+    state === 'awaiting' ? <AwaitingDot />
+      : state === 'working' ? <WorkingDots dotClassName="bg-foreground" />
+        : <UnreadDot mention={state === 'mention'} />
+  return <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">{dot}</span>
 }
 
 /**
@@ -320,14 +325,14 @@ function AgentCardSessions({
                   {stripAgentPrefix(s.name, agentName)}
                 </span>
               </button>
-              {st === 'unread' || st === 'awaiting' ? (
+              {st === 'unread' || st === 'mention' || st === 'awaiting' ? (
                 /* Time stamp sits flush right; the action buttons are collapsed
                    to zero width until the row is hovered/focused, then expand
                    and slide in from the right, nudging the stamp left. */
                 <span className="flex shrink-0 items-center">
                   <span className="text-muted-foreground tabular-nums">{right}</span>
                   <span className="flex max-w-0 translate-x-1 items-center gap-0.5 overflow-hidden opacity-0 transition-all duration-200 ease-out group-hover/row:max-w-16 group-hover/row:translate-x-0 group-hover/row:pl-1.5 group-hover/row:opacity-100 group-focus-within/row:max-w-16 group-focus-within/row:translate-x-0 group-focus-within/row:pl-1.5 group-focus-within/row:opacity-100">
-                    {st === 'unread' && (
+                    {(st === 'unread' || st === 'mention') && (
                       <button
                         type="button"
                         onClick={(e) => {
@@ -592,16 +597,18 @@ function AgentCard({
   })
 
   // Notification summary for the Small card's rotating title meta. Orange
-  // (needs input) always wins over blue (unread).
+  // (needs input) wins over the purple @ (mentioned you), which wins over blue (unread).
   const notifSessions = useMemo(
     () => (sessions ?? []).filter((s) => s.isAwaitingInput || s.hasUnreadNotifications),
     [sessions]
   )
   const notifState: SessionState | null = notifSessions.some((s) => s.isAwaitingInput)
     ? 'awaiting'
-    : notifSessions.length > 0
-      ? 'unread'
-      : null
+    : notifSessions.some((s) => s.hasUnreadMention)
+      ? 'mention'
+      : notifSessions.length > 0
+        ? 'unread'
+        : null
 
   const titleOverlay = (
     <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">

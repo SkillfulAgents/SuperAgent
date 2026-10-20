@@ -284,28 +284,34 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration'] }).notNull(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
   body: text('body').notNull(),
   isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
-  // NOTE: notifications are intentionally agent/session-scoped, NOT per-user.
-  // Read state is shared across everyone with access to the agent (a teammate
+  // NOTE: most notifications are agent/session-scoped, NOT per-user. Read state
+  // is shared across everyone with access to the agent (a teammate
   // acknowledging a "session waiting"/"session complete" item clears it for the
-  // team). There is deliberately no per-user owner column here: cross-agent
-  // isolation is enforced by getAccessibleAgentSlugs() in the service layer and
-  // by HasNotificationAccess on the by-id routes. A previously-speculative
-  // `user_id` column was dropped (SUP-227, never wired up — always NULL). Do not
-  // re-add a per-user owner unless a *targeted* notification type lands (e.g. an
-  // @-mention or per-approver request), which needs a recipient + split read
-  // state, not a single shared isRead bit.
+  // team), and those rows leave `recipient_user_id` null. Cross-agent isolation
+  // is enforced by getAccessibleAgentSlugs() in the service layer and by
+  // HasNotificationAccess on the by-id routes.
+  //
+  // A targeted row (`session_mention`: one per person tagged in a message) names
+  // its recipient, so its read state is that person's alone and nobody else
+  // sees it. Every read applies `recipient_user_id IS NULL OR = me`. Plain text
+  // with no FK, like `session_unread_marks.user_id`.
+  recipientUserId: text('recipient_user_id'),
+  /** The transcript message a targeted row points at (the mention). */
+  messageUuid: text('message_uuid'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
   agentSlugIsReadIdx: index('notifications_agent_slug_is_read_idx').on(table.agentSlug, table.isRead),
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
+  // One mention row per person per message, so a retried insert is a no-op.
+  messageRecipientUnique: uniqueIndex('notifications_message_recipient_unique').on(table.messageUuid, table.recipientUserId),
 }))
 
 /**

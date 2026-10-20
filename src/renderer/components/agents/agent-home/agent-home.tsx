@@ -468,6 +468,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 onChoice={composer.mountDialog.onChoice}
                 folderName={composer.mountDialog.folderName}
               />
+              {composer.chipDialog}
               <form
                 onSubmit={composer.handleSubmit}
                 className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}

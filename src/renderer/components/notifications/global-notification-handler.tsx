@@ -305,6 +305,14 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'session_mention_withdrawn': {
+            // The message that tagged this viewer was taken back before it ran.
+            queryClient.invalidateQueries({ queryKey: ['notifications'] })
+            if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
           case 'platform_notifications_changed': {
             // A platform notification INSERT arrived over Realtime — refresh
             // the proxy-live inbox + badge (there is no local copy to update).
@@ -333,6 +341,9 @@ export function GlobalNotificationHandler() {
             } else if (notifType === 'session_scheduled' && data.taskId) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
               queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
+            } else if (notifType === 'session_mention') {
+              // No session lifecycle event follows a mention to refresh the agent row's dot.
+              queryClient.invalidateQueries({ queryKey: ['agents'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -358,7 +369,7 @@ export function GlobalNotificationHandler() {
             const notifyWhenUnfocused =
               userSettingsRef.current?.notifications?.notifyWhenUnfocused === true
             const isAppActive =
-              notificationType === 'session_waiting' || notifyWhenUnfocused
+              notificationType === 'session_waiting' || notificationType === 'session_mention' || notifyWhenUnfocused
                 ? isTabVisible && document.hasFocus()
                 : isTabVisible
 
@@ -390,6 +401,7 @@ export function GlobalNotificationHandler() {
               ) {
                 applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                   hasUnreadNotifications: true,
+                  ...(notificationType === 'session_mention' ? { hasUnreadMention: true } : {}),
                 })
               }
               const { title, body } = data as { title: string; body: string }
@@ -449,6 +461,7 @@ export function GlobalNotificationHandler() {
                     if (agentSlug && notificationSessionId) {
                       applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                         hasUnreadNotifications: false,
+                        hasUnreadMention: false,
                       })
                       queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
                     }
