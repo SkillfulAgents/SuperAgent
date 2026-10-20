@@ -1,6 +1,6 @@
+import type { ComponentProps } from 'react'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { getFileBrowserTabKey, nextFileVersion, useFilePreviewTabs, type FileBrowserTab } from '@renderer/hooks/use-file-preview-tabs'
-import type { useFolderEntries } from '@renderer/hooks/use-folder-entries'
 import { DirectoryBrowser } from './directory-browser'
 import { TabbedFilePreview } from './tabbed-file-preview'
 
@@ -9,7 +9,7 @@ export type OpenedFile = { inlineUrl: string; downloadUrl?: string } | { reason:
 
 /** A folder of files the browser can list and open: a mounted volume, or a zip. */
 export interface FileSource {
-  useEntries: (path: string, enabled: boolean) => Pick<ReturnType<typeof useFolderEntries>, 'data' | 'isLoading' | 'error' | 'refetch'>
+  useEntries: ComponentProps<typeof DirectoryBrowser>['useEntries']
   /** The open file, or null while it is not ready or no file is open. */
   useFile: (path: string | null, version: number) => OpenedFile | null
 }

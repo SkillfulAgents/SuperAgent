@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, Loader2 } from 'lucide-react'
+import { AlertCircle } from 'lucide-react'
 import { guessMimeType } from '@shared/lib/utils/mime'
+import { previewKind } from '@renderer/lib/file-types'
+import { arrayBufferToBase64 } from '@renderer/lib/voice/shared/pcm'
 import type { FolderEntriesResponse, FolderEntry } from '@renderer/hooks/use-folder-entries'
 import { FileBrowser, type FileSource, type OpenedFile } from '../file-browser'
-import { downloadZip, listZip, MAX_ZIP_ENTRIES, unzipEntry, type ZipEntry } from './zip-archive'
-import { UnsupportedRenderer } from './unsupported-renderer'
+import { LAZY_FALLBACK } from './file-renderer'
+import { downloadZip, listZip, MAX_ZIP_ENTRIES, unzipEntry } from './zip-archive'
+import { NO_PREVIEW, UnsupportedRenderer } from './unsupported-renderer'
 
 const REASONS = {
   'too-large': 'Larger than 5 MB.',
@@ -15,11 +18,9 @@ const REASONS = {
 
 const ENTRY_REASONS = {
   'too-much': 'Too much content to preview. Download the zip to open it.',
+  encrypted: 'Password-protected. Download the zip to open it.',
   unreadable: "Can't read this file. Download the zip to open it.",
 } as const
-
-/** Entries per folder, as the workspace folder listing caps them. */
-const MAX_FOLDER_ENTRIES = 1_000
 
 type Loaded = { ok: true; bytes: Uint8Array; folders: Map<string, FolderEntry[]> } | { ok: false; reason: keyof typeof REASONS }
 
@@ -40,7 +41,7 @@ function isMacJunk(name: string): boolean {
 /**
  * Each folder's entries, keyed by folder path ('' is the top), sorted as workspace folders are.
  * Adds the folders a zip implies but does not list, so every file sits under its folder.
- * A file keeps its name in the zip as its path, since that is what opening it looks up.
+ * Names arrive as `listZip` gives them, so a file's path is the name opening looks up.
  * Null when the folders it adds take the count past the listing limit.
  */
 export function archiveFolders(names: readonly string[]): Map<string, FolderEntry[]> | null {
@@ -52,7 +53,7 @@ export function archiveFolders(names: readonly string[]): Map<string, FolderEntr
     let parent = ''
     for (const [i, part] of parts.entries()) {
       const type = name.endsWith('/') || i < parts.length - 1 ? 'directory' : 'file'
-      const path = type === 'file' ? name : parent ? `${parent}/${part}` : part
+      const path = parent ? `${parent}/${part}` : part
       const siblings = folders.get(parent)
       // A folder and a file can share a name in a zip but not on disk. The folder wins, as unzipping would leave it.
       if (siblings && !siblings.has(path) && !(type === 'file' && folders.has(path))) {
@@ -72,24 +73,63 @@ export function archiveFolders(names: readonly string[]): Map<string, FolderEntr
   })]))
 }
 
+/** The whole folder: the listing is already in memory, so nothing is held back from the filter. */
 function folderResponse(folders: Map<string, FolderEntry[]>, path: string): FolderEntriesResponse {
-  const entries = folders.get(path) ?? []
-  return { root: '', path, entries: entries.slice(0, MAX_FOLDER_ENTRIES), truncated: entries.length > MAX_FOLDER_ENTRIES }
+  return { root: '', path, entries: folders.get(path) ?? [], truncated: false }
 }
 
-/** The open entry, unpacked when opened, as a URL that lives only while it is shown. No download: it is not a workspace file. */
-export function useZipFile(bytes: Uint8Array, path: string | null): OpenedFile | null {
-  const unpacked = useMemo(() => (path === null ? null : unzipEntry(bytes, path)), [bytes, path])
-  // Tied to the unpack it came from, so a switch never shows the last file's URL under the next name.
-  const [blob, setBlob] = useState<{ from: ZipEntry; url: string } | null>(null)
-  useEffect(() => {
-    if (!path || !unpacked?.ok) return
-    const url = URL.createObjectURL(new Blob([unpacked.content], { type: guessMimeType(path) }))
-    setBlob({ from: unpacked, url })
-    return () => URL.revokeObjectURL(url)
-  }, [unpacked, path])
-  if (unpacked && !unpacked.ok) return { reason: ENTRY_REASONS[unpacked.reason] }
-  return blob && blob.from === unpacked ? { inlineUrl: blob.url } : null
+const INERT_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp', 'image/x-icon', 'application/pdf', 'application/zip', 'application/json', 'application/octet-stream',
+  'text/plain', 'text/csv', 'text/markdown', 'text/yaml', 'text/css', 'text/javascript', 'text/typescript', 'text/x-python', 'text/x-shellscript',
+])
+
+/** Types a browser shows as text, plays, or downloads when opened in a tab of their own, never running script. */
+function isInert(type: string): boolean {
+  return INERT_TYPES.has(type) || /^(audio|video)\//.test(type)
+}
+
+/** Chromium's longest URL. A frame given a longer one loads nothing. */
+const MAX_URL = 2 * 1024 * 1024
+
+/**
+ * An entry as a URL its renderer can load, unpacked only when a renderer can show it.
+ * A blob: URL belongs to the app's origin, so only inert types get one. Anything else,
+ * HTML and SVG included, gets a data: URL, which has no origin to run as.
+ */
+function openEntry(bytes: Uint8Array, path: string): OpenedFile {
+  if (!previewKind(path)) return { reason: NO_PREVIEW }
+  const entry = unzipEntry(bytes, path)
+  if (!entry.ok) return { reason: ENTRY_REASONS[entry.reason] }
+  const type = guessMimeType(path)
+  if (isInert(type)) return { inlineUrl: URL.createObjectURL(new Blob([entry.content], { type })) }
+  const prefix = `data:${type};base64,`
+  if (prefix.length + 4 * Math.ceil(entry.content.length / 3) > MAX_URL) return { reason: ENTRY_REASONS['too-much'] }
+  return { inlineUrl: prefix + arrayBufferToBase64(entry.content.buffer) }
+}
+
+/**
+ * Opens each entry once and keeps it at one URL while the zip is shown, so switching back
+ * unpacks nothing and a nested zip keeps its key. Every URL is revoked when the view goes.
+ * No download: an entry is not a workspace file.
+ */
+export function useZipFiles(bytes: Uint8Array | null): ((path: string) => OpenedFile) | null {
+  const [opened, setOpened] = useState<{ bytes: Uint8Array; files: Map<string, OpenedFile> } | null>(null)
+  // Before paint, so the list shows in the frame the bytes arrive.
+  useLayoutEffect(() => {
+    if (!bytes) return
+    const files = new Map<string, OpenedFile>()
+    setOpened({ bytes, files })
+    return () => {
+      for (const file of files.values()) if ('inlineUrl' in file) URL.revokeObjectURL(file.inlineUrl)
+    }
+  }, [bytes])
+  if (!bytes || opened?.bytes !== bytes) return null
+  // Opened while rendering, into the map the effect owns, so a URL from a render React drops is still revoked.
+  return path => {
+    let file = opened.files.get(path)
+    if (!file) opened.files.set(path, (file = openEntry(bytes, path)))
+    return file
+  }
 }
 
 interface ArchiveRendererProps {
@@ -106,15 +146,12 @@ export function ArchiveRenderer({ url, filePath, agentSlug, downloadUrl }: Archi
     queryFn: ({ signal }) => loadZip(url, signal),
     // The URL carries the file's version, so its bytes never go stale. A refetch would let the open file and the list read different zips.
     staleTime: Infinity,
+    // A zip opened from another dies with the view that unpacked it, so its cache entry would only hold memory.
+    gcTime: url.startsWith('blob:') ? 0 : undefined,
   })
+  const open = useZipFiles(data?.ok ? data.bytes : null)
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
+  if (isLoading) return LAZY_FALLBACK
   if (error || !data) {
     return (
       <div className="flex items-center gap-2 p-4 text-sm text-destructive">
@@ -126,19 +163,12 @@ export function ArchiveRenderer({ url, filePath, agentSlug, downloadUrl }: Archi
   if (!data.ok) {
     return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} reason={REASONS[data.reason]} />
   }
+  if (!open) return LAZY_FALLBACK
 
-  const { bytes, folders } = data
+  const { folders } = data
   const source: FileSource = {
-    useEntries(path, enabled) {
-      return useQuery<FolderEntriesResponse>({
-        queryKey: ['file-archive-folder', url, path],
-        queryFn: () => folderResponse(folders, path),
-        initialData: () => folderResponse(folders, path),
-        enabled,
-        staleTime: Infinity,
-      })
-    },
-    useFile: path => useZipFile(bytes, path),
+    useEntries: path => ({ data: folderResponse(folders, path), isLoading: false, error: null, refetch: () => {} }),
+    useFile: path => (path === null ? null : open(path)),
   }
   return <div className="flex h-full flex-col" data-testid="archive-renderer"><FileBrowser source={source} /></div>
 }

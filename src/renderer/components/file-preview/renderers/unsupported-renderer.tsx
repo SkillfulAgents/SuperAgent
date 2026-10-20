@@ -4,6 +4,8 @@ import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 
+export const NO_PREVIEW = 'Preview is not available for this file type'
+
 interface UnsupportedRendererProps {
   filePath: string
   agentSlug: string
@@ -12,7 +14,7 @@ interface UnsupportedRendererProps {
   reason?: string
 }
 
-export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl, reason = 'Preview is not available for this file type' }: UnsupportedRendererProps) {
+export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl, reason = NO_PREVIEW }: UnsupportedRendererProps) {
   const file = agentSlug ? describeWorkspaceFile(filePath, agentSlug) : { name: getPathName(filePath), downloadUrl }
 
   return (

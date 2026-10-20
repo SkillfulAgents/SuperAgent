@@ -939,6 +939,8 @@ test.describe('File Preview', () => {
     await zip.locator('[data-entry-path="site"]').click()
     await zip.locator('[data-entry-path="site/index.html"]').click()
     await expect(zip.frameLocator('iframe').locator('#probe')).toHaveText('SecurityError', { timeout: 10000 })
+    // Opened in a tab of its own, the page still cannot run as the app: a data: URL has no origin, a blob: URL has the app's.
+    await expect(zip.locator('iframe')).toHaveAttribute('src', /^data:text\/html;/)
   })
 
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {

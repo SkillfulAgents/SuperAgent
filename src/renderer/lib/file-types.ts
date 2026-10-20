@@ -19,6 +19,9 @@ export type FileCategory =
   | 'model'
   | 'other'
 
+/** The zip download limit and the per-file unpack limit: 5 MB as the drawer header counts sizes. */
+export const MAX_ZIP_BYTES = 5 * 1024 * 1024
+
 /** The renderer that can show a file in the preview drawer. */
 export type PreviewKind =
   | 'markdown'

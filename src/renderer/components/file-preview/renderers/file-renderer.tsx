@@ -13,7 +13,7 @@ import { previewKind } from '@renderer/lib/file-types'
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
 const ArchiveRenderer = lazy(() => import('./archive-renderer').then(m => ({ default: m.ArchiveRenderer })))
 
-const LAZY_FALLBACK = (
+export const LAZY_FALLBACK = (
   <div className="flex items-center justify-center py-12">
     <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
   </div>
