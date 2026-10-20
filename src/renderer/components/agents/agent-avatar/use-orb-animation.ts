@@ -72,7 +72,7 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
       }
       if (stop) return
       animation.resume(performance.now())
-      const unsubscribe = subscribeToFrames(tick, followPointer ? measure : undefined)
+      const unsubscribe = subscribeToFrames(tick, { measure: followPointer ? measure : undefined, smooth: () => animation.smooth })
       if (followPointer) {
         target.addEventListener('pointermove', onMove, { passive: true })
         leaveFrom.addEventListener('pointerleave', onLeave)

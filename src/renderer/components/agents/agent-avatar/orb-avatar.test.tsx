@@ -281,3 +281,32 @@ describe('OrbAvatar visibility', () => {
     expect(raf).toHaveBeenCalled()
   })
 })
+
+describe('OrbAvatar frame rate', () => {
+  // Fake timers fire animation frames every 16ms, like a 60 Hz display.
+  const changes = (frames: number, read: () => string) => {
+    let count = 0
+    let previous = read()
+    for (let i = 0; i < frames; i++) {
+      act(() => vi.advanceTimersByTime(16))
+      if (read() !== previous) count++
+      previous = read()
+    }
+    return count
+  }
+
+  it('paints a calm sleeping orb at most 30 times a second', () => {
+    render(orb('sleeping'))
+    advance(1000)
+    const paints = changes(60, () => layer('glow').style.opacity)
+    expect(paints).toBeGreaterThanOrEqual(25)
+    expect(paints).toBeLessThanOrEqual(30)
+  })
+
+  it('paints every frame while working', () => {
+    render(orb('working'))
+    // The body shrinks continuously from 0.5s to 1.1s into work.
+    advance(550)
+    expect(changes(30, () => body().style.transform)).toBeGreaterThanOrEqual(29)
+  })
+})

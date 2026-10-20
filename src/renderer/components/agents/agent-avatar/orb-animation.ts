@@ -94,6 +94,14 @@ export class OrbAnimation {
     return !this.working && (this.state === 'idle' || this.state === 'done')
   }
 
+  /** Typing dots and turning toward the cursor need every frame; the looping states do not. */
+  get smooth(): boolean {
+    if (this.working) return true
+    if (!this.follow) return false
+    const duration = this.config.shape.snaps ? this.config.shape.duration : FOLLOW_MS
+    return this.lastTick - this.follow.since < duration
+  }
+
   lookAt(dx: number, dy: number, width: number, now: number) {
     if (!this.canFollow) return
     const shown = this.follow ? this.followGaze(now) : this.last
