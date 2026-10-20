@@ -1,5 +1,6 @@
 import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
+import type { ApiTarget } from '@shared/lib/api-target'
 import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
 
 let mainWindowRef: BrowserWindow | null = null
@@ -18,23 +19,23 @@ let updateInterval: NodeJS.Timeout | null = null
  * and the window opens but never navigates (SUP-264).
  */
 export type PendingMenuCommand =
-  | { channel: 'navigate-to-agent'; agentSlug: string }
+  | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
   | { channel: 'open-settings' }
   | { channel: 'open-create-agent' }
+  | { channel: 'switch-target'; target: ApiTarget }
 
 const pendingMenuCommands: PendingMenuCommand[] = []
 
-/** Translate a raw `sendToRenderer` call into a replayable command, if any. */
-function buildPendingCommand(channel: string, args: unknown[]): PendingMenuCommand | null {
-  switch (channel) {
+/** The arguments a command's live IPC event carries, after its channel. */
+function ipcArgs(command: PendingMenuCommand): unknown[] {
+  switch (command.channel) {
     case 'navigate-to-agent':
-      return { channel: 'navigate-to-agent', agentSlug: String(args[0] ?? '') }
+      return [command.agentSlug, command.sessionId ?? null]
+    case 'switch-target':
+      return [command.target]
     case 'open-settings':
-      return { channel: 'open-settings' }
     case 'open-create-agent':
-      return { channel: 'open-create-agent' }
-    default:
-      return null
+      return []
   }
 }
 
@@ -75,16 +76,16 @@ function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
 }
 
 /**
- * Send an IPC event to the renderer, ensuring the window exists
+ * Deliver a command to the main window's renderer, ensuring the window exists:
+ * live when it is listening, queued for its mount-time flush when the window is
+ * closed or still loading. Used by the menu and by Spotlight results.
  */
-function sendToRenderer(channel: string, ...args: unknown[]): void {
-  const command = buildPendingCommand(channel, args)
-
+export function sendMenuCommand(command: PendingMenuCommand): void {
   if (!mainWindowRef || mainWindowRef.isDestroyed()) {
     // Window closed (app still in tray/dock). Queue the command so the renderer
     // can replay it once it mounts, then recreate the window. Sending now would
     // be lost — the window doesn't exist yet (SUP-264).
-    if (command) queueMenuCommand(command)
+    queueMenuCommand(command)
     app.emit('activate')
     return
   }
@@ -96,12 +97,12 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
   // just recreated it). The IPC listeners attach on React mount, which hasn't
   // happened yet, so a live send would race them and be lost — queue instead
   // and let the mount-time flush deliver it.
-  if (command && mainWindowRef.webContents.isLoading()) {
+  if (mainWindowRef.webContents.isLoading()) {
     queueMenuCommand(command)
     return
   }
 
-  mainWindowRef.webContents.send(channel, ...args)
+  mainWindowRef.webContents.send(command.channel, ...ipcArgs(command))
 }
 
 /**
@@ -135,7 +136,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('working'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
     agentsSubmenu.push({ type: 'separator' })
@@ -147,7 +148,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('working'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
     agentsSubmenu.push({ type: 'separator' })
@@ -159,7 +160,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('idle'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
     agentsSubmenu.push({ type: 'separator' })
@@ -171,7 +172,7 @@ async function buildAppMenu(): Promise<void> {
       agentsSubmenu.push({
         label: agent.name,
         icon: createStatusIcon('sleeping'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+        click: () => sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: agent.slug }),
       })
     })
   }
@@ -192,7 +193,7 @@ async function buildAppMenu(): Promise<void> {
         {
           label: 'Settings...',
           accelerator: 'CmdOrCtrl+,',
-          click: () => sendToRenderer('open-settings'),
+          click: () => sendMenuCommand({ channel: 'open-settings' }),
         },
         { type: 'separator' as const },
         // Explicit labels: `role` items interpolate app.name (kept 'SuperAgent' for
@@ -212,14 +213,14 @@ async function buildAppMenu(): Promise<void> {
         {
           label: 'New Agent',
           accelerator: 'CmdOrCtrl+N',
-          click: () => sendToRenderer('open-create-agent'),
+          click: () => sendMenuCommand({ channel: 'open-create-agent' }),
         },
         ...(!isMac ? [
           { type: 'separator' as const },
           {
             label: 'Settings...',
             accelerator: 'CmdOrCtrl+,',
-            click: () => sendToRenderer('open-settings'),
+            click: () => sendMenuCommand({ channel: 'open-settings' }),
           },
         ] : []),
         { type: 'separator' },

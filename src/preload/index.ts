@@ -186,6 +186,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  // Main asking this window to switch Superagents (a Spotlight result from the
+  // other side). The renderer runs its own Local/Cloud checks before switching.
+  onSwitchTarget: (callback: (target: ApiTarget) => void): (() => void) => {
+    const handler = (_event: unknown, target: unknown) => callback(target === 'cloud' ? 'cloud' : 'local')
+    ipcRenderer.on('switch-target', handler)
+    return () => {
+      ipcRenderer.removeListener('switch-target', handler)
+    }
+  },
+  // The switch main asked for did not happen (refused, or one already under way).
+  declineTargetSwitch: () => {
+    ipcRenderer.send('target-switch-declined')
+  },
+
   onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
     const handler = (_event: unknown, command: unknown) => {
       if (command === 'back' || command === 'forward') callback(command)
@@ -256,14 +270,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('flush-pending-notification-events')
   },
 
-  // Pull menu commands (Settings / New Agent / navigate-to-agent) queued while
-  // the window was closed. The renderer calls this once on mount so commands
-  // captured before its IPC listeners existed still get dispatched (SUP-264).
+  // Pull menu commands (Settings / New Agent / navigate-to-agent / switch-target)
+  // queued while the window was closed. The renderer calls this once on mount so
+  // commands captured before its IPC listeners existed still get dispatched (SUP-264).
   flushPendingMenuCommands: (): Promise<
     Array<
-      | { channel: 'navigate-to-agent'; agentSlug: string }
+      | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
       | { channel: 'open-settings' }
       | { channel: 'open-create-agent' }
+      | { channel: 'switch-target'; target: ApiTarget }
     >
   > => {
     return ipcRenderer.invoke('flush-pending-menu-commands')
@@ -511,6 +526,8 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
+      onSwitchTarget?: (callback: (target: ApiTarget) => void) => () => void
+      declineTargetSwitch?: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
       beginTargetSwitch: () => Promise<void>
@@ -531,9 +548,10 @@ declare global {
       }>
       flushPendingMenuCommands: () => Promise<
         Array<
-          | { channel: 'navigate-to-agent'; agentSlug: string }
+          | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
           | { channel: 'open-settings' }
           | { channel: 'open-create-agent' }
+          | { channel: 'switch-target'; target: ApiTarget }
         >
       >
       setBadgeCount: (count: number) => Promise<void>

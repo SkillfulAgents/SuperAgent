@@ -23,7 +23,8 @@
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
     "build:mediaremote-adapter": "bash scripts/build-mediaremote-adapter.sh",
-    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:mediaremote-adapter && npm run build:electron && electron-builder --mac --publish never",
+    "build:spotlight-bridge": "bash scripts/build-spotlight-bridge.sh",
+    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:mediaremote-adapter && npm run build:spotlight-bridge && npm run build:electron && electron-builder --mac --publish never",
     "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src e2e perf --ext .ts,.tsx",
@@ -84,6 +85,7 @@
     "hono": "^4.6.14",
     "jose": "^6.1.3",
     "js-yaml": "^4.1.1",
+    "koffi": "^3.3.3",
     "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.4/llm-endpoint-translation-0.1.4.tgz",
     "marked": "^18.0.0",
     "pngjs": "^7.0.0",
@@ -286,6 +288,10 @@
         {
           "from": "build/mediaremote-adapter",
           "to": "mediaremote-adapter"
+        },
+        {
+          "from": "build/spotlight-bridge",
+          "to": "spotlight-bridge"
         }
       ],
       "artifactName": "Gamut-${version}-${arch}.${ext}",
@@ -295,6 +301,9 @@
       "gatekeeperAssess": false,
       "notarize": true,
       "extendInfo": {
+        "NSUserActivityTypes": [
+          "com.apple.corespotlightitem"
+        ],
         "CFBundleAlternateNames": [
           "Gamut",
           "Superagent",
