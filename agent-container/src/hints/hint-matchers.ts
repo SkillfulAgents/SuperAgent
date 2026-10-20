@@ -39,7 +39,9 @@ function compileToolTrigger(trigger: HintToolTrigger): HintMatcher {
     return fields.every((field) => {
       const want = required.find(([f]) => f === field)?.[1]
       const avoid = excluded.find(([f]) => f === field)?.[1]
-      const value = toolInput[field]
+      const raw = toolInput[field]
+      // Booleans and numbers compare as text, so `unless: { run_in_background: "true" }` works.
+      const value = typeof raw === 'boolean' || typeof raw === 'number' ? String(raw) : raw
       if (typeof value !== 'string') return !want
       return candidates(trigger.tool, field, value).some((part) => (!want || want.test(part)) && !avoid?.test(part))
     })
