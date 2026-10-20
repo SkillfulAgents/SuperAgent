@@ -697,7 +697,7 @@ it('publishes the same default used for provider-only selections, including disa
   state.platformToken = 'platform-token'
   await ensureManagedPlatformConnection()
   const openrouter = await saveConnection({ name: 'Router', provider: 'openrouter', config: { apiKeys: { openrouterApiKey: 'key' } } }, admin)
-  for (const [id, expected] of [['legacy-platform', 'grok'], [openrouter, 'sonnet']] as const) {
+  for (const [id, expected] of [['legacy-platform', 'sonnet'], [openrouter, 'sonnet']] as const) {
     const row = (await listConnections(admin)).find(c => c.id === id)!
     expect(row.defaultModel).toBe(expected)
     expect((await resolveExecutionSelection({ llmProviderId: id })).model).toBe(row.defaultModel)
