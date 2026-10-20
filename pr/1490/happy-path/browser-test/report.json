@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, and reported the page title \"Example Domain\"",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the response clearly mentioning the expected page title.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded Gamut application home page displaying sidebar with agents and main content area",
-    "Found and clicked on \"QA-20261019-221013-90h3\" agent in the sidebar — Successfully navigated to agent page with title \"QA-20261019-221013-90h3 · Gamut\" and displayed message input field",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent and agent started processing (URL changed to session-specific URL: /sessions/e75b088a-3e4b-4dc5-bfa1-b77352e4fbc3)",
-    "Waited up to 3 minutes for response — Agent completed processing in approximately 10 seconds, displaying status \"Worked for 10s · 3 tool calls · 154,698 tokens\"",
-    "Verified response mentions \"Example Domain\" and took screenshot — Agent response confirms: \"The page title is \"Example Domain\". The page loaded normally (HTTP 200), and I've closed the browser.\" The response clearly mentions \"Example Domain\" as required"
+    "1. Navigated to http://localhost:47891 — Page loaded successfully showing Gamut home page with \"Your Agents\" list containing the target agent \"QA-20261019-234628-zh8t\"",
+    "2. Found and clicked on \"QA-20261019-234628-zh8t\" agent in sidebar — Agent detail page opened successfully, displaying agent configuration and chat interface",
+    "3. Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" and clicked send button — Message was successfully submitted and a new chat session was created with session ID 52c39722-fd6f-401d-8668-8082bcb98cfe",
+    "4. Waited up to 3 minutes for response — Agent completed the task within 9 seconds, executed 3 tool calls, and used 154,694 tokens",
+    "5. Verified the response contains \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\". The page loaded normally, and I closed the browser afterwards.\""
   ],
   "bugs": [],
-  "durationMs": 99413,
-  "sessionId": "79e65bc4-17da-4082-9cda-5d741c50ce45",
+  "durationMs": 1158241,
+  "sessionId": "0976b67f-c991-4e09-9cb7-50a6256c822c",
   "cost": {
-    "inputTokens": 464,
-    "outputTokens": 18394,
-    "cacheCreationTokens": 137349,
-    "cacheReadTokens": 1472827,
+    "inputTokens": 454,
+    "outputTokens": 12379,
+    "cacheCreationTokens": 205374,
+    "cacheReadTokens": 1292081,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.411403
+    "totalCostUsd": 0.448275
   }
 }
