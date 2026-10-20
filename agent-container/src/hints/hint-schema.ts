@@ -3,15 +3,30 @@ import { z } from 'zod'
 export const HINT_EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse'] as const
 export type HintEvent = (typeof HINT_EVENTS)[number]
 
-/**
- * `match` syntax depends on the event:
- * - PreToolUse / PostToolUse: `Tool` or `Tool(pattern)`, e.g. `Bash(sleep *)`
- * - UserPromptSubmit: a case-insensitive regular expression on the prompt text
- */
-export const hintTriggerSchema = z.object({
-  event: z.enum(HINT_EVENTS),
-  match: z.string().min(1, 'Trigger match is required'),
-})
+/** tool_input field name → glob. `*` matches anything; see hint-matchers.ts. */
+const fieldGlobsSchema = z.record(z.string().min(1), z.string().min(1, 'Glob must not be empty'))
+
+// Strict so a misspelled key (e.g. `inputs`) fails loudly instead of matching every call.
+const toolTriggerSchema = z
+  .object({
+    event: z.enum(['PreToolUse', 'PostToolUse']),
+    tool: z.string().min(1, 'Tool name is required'),
+    /** Every field must match its glob. */
+    input: fieldGlobsSchema.optional(),
+    /** No field may match its glob. */
+    unless: fieldGlobsSchema.optional(),
+  })
+  .strict()
+
+const promptTriggerSchema = z
+  .object({
+    event: z.literal('UserPromptSubmit'),
+    /** Case-insensitive regular expression on the prompt text. */
+    prompt: z.string().min(1, 'Prompt pattern is required'),
+  })
+  .strict()
+
+export const hintTriggerSchema = z.discriminatedUnion('event', [toolTriggerSchema, promptTriggerSchema])
 
 export const hintFrontmatterSchema = z.object({
   name: z.string().min(1, 'Hint name is required'),
@@ -22,6 +37,7 @@ export const hintFrontmatterSchema = z.object({
 })
 
 export type HintTrigger = z.infer<typeof hintTriggerSchema>
+export type HintToolTrigger = z.infer<typeof toolTriggerSchema>
 export type Hint = z.output<typeof hintFrontmatterSchema> & { content: string }
 
 export type HintEventInput =
