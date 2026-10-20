@@ -142,6 +142,12 @@ export function resolveRemoteMcpProxyUrl(
   }
 }
 
+// The Platform model base is the host's relay, handed out mid-session like an MCP proxyUrl.
+export function withPlatformRelayOnHostApi(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const base = env.ANTHROPIC_BASE_URL
+  return base?.endsWith('/api/platform-proxy') ? { ...env, ANTHROPIC_BASE_URL: resolveRemoteMcpProxyUrl(base) } : env
+}
+
 function parseRemoteMcps(): RemoteMcpConfig[] {
   const raw = process.env.REMOTE_MCPS;
   if (!raw) return [];
@@ -1183,7 +1189,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       // vars into ANTHROPIC_CUSTOM_HEADERS (composed here, after the custom-env
       // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
       // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
-      env: withSpeedHeader(withAgentAttributionHeaders({
+      env: withSpeedHeader(withAgentAttributionHeaders(withPlatformRelayOnHostApi({
         // The CLI caps concurrent workflow agents at min(16, cores - 2), which
         // is 1-2 on our 2-core microVMs. Workflow agents mostly wait on the
         // model API, so floor it at 4. Placed first so a custom env var wins.
@@ -1244,7 +1250,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           !this.llmRuntime?.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
             CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
           }),
-      }), this.speed),
+      })), this.speed),
       mcpServers: {
         ...this.buildSdkMcpServers(browserMcpTools),
         ...remoteMcpConfigs,

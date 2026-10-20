@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto'
 import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
 import { orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
 import type { ProviderErrorPresentation } from './error-presentation'
-import { rewriteLoopbackForContainer } from './container-url'
 import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -14,7 +13,7 @@ import type { ModelAvailability } from './model-availability-schema'
 import { parseModelNotInPlan, platformModelAvailability } from './platform-plan-policy'
 import { actingPlanPolicy } from './platform-plan-account'
 import { platformPlanCache } from './platform-plan-cache'
-import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
+import { getPlatformContainerAccess } from '@shared/lib/platform-attribution/container-token'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
@@ -117,10 +116,9 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   }
 
   async getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>> {
-    const proxyUrl = getPlatformProxyBaseUrl()
-    const containerUrl = rewriteLoopbackForContainer(proxyUrl)
-
-    const authToken = await getPlatformContainerToken(agent?.id) ?? this.getEffectiveApiKey()
+    // Lazy: agent-actor imports the provider registry.
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    const access = agent && await getPlatformContainerAccess(agent.id, await agentRegistry.get(agent.id).container.hostApiBaseUrl())
 
     // Agent identity rides into the container as plain env vars; the container
     // folds them into ANTHROPIC_CUSTOM_HEADERS itself (see agent-container/src/
@@ -130,8 +128,8 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
     return {
       ANTHROPIC_API_KEY: '',
-      ANTHROPIC_BASE_URL: containerUrl,
-      ANTHROPIC_AUTH_TOKEN: authToken,
+      ANTHROPIC_BASE_URL: access?.baseUrl,
+      ANTHROPIC_AUTH_TOKEN: access?.token,
       ...(agent && {
         SUPERAGENT_AGENT_ID: agent.id,
         ...(agentName && { SUPERAGENT_AGENT_NAME: agentName }),

@@ -42,6 +42,7 @@ import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
 import llmRuntimeRouter from './routes/llm-runtime'
+import platformProxy from './routes/platform-proxy'
 import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
@@ -259,6 +260,7 @@ app.route('/api/notifications', notifications)
 app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
+app.route('/api/platform-proxy', platformProxy)
 app.route('/api/volumes', volumes)
 app.route('/api/volume-definitions', volumeDefinitions)
 app.route('/api/volume-types', volumeTypes)

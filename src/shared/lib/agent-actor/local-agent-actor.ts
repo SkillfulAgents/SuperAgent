@@ -155,6 +155,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     idleSince: () => runtime().idleSince(),
     stats: () => client().getStats(),
     info: () => client().getInfo(),
+    hostApiBaseUrl: async () => client().getHostApiBaseUrl(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
     syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind, runtime()),

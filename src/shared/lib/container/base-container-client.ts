@@ -43,9 +43,8 @@ import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
-import { getPlatformContainerToken } from '../platform-attribution/container-token'
-import { getPlatformProxyBaseUrl } from '../platform-auth/config'
-import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
+import { getPlatformContainerAccess } from '../platform-attribution/container-token'
+import { getPlatformAccessToken } from '../services/platform-auth-service'
 
 /**
  * The integration families whose providers this host can run, by the same
@@ -2015,7 +2014,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected async buildAgentEnv(extra?: Record<string, string>, agentName?: string): Promise<Record<string, string>> {
     const settings = getSettings()
     const provider = getActiveLlmProvider()
-    const platformToken = await getPlatformContainerToken(this.config.agentId)
+    const platform = getPlatformAccessToken()
+      ? await getPlatformContainerAccess(this.config.agentId, await this.getHostApiBaseUrl())
+      : undefined
     const merged: Record<string, string | undefined> = {
       ...(settings.llmDefault ? {} : await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
       SUPERAGENT_AGENT_ID: this.config.agentId,
@@ -2030,8 +2031,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       ...extra,
       // Platform services stay available with any LLM provider. Pin these after
       // custom config, including clearing stale overrides when disconnected.
-      PLATFORM_BASE_URL: platformToken ? rewriteLoopbackForContainer(getPlatformProxyBaseUrl()) : undefined,
-      PLATFORM_AUTH_TOKEN: platformToken,
+      PLATFORM_BASE_URL: platform?.baseUrl,
+      PLATFORM_AUTH_TOKEN: platform?.token,
     }
     const out: Record<string, string> = {}
     for (const [key, value] of Object.entries(merged)) {

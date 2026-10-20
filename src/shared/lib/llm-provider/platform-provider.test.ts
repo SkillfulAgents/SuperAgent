@@ -33,6 +33,10 @@ vi.mock('../config/settings', () => ({
   getSettings: () => ({}),
 }))
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentRegistry: { get: () => ({ container: { hostApiBaseUrl: async () => 'http://host.test:47891' } }) },
+}))
+vi.mock('../proxy/token-store', () => ({ getOrCreateProxyToken: async (slug: string) => `synth_${slug}` }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
 import { platformPlanCache } from './platform-plan-cache'
@@ -130,7 +134,18 @@ describe('getModelAvailability', () => {
   })
 })
 
-describe('getContainerEnvVars auth token (cold start)', () => {
+describe('getContainerEnvVars platform access', () => {
+  it('gives the container the app relay and its proxy token, never the platform token', async () => {
+    forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
+    const env = await provider.getContainerEnvVars({ id: 'abc123' })
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://host.test:47891/api/platform-proxy')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('synth_abc123')
+    expect(Object.values(env)).not.toContain('org-jwt::sub_owner')
+    expect(Object.values(env)).not.toContain('platform-token')
+  })
+})
+
+describe('getPlatformContainerToken (the relay\'s token for an agent)', () => {
   it('does not carry an ambient token into a disconnected container', async () => {
     platformAccessToken.mockReturnValue(null)
     currentAttribution.mockReturnValue({ bearerToken: () => 'old-token::member' })
@@ -139,32 +154,30 @@ describe('getContainerEnvVars auth token (cold start)', () => {
     expect(currentAttribution).not.toHaveBeenCalled()
   })
 
-  it('bakes the agent-resolved attribution token when an identity is provided', async () => {
+  it('resolves the agent owner\'s attribution token', async () => {
     forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
-    const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))
+    expect(await getPlatformContainerToken('abc123')).toBe('org-jwt::sub_owner')
     expect(forAgentAttribution).toHaveBeenCalledWith('abc123')
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_owner')
   })
 
-  it('uses the ambient attribution when no identity is provided', async () => {
+  it('uses the ambient attribution when no agent is given', async () => {
     currentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_ambient' })
-    expect((await provider.getContainerEnvVars()).ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_ambient')
+    expect(await getPlatformContainerToken()).toBe('org-jwt::sub_ambient')
     expect(forAgentAttribution).not.toHaveBeenCalled()
   })
 
   it('reports and falls back to the bare token when an org JWT resolves no member', async () => {
     requiresActingMember.mockReturnValue(true)
-    const env = (await provider.getContainerEnvVars({ id: 'abc123' }))
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(await getPlatformContainerToken('abc123')).toBe('platform-token')
     expect(captureMessage).toHaveBeenCalledWith(
-      'platform container env built without acting member',
-      expect.objectContaining({ tags: { area: 'platform-attribution', op: 'container.env.no_member' } }),
+      'platform relay call without acting member',
+      expect.objectContaining({ tags: { area: 'platform-attribution', op: 'relay.no_member' } }),
     )
   })
 
   it('does not report the fallback for an opaque access key', async () => {
     requiresActingMember.mockReturnValue(false)
-    expect((await provider.getContainerEnvVars({ id: 'abc123' })).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(await getPlatformContainerToken('abc123')).toBe('platform-token')
     expect(captureMessage).not.toHaveBeenCalled()
   })
 })
@@ -181,7 +194,6 @@ describe('getContainerEnvVars agent identity', () => {
     const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))
     expect(env.SUPERAGENT_AGENT_ID).toBe('abc123')
     expect(env.SUPERAGENT_AGENT_NAME).toBe('My Agent')
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
   })
 
   it('omits identity env vars when no identity is provided', async () => {

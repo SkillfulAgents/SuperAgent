@@ -4,10 +4,23 @@ import {
   AGENT_BROWSER_BASH_WARNING,
   MessageQueue,
   resolveRemoteMcpProxyUrl,
+  withPlatformRelayOnHostApi,
   resultNeedsResumeErrorFallback,
   startsWithAgentBrowserCommand,
   stillQueuedFromReceipt,
 } from './claude-code'
+
+describe('withPlatformRelayOnHostApi', () => {
+  it('moves the Platform relay onto the talk-back origin and leaves other providers alone', () => {
+    const talkback = 'http://127.0.0.1:9412/api'
+    process.env.SUPERAGENT_HOST_API_URL = talkback
+    expect(withPlatformRelayOnHostApi({ ANTHROPIC_BASE_URL: 'http://10.20.108.29:3000/api/platform-proxy', X: '1' }))
+      .toEqual({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:9412/api/platform-proxy', X: '1' })
+    expect(withPlatformRelayOnHostApi({ ANTHROPIC_BASE_URL: 'https://openrouter.ai/api' }).ANTHROPIC_BASE_URL)
+      .toBe('https://openrouter.ai/api')
+    delete process.env.SUPERAGENT_HOST_API_URL
+  })
+})
 
 describe('resolveRemoteMcpProxyUrl', () => {
   it('re-origins a direct host-app proxyUrl onto the talk-back base', () => {

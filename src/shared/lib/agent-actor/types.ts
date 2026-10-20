@@ -216,6 +216,8 @@ export interface ContainerOps {
   stats(): Promise<ContainerStats | null>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
   info(): Promise<ContainerInfo>
+  /** `client.getHostApiBaseUrl` — the app's API as this agent's container reaches it. */
+  hostApiBaseUrl(): Promise<string>
   /** `updateConnectedAccountsEnvironment` (connection-runtime-sync) with this agent's client. */
   updateConnectedAccountsEnvironment(): Promise<Response>
   /** `updateRemoteMcpEnvironment` (connection-runtime-sync) with this agent's client. */

@@ -11,13 +11,10 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
 }))
 const getContainerEnvVars = vi.fn((): Record<string, string> => ({ ANTHROPIC_API_KEY: 'provider-key' }))
-const platformToken = vi.fn(async (_agentId: string): Promise<string | undefined> => undefined)
-vi.mock('../platform-attribution/container-token', () => ({
-  getPlatformContainerToken: (agentId: string) => platformToken(agentId),
-}))
-vi.mock('../platform-auth/config', () => ({
-  getPlatformProxyBaseUrl: () => 'http://localhost:8080',
-}))
+const platformToken = vi.fn((): string | null => null)
+vi.mock('../services/platform-auth-service', () => ({ getPlatformAccessToken: () => platformToken() }))
+vi.mock('../proxy/token-store', () => ({ getOrCreateProxyToken: async (agentId: string) => `synth_${agentId}` }))
+vi.mock('../platform-attribution', () => ({ attribution: {} }))
 const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
@@ -32,6 +29,9 @@ class TestContainerClient extends BaseContainerClient {
   public testIsPortConflictError(error: unknown): boolean {
     return this.isPortConflictError(error)
   }
+  public getHostApiBaseUrl(): string {
+    return 'http://host.test:47891'
+  }
   public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
   }
@@ -41,7 +41,7 @@ describe('buildAgentEnv', () => {
   afterEach(() => {
     enableToolSearch.mockReturnValue(true)
     toolSearchEnv.mockReturnValue('true')
-    platformToken.mockReset().mockResolvedValue(undefined)
+    platformToken.mockReset().mockReturnValue(null)
     getContainerEnvVars.mockReset().mockReturnValue({ ANTHROPIC_API_KEY: 'provider-key' })
   })
 
@@ -62,8 +62,8 @@ describe('buildAgentEnv', () => {
     { ANTHROPIC_API_KEY: 'direct-key' },
     { ANTHROPIC_BASE_URL: 'https://other-provider.example', ANTHROPIC_AUTH_TOKEN: 'other-token' },
     { CLAUDE_CODE_USE_BEDROCK: '1', AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key' },
-  ] as Record<string, string>[])('supplies independent Platform service credentials with LLM env %j', async (llmEnv) => {
-    platformToken.mockResolvedValue('platform-token::agent-owner')
+  ] as Record<string, string>[])('points Platform services at the app relay, never the platform token, with LLM env %j', async (llmEnv) => {
+    platformToken.mockReturnValue('platform-token')
     getContainerEnvVars.mockReturnValue(llmEnv)
     const client = new TestContainerClient({
       agentId: 'my-agent',
@@ -71,9 +71,9 @@ describe('buildAgentEnv', () => {
     })
     const env = await client.testBuildAgentEnv({ PLATFORM_AUTH_TOKEN: 'wrong-token' })
     expect(env).toMatchObject(llmEnv)
-    expect(env.PLATFORM_BASE_URL).toBe('http://host.docker.internal:8080')
-    expect(env.PLATFORM_AUTH_TOKEN).toBe('platform-token::agent-owner')
-    expect(platformToken).toHaveBeenCalledWith('my-agent')
+    expect(env.PLATFORM_BASE_URL).toBe('http://host.test:47891/api/platform-proxy')
+    expect(env.PLATFORM_AUTH_TOKEN).toBe('synth_my-agent')
+    expect(Object.values(env)).not.toContain('platform-token')
   })
 
   it('omits Platform service credentials when disconnected, including old custom overrides', async () => {
