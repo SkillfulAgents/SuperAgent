@@ -353,7 +353,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
       ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown',
       session_id: session?.sessionId ?? null, credential_source: 'platform',
     })
-  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, track])
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, session?.sessionId, track])
   useEffect(() => {
     if (!shownRef.current || clearedRef.current || !billing.cleared || holding) return
     clearedRef.current = true
