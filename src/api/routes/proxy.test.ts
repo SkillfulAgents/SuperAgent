@@ -82,7 +82,8 @@ const mockResolveApiPolicy = vi.fn()
 const mockRequestReview = vi.fn()
 const mockRequestReauth = vi.fn()
 
-vi.mock('@shared/lib/proxy/scope-matcher', () => ({
+vi.mock('@shared/lib/proxy/scope-matcher', async (importOriginal) => ({
+  globMatch: (await importOriginal<typeof import('@shared/lib/proxy/scope-matcher')>()).globMatch,
   matchScopes: (...args: unknown[]) => mockMatchScopes(...args),
 }))
 

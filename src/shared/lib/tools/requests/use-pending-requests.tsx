@@ -4,6 +4,7 @@ import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
 import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
+import { sendPreviewSchema, type SendPreview } from '@shared/lib/proxy/send-preview/schema'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -236,6 +237,7 @@ export interface PendingReview {
   displayText?: string
   endpointDescription?: string
   requestBody?: string
+  sendPreview?: SendPreview
   xAgent?: XAgentReview
   ruleOutcomes?: ReviewRuleOutcomeView[]
   ruleProposal?: RuleProposalReview
@@ -344,6 +346,7 @@ export function reviewFromEnvelope(
         : undefined,
     }
   }
+  const sendPreview = sendPreviewSchema.safeParse(payload.sendPreview).data
   return {
     id: request.id,
     agentSlug: request.scope.agentSlug ?? '',
@@ -364,6 +367,7 @@ export function reviewFromEnvelope(
     displayText: typeof payload.displayText === 'string' ? payload.displayText : undefined,
     ...(typeof payload.endpointDescription === 'string' ? { endpointDescription: payload.endpointDescription } : {}),
     ...(typeof payload.requestBody === 'string' ? { requestBody: payload.requestBody } : {}),
+    ...(sendPreview ? { sendPreview } : {}),
     ...(xAgent ? { xAgent } : {}),
     ...(parseRuleOutcomes(payload.ruleOutcomes) ? { ruleOutcomes: parseRuleOutcomes(payload.ruleOutcomes) } : {}),
     ...(parseRuleProposal(payload.ruleProposal) ? { ruleProposal: parseRuleProposal(payload.ruleProposal) } : {}),
@@ -906,6 +910,7 @@ export function usePendingRequests({
           displayText: review.displayText,
           endpointDescription: review.endpointDescription,
           requestBody: review.requestBody,
+          sendPreview: review.sendPreview,
           ruleOutcomes: review.ruleOutcomes,
           ruleProposal: review.ruleProposal,
           onComplete: handleProxyReviewComplete,

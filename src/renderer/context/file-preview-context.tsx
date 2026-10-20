@@ -413,6 +413,11 @@ export function FilePreviewProvider({
   )
 }
 
+/** For a part that can open files but also renders where no drawer is mounted (dashboards). */
+export function useOptionalFilePreview(): FilePreviewContextType | null {
+  return useContext(FilePreviewContext)
+}
+
 export function useFilePreview(): FilePreviewContextType {
   const ctx = useContext(FilePreviewContext)
   if (!ctx) throw new Error('useFilePreview must be used within FilePreviewProvider')

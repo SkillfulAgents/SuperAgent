@@ -9,6 +9,7 @@ import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request
 import { generateReviewDisplayText, type ReviewDetails } from './review-display'
 import { heldByRequireRule, parseRuleProposal } from './rules/proposal-schema'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
+import { sendPreviewSchema } from './send-preview/schema'
 
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -67,6 +68,7 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
   const endpointDescription =
     typeof p.endpointDescription === 'string' ? p.endpointDescription : undefined
   const endpointAmbiguous = p.endpointAmbiguous === true
+  const sendPreview = sendPreviewSchema.safeParse(p.sendPreview).data
   const displayText =
     typeof p.displayText === 'string' && p.displayText.length > 0
       ? p.displayText
@@ -83,6 +85,7 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
     ...(endpointDescription !== undefined ? { endpointDescription } : {}),
     ...(endpointAmbiguous ? { endpointAmbiguous } : {}),
     ...(typeof p.requestBody === 'string' ? { requestBody: p.requestBody } : {}),
+    ...(sendPreview ? { sendPreview } : {}),
     ...(Array.isArray(p.ruleOutcomes) && p.ruleOutcomes.length > 0
       ? { ruleOutcomes: p.ruleOutcomes as ReviewDetails['ruleOutcomes'] }
       : {}),
@@ -212,7 +215,7 @@ export class AgentReviews {
       const timer = setTimeout(settleTimedOut, REVIEW_TIMEOUT_MS)
       this.settlers.set(id, { waiter: resolve, timer, recheck: options.recheck === true })
 
-      const displayText = generateReviewDisplayText(
+      const displayText = details.sendPreview?.title ?? generateReviewDisplayText(
         details.toolkit,
         details.method,
         details.targetPath,

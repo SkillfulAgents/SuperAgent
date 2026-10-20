@@ -1,3 +1,4 @@
+import { sendPreviewSchema } from '@shared/lib/proxy/send-preview/schema'
 import { xAgentFileTransferSchema } from '@shared/lib/proxy/x-agent-review'
 import { z } from 'zod'
 
@@ -147,6 +148,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       endpointDescription: lenientString,
       endpointAmbiguous: z.boolean().optional().catch(undefined),
       requestBody: lenientString,
+      sendPreview: sendPreviewSchema.optional().catch(undefined),
       ruleOutcomes: z
         .array(z.looseObject({
           ruleId: z.string(),

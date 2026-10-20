@@ -207,7 +207,7 @@ export function graphqlRootField(body: ArrayBuffer): string | undefined {
  *  - '*' matches one or more characters within a single segment
  *  - Segments without wildcards must match exactly
  */
-function globMatch(pattern: string, path: string): number | null {
+export function globMatch(pattern: string, path: string): number | null {
   const patternSegs = pattern.replace(/^\//, '').split('/')
   const pathSegs = path.replace(/^\//, '').split('/')
 

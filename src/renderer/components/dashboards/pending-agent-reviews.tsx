@@ -117,6 +117,7 @@ export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: P
             displayText={review.displayText}
             endpointDescription={review.endpointDescription}
             requestBody={review.requestBody}
+            sendPreview={review.sendPreview}
             ruleOutcomes={review.ruleOutcomes}
             ruleProposal={review.ruleProposal}
             agentSlug={agentSlug}

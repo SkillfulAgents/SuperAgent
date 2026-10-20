@@ -5,6 +5,7 @@
 import type { XAgentReview } from './x-agent-review'
 import type { ReviewRuleOutcome } from './rules/gate'
 import type { RuleProposalReview } from './rules/proposal-schema'
+import type { SendPreview } from './send-preview/schema'
 
 /**
  * Which policy table an "always allow/deny" on this review writes to.
@@ -33,6 +34,8 @@ export interface ReviewDetails {
   endpointAmbiguous?: boolean
   /** What the request sends, as text, for the card's request details. Absent for no body or a binary one. */
   requestBody?: string
+  /** The message a send would deliver, decoded, when a preview row reads it fully. */
+  sendPreview?: SendPreview
   /** Proxy rules that ran on this request and did not allow it. */
   ruleOutcomes?: ReviewRuleOutcome[]
   /** Set when the review asks a person to confirm an agent's proxy rule. */

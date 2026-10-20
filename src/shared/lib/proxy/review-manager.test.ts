@@ -94,6 +94,25 @@ describe('ReviewManager', () => {
     expect(result).toBe('deny')
   })
 
+  it('titles a review with its send preview when a row decoded the send', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'notes',
+      method: 'POST',
+      targetPath: '/v1/me/notes',
+      matchedScopes: ['write'],
+      scopeDescriptions: {},
+      sendPreview: { kind: 'note', look: 'notes', title: 'Allow posting this note?', data: { text: 'hi' } },
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    if (entry.kind !== 'proxy_review') throw new Error('expected a proxy review')
+    expect(entry.payload.displayText).toBe('Allow posting this note?')
+    expect(entry.payload.sendPreview).toEqual({ kind: 'note', look: 'notes', title: 'Allow posting this note?', data: { text: 'hi' } })
+    manager.submitDecision(entry.id, 'deny')
+    await promise
+  })
+
   it('raises a tied review with the generic headline', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-1',

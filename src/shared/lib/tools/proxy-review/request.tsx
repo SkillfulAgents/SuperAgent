@@ -28,6 +28,8 @@ import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
+import type { SendPreview } from '@shared/lib/proxy/send-preview/schema'
+import { SendPreviewView } from './send-preview/looks'
 
 // Endpoint descriptions come from API docs and carry inline Markdown
 // (`code`, [links](…)). The title renders them inline: no paragraph or block
@@ -76,6 +78,8 @@ interface ProxyReviewRequestItemProps {
   endpointDescription?: string
   /** What the request sends, as text. */
   requestBody?: string
+  /** The message a send would deliver, shown the way its service shows it. */
+  sendPreview?: SendPreview
   /** Proxy rules that ran on the request and did not allow it. */
   ruleOutcomes?: ReviewRuleOutcomeView[]
   /** Present when the review asks to approve an agent's proxy rule. */
@@ -170,6 +174,7 @@ function ScopeReviewRequestItem({
   displayText,
   endpointDescription,
   requestBody,
+  sendPreview,
   ruleOutcomes,
   sessionId,
   agentSlug,
@@ -336,7 +341,10 @@ function ScopeReviewRequestItem({
   const readOnlyConfig = readOnly
     ? {
         extraContent: (
-          <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+          <>
+            {sendPreview && <SendPreviewView preview={sendPreview} agentSlug={agentSlug} />}
+            <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+          </>
         ),
       }
     : false as const
@@ -355,7 +363,8 @@ function ScopeReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Code block showing method/path + toolkit, what the request sends, and the rules that held it */}
+      {/* The decoded message when a preview row read it, then method/path + toolkit, what the request sends, and the rules that held it */}
+      {sendPreview && <SendPreviewView preview={sendPreview} agentSlug={agentSlug} />}
       <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
       {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 

@@ -1,9 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { requestBodyPreview } from '@shared/lib/proxy/review-display'
+import { sendPreviewFor } from '@shared/lib/proxy/send-preview/registry'
+import { sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
 import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
@@ -343,7 +346,20 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   if (resolvedPolicyDecision === 'review') {
     const ruleOutcomes = reviewRuleOutcomes(ruleGate.evaluations)
     const rules = reportedRules(ruleGate)
+    // As a cross-agent transfer: a folder per send and per part, so equal names never overwrite.
+    const attachmentFolder = `uploads/outgoing/${randomUUID()}`
     try {
+      const sendPreview = await sendPreviewFor({
+        toolkit: account.toolkitSlug,
+        method,
+        targetPath,
+        body: textBody,
+        saveAttachment: async (name, bytes, index) => {
+          const path = `${attachmentFolder}/${index}/${sanitizeUploadFilename(name)}`
+          await agentRegistry.get(agentSlug).files.putDoc(path, bytes)
+          return `/workspace/${path}`
+        },
+      })
       const reviews = agentRegistry.get(agentSlug).inputs.reviews
       const decision = await awaitReview(reviews, (raise) => reviews.request({
         accountId,
@@ -356,6 +372,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         endpointDescription: policyResult.endpointDescription,
         endpointAmbiguous: policyResult.endpointAmbiguous,
         requestBody: requestBodyPreview(textBody),
+        sendPreview,
         ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
       }, raise), {
         signal: c.req.raw.signal,
