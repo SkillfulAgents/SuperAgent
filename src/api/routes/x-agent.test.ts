@@ -17,7 +17,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
-import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import type { FileOps, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as schema from '@shared/lib/db/schema'
@@ -125,8 +125,8 @@ function openBytes(bytes: Uint8Array | string, size?: number, body?: ReadableStr
     readAt: vi.fn(),
   }
 }
-const mockSourceOpen = vi.fn<FileOps['open']>()
-const mockTargetOpen = vi.fn<FileOps['open']>()
+const mockSourceOpen = vi.fn<StoreFileOps['open']>()
+const mockTargetOpen = vi.fn<StoreFileOps['open']>()
 const mockTargetWrite = vi.fn<FileOps['write']>()
 const mockTargetDelete = vi.fn<FileOps['delete']>()
 
@@ -379,8 +379,9 @@ beforeEach(async () => {
   } as never)
   mockSourceOpen.mockImplementation(async () => openBytes('source'))
   mockTargetOpen.mockImplementation(async () => openBytes('data'))
-  const sourceFiles = agentRegistry.get(CALLER_SLUG).files
-  const targetFiles = agentRegistry.get(TARGET_SLUG).files
+  // The store's files: reads of either agent's go through their opens.
+  const sourceFiles = agentRegistry.get(CALLER_SLUG).files as StoreFileOps
+  const targetFiles = agentRegistry.get(TARGET_SLUG).files as StoreFileOps
   mockTargetWrite.mockImplementation(targetFiles.write.bind(targetFiles))
   mockTargetDelete.mockImplementation(targetFiles.delete.bind(targetFiles))
   vi.spyOn(sourceFiles, 'open').mockImplementation(mockSourceOpen)

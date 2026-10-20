@@ -90,20 +90,27 @@ export function transferError(error: unknown): unknown {
 
 /** Read size and bounded bytes from the same confined open file. */
 export async function openXAgentFile(files: FileOps, filePath: string): Promise<{ sizeBytes: number; body: ReadableStream<Uint8Array> }> {
-  const file = await files.open(filePath, { confined: true })
+  let opened: { size: number; stream: ReadableStream<Uint8Array> }
   try {
-    const sizeBytes = await file.size()
-    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) throw new XAgentAttachmentError('File size is unavailable', 502)
-    if (sizeBytes > MAX_X_AGENT_ATTACHMENT_BYTES) throw new XAgentAttachmentError('File exceeds the transfer limit', 413)
-    if (sizeBytes === 0) {
-      await file.close()
-      return { sizeBytes, body: new ReadableStream({ start: (controller) => controller.close() }) }
-    }
-    return { sizeBytes, body: countedBody(file.stream({ start: 0, end: sizeBytes - 1 }), sizeBytes, filePath) }
+    opened = await files.readSized(filePath, { confined: true })
   } catch (error) {
-    await file.close().catch(() => {})
     throw transferError(error)
   }
+  const { size: sizeBytes, stream } = opened
+  try {
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) throw new XAgentAttachmentError('File size is unavailable', 502)
+    if (sizeBytes > MAX_X_AGENT_ATTACHMENT_BYTES) throw new XAgentAttachmentError('File exceeds the transfer limit', 413)
+  } catch (error) {
+    await stream.cancel().catch(() => {})
+    throw error
+  }
+  return { sizeBytes, body: sizeBytes === 0 ? stream : countedBody(stream, sizeBytes, filePath) }
+}
+
+/** The stream, failed once the signal aborts: the write it feeds then discards what it staged. */
+function abortable(body: ReadableStream<Uint8Array>, signal: AbortSignal | undefined): ReadableStream<Uint8Array> {
+  if (!signal) return body
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal })
 }
 
 export function normalizeXAgentAttachmentPaths(paths: string[]): string[] {
@@ -138,7 +145,7 @@ export async function transferXAgentAttachments(input: {
       const filename = sanitizeUploadFilename(path.posix.basename(sourcePath))
       const targetPath = `${targetDirectory}/${index}/${filename}`
       try {
-        await input.targetFiles.write(targetPath, body, { confined: true, overwrite: false, signal: input.signal })
+        await input.targetFiles.write(targetPath, abortable(body, input.signal), { confined: true, overwrite: false })
       } catch (error) {
         // A refused destination may not have consumed the source yet.
         if (!body.locked) await body.cancel().catch(() => {})

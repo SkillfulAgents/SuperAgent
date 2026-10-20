@@ -1,5 +1,5 @@
 /**
- * Line and JSONL readers over `FileOps`, for transcripts.
+ * Line and JSONL readers over `StoreFileOps`, for transcripts.
  *
  * Each reader is the one it replaces with the file operations in place of the
  * filesystem calls: an open, a size, positional reads or a stream over the
@@ -9,7 +9,7 @@
  * below 0x80, so a multi-byte UTF-8 sequence is never split.
  */
 import { parseJsonlLine } from '@shared/lib/utils/file-storage'
-import type { FileOps, OpenFile } from './types'
+import type { StoreFileOps, OpenFile } from './types'
 import { WorkspaceFileError } from './workspace-path'
 
 const NEWLINE_BYTE = 0x0a
@@ -81,7 +81,7 @@ export async function* chunksOf(stream: ReadableStream<Uint8Array>): AsyncGenera
  * operations' default applies.
  */
 export async function* streamLines(
-  files: FileOps,
+  files: StoreFileOps,
   path: string,
   range?: { start?: number; end?: number },
   signal?: AbortSignal,
@@ -140,7 +140,7 @@ export async function* streamLines(
 }
 
 /** Parsed JSONL entries in file order; blank and malformed lines are skipped. An absent file throws `not-found`. */
-export async function* streamJsonl<T = unknown>(files: FileOps, path: string): AsyncIterable<T> {
+export async function* streamJsonl<T = unknown>(files: StoreFileOps, path: string): AsyncIterable<T> {
   for await (const line of streamLines(files, path)) {
     const parsed = parseJsonlLine<T>(line)
     if (parsed !== undefined) yield parsed
@@ -148,7 +148,7 @@ export async function* streamJsonl<T = unknown>(files: FileOps, path: string): A
 }
 
 /** Every entry of a JSONL file, or `[]` when it is absent. */
-export async function readJsonl<T = unknown>(files: FileOps, path: string): Promise<T[]> {
+export async function readJsonl<T = unknown>(files: StoreFileOps, path: string): Promise<T[]> {
   const results: T[] = []
   try {
     for await (const item of streamJsonl<T>(files, path)) results.push(item)
@@ -163,7 +163,7 @@ export async function readJsonl<T = unknown>(files: FileOps, path: string): Prom
  * Open a file for the backward readers below: null when it is absent, which
  * they answer with "nothing", and the handle otherwise.
  */
-async function openOrNull(files: FileOps, path: string): Promise<OpenFile | null> {
+async function openOrNull(files: StoreFileOps, path: string): Promise<OpenFile | null> {
   try {
     return await files.open(path)
   } catch (error) {
@@ -183,7 +183,7 @@ async function openOrNull(files: FileOps, path: string): Promise<OpenFile | null
  * Reads start at READ_CHUNK_MIN and double up to READ_CHUNK_MAX.
  */
 export async function readTailLines(
-  files: FileOps,
+  files: StoreFileOps,
   path: string,
   maxLines: number,
   signal?: AbortSignal,
@@ -297,7 +297,7 @@ export async function readTailLines(
  * takes far fewer.
  */
 export async function* iterateLinesBackward(
-  files: FileOps,
+  files: StoreFileOps,
   path: string,
   signal?: AbortSignal,
 ): AsyncGenerator<{ line: Buffer; offset: number }> {

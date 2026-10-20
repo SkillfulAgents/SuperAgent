@@ -135,7 +135,7 @@ export class LocalAgentActor implements AgentActor {
       })
     this.store = this.state.store
     this.files = this.store.files
-    this.memories = createMemoryOps(this.files)
+    this.memories = createMemoryOps(this.store.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)

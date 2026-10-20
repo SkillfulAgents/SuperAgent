@@ -4,7 +4,7 @@ import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
-import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import type { OpenFile } from '@shared/lib/agent-actor/types'
 import { normalizeXAgentAttachmentPaths, transferXAgentAttachments, transferError, XAgentAttachmentError } from './x-agent-attachment-service'
 import { MAX_X_AGENT_ATTACHMENT_BYTES } from './x-agent-attachment-schema'
 
@@ -38,8 +38,8 @@ describe('normalizeXAgentAttachmentPaths', () => {
 
 describe('transferXAgentAttachments through local FileOps', () => {
   let root: string
-  let source: FileOps
-  let target: FileOps
+  let source: LocalFileOps
+  let target: LocalFileOps
   const targetDirectory = '/workspace/uploads/x-agent/test-transfer'
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'xagent-fileops-'))
@@ -90,12 +90,18 @@ describe('transferXAgentAttachments through local FileOps', () => {
     const cause = new XAgentAttachmentError('File changed', 409)
     expect(transferError(new TypeError('fetch failed', { cause }))).toBe(cause)
   })
-  it('closes an oversized source before reading it', async () => {
-    const file: OpenFile = { size: async () => MAX_X_AGENT_ATTACHMENT_BYTES + 1, stream: vi.fn(), close: vi.fn(async () => {}), readAt: vi.fn() }
+  it('releases an oversized source and writes none of it', async () => {
+    const close = vi.fn(async () => {})
+    const file: OpenFile = {
+      size: async () => MAX_X_AGENT_ATTACHMENT_BYTES + 1,
+      stream: () => new ReadableStream({ cancel: close }),
+      close,
+      readAt: vi.fn(),
+    }
     vi.spyOn(source, 'open').mockResolvedValue(file)
     await expect(transfer(['large'])).rejects.toMatchObject({ status: 413 })
-    expect(file.close).toHaveBeenCalledOnce()
-    expect(file.stream).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+    expect(await target.stat(targetDirectory)).toBeNull()
   })
   it('refuses symlink escapes when reading, writing, and cleaning up', async () => {
     const outside = path.join(root, 'outside')

@@ -818,13 +818,8 @@ export interface WriteOptions {
   existingParent?: boolean
   /** With `confined`: refuse a root that no longer resolves to itself, so nothing is staged where a link leads. */
   exactRoot?: boolean
-  /** Filesystem only: a lock held around the final publish and a failed write's cleanup, not while content is written. It also turns on the check that the staged file is still this write's. */
-  lock?: (fn: () => Promise<void>) => Promise<void>
-  /** Filesystem only: called under `lock` just before the destination is published; throwing refuses it. */
-  beforePublish?: (destination: string) => Promise<void>
   /** Publish only if no destination exists, including racing writers. */
   overwrite?: boolean
-  signal?: AbortSignal
   /**
    * File mode to apply. Advisory: a filesystem implementation applies it (the
    * container must be able to read `.env`), anything else ignores it.
@@ -892,7 +887,11 @@ export interface FileOps {
   getDoc(path: string): Promise<Uint8Array | null>
   /** Replace a whole file atomically; missing parent directories are created. */
   putDoc(path: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void>
-  /** Write a file of any size from a stream; parents are created; nothing is left behind on failure. */
+  /**
+   * Write a file of any size from a stream; parents are created; nothing is
+   * left behind on failure. A caller that gives up errors or cancels the
+   * stream, which fails the write.
+   */
   write(path: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: WriteOptions): Promise<{ size: number }>
   /** Remove a file, or a directory tree with `recursive`. An absent path is a no-op. */
   delete(path: string, options?: { recursive?: boolean; confined?: boolean }): Promise<void>
@@ -904,6 +903,20 @@ export interface FileOps {
    * directory → `not-a-file`.
    */
   append(path: string, bytes: Uint8Array | string): Promise<void>
+  /**
+   * A whole file's size and its bytes from one open, the stream bounded to
+   * that size even while the file grows. With `confined`, a path that leads
+   * out of the workspace through a link is refused. Absent → `not-found`; a
+   * directory → `not-a-file`. A caller that does not read the stream cancels it.
+   */
+  readSized(path: string, options?: { confined?: boolean }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }>
+}
+
+/**
+ * `FileOps` as the actor's own storage reaches it, never handed out: an open
+ * file for reads at byte offsets is a handle, and one cannot cross a transport.
+ */
+export interface StoreFileOps extends FileOps {
   /**
    * Open a file for reads at byte offsets: what a transcript reader that
    * pages backward from the end, or serves one span out of the middle, needs
