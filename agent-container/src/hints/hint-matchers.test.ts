@@ -65,6 +65,14 @@ describe('compileTrigger', () => {
     expect(secret({ event: 'PreToolUse', toolName: 'mcp__user-input__request_secret', toolInput: { secretName: 'SLACK_TOKEN' } })).toBe(false)
   })
 
+  it('compares boolean and number fields as text', () => {
+    const foreground = compileTrigger({ event: 'PreToolUse', tool: 'Bash', input: { command: 'sleep *' }, unless: { run_in_background: 'true' } })
+    const call = (run_in_background?: boolean) => ({ event: 'PreToolUse' as const, toolName: 'Bash', toolInput: { command: 'sleep 10', run_in_background } })
+    expect(foreground(call())).toBe(true)
+    expect(foreground(call(false))).toBe(true)
+    expect(foreground(call(true))).toBe(false)
+  })
+
   it('treats a missing field as not matching input and not matching unless', () => {
     const needsPath = compileTrigger({ event: 'PostToolUse', tool: 'Write', input: { file_path: '*' } })
     const avoidsPath = compileTrigger({ event: 'PostToolUse', tool: 'Write', unless: { file_path: '*.md' } })
