@@ -99,7 +99,7 @@ export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[]
   },
 ]
 
-/** Platform-specific default-model shortlist. The provider default is Grok. */
+/** Platform-specific default-model shortlist. The provider default is Sonnet. */
 export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
   {
     model: 'opus',
@@ -107,6 +107,14 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     tag: 'Deep reasoning',
     description: 'Best for complex, multi-step tasks.',
     subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
   },
   {
     model: 'gpt-sol',
@@ -120,9 +128,9 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     model: 'grok',
     label: 'Grok',
     resolveLabelFromCatalog: true,
-    tag: 'Recommended',
-    description: 'Fast, capable, and efficient for everyday agent work.',
-    subdescription: 'The default model for Gamut Platform.',
+    tag: 'xAI flagship',
+    description: 'Fast and capable for everyday agent work.',
+    subdescription: 'An efficient alternative to Sonnet.',
   },
 ]
 
@@ -170,6 +178,7 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     blurb: 'Balanced speed and capability',
     family: 'sonnet',
     isLatest: true,
+    isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-sonnet-5-5'),
@@ -216,7 +225,6 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
-    isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-opus-5-5'),

@@ -157,16 +157,16 @@ test.describe('Model selection', () => {
   })
 
   test('the default bare-alias model resolves to a concrete id on the wire', async ({ page }, testInfo) => {
-    // The default `agentModel` setting is the bare alias 'opus'. AgentHome's
-    // trigger must display the resolved Opus model, and a send without touching
+    // The default `agentModel` setting is the bare alias 'sonnet'. AgentHome's
+    // trigger must display the resolved Sonnet model, and a send without touching
     // the popover must put the resolved concrete id on the wire.
     const tag = `${testInfo.workerIndex}-${Date.now()}`
 
     await agentPage.createAgent(`First message ${tag}`)
 
-    // Back on agent-home: the trigger shows the resolved Opus model (not Sonnet).
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Sonnet')
+    // Back on agent-home: the trigger shows the resolved Sonnet model (not Opus).
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Sonnet')
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Opus')
 
     const followUp = `Default-alias message ${tag}`
     await page.locator('[data-testid="home-message-input"]').fill(followUp)
@@ -174,17 +174,17 @@ test.describe('Model selection', () => {
 
     const record = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === followUp
     )
-    // Bare 'opus' resolves to its concrete latest id — match family-shape so the
+    // Bare 'sonnet' resolves to its concrete latest id — match family-shape so the
     // test survives future default-version bumps.
-    expect(record.model).toContain('opus')
-    expect(record.model).not.toBe('opus')
+    expect(record.model).toContain('sonnet')
+    expect(record.model).not.toBe('sonnet')
   })
 
   test('Sonnet 4.6 offers Max effort but hides Extra High', async ({ page }) => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Default starts on Opus — confirm xhigh/max are visible there first.
+    // Default starts on Sonnet 5.5 — confirm xhigh/max are visible there first.
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await expect(page.locator('[data-testid="effort-option-xhigh"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()

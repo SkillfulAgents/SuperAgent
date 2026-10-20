@@ -35,7 +35,7 @@ export function ConfigureModelStep() {
   const options = provider?.defaultModelOptions ?? []
   const catalog = provider?.catalog ?? []
   // The provider default is the last-resort selection while settings load or
-  // when no global model has been persisted. Platform declares Grok here.
+  // when no global model has been persisted.
   const agentModel = settings?.models?.agentModel ?? provider?.defaultModels?.agent
   const matchedOption = findDefaultModelOption(agentModel, options, catalog)
   const otherSelected = showOther || (Boolean(agentModel) && !matchedOption)

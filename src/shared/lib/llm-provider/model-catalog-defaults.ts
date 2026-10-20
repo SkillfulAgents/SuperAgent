@@ -11,7 +11,7 @@ export interface CatalogDefaultModels {
 
 export const ANTHROPIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
-  agentModel: 'opus',
+  agentModel: 'sonnet',
   browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }
@@ -32,7 +32,7 @@ export const BEDROCK_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
 
 export const PLATFORM_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
-  agentModel: 'grok',
+  agentModel: 'sonnet',
   browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }

@@ -25,16 +25,17 @@ beforeEach(() => {
 })
 
 describe('getProviderCatalog', () => {
-  it('exposes provider-owned onboarding options and uses Grok as the Platform agent fallback', () => {
+  it('exposes provider-owned onboarding options and uses Sonnet as the Platform agent fallback', () => {
     const platform = getAllProviderInfo().find((provider) => provider.id === 'platform')!
 
     expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
       'opus',
+      'sonnet',
       'gpt-sol',
       'grok',
     ])
-    expect(platform.defaultModels.agent).toBe('grok')
-    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('grok')
+    expect(platform.defaultModels.agent).toBe('sonnet')
+    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('sonnet')
   })
 
   it('declares one concrete picker default for every built-in model vendor', () => {
@@ -44,20 +45,20 @@ describe('getProviderCatalog', () => {
         .map((model) => [model.icon, model.id])
 
     expect(defaultsByIcon('anthropic')).toEqual([
-      ['anthropic', 'claude-opus-5-5'],
+      ['anthropic', 'claude-sonnet-5-5'],
     ])
     expect(defaultsByIcon('bedrock')).toEqual([
       ['anthropic', 'us.anthropic.claude-opus-4-8'],
     ])
     expect(defaultsByIcon('openrouter')).toEqual([
-      ['anthropic', 'claude-opus-5-5'],
+      ['anthropic', 'claude-sonnet-5-5'],
       ['openai', 'openai/gpt-5.5'],
       ['zai', 'z-ai/glm-5.2'],
       ['xai', 'x-ai/grok-4.7'],
       ['kimi', 'moonshotai/kimi-k3'],
     ])
     expect(defaultsByIcon('platform')).toEqual([
-      ['anthropic', 'claude-opus-5-5'],
+      ['anthropic', 'claude-sonnet-5-5'],
       ['openai', 'gpt-6.1-sol'],
       ['xai', 'grok-4.7'],
       ['gemini', 'gemini-4-argon'],
