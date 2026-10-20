@@ -7,7 +7,7 @@ const TOOL_PATTERN_FIELDS: Record<string, string> = {
   Bash: 'command',
 }
 
-function escapeRegExp(text: string): string {
+export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
@@ -25,10 +25,14 @@ export function toolPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${source}${wordThenAnything ? '(?=$|[\\s;&|])' : '$'}`, 's')
 }
 
-function compileToolMatch(match: string): HintMatcher {
+export function parseToolMatch(match: string): { toolName: string; pattern?: string } {
   const parsed = /^([\w.-]+)(?:\((.+)\))?$/s.exec(match.trim())
   if (!parsed) throw new Error(`Invalid tool match "${match}"; expected Tool or Tool(pattern)`)
-  const [, toolName, pattern] = parsed
+  return { toolName: parsed[1], pattern: parsed[2] }
+}
+
+function compileToolMatch(match: string): HintMatcher {
+  const { toolName, pattern } = parseToolMatch(match)
   if (pattern === undefined) {
     return (input) => 'toolName' in input && input.toolName === toolName
   }

@@ -1,6 +1,6 @@
-import type { HookCallback, HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { compileTrigger } from './hint-matchers'
-import type { Hint, HintEventInput } from './hint-schema'
+import type { HookCallback, HookCallbackMatcher, HookInput } from '@anthropic-ai/claude-agent-sdk'
+import { compileTrigger, escapeRegExp, parseToolMatch } from './hint-matchers'
+import type { Hint, HintEvent, HintEventInput } from './hint-schema'
 
 function toHintEventInput(input: HookInput): HintEventInput | undefined {
   switch (input.hook_event_name) {
@@ -28,5 +28,24 @@ export function createHintsHook(hints: Hint[]): HookCallback {
       .map(({ hint }) => hint.content)
     if (matched.length === 0) return {}
     return { hookSpecificOutput: { hookEventName: event.event, additionalContext: matched.join('\n\n') } }
+  }
+}
+
+/**
+ * SDK hook entries per event. A tool event only gets an entry whose matcher
+ * lists the tools some hint names, so other tool calls skip the callback.
+ */
+export function createHintHookMatchers(hints: Hint[]): Record<HintEvent, HookCallbackMatcher[]> {
+  const hook = createHintsHook(hints)
+  const triggers = hints.flatMap((hint) => hint.triggers)
+  const forTools = (event: 'PreToolUse' | 'PostToolUse'): HookCallbackMatcher[] => {
+    const toolNames = [...new Set(triggers.filter((t) => t.event === event).map((t) => parseToolMatch(t.match).toolName))]
+    if (toolNames.length === 0) return []
+    return [{ matcher: `^(${toolNames.map(escapeRegExp).join('|')})$`, hooks: [hook] }]
+  }
+  return {
+    UserPromptSubmit: triggers.some((t) => t.event === 'UserPromptSubmit') ? [{ hooks: [hook] }] : [],
+    PreToolUse: forTools('PreToolUse'),
+    PostToolUse: forTools('PostToolUse'),
   }
 }

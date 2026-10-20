@@ -10,3 +10,5 @@ triggers:
 ---
 Short text the agent sees when a trigger matches.
 ```
+
+Set `BUILTIN_HINTS=0` in the container env to turn all built-in hints off (read once at start).
