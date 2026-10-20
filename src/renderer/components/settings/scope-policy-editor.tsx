@@ -52,21 +52,6 @@ const LABEL_GROUPS: Array<{
   { key: 'destructive', title: 'Destructive actions' },
 ]
 
-/** Marks a group or scope that the pending request needs. */
-function RequestTag({ testId }: { testId: string }) {
-  return (
-    <span data-testid={testId} className="ml-1.5 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground/80">
-      This request
-    </span>
-  )
-}
-
-/** The editor's group title for a scope, so callers name a scope's group the way the editor does. */
-export function scopeGroupTitle(toolkit: string, scope: string): string {
-  const label = getScopeLabel(toolkit, scope)
-  return LABEL_GROUPS.find((g) => g.key === label)?.title ?? 'Other actions'
-}
-
 /** Every scope a toolkit declares, flattened. Empty when we have no scope map for it. */
 function toolkitScopes(toolkit: string): string[] {
   const provider = SCOPE_MAPS[toolkit]
@@ -241,10 +226,6 @@ interface ScopePolicyEditorBodyProps {
    * toolbar — the parent renders ScopePolicyFilterControls wherever it wants.
    */
   filters?: ScopePolicyFilters
-  /** Scopes a pending request needs: their groups and rows are tagged. */
-  requestScopes?: string[]
-  /** Replaces the default action bar. `save` resolves false when the save failed. */
-  renderActions?: (actions: { isDirty: boolean; saving: boolean; save: () => Promise<boolean> }) => React.ReactNode
 }
 
 /**
@@ -258,8 +239,6 @@ export function ScopePolicyEditorBody({
   onCancel,
   hideActions,
   filters,
-  requestScopes,
-  renderActions,
 }: ScopePolicyEditorBodyProps) {
   const queryClient = useQueryClient()
   const [policies, setPolicies] = useState<ScopePolicy[]>([])
@@ -280,11 +259,7 @@ export function ScopePolicyEditorBody({
 
   // Get scopes from the scope map for this toolkit
   const provider = SCOPE_MAPS[toolkit]
-  // A request can need a scope the toolkit doesn't declare (a Gmail token reading a
-  // Drive file), so the request's scopes join the list.
-  const requestScopesKey = requestScopes?.join('\n') ?? ''
-  const requested = useMemo(() => new Set(requestScopesKey ? requestScopesKey.split('\n') : []), [requestScopesKey])
-  const allScopes = useMemo(() => [...new Set([...toolkitScopes(toolkit), ...requested])], [toolkit, requested])
+  const allScopes = useMemo(() => toolkitScopes(toolkit), [toolkit])
 
   // For each scope, prefer the curated description; otherwise borrow the
   // first endpoint description that mentions this scope.
@@ -307,10 +282,7 @@ export function ScopePolicyEditorBody({
     setFetchError(null)
     setOpenGroups({})
     apiFetch(`/api/policies/scope/${accountId}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Load failed: ${res.status}`)
-        return res.json()
-      })
+      .then((res) => res.json())
       .then((data) => {
         const allPolicies: Array<{ scope: string; decision: string }> = data.policies || []
         const existing = new Map<string, PolicyDecision>()
@@ -354,7 +326,7 @@ export function ScopePolicyEditorBody({
       })
       .catch((err) => {
         console.error('Failed to fetch scope policies:', err)
-        setFetchError('Failed to load these permissions. Saving is disabled.')
+        setFetchError('Failed to load policies. Showing defaults.')
         setPolicies(allScopes.map((scope) => ({ scope, decision: 'default' })))
         setSavedSnapshot('[]')
         setLoading(false)
@@ -444,28 +416,23 @@ export function ScopePolicyEditorBody({
 
   const currentSnapshot = useMemo(() => serializePolicies(currentBatch), [currentBatch])
   // Save is only meaningful when the editor differs from what's persisted.
-  // After a failed load the form shows defaults, and saving them would replace the real rules.
-  const isDirty = currentSnapshot !== savedSnapshot && !fetchError
+  const isDirty = currentSnapshot !== savedSnapshot
 
-  const handleSave = async (): Promise<boolean> => {
-    if (fetchError) return false
+  const handleSave = async () => {
     setSaving(true)
     try {
       const batch = [...currentBatch.entries()].map(([scope, decision]) => ({ scope, decision }))
 
-      const res = await apiFetch(`/api/policies/scope/${accountId}`, {
+      await apiFetch(`/api/policies/scope/${accountId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ policies: batch }),
       })
-      if (!res.ok) throw new Error(`Save failed: ${res.status}`)
       queryClient.invalidateQueries({ queryKey: ['scope-policies', accountId] })
       setSavedSnapshot(currentSnapshot)
       onSaved?.()
-      return true
     } catch (error) {
       console.error('Failed to save policies:', error)
-      return false
     } finally {
       setSaving(false)
     }
@@ -477,22 +444,16 @@ export function ScopePolicyEditorBody({
     )
   }
 
-  const holdsRequestScope = (rows: ScopePolicy[]) => rows.some((p) => requested.has(p.scope))
-
   const renderRow = (p: ScopePolicy, inherited?: 'allow' | 'review' | 'block') => (
     <div
       key={p.scope}
       data-testid={`scope-row-${p.scope}`}
-      className={cn(
-        'flex items-center justify-between gap-2 py-2 pl-8 pr-2',
-        requested.has(p.scope) && 'bg-muted/50',
-      )}
+      className="flex items-center justify-between gap-2 py-2 pl-8 pr-2"
     >
       <div className="flex-1 min-w-0">
         <span className="text-xs font-mono font-medium">
           <HighlightMatch text={p.scope} query={textFilter} />
         </span>
-        {requested.has(p.scope) && <RequestTag testId={`scope-row-request-${p.scope}`} />}
         {scopeDescriptions[p.scope] && (
           <p className="text-[11px] text-muted-foreground truncate">
             <HighlightMatch text={scopeDescriptions[p.scope]} query={textFilter} />
@@ -514,32 +475,6 @@ export function ScopePolicyEditorBody({
       </div>
     )
   }
-
-  const defaultActions = (
-    <>
-      {allScopes.length > 0 && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={resetToRecommended}
-          data-testid="reset-recommended-defaults"
-          className="mr-auto text-muted-foreground hover:text-foreground"
-        >
-          <Undo2 className="h-3.5 w-3.5 mr-1.5" />
-          Reset defaults
-        </Button>
-      )}
-      {onCancel && (
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-      )}
-      <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving || !isDirty}>
-        {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-        Save
-      </Button>
-    </>
-  )
 
   return (
     <div className="flex flex-col gap-3 min-h-0 flex-1">
@@ -600,7 +535,6 @@ export function ScopePolicyEditorBody({
                       <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground tabular-nums">
                         {rows.length}
                       </span>
-                      {holdsRequestScope(rows) && <RequestTag testId={`scope-group-request-${g.key}`} />}
                     </CollapsibleTrigger>
                     <PolicyDecisionDropdown
                       value={labelDefaults[g.key]}
@@ -635,7 +569,6 @@ export function ScopePolicyEditorBody({
                     <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground tabular-nums">
                       {groupedPolicies.other.length}
                     </span>
-                    {holdsRequestScope(groupedPolicies.other) && <RequestTag testId="scope-group-request-other" />}
                   </CollapsibleTrigger>
                 </div>
                 {/* Unlabeled scopes belong to no risk group, so there is no
@@ -664,8 +597,28 @@ export function ScopePolicyEditorBody({
         </div>
       </div>
       {!hideActions && (
-        <div className="flex flex-wrap items-center justify-end gap-2 pl-3 pr-2">
-          {renderActions ? renderActions({ isDirty, saving, save: handleSave }) : defaultActions}
+        <div className="flex items-center justify-end gap-2 pl-3 pr-2">
+          {allScopes.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={resetToRecommended}
+              data-testid="reset-recommended-defaults"
+              className="mr-auto text-muted-foreground hover:text-foreground"
+            >
+              <Undo2 className="h-3.5 w-3.5 mr-1.5" />
+              Reset defaults
+            </Button>
+          )}
+          {onCancel && (
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving || !isDirty}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            Save
+          </Button>
         </div>
       )}
     </div>

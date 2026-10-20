@@ -120,6 +120,51 @@ test.describe('Proxy Review Requests', () => {
     await sessionPage.allowProxyReview(review.id)
     await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
   })
+
+  test('proxy review: remember always allow for scope', async ({ page, request }, testInfo) => {
+    const { review } = await sendReviewScenario(page, request, testInfo, 'proxy review', {
+      xAgent: false,
+      toolkit: 'slack',
+      targetPath: 'api/chat.postMessage',
+      matchedScope: 'chat:write',
+    })
+
+    await sessionPage.waitForProxyReviewRequestById(review.id, 35000)
+
+    // Click always allow for this scope (opens Allow popover, then clicks scope button)
+    await sessionPage.alwaysAllowScope('chat:write', review.id)
+
+    // Review prompt should disappear.
+    await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
+    await expectPendingProxyReviewResolved(request, agent, review)
+
+    // Session should complete with approval message
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
+  })
+
+  test('proxy review: allow all requests for the minimal risk group', async ({ page, request }, testInfo) => {
+    const { review } = await sendReviewScenario(page, request, testInfo, 'proxy review', {
+      xAgent: false,
+      toolkit: 'slack',
+      targetPath: 'api/chat.postMessage',
+      matchedScope: 'chat:write',
+    })
+
+    await sessionPage.waitForProxyReviewRequestById(review.id, 35000)
+
+    // chat.postMessage is satisfied by chat:write (a "write"-labelled scope), so the
+    // minimal group offered is "write". Allowing it should approve and persist '*write'.
+    await sessionPage.alwaysAllowLabelGroup('write', review.id)
+
+    // Review prompt should disappear.
+    await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
+    await expectPendingProxyReviewResolved(request, agent, review)
+
+    // Session should complete with approval message
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
+  })
 })
 
 test.describe('X-Agent Review Requests', () => {

@@ -1,17 +1,16 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { ScopePolicyEditor, ScopePolicyEditorBody } from './scope-policy-editor'
+import { ScopePolicyEditor } from './scope-policy-editor'
 import { renderWithProviders, screen, waitFor, within } from '@renderer/test/test-utils'
 
 // Route apiFetch: GET returns the configured policies fixture; PUT captures its body.
 let policiesFixture: Array<{ scope: string; decision: string }> = []
 let lastPutBody: { policies: Array<{ scope: string; decision: string }> } | null = null
-let putOk = true
 
 const mockApiFetch = vi.fn((url: string, opts?: { method?: string; body?: string }) => {
   if (opts?.method === 'PUT') {
     lastPutBody = JSON.parse(opts.body as string)
-    return Promise.resolve({ ok: putOk, json: () => Promise.resolve({ ok: putOk }) })
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) })
   }
   return Promise.resolve({ ok: true, json: () => Promise.resolve({ policies: policiesFixture }) })
 })
@@ -45,7 +44,6 @@ describe('ScopePolicyEditor', () => {
     vi.clearAllMocks()
     policiesFixture = []
     lastPutBody = null
-    putOk = true
   })
 
   it('pre-fills the recommended baseline for an untouched account', async () => {
@@ -196,70 +194,6 @@ describe('ScopePolicyEditor', () => {
     await waitFor(() =>
       expect(scopeToggle('gmail.readonly', 'allow')).toHaveAttribute('data-inherited', 'true'),
     )
-  })
-
-  it('blocks saving over rules it failed to load', async () => {
-    mockApiFetch.mockImplementationOnce(() => Promise.resolve({ ok: false, json: () => Promise.resolve({ ok: false }) }))
-    renderWithProviders(<ScopePolicyEditorBody accountId="acc-14" toolkit="gmail" onCancel={() => {}} />)
-
-    expect(await screen.findByText('Failed to load these permissions. Saving is disabled.')).toBeInTheDocument()
-    expect(screen.getByTestId('scope-policy-save')).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
-  })
-
-  it("tags the request's group, then its scope once the group is open", async () => {
-    renderWithProviders(<ScopePolicyEditorBody accountId="acc-15" toolkit="gmail" requestScopes={['gmail.readonly']} />)
-
-    expect(await screen.findByTestId('scope-group-request-read')).toHaveTextContent('This request')
-    expect(screen.queryByTestId('scope-group-request-write')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('scope-row-gmail.readonly')).not.toBeInTheDocument()
-
-    await expandGroup('read')
-    expect(screen.getByTestId('scope-row-request-gmail.readonly')).toBeInTheDocument()
-    expect(screen.getAllByText('This request')).toHaveLength(2)
-  })
-
-  it('lists, tags and saves a requested scope the toolkit does not declare', async () => {
-    renderWithProviders(<ScopePolicyEditorBody accountId="acc-16" toolkit="gmail" requestScopes={['googledrive:drive.readonly']} />)
-
-    const groupTag = await screen.findByTestId(/^scope-group-request-/)
-    const group = groupTag.getAttribute('data-testid')!.replace('scope-group-request-', '')
-    screen.getByTestId(`scope-group-toggle-${group}`).click()
-    expect(await screen.findByTestId('scope-row-request-googledrive:drive.readonly')).toBeInTheDocument()
-
-    scopeToggle('googledrive:drive.readonly', 'block').click()
-    await waitFor(() => expect(scopeToggle('googledrive:drive.readonly', 'block')).toHaveAttribute('data-active', 'true'))
-    screen.getByTestId('scope-policy-save').click()
-    await waitFor(() => expect(lastPutBody).not.toBeNull())
-    expect(lastPutBody!.policies).toContainEqual({ scope: 'googledrive:drive.readonly', decision: 'block' })
-  })
-
-  it('hands its save and dirty state to custom actions, and reports a failed save', async () => {
-    policiesFixture = [{ scope: '*read', decision: 'allow' }]
-    putOk = false
-    const results: boolean[] = []
-    renderWithProviders(
-      <ScopePolicyEditorBody
-        accountId="acc-12"
-        toolkit="gmail"
-        renderActions={({ isDirty, save }) => (
-          <button type="button" data-testid="custom-save" data-dirty={String(isDirty)} onClick={async () => { results.push(await save()) }}>
-            save
-          </button>
-        )}
-      />,
-    )
-    await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
-    expect(screen.queryByTestId('scope-policy-save')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('reset-recommended-defaults')).not.toBeInTheDocument()
-    expect(screen.getByTestId('custom-save')).toHaveAttribute('data-dirty', 'false')
-
-    await setGroupDecision('read', 'block')
-    await waitFor(() => expect(screen.getByTestId('custom-save')).toHaveAttribute('data-dirty', 'true'))
-    screen.getByTestId('custom-save').click()
-
-    await waitFor(() => expect(results).toEqual([false]))
-    expect(screen.getByTestId('custom-save')).toHaveAttribute('data-dirty', 'true')
   })
 
   it('Reset defaults restores the group baselines and the account fallback', async () => {

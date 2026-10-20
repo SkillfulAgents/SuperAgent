@@ -10,20 +10,21 @@ import {
   CollapsibleTrigger,
 } from '@renderer/components/ui/collapsible'
 import { cn } from '@shared/lib/utils/cn'
+import { getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
+import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { Components } from 'react-markdown'
 import { Markdown } from '@renderer/components/ui/markdown'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { useAgentRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import {
-  isPublicAgentConnectedAccount,
-  isPublicAgentRemoteMcp,
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
   type AgentConnectedAccountDto,
   type AgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
-import { OpenSettingsButton, PermissionsMenu } from './permissions-menu'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
 
@@ -37,21 +38,23 @@ const TITLE_MARKDOWN: Components = {
   code: ({ children }) => <code className="rounded bg-muted px-1 py-px font-mono text-[0.9em]">{children}</code>,
 }
 
+// read is least privileged, destructive most — used to pick the minimal group
+// whose "allow all" still satisfies this request (resolver takes most-permissive).
+const LABEL_RANK: Record<ScopeLabel, number> = { read: 0, write: 1, destructive: 2 }
 
-// The reviewed account or MCP server as this viewer can open it, or null for
-// another member's connection (foreign DTOs carry no id) or one no longer on the agent.
-function ownedConnection(
+// The connections-page detail key for the reviewed account or MCP server, or null
+// when this viewer can't open it: another member's connection (foreign DTOs carry
+// no id) or one no longer on the agent.
+function ownedConnectionDetailKey(
   reviewType: ProxyReviewType,
   id: string,
   accounts: AgentConnectedAccountDto[] | undefined,
   mcps: AgentRemoteMcpDto[] | undefined,
-): { detailKey: string; name: string } | null {
+): string | null {
   if (reviewType === 'mcp') {
-    const mcp = mcps?.filter(isPublicAgentRemoteMcp).find((m) => m.id === id)
-    return mcp ? { detailKey: `mcp-${id}`, name: mcp.name } : null
+    return mcps?.some((m) => !isForeignAgentRemoteMcp(m) && m.id === id) ? `mcp-${id}` : null
   }
-  const account = accounts?.filter(isPublicAgentConnectedAccount).find((a) => a.id === id)
-  return account ? { detailKey: `account-${id}`, name: account.displayName } : null
+  return accounts?.some((a) => !isForeignAgentConnectedAccount(a) && a.id === id) ? `account-${id}` : null
 }
 
 interface ProxyReviewRequestItemProps {
@@ -168,6 +171,13 @@ function ScopeReviewRequestItem({
   const requestLabel = `${method} /${targetPath}`
   const named = !!endpointDescription
 
+  // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
+  // group is the smallest-blast-radius "allow all" that still lets this request
+  // through, since the resolver picks the most-permissive sufficient scope.
+  const minimalLabel: ScopeLabel | undefined = matchedScopes
+    .map((s) => getScopeLabel(toolkit, s))
+    .filter((l): l is ScopeLabel => !!l)
+    .sort((a, b) => LABEL_RANK[a] - LABEL_RANK[b])[0]
   // Never infer from the path when the review says what it is: an MCP call
   // whose JSON-RPC method is not `tools/call` has a bare method path, and
   // treating it as an API review sent the MCP server id to the API-scope
@@ -178,33 +188,41 @@ function ScopeReviewRequestItem({
   // A require rule held this request: changing the policy wouldn't stop the
   // rule holding the next one, so only one-off decisions are offered.
   const heldByRule = heldByRequireRule(ruleOutcomes)
+  // An unnamed API call's scopes union every action on its path, so allowing any of
+  // them can allow a delete. Those cards offer no label or scope allow either.
+  const policyAllows = !heldByRule && (!isApiReview || named)
 
   const navigate = useNavigate()
   const router = useRouter()
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
-  const connection = ownedConnection(resolvedReviewType, accountId, accountsData?.accounts, mcpsData?.mcps)
+  const connectionDetailKey = ownedConnectionDetailKey(
+    resolvedReviewType,
+    accountId,
+    accountsData?.accounts,
+    mcpsData?.mcps,
+  )
   // `source: 'home'` is required with `detail`; `from` overrides where Back goes.
-  const openConnection = (detailKey: string) => {
-    void navigate({
-      to: '/agents/$slug/connections',
-      params: { slug: agentSlug },
-      search: {
-        detail: detailKey,
-        source: 'home',
-        from: router.state.location.pathname + router.state.location.searchStr,
-      },
-    })
-  }
-  // API accounts the viewer owns get the permissions editor in place of the "Always..." options.
-  const editorConnection = isApiReview && !heldByRule ? connection : null
+  const openConnection = connectionDetailKey
+    ? () => {
+        void navigate({
+          to: '/agents/$slug/connections',
+          params: { slug: agentSlug },
+          search: {
+            detail: connectionDetailKey,
+            source: 'home',
+            from: router.state.location.pathname + router.state.location.searchStr,
+          },
+        })
+      }
+    : null
   // The toolkit name opens its connection page wherever the card shows it.
   const toolkitName = (className?: string) =>
-    connection ? (
+    openConnection ? (
       <button
         type="button"
         data-testid="proxy-review-connection-link"
-        onClick={() => openConnection(connection.detailKey)}
+        onClick={openConnection}
         className={cn(className, 'hover:underline')}
       >
         {toolkit}
@@ -320,12 +338,12 @@ function ScopeReviewRequestItem({
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for approval"
-      headerRight={connection && (
+      headerRight={openConnection && (
         <button
           type="button"
-          onClick={() => openConnection(connection.detailKey)}
-          aria-label="Open settings"
-          title="Open settings"
+          onClick={openConnection}
+          aria-label="Edit permissions"
+          title="Edit permissions"
           data-testid="proxy-review-permissions-btn"
           className="inline-flex h-5 w-5 items-center justify-center rounded text-foreground transition-colors hover:bg-muted"
         >
@@ -378,7 +396,7 @@ function ScopeReviewRequestItem({
               onCloseAutoFocus={() => setDenyReason('')}
             >
               <div className="flex flex-col items-start gap-0">
-                {!isApiReview && matchedScopes.length > 0 && (
+                {matchedScopes.length > 0 && (
                   <div className="w-full py-2">
                     <div className="flex flex-col items-start gap-1">
                       {matchedScopes.map((scope) => (
@@ -424,7 +442,7 @@ function ScopeReviewRequestItem({
                   </div>
                 )}
                 <div className="w-full pt-0">
-                  {!isApiReview && matchedScopes.length > 0 && <div className="mx-3 border-t border-border" />}
+                  {matchedScopes.length > 0 && <div className="mx-3 border-t border-border" />}
                   <div className="w-full px-3 pt-3 pb-0 text-foreground">
                     <span className="flex flex-col items-start text-left">
                       <span className="text-xs font-medium text-foreground">Deny with reason</span>
@@ -493,38 +511,63 @@ function ScopeReviewRequestItem({
                 <ChevronDown className={cn('ml-2 h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
               </Button>
             </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className={cn(
-                'max-w-[calc(100vw-2rem)] p-1',
-                editorConnection ? 'w-[480px] max-h-[70vh] overflow-y-auto' : 'w-[380px]',
-              )}
-            >
+            <PopoverContent align="end" className="w-[380px] max-w-[calc(100vw-2rem)] p-1">
               <div className="flex flex-col items-start gap-0">
-                {/* Allow once (this request only). The permissions footer carries it for owned API accounts. */}
-                {!editorConnection && (
-                  <Button
-                    data-testid="proxy-review-allow-once-menu-btn"
-                    onClick={() => {
-                      setAllowMenuOpen(false)
-                      handleDecision('allow')
-                    }}
-                    disabled={status === 'submitting'}
-                    variant="ghost"
-                    size="xs"
-                    className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                  >
-                    <span className="flex min-w-0 w-full flex-col items-start text-left">
-                      <span className="block w-full truncate">Allow Once</span>
-                      <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
-                        Only allow this action this one time
-                      </span>
+                {/* Allow once (this request only) */}
+                <Button
+                  data-testid="proxy-review-allow-once-menu-btn"
+                  onClick={() => {
+                    setAllowMenuOpen(false)
+                    handleDecision('allow')
+                  }}
+                  disabled={status === 'submitting'}
+                  variant="ghost"
+                  size="xs"
+                  className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                >
+                  <span className="flex min-w-0 w-full flex-col items-start text-left">
+                    <span className="block w-full truncate">Allow Once</span>
+                    <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
+                      Only allow this action this one time
                     </span>
-                  </Button>
+                  </span>
+                </Button>
+
+                {/* Minimal risk group — smallest "allow all" that still covers this request */}
+                {policyAllows && isApiReview && minimalLabel && (
+                  <>
+                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
+                    <Button
+                      data-testid={`proxy-review-allow-label-${minimalLabel}`}
+                      onClick={() => {
+                        setAllowMenuOpen(false)
+                        handleAlways('allow', labelDefaultKey(minimalLabel))
+                      }}
+                      disabled={status === 'submitting'}
+                      variant="ghost"
+                      size="xs"
+                      className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                    >
+                      <span className="flex min-w-0 w-full flex-col items-start text-left">
+                        <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
+                          <span className="shrink-0">Allow all</span>
+                          <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
+                            {minimalLabel}
+                          </span>
+                          <span className="shrink-0">
+                            requests to <span className="capitalize">{toolkit}</span>
+                          </span>
+                        </span>
+                        <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
+                          Auto-allow every {minimalLabel}-level scope for this account
+                        </span>
+                      </span>
+                    </Button>
+                  </>
                 )}
 
                 {/* Per-scope "always allow" — tucked behind a disclosure */}
-                {!isApiReview && !heldByRule && matchedScopes.length > 0 && (
+                {policyAllows && matchedScopes.length > 0 && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Collapsible
@@ -589,14 +632,12 @@ function ScopeReviewRequestItem({
                   </>
                 )}
 
-                {heldByRule && (
+                {/* Allow everything for this account */}
+                {heldByRule ? (
                   <p className="px-3 py-2 text-xs text-muted-foreground" data-testid="proxy-review-held-by-rule-note">
                     A rule requires review for requests like this. To stop asking, change or delete the rule on the connection.
                   </p>
-                )}
-
-                {/* Allow everything for this MCP server */}
-                {!isApiReview && !heldByRule && (
+                ) : (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
                     <Button
@@ -624,39 +665,24 @@ function ScopeReviewRequestItem({
                   </>
                 )}
 
-                {/* API accounts: the same permissions section as the connection page */}
-                {editorConnection && (
-                  <PermissionsMenu
-                    accountId={accountId}
-                    toolkit={toolkit}
-                    accountName={editorConnection.name}
-                    requestScopes={matchedScopes}
-                    submitting={status === 'submitting'}
-                    onSubmittingChange={(submitting) => setStatus(submitting ? 'submitting' : 'pending')}
-                    onOpenSettings={() => {
-                      setAllowMenuOpen(false)
-                      openConnection(editorConnection.detailKey)
-                    }}
-                    onSaved={() => setAllowMenuOpen(false)}
-                    onAllow={() => {
-                      setAllowMenuOpen(false)
-                      handleDecision('allow')
-                    }}
-                  />
-                )}
-
-                {!editorConnection && connection && (
+                {openConnection && (
                   <>
                     <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
-                    <OpenSettingsButton
-                      toolkit={toolkit}
+                    <Button
+                      data-testid="proxy-review-edit-permissions"
                       onClick={() => {
                         setAllowMenuOpen(false)
-                        openConnection(connection.detailKey)
+                        openConnection()
                       }}
+                      variant="ghost"
                       size="xs"
-                      className="h-auto w-full justify-start py-2 text-foreground hover:bg-muted"
-                    />
+                      className="h-auto min-w-0 w-full justify-start gap-1.5 py-2 text-foreground hover:bg-muted"
+                    >
+                      <Settings2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>
+                        Edit <span className="capitalize">{toolkit}</span> permissions
+                      </span>
+                    </Button>
                   </>
                 )}
               </div>
