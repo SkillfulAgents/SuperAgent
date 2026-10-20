@@ -111,7 +111,7 @@ test.describe('home card arrangement', () => {
     await dragTile(page, dashboardWidget, 180)
     await directSaved
 
-    await page.getByRole('button', { name: 'Agent layout options' }).click()
+    await page.getByTestId('home-options-trigger').click()
     await page.getByTestId('home-arrange-action').click()
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Done' })).toBeVisible()
@@ -182,7 +182,7 @@ test.describe('home card arrangement', () => {
     const mobileWidget = page.locator(`[data-widget-id="${agent.slug}"]`)
     await expect(mobileWidget).toBeVisible({ timeout: 15_000 })
     await mobileWidget.scrollIntoViewIfNeeded()
-    await page.getByRole('button', { name: 'Agent layout options' }).click()
+    await page.getByTestId('home-options-trigger').click()
     await page.getByTestId('home-arrange-action').click()
     // Dragging the agent card on mobile is only eligible once Arrange mode
     // has rendered (dragEnabled flips in the same React commit that shows the
