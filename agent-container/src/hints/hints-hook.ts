@@ -1,5 +1,5 @@
 import type { HookCallback, HookCallbackMatcher, HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { compileTrigger, escapeRegExp, parseToolMatch } from './hint-matchers'
+import { compileTrigger, escapeRegExp } from './hint-matchers'
 import type { Hint, HintEvent, HintEventInput } from './hint-schema'
 
 function toHintEventInput(input: HookInput): HintEventInput | undefined {
@@ -51,7 +51,7 @@ export function createHintHookMatchers(hints: Hint[], currentTurn: () => number)
   const hook = createHintsHook(hints, currentTurn)
   const triggers = hints.flatMap((hint) => hint.triggers)
   const forTools = (event: 'PreToolUse' | 'PostToolUse'): HookCallbackMatcher[] => {
-    const toolNames = [...new Set(triggers.filter((t) => t.event === event).map((t) => parseToolMatch(t.match).toolName))]
+    const toolNames = [...new Set(triggers.flatMap((t) => (t.event === event ? [t.tool] : [])))]
     if (toolNames.length === 0) return []
     return [{ matcher: `^(${toolNames.map(escapeRegExp).join('|')})$`, hooks: [hook] }]
   }
