@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can execute browser tools to navigate to example.com and retrieve the page title, with the response correctly mentioning \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully, showing the Gamut dashboard with agents in sidebar",
+    "Clicked on the \"QA-20261020-190027-idva\" agent in the sidebar — Agent page opened with chat interface and configuration panels visible",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was submitted and a new session titled \"Browser Page Title Check\" was created",
+    "Waited up to 3 minutes for response (max 180 seconds) — Agent completed work in 13 seconds after making 3 tool calls using 154,707 tokens",
+    "Verified response mentions \"Example Domain\" — Screenshot confirms the agent's response states: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I closed the browser afterward.\""
+  ],
+  "bugs": [],
+  "durationMs": 104812,
+  "sessionId": "e3e43939-ddfc-468c-94a2-0627ab09b5d7",
+  "cost": {
+    "inputTokens": 518,
+    "outputTokens": 12692,
+    "cacheCreationTokens": 119979,
+    "cacheReadTokens": 1514883,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.36544
+  }
+}
