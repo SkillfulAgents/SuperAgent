@@ -42,22 +42,11 @@ describe('compileTrigger', () => {
     expect(matches(bash(command))).toBe(expected)
   })
 
-  it.each([
-    ['uv run fetch.py', true],
-    ['uv run --env-file .env fetch.py', false],
-    ['cd /workspace && uv run fetch.py', true],
-    ['uv run --env-file .env a.py && uv run b.py', true],
-    ['ls', false],
-  ])('unless skips the part that has the excluded text: %s is %s', (command, expected) => {
-    const matches = compileTrigger({ event: 'PreToolUse', tool: 'Bash', input: { command: 'uv run *' }, unless: { command: '*--env-file*' } })
-    expect(matches(bash(command))).toBe(expected)
-  })
-
   it('matches any tool_input field as a whole value, including MCP tools', () => {
     const write = (file_path: string) => ({ event: 'PostToolUse' as const, toolName: 'Write', toolInput: { file_path } })
-    const skill = compileTrigger({ event: 'PostToolUse', tool: 'Write', input: { file_path: '/workspace/.claude/skills/*' }, unless: { file_path: '*/SKILL.md' } })
+    const skill = compileTrigger({ event: 'PostToolUse', tool: 'Write', input: { file_path: '/workspace/.claude/skills/*' } })
     expect(skill(write('/workspace/.claude/skills/fetch-weather/weather.py'))).toBe(true)
-    expect(skill(write('/workspace/.claude/skills/fetch-weather/SKILL.md'))).toBe(false)
+    expect(skill(write('/workspace/.claude/skills-old/weather.py'))).toBe(false)
     expect(skill(write('/workspace/notes; /workspace/.claude/skills/a.py'))).toBe(false)
 
     const secret = compileTrigger({ event: 'PreToolUse', tool: 'mcp__user-input__request_secret', input: { secretName: '*GITHUB*' } })
@@ -66,19 +55,16 @@ describe('compileTrigger', () => {
   })
 
   it('compares boolean and number fields as text', () => {
-    const foreground = compileTrigger({ event: 'PreToolUse', tool: 'Bash', input: { command: 'sleep *' }, unless: { run_in_background: 'true' } })
+    const background = compileTrigger({ event: 'PreToolUse', tool: 'Bash', input: { command: 'sleep *', run_in_background: 'true' } })
     const call = (run_in_background?: boolean) => ({ event: 'PreToolUse' as const, toolName: 'Bash', toolInput: { command: 'sleep 10', run_in_background } })
-    expect(foreground(call())).toBe(true)
-    expect(foreground(call(false))).toBe(true)
-    expect(foreground(call(true))).toBe(false)
+    expect(background(call(true))).toBe(true)
+    expect(background(call(false))).toBe(false)
+    expect(background(call())).toBe(false)
   })
 
-  it('treats a missing field as not matching input and not matching unless', () => {
+  it('treats a missing field as not matching', () => {
     const needsPath = compileTrigger({ event: 'PostToolUse', tool: 'Write', input: { file_path: '*' } })
-    const avoidsPath = compileTrigger({ event: 'PostToolUse', tool: 'Write', unless: { file_path: '*.md' } })
-    const noPath = { event: 'PostToolUse' as const, toolName: 'Write', toolInput: {} }
-    expect(needsPath(noPath)).toBe(false)
-    expect(avoidsPath(noPath)).toBe(true)
+    expect(needsPath({ event: 'PostToolUse', toolName: 'Write', toolInput: {} })).toBe(false)
   })
 
   it('matches the prompt text case-insensitively', () => {
