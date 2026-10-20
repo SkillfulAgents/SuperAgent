@@ -6320,7 +6320,9 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    await removeMount(agentSlug, mountId)
+    if (!(await removeMount(agentSlug, mountId))) {
+      return c.json({ error: 'Drive not found' }, 404)
+    }
 
     await afterMountChange(agentSlug, restart)
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
+import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 
 export interface VolumeSettingsInput {
@@ -27,9 +27,9 @@ export function useVolumeDefinitions() {
 export function useSaveVolumeDefinition() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: async (input: VolumeSettingsInput | { id: string; name?: string; visibility?: VolumeSettingsInput['visibility'] }) => {
+    mutationFn: async (input: VolumeSettingsInput | { id: string; name?: string; visibility?: VolumeSettingsInput['visibility']; global?: GlobalAccess | null }) => {
       const id = 'id' in input ? input.id : undefined
-      const body = 'id' in input ? { name: input.name, visibility: input.visibility } : { name: input.name, visibility: input.visibility, ...volumeConfigSchema.parse(input.source) }
+      const body = 'id' in input ? { name: input.name, visibility: input.visibility, global: input.global } : { name: input.name, visibility: input.visibility, ...volumeConfigSchema.parse(input.source) }
       return (await checkedResponse(await apiFetch(`/api/volume-definitions${id ? `/${id}` : ''}`, {
         method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       }))).json()
