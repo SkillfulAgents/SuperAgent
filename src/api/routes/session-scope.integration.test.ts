@@ -266,8 +266,8 @@ beforeEach(async () => {
   writeTranscript(ATTACKER, attackerSession)
 
   // The victim's session is LIVE: subscribed and streaming.
-  await agentRegistry.get(VICTIM).sessions.subscribeStream(victimSession, victimSession)
-  await agentRegistry.get(ATTACKER).sessions.subscribeStream(attackerSession, attackerSession)
+  await agentRegistry.get(VICTIM).sessions.attach(victimSession)
+  await agentRegistry.get(ATTACKER).sessions.attach(attackerSession)
   agentRegistry.get(VICTIM).sessions.markActive(victimSession)
 
   victimEvents = []

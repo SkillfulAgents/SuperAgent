@@ -209,7 +209,7 @@ describe('overlap guard against a real background-bash capture', () => {
     const removeSseClient = actor.messages.subscribe(sessionId, (data) => {
       sseTypes.push((data as { type?: unknown }).type)
     })
-    await actor.sessions.subscribeStream(sessionId, sessionId)
+    await actor.sessions.attach(sessionId)
     actor.sessions.markActive(sessionId)
 
     // Replay up to the first turn-end idle that arrives while a background bash

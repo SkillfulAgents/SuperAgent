@@ -88,6 +88,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
     isSessionRecovering: (id) => recovering.has(id),
     isSubscribed: () => false,
     subscribeToSession,
+    inDeliveryTurn: (_sessionId, work) => work(),
     syncAgentStatus,
     ...overrides,
   }
@@ -417,6 +418,32 @@ describe('recoverFromUnexpectedDeath', () => {
       { shouldQuery: true },
     ])
     expect(deps.syncAgentStatus).not.toHaveBeenCalled()
+  })
+
+  it('resumes a session and sends what it held in one delivery turn, ahead of later messages', async () => {
+    const order: string[] = []
+    let turnOpen = false
+    const deps = createDeps({
+      takeCoalescedUserMessages: () => coalescedKeepGoing(),
+      inDeliveryTurn: async (sessionId, work) => {
+        order.push(`turn ${sessionId}`)
+        turnOpen = true
+        try {
+          return await work()
+        } finally {
+          turnOpen = false
+          order.push('turn ends')
+        }
+      },
+    })
+    deps.sendMessage.mockImplementation(async (_sessionId: string, text: string) => {
+      order.push(`${turnOpen ? 'in turn' : 'outside'}: ${text}`)
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(order).toEqual(['turn sess-1', `in turn: ${TEST_RESUME_PROMPT}`, 'in turn: keep going', 'turn ends'])
   })
 
   it('delivers a coalesced transcript-only append without starting a turn', async () => {

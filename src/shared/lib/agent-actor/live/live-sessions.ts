@@ -18,7 +18,6 @@ import type { ContainerClient, SlashCommandInfo } from '@shared/lib/container/ty
 import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
-import { withSessionSendContext } from '@shared/lib/container/session-send-context'
 import type { SessionActivity, SessionMetadata } from '@shared/lib/types/agent'
 import type { AgentInputRequests, UserInputRequestTransition } from '@shared/lib/tools/requests/agent-input-requests'
 import {
@@ -67,6 +66,14 @@ export interface LiveSessionsDeps {
 // Body of the container's POST /sessions/:id/interrupt.
 const interruptResponseSchema = z.object({ processKept: z.boolean().optional() })
 
+/** A send's active mark (see `LiveSessions.markSending`). */
+export interface SendingMark {
+  /** The message joins a running turn. */
+  readonly queued: boolean
+  /** Undo only this mark: the send was not accepted. */
+  rollback(): void
+}
+
 export interface PendingComputerUseRequest {
   toolUseId: string
   method: string
@@ -95,6 +102,8 @@ export class LiveSessions {
   private readonly workflows = new Map<string, WorkflowTailers>()
   /** Each session's completion notifications, in turn order; let go once a queue has sent everything. */
   private readonly completions = new Map<string, OrderedSends>()
+  /** Sessions whose events are being tagged `provisional` (see `attachReplaying`). */
+  private readonly provisionalSessions = new Set<string>()
 
   constructor(private readonly deps: LiveSessionsDeps) {}
 
@@ -240,8 +249,9 @@ export class LiveSessions {
 
   /** An event for a session's listeners. */
   emit(sessionId: string, event: SessionEvent): void {
-    void this.deps.capture?.recordOutput(sessionId, event)
-    this.channels.emit(sessionId, event)
+    const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event
+    void this.deps.capture?.recordOutput(sessionId, tagged)
+    this.channels.emit(sessionId, tagged)
   }
 
   /** The session as a viewer starting from nothing needs it: it stands for every event up to `lastId`. */
@@ -437,13 +447,36 @@ export class LiveSessions {
   }
 
   /**
-   * Mark active for terminal replay during recovery; the returned undo owns
-   * only this mark. It undoes it on whichever state holds the session then:
-   * the subscribe that usually follows replaces the state.
+   * Attach again so the container replays the last turn's terminal frames to
+   * a listener that lost track of the session. An idle session is marked
+   * active around the attach, or the replay would be discarded as already
+   * settled; the mark is undone on whichever state holds the session then
+   * (the attach replaces it), unless a send, a turn or output took it over.
+   * The mark's and the undo's events are tagged `provisional`: they are no
+   * turn starting or ending, and a listener that counts turns skips them.
+   * Attached and busy, there is nothing to replay that the stream has not
+   * carried, so it is left as it is.
    */
-  markProvisionallyActive(sessionId: string): () => void {
-    const mark = this.stateOrCreate(sessionId).markProvisionallyActive()
-    return () => this.states.get(sessionId)?.revertProvisional(mark)
+  async attachReplaying(sessionId: string, client: ContainerClient, metadata?: SessionMetadata | null): Promise<void> {
+    if (this.isSubscribed(sessionId) && this.activity(sessionId) !== 'idle') return
+    const mark = this.activity(sessionId) === 'idle'
+      ? this.provisionally(sessionId, () => this.stateOrCreate(sessionId).markProvisionallyActive())
+      : undefined
+    try {
+      await this.subscribe(sessionId, client, sessionId, metadata)
+    } finally {
+      if (mark) this.provisionally(sessionId, () => this.states.get(sessionId)?.revertProvisional(mark))
+    }
+  }
+
+  /** Run `change`, tagging the session events it emits `provisional`. */
+  private provisionally<T>(sessionId: string, change: () => T): T {
+    this.provisionalSessions.add(sessionId)
+    try {
+      return change()
+    } finally {
+      this.provisionalSessions.delete(sessionId)
+    }
   }
 
   /** The user stopped the session (see `LiveSession.markInterrupted`). */
@@ -517,12 +550,13 @@ export class LiveSessions {
   }
 
   /**
-   * The delivery boundary for every send (the app, chat, scheduled wakes,
-   * x-agent follow-ups). The stream is reserved before reconnecting, and the
-   * session marked active only after, so the reconnect's terminal replay
-   * still sees the settled turn. A send that fails rolls back only its own mark.
+   * The session's delivery turn (see `messages.deliver`): `work` runs after
+   * the session's earlier deliveries and any attach in flight, one at a
+   * time, so a failed one is rolled back before the next looks at the state
+   * and the selection one stores is the next one's to read. Its stream is
+   * held open meanwhile. Recovery's sends take the same turn.
    */
-  async withSend<T>(sessionId: string, client: ContainerClient, send: () => Promise<T>): Promise<T> {
+  async inDeliveryTurn<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
     const previous = this.sending.get(sessionId)
     let finished!: () => void
     const done = new Promise<void>((resolve) => {
@@ -533,18 +567,8 @@ export class LiveSessions {
     try {
       if (previous) await previous
       const connecting = this.connecting.get(sessionId)
-      if (connecting) await connecting
-      if (!this.isSubscribed(sessionId)) await this.subscribe(sessionId, client, sessionId)
-      const state = this.stateOrCreate(sessionId)
-      const before = state.sendSnapshot()
-      state.markActive()
-      const marked = state.sendSnapshot()
-      try {
-        return await withSessionSendContext(this.deps.slug, sessionId, before.wasActive, send)
-      } catch (error) {
-        this.states.get(sessionId)?.sendFailed(before, marked)
-        throw error
-      }
+      if (connecting) await connecting.catch(() => {})
+      return await work()
     } finally {
       finished()
       if (this.sending.get(sessionId) === done) this.sending.delete(sessionId)
@@ -553,6 +577,21 @@ export class LiveSessions {
       else this.sendsInFlight.delete(sessionId)
       this.releaseIfIdle(sessionId)
     }
+  }
+
+  /**
+   * Mark the session active for a message about to be sent, in its delivery
+   * turn. `queued`: the message joins a running turn. `rollback` undoes only
+   * this mark, for a send that was not accepted: a later send, a stop, a
+   * recovery, a new runtime turn or output that arrived meanwhile owns the
+   * state from then on.
+   */
+  markSending(sessionId: string): SendingMark {
+    const state = this.stateOrCreate(sessionId)
+    const before = state.sendSnapshot()
+    state.markActive()
+    const marked = state.sendSnapshot()
+    return { queued: before.wasActive, rollback: () => this.states.get(sessionId)?.sendFailed(before, marked) }
   }
 
   /** Resolve once the session is no longer active; see `waitForIdle`. */

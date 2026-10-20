@@ -69,44 +69,91 @@ describe('LiveSessions', () => {
     sessions().unsubscribe(SESSION_ID)
   })
 
-  describe('provisional recovery activity', () => {
+  describe('attaching to replay the last turn (attachReplaying)', () => {
+    /** Hold the next attach's handshake open until the returned release. */
+    const holdNextAttach = () => {
+      let release!: () => void
+      const ready = new Promise<void>((resolve) => { release = resolve })
+      const attach = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
+      vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((id, onMessage) => ({ ...attach(id, onMessage), ready }))
+      return release
+    }
+
     it('reverts a silent cold attachment even when subscribing recreates the streaming state', async () => {
       sessions().unsubscribe(SESSION_ID)
-      const revert = sessions().markProvisionallyActive(SESSION_ID)
+      const release = holdNextAttach()
+      const attaching = sessions().attachReplaying(SESSION_ID, mockClient)
       expect(sessions().isActive(SESSION_ID)).toBe(true)
-      await sessions().subscribe(SESSION_ID, mockClient, SESSION_ID)
       mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'cold-process' })
-      revert()
+      release()
+      await attaching
       expect(sessions().isActive(SESSION_ID)).toBe(false)
     })
 
-    it('preserves a real running turn even if the pending-inclusive generation is unchanged', () => {
-      const revert = sessions().markProvisionallyActive(SESSION_ID)
+    it('preserves a real running turn even if the pending-inclusive generation is unchanged', async () => {
+      const release = holdNextAttach()
+      const attaching = sessions().attachReplaying(SESSION_ID, mockClient)
       const before = sessions().turnGeneration(SESSION_ID)
       mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
       expect(sessions().turnGeneration(SESSION_ID)).toBe(before)
-      revert()
+      release()
+      await attaching
       expect(sessions().isActive(SESSION_ID)).toBe(true)
     })
 
-    it.each(['send', 'output', 'result'] as const)('preserves a new %s during attachment', kind => {
-      const revert = sessions().markProvisionallyActive(SESSION_ID)
+    it.each(['send', 'output', 'result'] as const)('preserves a new %s during attachment', async (kind) => {
+      const release = holdNextAttach()
+      const attaching = sessions().attachReplaying(SESSION_ID, mockClient)
       if (kind === 'send') sessions().markActive(SESSION_ID)
       else if (kind === 'output') mockClient.emit({ type: 'assistant', message: { role: 'assistant', content: 'still running' } })
       else {
         mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
         mockClient.emit({ type: 'result', subtype: 'success', replayed: true, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
       }
-      revert()
+      release()
+      await attaching
       expect(sessions().isActive(SESSION_ID)).toBe(true)
     })
 
-    it('does not emit a second completion after terminal replay', () => {
-      const revert = sessions().markProvisionallyActive(SESSION_ID)
+    it('does not emit a second completion after terminal replay', async () => {
+      const release = holdNextAttach()
+      const attaching = sessions().attachReplaying(SESSION_ID, mockClient)
       mockClient.emit({ type: 'result', subtype: 'success', num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
-      revert()
+      release()
+      await attaching
       expect(sessions().isActive(SESSION_ID)).toBe(false)
       expect(sseEvents.filter(event => event.type === 'session_idle')).toHaveLength(1)
+    })
+
+    it('tags the mark and its undo provisional, and the replay it attached for not', async () => {
+      const release = holdNextAttach()
+      const attaching = sessions().attachReplaying(SESSION_ID, mockClient)
+      mockClient.emit({ type: 'result', subtype: 'success', replayed: true, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+      release()
+      await attaching
+      const activity = sseEvents.filter(event => event.type === 'session_active' || event.type === 'session_idle')
+      expect(activity.map(event => [event.type, event.provisional === true])).toEqual([
+        ['session_active', true],
+        ['session_idle', false],
+      ])
+    })
+
+    it('tags the undo of a silent cold attachment provisional', async () => {
+      await sessions().attachReplaying(SESSION_ID, mockClient)
+      const activity = sseEvents.filter(event => event.type === 'session_active' || event.type === 'session_idle')
+      expect(activity.map(event => [event.type, event.provisional])).toEqual([
+        ['session_active', true],
+        ['session_idle', true],
+      ])
+      expect(sessions().isActive(SESSION_ID)).toBe(false)
+    })
+
+    it('leaves an attached, busy session as it is', async () => {
+      sessions().markActive(SESSION_ID)
+      const attaches = vi.mocked(mockClient.subscribeToStream).mock.calls.length
+      await sessions().attachReplaying(SESSION_ID, mockClient)
+      expect(vi.mocked(mockClient.subscribeToStream).mock.calls).toHaveLength(attaches)
+      expect(sessions().isActive(SESSION_ID)).toBe(true)
     })
   })
 })

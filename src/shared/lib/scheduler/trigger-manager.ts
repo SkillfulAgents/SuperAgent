@@ -326,32 +326,27 @@ class TriggerManager {
       agentPrefs,
       models,
     )
-    const containerSession = await actor.sessions.create({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: prompt,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: trigger.name || `Webhook: ${trigger.triggerType}`,
+      metadata: {
+        isWebhookExecution: true,
+        webhookTriggerId: trigger.id,
+        webhookTriggerName: trigger.name || undefined,
+        webhookInvocationCount: events.length,
+        automationStatus: 'running',
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
-
-    await actor.sessions.register(sessionId, sessionName, {
-      isWebhookExecution: true,
-      webhookTriggerId: trigger.id,
-      webhookTriggerName: trigger.name || undefined,
-      webhookInvocationCount: events.length,
-      automationStatus: 'running',
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)

@@ -221,6 +221,8 @@ const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
 const mockClientWarmSession = vi.fn()
+// The container's view of a session, which an uncertain send asks for. Unknown unless a test says.
+const mockClientGetSession = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 const mockRestartContainer = vi.fn()
 // The actor reaches the client through getClient after start(), so the
@@ -239,6 +241,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       forkSession: (...args: unknown[]) => mockForkSession(...args),
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
+      getSession: (...args: unknown[]) => mockClientGetSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -263,9 +266,21 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
 // mocks, each called with the agent's slug and then the method's own arguments;
 // a method not listed answers as an agent with nothing live.
 type LiveAnswer<K extends keyof LiveSessionsAnswers> = NonNullable<LiveSessionsAnswers[K]>
-const mockLiveSessions = vi.hoisted(() => ({
+const mockLiveSessions = vi.hoisted(() => {
+  const isActive = vi.fn<LiveAnswer<'isActive'>>(() => false)
+  const markActive = vi.fn<LiveAnswer<'markActive'>>()
+  const rollbackSend = vi.fn<(slug: string, sessionId: string) => void>()
+  // A session's deliveries run one at a time, as the live sessions run them.
+  const turns = new Map<string, Promise<unknown>>()
+  const inDeliveryTurn = vi.fn((slug: string, sessionId: string, work: () => Promise<unknown>) => {
+    const key = `${slug}:${sessionId}`
+    const turn = (turns.get(key) ?? Promise.resolve()).catch(() => {}).then(work)
+    turns.set(key, turn)
+    return turn
+  }) as unknown as ReturnType<typeof vi.fn<LiveAnswer<'inDeliveryTurn'>>>
+  return {
   emit: vi.fn<LiveAnswer<'emit'>>(),
-  isActive: vi.fn<LiveAnswer<'isActive'>>(() => false),
+  isActive,
   isAwaitingInput: vi.fn<LiveAnswer<'isAwaitingInput'>>(() => false),
   recoverAwaitingInput: vi.fn<LiveAnswer<'recoverAwaitingInput'>>(),
   activeIds: vi.fn<LiveAnswer<'activeIds'>>(() => []),
@@ -278,8 +293,15 @@ const mockLiveSessions = vi.hoisted(() => ({
   promoteAutomated: vi.fn<LiveAnswer<'promoteAutomated'>>(async (_slug, _sessionId, metadata) => metadata ?? null),
   coalesceIfRecovering: vi.fn<LiveAnswer<'coalesceIfRecovering'>>(() => false),
   dropCoalesced: vi.fn<LiveAnswer<'dropCoalesced'>>(() => false),
-  markActive: vi.fn<LiveAnswer<'markActive'>>(),
-  markProvisionallyActive: vi.fn<LiveAnswer<'markProvisionallyActive'>>(() => () => {}),
+  markActive,
+  inDeliveryTurn,
+  // A send's mark: queued when the session is already active; its rollback is recorded.
+  markSending: vi.fn<LiveAnswer<'markSending'>>((slug, sessionId) => {
+    const queued = isActive(slug, sessionId)
+    markActive(slug, sessionId)
+    return { queued, rollback: () => rollbackSend(slug, sessionId) }
+  }),
+  rollbackSend,
   markInterrupted: vi.fn<LiveAnswer<'markInterrupted'>>(),
   hasOnlyUntrackedBackgroundWork: vi.fn<LiveAnswer<'hasOnlyUntrackedBackgroundWork'>>(() => false),
   cancelAwaitingInput: vi.fn<LiveAnswer<'cancelAwaitingInput'>>(async () => {}),
@@ -288,7 +310,8 @@ const mockLiveSessions = vi.hoisted(() => ({
   clearComputerUseRequest: vi.fn<LiveAnswer<'clearComputerUseRequest'>>(),
   grantCapability: vi.fn<LiveAnswer<'grantCapability'>>(),
   settledRequests: vi.fn<LiveAnswer<'settledRequests'>>(() => new Map()),
-}))
+  }
+})
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(mockLiveSessions),
 }))
@@ -398,9 +421,11 @@ import { getUserSummaries, userExists } from '@shared/lib/services/user-profile-
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
+const mockDeleteAuthor = vi.fn().mockResolvedValue(undefined)
 vi.mock('./message-author', () => ({
   insertMessageAuthorBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
   insertMessageAuthorsBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
+  deleteMessageAuthorBestEffort: (...a: unknown[]) => mockDeleteAuthor(...a),
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
@@ -4475,7 +4500,10 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       expect(res.status).toBe(404)
       expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
       expect(mockSendMessage).not.toHaveBeenCalled()
-      expect(mockDbInsertValues).not.toHaveBeenCalled()
+      // Nothing it wrote is left: another member's connection is refused in
+      // the delivery's turn, and the attribution row goes with it.
+      const recorded = mockDbInsertValues.mock.calls.map(([row]) => (row as { id: string }).id)
+      expect(mockDeleteAuthor.mock.calls.map(([id]) => id)).toEqual(recorded)
     } finally {
       lookup.mockRestore()
     }
@@ -4726,27 +4754,26 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', SESSION_UPDATED)
     })
 
-    it('reads again in its selection turn when another send of the session finished after its read', async () => {
+    it('reads in its own delivery turn, after the send ahead of it stored its selection', async () => {
       const first = { ...bound, effort: 'low' as const }
-      const staleRead = { ...bound, effort: 'low' as const }
       const afterFirst = { model: 'model-b', llmProviderId: 'conn-1', effort: 'low' as const }
       vi.mocked(getSessionMetadata)
         .mockResolvedValueOnce(first)
-        .mockResolvedValueOnce(staleRead)
         .mockResolvedValueOnce(afterFirst)
       let releaseFirst!: () => void
       mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({}) }))
 
       const firstSend = postJson(app, URL, { content: 'first', model: 'model-b' })
       await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
-      // The second send reads while the first is still in its selection turn.
+      // The second send waits for the first's turn: it has read nothing yet.
       const secondSend = postJson(app, URL, { content: 'second' })
-      await vi.waitFor(() => expect(getSessionMetadata).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(mockLiveSessions.inDeliveryTurn).toHaveBeenCalledTimes(2))
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
       releaseFirst()
       expect((await firstSend).status).toBe(201)
       expect((await secondSend).status).toBe(201)
 
-      expect(getSessionMetadata).toHaveBeenCalledTimes(3)
+      expect(getSessionMetadata).toHaveBeenCalledTimes(2)
       expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'second', expect.any(String), expect.objectContaining({
         sessionMetadata: afterFirst,
       }))
@@ -7026,13 +7053,10 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
       cause: new ProviderReconnectRequiredError(new CredentialRefreshError(401).message),
     })
 
-  const undoFreshTurn = vi.fn()
-
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
-    mockLiveSessions.markProvisionallyActive.mockReturnValue(undoFreshTurn)
   })
 
   it('undoes a fresh turn so the retry is not treated as queued', async () => {
@@ -7041,8 +7065,8 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(424)
     expect(await res.json()).toMatchObject({ code: 'provider_reconnect_required' })
-    expect(mockLiveSessions.markProvisionallyActive).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+    expect(mockLiveSessions.markSending).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledExactlyOnceWith('test-agent', 'sess-1')
   })
 
   it('tells the client when to retry a temporary refresh outage', async () => {
@@ -7054,18 +7078,37 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(503)
     expect(res.headers.get('Retry-After')).toBe('30')
-    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledTimes(1)
   })
 
-  it('leaves a running turn active when a queued follow-up is rejected', async () => {
+  it('takes back only a rejected queued follow-up, not the running turn', async () => {
     mockLiveSessions.isActive.mockReturnValueOnce(true)
     mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container unavailable'))
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(500)
-    expect(mockLiveSessions.markActive).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(mockLiveSessions.markProvisionallyActive).not.toHaveBeenCalled()
-    expect(undoFreshTurn).not.toHaveBeenCalled()
+    // The mark knew it was queued: its rollback withdraws the message and
+    // leaves the turn it joined running (see the live sessions' send tests).
+    expect(mockLiveSessions.markSending.mock.results[0].value).toMatchObject({ queued: true })
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the mark of a send that may have reached a running session', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('Failed to send message - request timed out.'))
+    mockClientGetSession.mockResolvedValueOnce({ id: 'sess-1', isRunning: true })
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(500)
+    expect(mockLiveSessions.rollbackSend).not.toHaveBeenCalled()
+  })
+
+  it('takes back the mark of an uncertain send once the container says the session is not running', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('Failed to send message - request timed out.'))
+    mockClientGetSession.mockResolvedValueOnce({ id: 'sess-1', isRunning: false })
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(500)
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -10934,8 +10977,8 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(200)
-      // No outcome to report: the actor's op passes its absent options on.
-      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, undefined)
+      // No outcome to report: the session is marked stopped as it stands.
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
     })
 
     it('stops only the turn by default, sparing background tasks', async () => {

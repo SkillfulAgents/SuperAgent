@@ -1,15 +1,13 @@
-import { assertConnectionSelectionAccess, markSessionSelection, selectionUnchangedSince, withSessionSelection, sessionRuntime, sessionCredentialSource } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, connectionNeedsAttachment, sessionRuntime, sessionCredentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
-import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
-import type { SendMessageResult } from '@shared/lib/container/types'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
+import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
@@ -61,7 +59,9 @@ import {
   decodeMediaRef,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
+  deliveryFailure,
   type AgentActor,
+  type DeliverResult,
   type FileStat,
   type SessionSortBy,
 } from '@shared/lib/agent-actor'
@@ -2104,35 +2104,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const resolved = await resolveConnectionRuntimeInherit(runtimeOptions, agentPrefs, models)
     const prewarm = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
-    const containerSession = await actor.sessions.create({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: await attributedForAgent(c, slug, message.trim()),
-      initialMessageUuid,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      maxOutputTokens: agentLimits.maxOutputTokens,
-      maxThinkingTokens: agentLimits.maxThinkingTokens,
-      maxTurns: agentLimits.maxTurns,
-      maxBudgetUsd: agentLimits.maxBudgetUsd,
-      customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-      maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: resolved.effort,
-      speed: resolved.speed,
-      // Same preference chain MINUS the per-session pick: this is what the
-      // composer will send next time (it only puts model/effort/speed on the
-      // wire when the user explicitly chooses one), so it is what the
-      // container should pre-warm for.
-      prewarmDefaults: {
-        llmProviderId: prewarm.llmProviderId ?? undefined,
-        model: prewarm.model,
-        effort: prewarm.effort,
-        speed: prewarm.speed,
-      },
-    })
-    const sessionId = containerSession.id
-
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
     // overrides, so changing an agent/app default later cannot silently change
@@ -2162,44 +2133,47 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       if (deviceId) initialMetadata.createdByDeviceId = deviceId
     }
 
-    // Slash commands from the container's init event (captured during session
-    // creation) go in the registration write rather than a second one.
-    if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-      initialMetadata.slashCommands = containerSession.slashCommands
-    }
+    // Create, mark, register and attach in one op: the first turn can emit
+    // as soon as create returns, and a session whose attach or registration
+    // fails is revoked rather than left running unseen. The registration
+    // carries the commands the container listed.
+    const containerSession = await actor.sessions.start({
+      create: {
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: await attributedForAgent(c, slug, message.trim()),
+        initialMessageUuid,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        maxOutputTokens: agentLimits.maxOutputTokens,
+        maxThinkingTokens: agentLimits.maxThinkingTokens,
+        maxTurns: agentLimits.maxTurns,
+        maxBudgetUsd: agentLimits.maxBudgetUsd,
+        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+        effort: resolved.effort,
+        speed: resolved.speed,
+        // Same preference chain MINUS the per-session pick: this is what the
+        // composer will send next time (it only puts model/effort/speed on the
+        // wire when the user explicitly chooses one), so it is what the
+        // container should pre-warm for.
+        prewarmDefaults: {
+          llmProviderId: prewarm.llmProviderId ?? undefined,
+          model: prewarm.model,
+          effort: prewarm.effort,
+          speed: prewarm.speed,
+        },
+      },
+      name: 'New Session',
+      metadata: initialMetadata,
+    })
+    const sessionId = containerSession.id
 
-    // Attach lifecycle state and the stream before slower metadata/DB work. The
-    // first turn can start emitting shortly after createSession returns, and a
-    // blocking input emitted during that window must not be missed or reset.
-    let lifecycleStarted = false
-    let sessionRegistered = false
-    try {
-      agentRegistry.get(slug).sessions.markActive(sessionId)
-      lifecycleStarted = true
-      // The session's metadata is the registration below: nothing to read.
-      await actor.sessions.subscribeStream(sessionId, sessionId, initialMetadata)
-
-      // Record author for initial message after we know the sessionId
-      if (isAuthMode()) {
-        const userId = getCurrentUserId(c)
-        await db.insert(messageAuthor).values({
-          id: initialMessageUuid,
-          sessionId,
-          agentSlug: slug,
-          userId,
-        })
-      }
-
-      await actor.sessions.register(sessionId, 'New Session', initialMetadata)
-      sessionRegistered = true
-    } catch (error) {
-      if (lifecycleStarted && !sessionRegistered) {
-        agentRegistry.get(slug).sessions.unsubscribeStream(sessionId)
-      }
-      throw error
-    }
-    if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-      agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
+    // The session runs now, so a failed attribution row leaves the message
+    // unattributed rather than failing a session the user can already see.
+    if (isAuthMode()) {
+      await insertMessageAuthorBestEffort({ id: initialMessageUuid, sessionId, agentSlug: slug, userId: getCurrentUserId(c) })
     }
 
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
@@ -2760,27 +2734,6 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   }
 })
 
-async function persistAndBroadcastUserMessage(
-  c: Context,
-  args: { messageUuid: string; sessionId: string; agentSlug: string; content: string; queued: boolean },
-): Promise<void> {
-  if (!isAuthMode()) return
-  const userId = getCurrentUserId(c)
-  await db.insert(messageAuthor).values({
-    id: args.messageUuid,
-    sessionId: args.sessionId,
-    agentSlug: args.agentSlug,
-    userId,
-  })
-  agentRegistry.get(args.agentSlug).messages.broadcastEvent(args.sessionId, {
-    type: 'user_message',
-    content: args.content,
-    sender: toUserSender(c.get('user' as never) as UserSenderSource),
-    uuid: args.messageUuid,
-    queued: args.queued,
-  })
-}
-
 /** In an agent several people can message, name the sender for the agent, as chat integrations do. */
 async function attributedForAgent(c: Context, agentSlug: string, text: string): Promise<string> {
   // A slash command or system notice only keeps its meaning at the very start of the text.
@@ -2810,10 +2763,9 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
-    // cancelAwaitingInput / markSessionActive / broadcastSessionEvent below are
-    // all keyed by session id alone: an unowned id would cancel another agent's
-    // pending input request, re-bind its session to this agent, and inject a
-    // spoofed user message into every client watching it.
+    // The delivery below is keyed by session id alone: an unowned id would
+    // cancel another agent's pending input request, re-bind its session to
+    // this agent, and inject a spoofed user message into every client watching it.
     if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
@@ -2830,21 +2782,6 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     if ('error' in mentions) return c.json({ error: mentions.error }, 400)
     if (mentions.silent) runtimeOptions.shouldQuery = false
 
-    // The session's metadata, read once for the whole send: the promotion
-    // check, the stream's lifecycle, the runtime selection and the container's
-    // provider binding all work from it. Marked first, so the selection turn
-    // below can tell whether another send of this session finished since and
-    // may have stored newer values.
-    const selectionMark = markSessionSelection(agentSlug, sessionId)
-    let metadata = await actor.sessions.metadata(sessionId)
-
-    // A message through this AgentUser route is human-originated. Promote any
-    // hidden automation before delivery so the host and container agree that
-    // a person has joined the session. This must precede sendMessage: a fast
-    // turn can settle immediately, and completion notification visibility is
-    // decided from the host-side promotedToInteractive marker.
-    metadata = await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId, metadata)
-
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
     // with another user's message and misattribute it). It is forwarded to the
@@ -2852,176 +2789,67 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // so the client can materialize its optimistic copy by exact id match.
     const messageUuid = randomUUID()
     const text = content.trim()
-    // Every path below hands the agent this same attributed text.
-    const agentText = await attributedForAgent(c, agentSlug, text)
-    // Every path below tells the teammates it tags once it is sent.
-    const notifyMentions = () => notifySessionMentions(c, mentions, {
-      agentSlug, agentName: agent.name, sessionId, sessionName: metadata?.name, messageUuid,
-    })
 
-    if (agentRegistry.get(agentSlug).messages.coalesceIfRecovering(sessionId, {
-      uuid: messageUuid,
-      text: agentText,
-      ...(runtimeOptions.shouldQuery === false ? { shouldQuery: false as const } : {}),
-    })) {
-      await persistAndBroadcastUserMessage(c, {
-        messageUuid,
+    // Checked before the session's binding is known: a connection the caller
+    // cannot bind outright is one it may only continue, and the delivery
+    // refuses it unless the session still holds it.
+    const requireStoredProvider = await connectionNeedsAttachment(runtimeOptions.llmProviderId)
+
+    const metadataUpdates: Partial<SessionMetadata> = {}
+    if (isAuthMode()) {
+      // Alert claim: the device that spoke last in a session is the one
+      // awaiting its outcome, so visible pushes follow it. A send with no
+      // device identity (web/desktop) CLEARS the claim — the user moved to a
+      // surface where a phone alert for this session would be noise (web push
+      // covers them there). Explicit null ≠ absent: absent falls back to the
+      // creation stamp in ApnsRelayChannel. Stored with the send so a fast
+      // turn can't complete ahead of its own claim.
+      metadataUpdates.alertDeviceId = getRequestDeviceId(c)
+      // The author row goes in before the message reaches anyone; the echo
+      // carries the sender to the other members' windows.
+      await db.insert(messageAuthor).values({ id: messageUuid, sessionId, agentSlug, userId: getCurrentUserId(c) })
+    }
+
+    // A message through this AgentUser route is human-originated: the
+    // delivery promotes a hidden automation first, so the host and container
+    // agree that a person has joined the session. While the session recovers
+    // from a runtime death the message is held for the recovery to send. A
+    // transcript-only append (the voice-mode notices) enters the agent's
+    // context to be read with its next turn, and no turn starts now.
+    let delivery: DeliverResult
+    try {
+      delivery = await actor.messages.deliver({
         sessionId,
-        agentSlug,
-        content: text,
-        queued: true,
+        content: await attributedForAgent(c, agentSlug, text),
+        uuid: messageUuid,
+        options: runtimeOptions,
+        metadataUpdates,
+        promote: true,
+        requireStoredProvider,
+        // An open AskUserQuestion / secret / file request would deadlock the
+        // message behind the blocked tool: it is cancelled, so the message
+        // starts a fresh turn.
+        cancelAwaiting: true,
+        coalesce: true,
+        ...(isAuthMode() ? { echo: { content: text, sender: toUserSender(c.get('user' as never) as UserSenderSource) } } : {}),
       })
-      await notifyMentions()
-      return c.json({ success: true, uuid: messageUuid, queued: true, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
+    } catch (error) {
+      // A message that certainly never went (refused, or the session is
+      // gone) leaves no attribution behind.
+      if (isAuthMode() && deliveryFailure(error)?.accepted === false) await deleteMessageAuthorBestEffort(messageUuid)
+      throw error
     }
-
-    // Use cached status to avoid spawning docker process
-    let info = agentRegistry.get(agentSlug).container.status()
-
-    if (info.status !== 'running') {
-      await agentRegistry.get(agentSlug).container.start()
-      // ensureRunning updates the cache, so get updated info
-      info = agentRegistry.get(agentSlug).container.status()
-    }
-
-    if (!agentRegistry.get(agentSlug).sessions.isStreamSubscribed(sessionId)) {
-      await actor.sessions.subscribeStream(sessionId, sessionId, metadata)
-    }
-
-    // A transcript-only append (the voice-mode notices): the message enters
-    // the agent's context to be read with its next turn, and no turn starts
-    // now. Nothing below applies — there is no turn to queue behind, no
-    // pending input to cancel, and marking the session active would leave it
-    // "working" with no idle event to ever clear it. Runtime options are
-    // dropped for the same reason a queued send drops them.
-    if (runtimeOptions.shouldQuery === false) {
-      await persistAndBroadcastUserMessage(c, {
-        messageUuid,
-        sessionId,
-        agentSlug,
-        content: text,
-        queued: false,
-      })
-      await actor.messages.send(sessionId, agentText, messageUuid, { shouldQuery: false, preserveRuntime: true })
-      // No stream frames follow an append, so the warm summary is told directly.
-      actor.sessions.recordActivity(sessionId)
-      await notifyMentions()
-      return c.json({ success: true, uuid: messageUuid, queued: false, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
-    }
-
-    return await withSessionSelection(agentSlug, sessionId, async () => {
-      const currentSelection = selectionUnchangedSince(selectionMark) ? metadata : await actor.sessions.metadata(sessionId)
-      // Authorize before mutating activity or persisting the user's message.
-      await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, currentSelection?.llmProviderId)
-      // If the session is awaiting user input (an open AskUserQuestion / secret / file
-      // request, etc.), cancel the pending request first so this message starts a fresh
-      // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
-      // Runs before the wasQueued capture so its state changes (interrupt for subagent
-      // requests) are reflected in the queue-vs-fresh-turn decision below.
-      await agentRegistry.get(agentSlug).inputs.cancelAwaiting(sessionId)
-
-      // Captured before markSessionActive: a message sent while the agent is
-      // mid-turn is queued by the agent loop rather than starting a new turn.
-      const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
-
-      // A rejected fresh turn is undone so the retry starts a new turn, unless a
-      // concurrent send, turn, or output has taken the session over meanwhile.
-      let undoFreshTurn: (() => void) | undefined
-      if (wasQueued) agentRegistry.get(agentSlug).sessions.markActive(sessionId)
-      else undoFreshTurn = agentRegistry.get(agentSlug).sessions.markProvisionalActive(sessionId)
-
-      // A mid-turn send must not carry model/effort/speed: the container treats a
-      // parameter change as interrupt/restart of the in-flight query. The
-      // composer strips these client-side, but its view of "active" comes from
-      // SSE and can be stale (reconnect, second window, shared-session peer) —
-      // the server's check is authoritative.
-      if (wasQueued) {
-        delete runtimeOptions.effort
-        delete runtimeOptions.speed
-        delete runtimeOptions.model
-        delete runtimeOptions.llmProviderId
-      }
-
-      await persistAndBroadcastUserMessage(c, {
-        messageUuid,
-        sessionId,
-        agentSlug,
-        content: text,
-        queued: wasQueued,
-      })
-
-      // What this send stores about the session besides its provider binding.
-      // Handed to the container client too: a send whose binding changed
-      // stores it before its POST, and these then go in that same write.
-      const fields: Partial<SessionMetadata> = {}
-      if (runtimeOptions.effort) fields.effort = runtimeOptions.effort
-      if (runtimeOptions.speed) fields.speed = runtimeOptions.speed
-      if (isAuthMode()) {
-        // Alert claim: the device that spoke last in a session is the one
-        // awaiting its outcome, so visible pushes follow it. A send with no
-        // device identity (web/desktop) CLEARS the claim — the user moved to a
-        // surface where a phone alert for this session would be noise (web push
-        // covers them there). Explicit null ≠ absent: absent falls back to the
-        // creation stamp in ApnsRelayChannel. Awaited via the metadata write
-        // below so a fast turn can't complete ahead of its own claim.
-        fields.alertDeviceId = getRequestDeviceId(c)
-      }
-
-      let sent: SendMessageResult
-      try {
-        sent = await actor.messages.send(sessionId, agentText, messageUuid, {
-          ...runtimeOptions,
-          ...(wasQueued ? { preserveRuntime: true } : {}),
-          sessionMetadata: currentSelection,
-          metadataUpdates: fields,
-        })
-      } catch (error) {
-        if (error instanceof MessageNotAcceptedError) undoFreshTurn?.()
-        throw error
-      }
+    const queued = delivery.status !== 'sent' || delivery.queued
+    if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
-      await notifyMentions()
-      const updates: Partial<SessionMetadata> = { ...fields }
-      // The container client resolves the pair, including inherited fallback
-      // after deletion. Do not overwrite it with a stale request pair.
-      const effective = getSettings().llmDefault ? (sent.selection ?? currentSelection) : null
-      if (!wasQueued && effective?.model) {
-        updates.model = effective.model
-        updates.llmProviderId = effective.llmProviderId
-      } else {
-        if (runtimeOptions.model) updates.model = runtimeOptions.model
-        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
-      }
-
-      // What the session holds now, as far as this send knows. Only a value it
-      // does not hold yet costs a write: an unchanged send writes nothing, and
-      // nothing is left over after the client stored a changed binding.
-      const stored = sent.metadataWritten ? { ...currentSelection, ...fields, ...sent.selection } : currentSelection
-      try {
-        if (!sessionMetadataHolds(stored, updates)) await actor.sessions.updateMetadata(sessionId, updates)
-        // The composer re-sends its whole selection on every fresh turn, so
-        // option presence alone doesn't mean anything changed. Compare against
-        // the metadata the send started from — otherwise every send would make
-        // every open window refetch the session list and detail for a no-op.
-        // A failed metadata write skips the broadcast too: peers would only
-        // refetch the stale values.
-        const runtimeSelectionChanged = (['effort', 'speed', 'model', 'llmProviderId'] as const).some(
-          (key) => updates[key] !== undefined && currentSelection?.[key] !== updates[key],
-        )
-        if (runtimeSelectionChanged) {
-          // Other windows/devices may already have seeded their composer from
-          // the previous session metadata. Tell both the local session stream
-          // and the global event stream to refresh before their next send.
-          agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
-          globalFeed.publish({ type: 'session_updated', sessionId, agentSlug })
-        }
-      } catch (error) {
-        console.error(error)
-      }
-
-      return c.json({ success: true, uuid: messageUuid, queued: wasQueued, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
-    })
+    }
+    if (mentions.teammates.length > 0) {
+      const sessionName = (await actor.sessions.metadata(sessionId))?.name
+      await notifySessionMentions(c, mentions, { agentSlug, agentName: agent.name, sessionId, sessionName, messageUuid })
+    }
+    return c.json({ success: true, uuid: messageUuid, queued, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
   } catch (error) {
+    if (deliveryFailure(error)?.code === 'provider-not-attached') return new LlmProviderNotFoundError().toHttpResponse()
     const runtimeError = findAgentRuntimeError(error)
     if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to send message:', error)
@@ -3051,11 +2879,6 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
     const withdrawMentions = () => notificationManager.withdrawSessionMentions(uuidParam.data).catch((error) => {
       console.error('Failed to withdraw mentions:', error)
     })
-    if (agentRegistry.get(agentSlug).messages.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
-      await withdrawMentions()
-      return c.json({ cancelled: true })
-    }
-
     const cancelled = await actor.messages.cancelQueued(sessionId, uuidParam.data)
     if (cancelled) await withdrawMentions()
     return c.json({ cancelled })
@@ -3400,10 +3223,9 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
 
-  // Outside the try on purpose. Every path below — including the catch — ends in
-  // markSessionInterrupted, which is keyed by session id alone across all agents,
-  // so an unowned id reaching any of them wipes another agent's live session
-  // state and tells its viewers it went idle.
+  // Outside the try on purpose. The stop below marks the session stopped on
+  // every path and is keyed by session id alone, so an unowned id reaching it
+  // would wipe another agent's live session state and tell its viewers it went idle.
   if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
@@ -3421,62 +3243,26 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   if (!body.success) {
     return c.json({ error: 'Invalid interrupt scope' }, 400)
   }
-  const requestedScope = body.data.scope
-  // A turn stop leaves background tasks running on purpose — but only tasks
-  // the user can see and stop one by one. When the only open work is untracked
-  // (the runtime lists it, the host's task list does not — a task a subagent
-  // launched, for one), a turn stop keeps the session pinned "working" with
-  // nothing to stop it from. Escalate to the full stop instead, without asking:
-  // there is no keep/kill choice to offer when the list is empty.
-  const escalate = requestedScope === 'turn' && agentRegistry.get(agentSlug).sessions.hasOnlyUntrackedBackgroundWork(sessionId)
-  const scope = escalate ? 'all' : requestedScope
-  if (escalate) {
-    console.log(`[Agents] Session ${sessionId}: only untracked background work is open — stopping everything instead of the turn`)
-  }
-
   try {
-    const actor = agentRegistry.get(agentSlug)
-    // Use cached status to avoid spawning docker process
-    const info = agentRegistry.get(agentSlug).container.status()
-
-    // If container isn't running, just mark the session as interrupted locally
-    // This handles the case where container crashed/restarted but UI still shows active
-    if (info.status !== 'running') {
-      console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
-      agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
-      agentRegistry.get(agentSlug).inputs.reviews.denyAll()
-      return c.json({ success: true, note: 'Container not running, session marked inactive' })
+    // A turn stop that would leave only untracked background work open is a
+    // full stop, without asking: there is no keep/kill choice to offer when
+    // the task list is empty. A container that is not running (crashed or
+    // restarted while the UI still shows the session active), or an
+    // interrupt that fails, still marks the session stopped.
+    const result = await agentRegistry.get(agentSlug).messages.stop(sessionId, {
+      scope: body.data.scope,
+      escalateUntracked: true,
+      denyReviews: true,
+    })
+    if (result.escalated) {
+      console.log(`[Agents] Session ${sessionId}: only untracked background work is open — stopped everything instead of the turn`)
     }
-
-    // Try to interrupt in the container. The turn generation read here tells
-    // the live session whether the turn running afterwards is still the stopped one.
-    const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
-    const { interrupted, processKept } = await actor.messages.interrupt(sessionId, { scope })
-
-    // Even if container interrupt fails (session might not exist there anymore),
-    // still mark it as interrupted locally to update the UI
-    if (!interrupted) {
-      console.log(`[Agents] Container interrupt returned false for session ${sessionId}, marking as interrupted locally`)
-    }
-
-    // processKept is the container's word, not the requested scope: a 'turn'
-    // stop that had to fall back to a process restart killed the background
-    // tasks, and the live session must drop them.
-    actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
-    actor.inputs.reviews.denyAll()
-
-    return c.json({ success: true, processKept })
+    if (result.path === 'not-running') return c.json({ success: true, note: 'Container not running, session marked inactive' })
+    if (result.path === 'interrupt-failed') return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
+    return c.json({ success: true, processKept: result.processKept })
   } catch (error) {
     console.error('Failed to interrupt session:', error)
-    // Even on error, try to mark session as interrupted to fix UI state.
-    // Ownership was established above, so this reaches only the caller's session.
-    try {
-      agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
-      agentRegistry.get(agentSlug).inputs.reviews.denyAll()
-      return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
-    } catch {
-      return c.json({ error: 'Failed to interrupt session' }, 500)
-    }
+    return c.json({ error: 'Failed to interrupt session' }, 500)
   }
 })
 
@@ -4360,16 +4146,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       const sessionId = c.req.param('sessionId')
       agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
 
-      // Interrupt the turn so the user can chat directly with the agent.
+      // Stop the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
-      let processKept = false
-      const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
-      try {
-        processKept = (await actor.messages.interrupt(sessionId, { scope: 'turn' })).processKept
-      } catch (e) {
-        console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
-      }
-      actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+      await actor.messages.stop(sessionId, { scope: 'turn' })
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })

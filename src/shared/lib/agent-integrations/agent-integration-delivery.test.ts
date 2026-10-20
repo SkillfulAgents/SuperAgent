@@ -13,7 +13,7 @@ import { getAgentIntegration } from '../services/agent-integration-service'
 import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { requireIntegrationReconnect } from './lifecycle'
 import { deliveryStore } from './delivery-store'
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { DeliveryError } from '../agent-actor/delivery-errors'
 import { IntegrationRelays, relayAcceptResult } from './relay-transport'
 import type { IntegrationRelayAttachment } from './transport'
 import { createFakeWebhookRelay, type FakeWebhookRelay } from '../webhook-relay/testing/fake-webhook-relay'
@@ -25,9 +25,16 @@ const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
-    subscribeStream: runtime.attach, isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
+    attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
+    isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
   messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
-    subscribe: runtime.subscribe, withSend: (_id: string, send: () => Promise<void>) => send() },
+    subscribe: runtime.subscribe,
+    // The actor's delivery: the echo with its queued flag, then the message.
+    deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
+      if (request.echo) runtime.broadcast(request.sessionId, { type: 'user_message', ...request.echo, uuid: request.uuid, queued: true })
+      await runtime.send(request.sessionId, request.content, request.uuid)
+      return { status: 'sent', queued: true }
+    } },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }) }))
@@ -109,7 +116,7 @@ beforeEach(async () => {
   })
   runtime.attach.mockResolvedValue(undefined); runtime.subscribed.mockReturnValue(true)
   runtime.subscribe.mockImplementation(() => () => {})
-  runtime.send.mockResolvedValue(undefined); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
+  runtime.send.mockResolvedValue({}); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
   runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
@@ -244,7 +251,7 @@ describe('shared manager durability with real integration storage', () => {
       vi.spyOn(adapter, 'sessionPolicy').mockReturnValue({ name: 'Chat', metadata: {}, timeoutHours: 1 })
       await database.update(chatIntegrationSessions).set({ updatedAt: new Date(0) }).run()
     } else {
-      runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
+      runtime.send.mockRejectedValueOnce(new DeliveryError('session-gone', 'Session not found'))
     }
     await adapter.input('after')
     await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'after')?.state).toBe('delivered'))
@@ -259,8 +266,8 @@ describe('shared manager durability with real integration storage', () => {
     if (path === 'attach') {
       runtime.subscribed.mockReturnValue(false)
       runtime.attach.mockRejectedValueOnce(new Error('Session not found'))
-    } else runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
-    runtime.create.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container stopped'))
+    } else runtime.send.mockRejectedValueOnce(new DeliveryError('session-gone', 'Session not found'))
+    runtime.create.mockRejectedValueOnce(new DeliveryError('unavailable', 'Container stopped'))
     await adapter.input('retry-me')
     await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'retry-me')).toMatchObject({ state: 'pending', sessionId: null, attempts: 1 }))
     // A newer input creates a replacement mapping during the first input's backoff.

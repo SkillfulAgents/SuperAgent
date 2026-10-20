@@ -1,6 +1,5 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
-import { isQueuedSessionSend } from './session-send-context'
 import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
@@ -1485,7 +1484,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const speed = options?.speed
     // A queued follow-up belongs to the running turn. It must not resolve a
     // deleted connection, rotate credentials, or rebuild the active query.
-    const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
+    const preserveRuntime = options?.preserveRuntime === true
     let llmRuntime: ConnectionRuntime | undefined
     const result: SendMessageResult = {}
     if (!preserveRuntime) {

@@ -19,7 +19,8 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
-import { insertMessageAuthorBestEffort } from './message-author'
+import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
+import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -31,7 +32,9 @@ import {
 } from '@shared/lib/services/agent-service'
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
-import type { FileOps } from '@shared/lib/agent-actor/types'
+import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-errors'
+import type { DeliverResult, FileOps } from '@shared/lib/agent-actor/types'
+import type { ContainerSession } from '@shared/lib/container/types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import {
   evaluate as evaluatePolicy,
@@ -139,17 +142,6 @@ async function getLatestMessageAuthorUserId(
       error: error instanceof Error ? error.message : String(error),
     })
     return undefined
-  }
-}
-
-async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
-  try {
-    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
-  } catch (error) {
-    console.warn('[x-agent] failed to clean up invoked message attribution', {
-      messageUuid,
-      error: error instanceof Error ? error.message : String(error),
-    })
   }
 }
 
@@ -881,11 +873,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           ? await targetActor.messages.findLastEntry(existingSessionId, isReturnableAssistantEntry)
           : null
         stage = 'subscribe'
-        if (!targetActor.sessions.isStreamSubscribed(existingSessionId)) {
-          await subscribeWithTimeout(
-            targetActor.sessions.subscribeStream(existingSessionId, existingSessionId),
-          )
-        }
+        // Attached here rather than by the delivery, so the attach is bounded
+        // and the cutoff below is checked after it.
+        await subscribeWithTimeout(targetActor.sessions.attach(existingSessionId))
         // Checked AFTER every unbounded pre-send await (container startup and
         // the stream attach above) so only fast local writes remain between
         // here and sendMessage — a check followed by a slow await could still
@@ -902,46 +892,48 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           return c.json({ error: deliveryCutoffError() }, 504)
         }
         stage = 'send_message'
-        await targetActor.messages.withSend(existingSessionId, async () => {
-          let messageUuid: string | undefined
-          if (isAuthMode() && attributedUserId) {
-            const candidateUuid = randomUUID()
-            const recorded = await insertMessageAuthorBestEffort({
-              id: candidateUuid,
-              sessionId: existingSessionId,
-              agentSlug: targetSlug,
-              userId: attributedUserId,
-            })
-            if (recorded) messageUuid = candidateUuid
+        let messageUuid: string | undefined
+        if (isAuthMode() && attributedUserId) {
+          const candidateUuid = randomUUID()
+          const recorded = await insertMessageAuthorBestEffort({
+            id: candidateUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+          if (recorded) messageUuid = candidateUuid
+        }
+        // What a message that never went leaves behind is removed; a failed
+        // send that may have gone keeps both, so an accepted message never
+        // references deleted bytes or loses its author.
+        const discardUndelivered = async () => {
+          promptDeliveryStarted = false
+          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          if (stagedTargetDirectory) {
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            stagedTargetDirectory = undefined
           }
-          try {
-            // A failed send can be ambiguous: retain files once delivery starts so
-            // a message accepted just before a transport error never references deleted bytes.
-            promptDeliveryStarted = true
-            if (messageUuid) {
-              await targetActor.messages.send(existingSessionId, deliveredPrompt, messageUuid, { isAutomated: true })
-            } else {
-              await targetActor.messages.send(existingSessionId, deliveredPrompt, undefined, { isAutomated: true })
-            }
-          } catch (sendError) {
-            if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
-            try {
-              const current = await targetActor.sessions.getLive(existingSessionId)
-              if (current?.isRunning === false) {
-                targetActor.sessions.markIdle(existingSessionId)
-                promptDeliveryStarted = false
-                if (stagedTargetDirectory) {
-                  await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-                  stagedTargetDirectory = undefined
-                }
-              }
-            } catch {
-              // Transport failures are ambiguous: stream events reconcile a send
-              // that reached the container, so retain active state and files.
-            }
-            throw sendError
-          }
-        })
+        }
+        promptDeliveryStarted = true
+        let delivered: DeliverResult
+        try {
+          // ifIdle: the session's state is decided in the delivery's own
+          // turn; the check above only fails fast.
+          delivered = await targetActor.messages.deliver({
+            sessionId: existingSessionId,
+            content: deliveredPrompt,
+            uuid: messageUuid,
+            options: { isAutomated: true },
+            ifIdle: true,
+          })
+        } catch (sendError) {
+          if (deliveryFailure(sendError)?.accepted === false) await discardUndelivered()
+          throw sendError
+        }
+        if (delivered.status === 'busy') {
+          await discardUndelivered()
+          return c.json({ error: 'Target session is currently running' }, 409)
+        }
         invokingSessions.delete(invokingSessionKey)
         invokingSessionKey = undefined
 
@@ -1022,161 +1014,77 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         return c.json({ error: deliveryCutoffError() }, 504)
       }
       stage = 'create_session'
-      // createSession IS the delivery (initialMessage carries the prompt) and
-      // cannot be cancelled mid-flight, so race it against the cutoff: if it
-      // lands after the caller's fetch is already dead, revoke the session the
-      // moment it materializes instead of leaving a ghost run for the caller's
-      // retry to duplicate.
+      // Creating the session IS the delivery (initialMessage carries the
+      // prompt) and cannot be cancelled mid-flight. One that lands after the
+      // cutoff, when the caller's fetch may already be dead, is revoked by the
+      // start itself the moment it materializes, instead of leaving a ghost
+      // run for the caller's retry to duplicate. A failed registration or
+      // stream attach is revoked the same way: without the attach nothing
+      // would persist the session's transcript.
+      // Recorded as the session's creator only while that person exists (a
+      // legacy id can outlive its user); the attribution row follows the start.
+      const createdByUserId = initialMessageUuid && attributedUserId && (await userExists(attributedUserId))
+        ? attributedUserId
+        : undefined
       promptDeliveryStarted = true
-      const createPromise = targetActor.sessions.create({
-        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-        initialMessage: deliveredPrompt,
-        ...(initialMessageUuid ? { initialMessageUuid } : {}),
-        model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-        browserModel: models.browserModel,
-        dashboardBuilderModel: models.dashboardBuilderModel,
-        effort: resolved.effort,
-        speed: resolved.speed,
-        maxOutputTokens: agentLimits.maxOutputTokens,
-        maxThinkingTokens: agentLimits.maxThinkingTokens,
-        maxTurns: agentLimits.maxTurns,
-        maxBudgetUsd: agentLimits.maxBudgetUsd,
-        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-        metadata: { isAutomated: true },
-      })
-      let created: Awaited<typeof createPromise> | typeof DEADLINE
+      let containerSession: ContainerSession
       try {
-        created = await raceDeadline(createPromise, deliveryCutoff)
-      } catch (error) {
+        containerSession = await targetActor.sessions.start({
+          create: {
+          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+          initialMessage: deliveredPrompt,
+          ...(initialMessageUuid ? { initialMessageUuid } : {}),
+          model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+          browserModel: models.browserModel,
+          dashboardBuilderModel: models.dashboardBuilderModel,
+          effort: resolved.effort,
+          speed: resolved.speed,
+          maxOutputTokens: agentLimits.maxOutputTokens,
+          maxThinkingTokens: agentLimits.maxThinkingTokens,
+          maxTurns: agentLimits.maxTurns,
+          maxBudgetUsd: agentLimits.maxBudgetUsd,
+          customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+          maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+          metadata: { isAutomated: true },
+        },
+          name: `Invoked by ${callerName}`,
+          metadata: { invokedByAgentSlug: callerSlug, ...(createdByUserId ? { createdByUserId } : {}) },
+          notAfter: deliveryCutoff,
+          attachTimeoutMs: SUBSCRIBE_TIMEOUT_MS,
+        })
+      } catch (startErr) {
         if (stagedTargetDirectory) {
           await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
         }
-        throw error
+        const failure = startFailure(startErr)
+        if (failure?.code === 'created-late') {
+          console.warn('[x-agent] delivery cutoff exceeded during create; the late session was revoked', { callerSlug, targetSlug })
+          return c.json({ error: lateDeliveryRevokedError() }, 504)
+        }
+        if (failure?.code !== 'register-failed' && failure?.code !== 'attach-failed') throw startErr
+        stage = failure.code === 'register-failed' ? 'register_session' : 'subscribe'
+        const message = startErr instanceof Error ? startErr.message : String(startErr)
+        console.error('[x-agent] invoke failed', { callerSlug, targetSlug, stage, error: message })
+        captureException(startErr, { tags: { ...X_AGENT_SENTRY, stage }, extra: { callerSlug, targetSlug } })
+        return c.json({
+          error: failure.code === 'register-failed'
+            ? `Failed to register invoked session: ${message}`
+            : `Failed to attach to invoked session: ${message}`,
+        }, 500)
       }
-      if (created === DEADLINE) {
-        console.warn('[x-agent] delivery cutoff exceeded during create; late session will be revoked', {
-          callerSlug,
-          targetSlug,
-        })
-        void createPromise.then(
-          async (lateSession) => {
-            await targetActor.sessions.deleteLive(lateSession.id).catch((cleanupErr) => {
-              console.error('[x-agent] failed to revoke late-created session', {
-                sessionId: lateSession.id,
-                error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-              })
-            })
-            if (stagedTargetDirectory) {
-              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-            }
-          },
-          async () => {
-            if (stagedTargetDirectory) {
-              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-            }
-          },
-        )
-        return c.json({ error: lateDeliveryRevokedError() }, 504)
-      }
-      const containerSession = created
       const newSessionId = containerSession.id
-      // Mark active before any await so waitForIdle sees state if result arrives early.
-      targetActor.sessions.markActive(newSessionId)
-
-      const authorRecorded = initialMessageUuid && attributedUserId
-        ? await insertMessageAuthorBestEffort({
-            id: initialMessageUuid,
-            sessionId: newSessionId,
-            agentSlug: targetSlug,
-            userId: attributedUserId,
-          })
-        : false
-
-      stage = 'register_session'
-      try {
-        await targetActor.sessions.register(newSessionId, `Invoked by ${callerName}`, {
-          invokedByAgentSlug: callerSlug,
-          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
-        })
-        // markSessionActive ran before registration so runtime waiters could
-        // not miss a fast result. Publish a metadata-aware update now that the
-        // x-agent provenance exists, allowing the target's trigger/history UI
-        // to appear immediately instead of waiting for its polling interval.
-        globalFeed.publish({
-          type: 'session_updated',
+      if (initialMessageUuid && createdByUserId) {
+        await insertMessageAuthorBestEffort({
+          id: initialMessageUuid,
           sessionId: newSessionId,
           agentSlug: targetSlug,
+          userId: createdByUserId,
         })
-      } catch (registerErr) {
-        const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
-        console.error('[x-agent] invoke failed', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          stage,
-          error: message,
-        })
-        captureException(registerErr, {
-          tags: { ...X_AGENT_SENTRY, stage },
-          extra: { callerSlug, targetSlug, sessionId: newSessionId },
-        })
-        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
-          console.error('[x-agent] failed to clean up orphaned container session', {
-            sessionId: newSessionId,
-            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          })
-        })
-        if (authorRecorded && initialMessageUuid) {
-          await deleteMessageAuthorBestEffort(initialMessageUuid)
-        }
-        targetActor.sessions.unsubscribeStream(newSessionId)
-        if (stagedTargetDirectory) {
-          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-        }
-        return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
-
-      stage = 'subscribe'
-      try {
-        await subscribeWithTimeout(
-          targetActor.sessions.subscribeStream(newSessionId, newSessionId),
-        )
-      } catch (subscribeErr) {
-        const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
-        console.error('[x-agent] invoke failed', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          stage,
-          error: message,
-        })
-        captureException(subscribeErr, {
-          tags: { ...X_AGENT_SENTRY, stage },
-          extra: { callerSlug, targetSlug, sessionId: newSessionId },
-        })
-        // Without the stream attach nothing would persist this session's
-        // transcript — it would run as an invisible ghost. Revoke it, same
-        // remediation as a failed registration above.
-        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
-          console.error('[x-agent] failed to clean up orphaned container session', {
-            sessionId: newSessionId,
-            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          })
-        })
-        if (authorRecorded && initialMessageUuid) {
-          await deleteMessageAuthorBestEffort(initialMessageUuid)
-        }
-        targetActor.sessions.unsubscribeStream(newSessionId)
-        if (stagedTargetDirectory) {
-          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
-        }
-        return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
-      }
-      if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-        targetActor.sessions.setSlashCommands(newSessionId, containerSession.slashCommands)
-      }
+      // The x-agent provenance exists now: the target's trigger and history
+      // UI can show the session at once instead of at its next poll.
+      globalFeed.publish({ type: 'session_updated', sessionId: newSessionId, agentSlug: targetSlug })
 
       if (sync) {
         stage = 'wait_for_idle'

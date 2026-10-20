@@ -249,6 +249,7 @@ export class ContainerRuntime {
       isSubscribed: (id) => this.sessions().isSubscribed(id),
       subscribeToSession: (sessionId, client, containerSessionId) =>
         this.sessions().subscribe(sessionId, client, containerSessionId),
+      inDeliveryTurn: (sessionId, work) => this.sessions().inDeliveryTurn(sessionId, work),
       restrictToSessionIds,
       syncAgentStatus: async () => {
         try {

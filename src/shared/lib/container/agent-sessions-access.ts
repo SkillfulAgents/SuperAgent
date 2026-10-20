@@ -19,6 +19,8 @@ export interface RuntimeSessions {
   isRecovering(sessionId: string): boolean
   isSubscribed(sessionId: string): boolean
   subscribe(sessionId: string, client: ContainerClient, containerSessionId: string): Promise<void>
+  /** Run `work` in the session's delivery turn (see `LiveSessions.inDeliveryTurn`). */
+  inDeliveryTurn<T>(sessionId: string, work: () => Promise<T>): Promise<T>
   /** The container is gone: no session is running. */
   markAllInactive(options?: { settleRecovering?: boolean }): void
   hasActive(): boolean
@@ -44,6 +46,7 @@ export const NO_LIVE_SESSIONS: RuntimeSessions = {
   isRecovering: () => false,
   isSubscribed: () => false,
   subscribe: async () => {},
+  inDeliveryTurn: (_sessionId, work) => work(),
   markAllInactive: () => {},
   hasActive: () => false,
   hasAwaitingInput: () => false,

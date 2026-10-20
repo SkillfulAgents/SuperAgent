@@ -12,7 +12,7 @@
  *
  * Each answer takes the agent's slug, then the method's own arguments. A
  * method with no answer behaves as an agent with nothing live: reads are
- * empty or false, marks do nothing, a send runs as is.
+ * empty or false, marks do nothing, a delivery runs at once and is never queued.
  */
 import type { LiveSessions, LiveSessionsDeps } from '../live/live-sessions'
 
@@ -48,11 +48,11 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   follow: async () => () => {},
   emit: () => {},
   subscribe: async () => {},
+  attachReplaying: async () => {},
   unsubscribe: () => {},
   detach: () => {},
   markActive: () => {},
   markIdle: () => {},
-  markProvisionallyActive: () => () => {},
   markInterrupted: () => {},
   markAllInactive: () => {},
   claimMidTurnForRecovery: () => [],
@@ -61,7 +61,8 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   coalesceIfRecovering: () => false,
   takeCoalesced: () => [],
   dropCoalesced: () => false,
-  withSend: (_sessionId, _client, send) => send(),
+  inDeliveryTurn: (_sessionId, work) => work(),
+  markSending: () => ({ queued: false, rollback: () => {} }),
   waitForIdle: async () => {},
   syncAwaiting: () => {},
   recoverAwaitingInput: () => {},

@@ -33,14 +33,9 @@ export async function finishConnectionReplacement(
 
     const interrupted = await Promise.allSettled(sessionIds.map(async (sessionId) => {
       // A user may have stopped a session while the projection was being updated.
-      if (!actor.sessions.isActive(sessionId)) return null
-      const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
-      const result = await actor.messages.interrupt(sessionId, { scope: 'turn' })
+      const result = await actor.messages.stop(sessionId, { scope: 'turn', ifActive: true })
+      if (result.path === 'skipped-idle') return null
       if (!result.interrupted) throw new Error(`Failed to interrupt session ${sessionId}`)
-      actor.sessions.markInterrupted(sessionId, {
-        processKept: result.processKept,
-        turnGenerationBefore,
-      })
       return sessionId
     }))
     for (const result of interrupted) {
@@ -61,9 +56,12 @@ export async function finishConnectionReplacement(
   }
 
   const deliveries = await Promise.allSettled(ready.map((sessionId) =>
-    actor.messages.withSend(sessionId, () =>
-      actor.messages.send(sessionId, buildConnectionReplacementMessage(change), randomUUID(), { shouldQuery: true }),
-    ),
+    actor.messages.deliver({
+      sessionId,
+      content: buildConnectionReplacementMessage(change),
+      uuid: randomUUID(),
+      options: { shouldQuery: true },
+    }),
   ))
   for (const result of deliveries) {
     if (result.status === 'rejected') {

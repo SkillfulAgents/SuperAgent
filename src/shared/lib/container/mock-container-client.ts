@@ -1,7 +1,6 @@
 import { MessageNotAcceptedError } from './message-dispatch-error'
 import { getSettings } from '../config/settings'
 import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
-import { isQueuedSessionSend } from './session-send-context'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -3425,7 +3424,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Resolve like the real container client so E2E sees the concrete wire id.
     let model = resolveContainerModel(options?.model, 'agent')
     const result: SendMessageResult = {}
-    if (getSettings().llmDefault && !options?.preserveRuntime && !isQueuedSessionSend(this.config.agentId, sessionId)) {
+    if (getSettings().llmDefault && !options?.preserveRuntime) {
       const { agentRegistry } = await import('../agent-actor')
       const actor = agentRegistry.get(this.config.agentId)
       const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)

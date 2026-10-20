@@ -25,6 +25,8 @@ export type RuntimeRecoveryDeps = {
     client: ContainerClient,
     containerSessionId: string,
   ) => Promise<void>
+  /** Run `work` in the session's delivery turn, after the deliveries ahead of it and before any that follow. */
+  inDeliveryTurn: <T>(sessionId: string, work: () => Promise<T>) => Promise<T>
   syncAgentStatus?: () => Promise<void>
   // One-session connection_closed. Omitted = every mid-turn session on the agent.
   restrictToSessionIds?: string[]
@@ -303,13 +305,17 @@ async function resumeSessions(
     // No longer recovering: the user interrupted or it settled during recovery.
     if (!deps.isSessionRecovering(sessionId)) continue
     try {
-      if (!deps.isSubscribed(sessionId)) {
-        await deps.subscribeToSession(sessionId, client, sessionId)
-      }
-      await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
-      const coalesced = deps.takeCoalescedUserMessages(sessionId)
-      deps.markRecovered([sessionId])
-      await deliverCoalescedMessages(deps, client, sessionId, coalesced)
+      // In the session's delivery turn: a message sent once the recovery
+      // ends goes after the resume and the messages it held, not between.
+      await deps.inDeliveryTurn(sessionId, async () => {
+        if (!deps.isSubscribed(sessionId)) {
+          await deps.subscribeToSession(sessionId, client, sessionId)
+        }
+        await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
+        const coalesced = deps.takeCoalescedUserMessages(sessionId)
+        deps.markRecovered([sessionId])
+        await deliverCoalescedMessages(deps, client, sessionId, coalesced)
+      })
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.resume' },

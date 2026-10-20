@@ -175,25 +175,25 @@ async function startRepairSession(
     const models = getEffectiveModels()
     const resolved = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
-    const session = await actor.sessions.create({
-      ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
-      initialMessage: buildPrompt(widgetSlug, error, logTail),
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const session = await actor.sessions.start({
+      create: {
+        ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
+        initialMessage: buildPrompt(widgetSlug, error, logTail),
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: 'Invoked to fix widget',
+      metadata: {
+        isWidgetRepair: true,
+        widgetRepairSlug: widgetSlug,
+        automationStatus: 'running',
+      },
     })
-
-    await actor.sessions.register(session.id, 'Invoked to fix widget', {
-      isWidgetRepair: true,
-      widgetRepairSlug: widgetSlug,
-      automationStatus: 'running',
-    })
-    await actor.sessions.subscribeStream(session.id, session.id)
-    actor.sessions.markActive(session.id)
     // The home entry and inbound history may already be mounted.
     globalFeed.publish({ type: 'session_updated', agentSlug, sessionId: session.id })
     console.log(`[WidgetRepair] ${agentSlug}/${widgetSlug}: opened repair session ${session.id}`)
