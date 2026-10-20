@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { volumeNameSchema } from '@shared/lib/services/mount-schema'
+import { githubVolumeConfigSchema } from './github-schema'
 import { s3VolumeConfigSchema } from './s3-schema'
 import { dropboxVolumeConfigSchema } from './dropbox-schema'
 import { googleDriveVolumeConfigSchema } from './google-drive-schema'
@@ -22,6 +23,7 @@ export type StoredPlatformVolumeConfig = z.infer<typeof storedPlatformVolumeConf
 
 /** Source configuration at the database/file boundary, independent of drivers. */
 export const volumeConfigSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('github'), config: githubVolumeConfigSchema }),
   z.object({ type: z.literal('s3'), config: s3VolumeConfigSchema }),
   z.object({ type: z.literal('local'), config: localVolumeConfigSchema }),
   z.object({ type: z.literal('dropbox'), config: dropboxVolumeConfigSchema }),

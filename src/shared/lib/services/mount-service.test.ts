@@ -8,6 +8,7 @@ import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/cr
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
+import { volumeHealth } from '@shared/lib/volumes/volume-health'
 
 let handle: TestDatabase
 let tmpDir: string
@@ -168,6 +169,10 @@ describe('volume health and stored configuration', () => {
       notMounted: [{ name: 'gone', reason: 'not found' }, { name: 'bad', reason: 'unreadable' }, { name: '', reason: 'invalid name' }],
     })
     expect((await getMountsWithHealth('test-agent')).map(m => m.health)).toEqual(['ok', 'missing', 'missing', 'missing'])
+  })
+  it('shows a first copy in progress as preparing, and a failed one as missing', () => {
+    expect([volumeHealth(null), volumeHealth('preparing'), volumeHealth('preparing: GitHub refused access'), volumeHealth('not found')])
+      .toEqual(['ok', 'preparing', 'missing', 'missing'])
   })
   it('reports a deleted folder or a root replaced by a symlink as missing', async () => {
     const dir = folder('replaced')

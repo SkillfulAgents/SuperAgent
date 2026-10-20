@@ -5,7 +5,7 @@ import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
-import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
 
 export { volumeSummary } from '@shared/lib/volumes/volume-health'
@@ -127,7 +127,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
         ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
         ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}),
-        ...(row.readOnly ? { readOnly: true } : {}) }]
+        ...(row.readOnly || driver?.readOnly ? { readOnly: true } : {}) }]
     }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
@@ -135,7 +135,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
   return (await judgeVolumes(slug)).map(({ row, reason }) => ({
-    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: reason === null ? 'ok' : 'missing',
+    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: volumeHealth(reason),
     ...(row.global ? { global: true as const } : {}),
   }))
 }
