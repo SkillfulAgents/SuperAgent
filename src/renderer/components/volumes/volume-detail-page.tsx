@@ -25,23 +25,23 @@ const LEVEL_LABEL: Record<GlobalAccess, string> = { read: 'Read-only', write: 'C
 function GlobalSetting({ volume }: { volume: VolumeDefinitionSummary }) {
   const save = useSaveVolumeDefinition()
   const current = volume.globalAccess
+  const isPublic = volume.userId === null
   const [level, setLevel] = useState<GlobalAccess>(current ?? 'read')
   const [confirming, setConfirming] = useState(false)
   const shown = current ?? level
-  const apply = () => save.mutate({ id: volume.id, global: current ? null : level }, {
-    onError: error => toast.error('Failed to update drive', { description: error instanceof Error ? error.message : 'Please try again.' }),
-  })
+  const apply = () => save.mutateAsync({ id: volume.id, global: current ? null : level })
+    .catch(error => toast.error('Failed to update drive', { description: error instanceof Error ? error.message : 'Please try again.' }))
   return <div className="space-y-2" data-testid="global-drive-setting">
     <div className="flex items-center gap-3">
       <p className="min-w-0 flex-1 text-sm font-medium">Global</p>
-      <Select value={shown} disabled={current !== null || save.isPending}
+      <Select value={shown} disabled={!isPublic || current !== null || save.isPending}
         onValueChange={value => { if (value === 'read' || value === 'write') setLevel(value) }}>
         <SelectTrigger className="h-8 w-[120px]" aria-label="Access on every agent" title={current ? 'Turn off global to change access' : undefined}><SelectValue /></SelectTrigger>
         <SelectContent>{(['read', 'write'] as const).map(item => <SelectItem key={item} value={item}>{LEVEL_LABEL[item]}</SelectItem>)}</SelectContent>
       </Select>
-      <Switch className="shrink-0" aria-label="Global drive" checked={current !== null} disabled={save.isPending} onCheckedChange={() => setConfirming(true)} />
+      <Switch className="shrink-0" aria-label="Global drive" checked={current !== null} disabled={!isPublic || save.isPending} onCheckedChange={() => setConfirming(true)} />
     </div>
-    <p className="text-xs text-muted-foreground">Gives every agent this drive. Agents that also have it as their own drive keep their own access.</p>
+    <p className="text-xs text-muted-foreground">{isPublic ? 'Gives every agent this drive. Agents that also have it as their own drive keep their own access.' : 'Only drives Everyone can add can be global.'}</p>
     {shown === 'write' && <p className="text-xs text-orange-600 dark:text-orange-400">Every agent can edit and delete files in this drive.</p>}
     <AlertDialog open={confirming} onOpenChange={setConfirming}>
       <AlertDialogContent>
@@ -66,7 +66,7 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
   const remove = useRemoveMount()
   return <section className="min-w-0 space-y-3" aria-label="Drive agents">
     <p className="text-xs text-muted-foreground">Running agents pick up drive changes after a restart.</p>
-    <AgentAssignmentList
+    {volume.globalAccess ? <p className="text-sm font-medium">Every agent has this drive</p> : <AgentAssignmentList
       agents={(agents.data ?? []).filter(agent => !isAuthMode || (rolesReady && canUseAgent(agent.slug)))}
       assignedSlugs={(assignment.data?.attachments ?? []).map(item => item.agentSlug)}
       isLoading={agents.isLoading || assignment.isLoading || (isAuthMode && !rolesReady)} error={agents.error ?? assignment.error}
@@ -83,7 +83,7 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
       }}
       rowDescription={agent => agents.data?.some(item => item.slug === agent.slug && item.status === 'running' && item.stale)
         ? <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }} className="text-[11px] text-orange-600 dark:text-orange-400 hover:underline">Restart agent to apply changes</AppLink> : null}
-    />
+    />}
   </section>
 }
 
@@ -104,7 +104,6 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
       <VolumeDetailsFields showName={false} value={{ name: volume.name, visibility }} onChange={next => { setVisibility(next.visibility); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
         <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
       </VolumeDetailsFields>
-      {volume.userId === null && <div className="border-t pt-4"><GlobalSetting volume={volume} /></div>}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={onDelete}
@@ -115,6 +114,7 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
         {isAuthMode && isAdmin && volume.attachmentCount === 0 && <Button type="submit" size="sm" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save changes'}</Button>}
       </div>
     </form>
+    <div className="rounded-xl border bg-background p-4"><GlobalSetting volume={volume} /></div>
   </section>
 }
 
@@ -148,18 +148,13 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
           <VolumeStatusBadge health={volume.health} />
         </div>
         <p className="text-xs text-muted-foreground truncate">{volume.sourceLabel ?? volume.hostPath}</p>
-        {volume.canManage && volume.attachmentCount > 0 && <p className="text-xs text-muted-foreground">Renaming this drive keeps existing agents’ folder paths.</p>}
+        {volume.canManage && volume.attachmentCount > 0 && !volume.globalAccess && <p className="text-xs text-muted-foreground">Renaming this drive keeps existing agents’ folder paths.</p>}
       </div>
       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">{volume.userId === null ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}{volume.userId === null ? 'Public' : 'Private'}</span>
     </div>
     <div className="grid gap-6 items-start grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] pt-4">
       <div className="min-w-0 space-y-6">
-        {volume.globalAccess
-          ? <section className="min-w-0 space-y-3" aria-label="Drive agents">
-            <p className="text-xs text-muted-foreground">Running agents pick up drive changes after a restart.</p>
-            <p className="text-sm font-medium">Every agent has this drive</p>
-          </section>
-          : <VolumeAgentsList volume={volume} />}
+        <VolumeAgentsList volume={volume} />
         {volume.canManage && <VolumeSettingsForm volume={volume} onDelete={onDelete} />}
       </div>
       <VolumeFileBrowser volumeId={volume.id} />

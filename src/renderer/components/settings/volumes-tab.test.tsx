@@ -49,12 +49,35 @@ describe('volume settings', () => {
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox')).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: /who can add/i })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Rename drive' }))
     await userEvent.clear(screen.getByTestId('volume-title-input'))
     await userEvent.type(screen.getByTestId('volume-title-input'), 'Team notes{Enter}')
     expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+  it('shows Global disabled with the reason on a drive only its owner can add', () => {
+    state.selectedId = 'v1'
+    render(<VolumesTab />)
+    expect(screen.getByRole('switch', { name: 'Global drive' })).toBeDisabled()
+    expect(screen.getByText('Only drives Everyone can add can be global.')).toBeInTheDocument()
+  })
+  it('turns a public drive global after a confirm, then locks the access picker and lists every agent', async () => {
+    state.definitions[0] = { ...state.definitions[0], userId: null }
+    state.selectedId = 'v1'
+    state.save.mockResolvedValue(undefined)
+    const { rerender } = render(<VolumesTab />)
+    expect(screen.getByRole('switch', { name: 'Global drive' })).not.toBeChecked()
+    expect(screen.getByRole('combobox', { name: 'Access on every agent' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('switch', { name: 'Global drive' }))
+    expect(state.save).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(state.save).toHaveBeenCalledExactlyOnceWith({ id: 'v1', global: 'read' })
+    state.definitions[0] = { ...state.definitions[0], globalAccess: 'read' }
+    rerender(<VolumesTab />)
+    expect(screen.getByRole('combobox', { name: 'Access on every agent' })).toBeDisabled()
+    expect(screen.getByText('Every agent has this drive')).toBeInTheDocument()
+    expect(screen.queryByText('Agents Without This Drive')).not.toBeInTheDocument()
   })
   it('returns Back to an agent page only when the agent home opened the drive', () => {
     expect(agentBackPath('home', '/agents/a1')).toBe('/agents/a1')

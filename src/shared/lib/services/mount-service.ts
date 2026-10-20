@@ -41,7 +41,8 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
     if (!stored) return []
     const name = uniqueName(volume.name, names)
     names.add(name)
-    return [{ ...stored, id: `global-${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess === 'read', global: true }]
+    // One id per agent, as with attachment rows: providers keep upload state per mount id.
+    return [{ ...stored, id: `global-${slug}-${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess !== 'write', global: true }]
   })
   return [...own, ...global]
 }
@@ -103,7 +104,7 @@ export async function removeMount(slug: string, mountId: string): Promise<boolea
   return changesOf(result) > 0
 }
 
-/** The attachment is the grant; knowing a shared definition's id grants no access. */
+/** The agent's own attachment or a global drive is the grant; knowing a shared definition's id grants no access. */
 export async function resolveVolume(slug: string, mountId: string) {
   const row = (await getMounts(slug)).find(m => m.id === mountId)
   if (!row) return null

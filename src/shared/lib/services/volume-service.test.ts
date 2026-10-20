@@ -50,7 +50,7 @@ describe('volume ownership', () => {
     const privateId = await createVolumeDefinition(input(), bob)
     await expect(updateVolumeDefinition(privateId, { name: 'Notes', visibility: 'public' }, bob)).rejects.toMatchObject({ status: 403 })
   })
-  it('makes only public drives global, and a drive going private stops being global', async () => {
+  it('makes only public drives global, and keeps a global drive public until global is off', async () => {
     const privateId = await createVolumeDefinition(input(), alice)
     await expect(updateVolumeDefinition(privateId, { global: 'read' }, alice)).rejects.toMatchObject({ status: 400 })
     const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
@@ -58,6 +58,9 @@ describe('volume ownership', () => {
     await expect(updateVolumeDefinition(id, { visibility: 'private', global: 'read' }, admin)).rejects.toMatchObject({ status: 400 })
     await updateVolumeDefinition(id, { global: 'write' }, admin)
     expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, globalAccess: 'write' }])
+    await expect(updateVolumeDefinition(id, { visibility: 'private' }, admin)).rejects.toMatchObject({ status: 409, message: 'Turn off global before changing access' })
+    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, userId: null, globalAccess: 'write' }])
+    await updateVolumeDefinition(id, { global: null }, admin)
     await updateVolumeDefinition(id, { visibility: 'private' }, admin)
     expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, userId: 'admin', globalAccess: null }])
   })
