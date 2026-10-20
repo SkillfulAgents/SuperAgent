@@ -10,6 +10,8 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { getSettings } from '@shared/lib/config/settings'
+import { syncAgentIdentityFromWorkspace } from '@shared/lib/services/agent-service'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 const agentBootstrap = new Hono()
 const DASHBOARD_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
@@ -120,6 +122,25 @@ agentBootstrap.post('/:agentSlug/events/widget-snapshot-ready', async (c) => {
     agentSlug,
     ...parsed.data,
   })
+  return c.body(null, 204)
+})
+
+// The agent changed the name or description in its instructions frontmatter
+// with Write or Edit. A signal only: the identity comes from the file, read
+// under the identity lock, so a user rename that landed since still wins.
+agentBootstrap.post('/:agentSlug/events/agent-identity-changed', async (c) => {
+  const agentSlug = c.req.param('agentSlug')
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const callerSlug = await validateProxyToken(token)
+  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
+  if (callerSlug !== agentSlug) return c.json({ error: 'Token does not match agent' }, 403)
+
+  const fields = await syncAgentIdentityFromWorkspace(agentSlug)
+  if (fields.length > 0) {
+    globalFeed.publish({ type: 'agent_updated', agentSlug })
+    await logAuditEvent({ userId: null, object: 'agent', objectId: agentSlug, action: 'updated', details: { fields, source: 'agent' } })
+  }
   return c.body(null, 204)
 })
 

@@ -59,7 +59,6 @@ const HOST_METHODS = [
   'markAgentsStale',
   'reconcileWebhookRelay',
   'watchWebhookRelay',
-  'onSessionIdle',
   'hasRunningAgents',
   'getReadiness',
   'resetReadiness',

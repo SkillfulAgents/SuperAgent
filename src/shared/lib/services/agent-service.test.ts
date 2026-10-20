@@ -695,25 +695,35 @@ Instructions`
       const created = await createAgent({ name: 'Untitled' })
       await setAgentInstructionsContent(created.slug, '---\nname: Inbox Bot\ndescription: Triages Gmail and drafts replies.\n---\nBody\n')
 
-      expect(await syncAgentIdentityFromWorkspace(created.slug)).toBe(true)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual(['name', 'description'])
 
       expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Bot', description: 'Triages Gmail and drafts replies.' })
       await updateAgent(created.slug, { name: 'Mail Helper' })
       const content = await getAgentInstructionsContent(created.slug)
       expect(content).toContain('name: Mail Helper')
       expect(content).toContain('description: Triages Gmail and drafts replies.')
-      expect(await syncAgentIdentityFromWorkspace(created.slug)).toBe(false)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
     })
 
     it('leaves blank or missing fields alone', async () => {
       const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
       await setAgentInstructionsContent(created.slug, '---\nname: "  "\n---\nBody\n')
 
-      expect(await syncAgentIdentityFromWorkspace(created.slug)).toBe(false)
-      expect(await syncAgentIdentityFromWorkspace('nonexistent')).toBe(false)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+      expect(await syncAgentIdentityFromWorkspace('nonexistent')).toEqual([])
 
       expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Helper' })
       expect((await getAgentRecord(created.slug))?.description).toBe('Triages Gmail.')
+    })
+
+    it('leaves a field alone when the value is too long or a YAML block indicator', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, `---\nname: ${'n'.repeat(81)}\ndescription: >-\n  Triages Gmail.\n---\nBody\n`)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+
+      await setAgentInstructionsContent(created.slug, `---\nname: Mail Helper\ndescription: ${'d'.repeat(201)}\n---\nBody\n`)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual(['name'])
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Mail Helper', description: 'Triages Gmail.' })
     })
   })
 

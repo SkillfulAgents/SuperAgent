@@ -145,6 +145,11 @@ This is the body.`
     expect(result.body).toBe('')
   })
 
+  it('keeps a quoted blank value a string rather than the number 0', () => {
+    const result = parseMarkdownWithFrontmatter('---\nname: "  "\n---\nBody')
+    expect(result.frontmatter).toEqual({ name: '  ' })
+  })
+
   it('parses boolean values', () => {
     const content = `---
 enabled: true

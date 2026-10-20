@@ -51,6 +51,7 @@ import {
   agentExists,
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
+import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '@shared/lib/services/agent-identity-schema'
 import {
   agentRegistry,
   containerHost,
@@ -1174,7 +1175,7 @@ const generateNameBodySchema = z.object({
 // anyway (the old max_tokens: 50 doubled as a truncator); clamp to one line
 // and a sidebar-sized length before using it.
 function clampGeneratedName(raw: string): string {
-  return raw.split('\n')[0].trim().substring(0, 80)
+  return raw.split('\n')[0].trim().substring(0, AGENT_NAME_MAX_LENGTH)
 }
 
 agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
@@ -1207,7 +1208,7 @@ Respond with ONLY those two lines. No labels, no quotes, no explanation.`,
     if (!name) {
       return c.json({ error: 'Failed to generate name' }, 500)
     }
-    const description = descriptionLine?.substring(0, 200)
+    const description = descriptionLine?.substring(0, AGENT_DESCRIPTION_MAX_LENGTH)
 
     return c.json(description ? { name, description } : { name })
   } catch (error) {

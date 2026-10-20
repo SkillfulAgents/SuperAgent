@@ -1,22 +1,22 @@
 export { FileHook, resolveToolFilePath } from './file-hook'
-export type { FileHookReadResult, FileHookWriteResult } from './file-hook'
+export type { FileHookReadResult, FileHookWriteResult, FileHookChangeResult } from './file-hook'
 export { BookmarksFileHook } from './bookmarks-hook'
 export { bookmarksSchema, bookmarkSchema } from './bookmarks-schema'
 export type { Bookmark } from './bookmarks-schema'
 export { AgentPreferencesFileHook } from './agent-preferences-hook'
-export { AgentDescriptionHintFileHook } from './agent-description-hint-hook'
+export { AgentIdentityFileHook } from './agent-identity-hook'
 export { MountIndexFileHook, mountIndexCommandHint } from './mount-index-hook'
 
 import { type FileHook } from './file-hook'
 import { BookmarksFileHook } from './bookmarks-hook'
 import { AgentPreferencesFileHook } from './agent-preferences-hook'
-import { AgentDescriptionHintFileHook } from './agent-description-hint-hook'
+import { AgentIdentityFileHook } from './agent-identity-hook'
 import { MountIndexFileHook } from './mount-index-hook'
 
 /** All registered file hooks. Add new FileHook subclasses here. */
 export const fileHooks: FileHook[] = [
   new BookmarksFileHook(),
   new AgentPreferencesFileHook(),
-  new AgentDescriptionHintFileHook(),
+  new AgentIdentityFileHook(),
   new MountIndexFileHook(),
 ]

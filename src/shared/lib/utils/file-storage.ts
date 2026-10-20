@@ -134,7 +134,7 @@ export function parseMarkdownWithFrontmatter<T = Record<string, unknown>>(
     // Parse booleans and numbers
     if (value === 'true') value = true
     else if (value === 'false') value = false
-    else if (!isNaN(Number(value)) && value !== '') value = Number(value)
+    else if (!isNaN(Number(value)) && value.trim() !== '') value = Number(value)
 
     frontmatter[key] = value
   }

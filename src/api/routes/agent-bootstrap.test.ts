@@ -26,6 +26,14 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ container: { containerRunner: 'apple-container' } }),
 }))
+const syncAgentIdentityFromWorkspace = vi.fn(async (_slug: string): Promise<Array<'name' | 'description'>> => [])
+vi.mock('@shared/lib/services/agent-service', () => ({
+  syncAgentIdentityFromWorkspace: (slug: string) => syncAgentIdentityFromWorkspace(slug),
+}))
+const logAuditEvent = vi.fn(async (_params: unknown) => undefined)
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: (params: unknown) => logAuditEvent(params),
+}))
 
 import agentBootstrap from './agent-bootstrap'
 import { setBootstrapEnv, clearBootstrapEnv, resetBootstrapEnvStoreForTests } from '@shared/lib/container/agent-bootstrap-env-store'
@@ -48,6 +56,8 @@ beforeEach(() => {
   captureException.mockReset()
   isActive.mockReset().mockReturnValue(false)
   isStreamSubscribed.mockReset().mockReturnValue(false)
+  syncAgentIdentityFromWorkspace.mockReset().mockResolvedValue([])
+  logAuditEvent.mockReset()
   resetBootstrapEnvStoreForTests()
 })
 
@@ -199,6 +209,45 @@ describe('POST /:agentSlug/events/dashboard-status-changed', () => {
 
     expect(res.status).toBe(400)
     expect(publish).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /:agentSlug/events/agent-identity-changed', () => {
+  it('reads the identity back, then tells renderers and audits it as the agent\'s change', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+    syncAgentIdentityFromWorkspace.mockResolvedValue(['description'])
+
+    const res = await post('/agent-1/events/agent-identity-changed', {}, { Authorization: 'Bearer synth_x' })
+
+    expect(res.status).toBe(204)
+    expect(syncAgentIdentityFromWorkspace).toHaveBeenCalledWith('agent-1')
+    expect(publish).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'agent-1' })
+    expect(logAuditEvent).toHaveBeenCalledWith({
+      userId: null,
+      object: 'agent',
+      objectId: 'agent-1',
+      action: 'updated',
+      details: { fields: ['description'], source: 'agent' },
+    })
+  })
+
+  it('stays quiet when the file holds nothing new', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+
+    const res = await post('/agent-1/events/agent-identity-changed', {}, { Authorization: 'Bearer synth_x' })
+
+    expect(res.status).toBe(204)
+    expect(publish).not.toHaveBeenCalled()
+    expect(logAuditEvent).not.toHaveBeenCalled()
+  })
+
+  it('rejects a token belonging to another agent', async () => {
+    validateProxyToken.mockResolvedValue('agent-2')
+
+    const res = await post('/agent-1/events/agent-identity-changed', {}, { Authorization: 'Bearer synth_other' })
+
+    expect(res.status).toBe(403)
+    expect(syncAgentIdentityFromWorkspace).not.toHaveBeenCalled()
   })
 })
 
