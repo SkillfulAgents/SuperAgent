@@ -44,6 +44,7 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['sheets batchUpdate', bash('curl -s -X POST "$PROXY_BASE_URL/acc-gsheets/sheets.googleapis.com/v4/spreadsheets/abc:batchUpdate"'), []],
   ['sleep', bash('sleep 30'), ['no-foreground-wait']],
   ['poll loop', bash('for i in $(seq 1 18); do curl -s "$URL/check-runs"; sleep 10; done'), ['no-foreground-wait']],
+  ['background sleep', { event: 'PreToolUse', toolName: 'Bash', toolInput: { command: 'sleep 10 && echo done', run_in_background: true } }, []],
   ['background command', bash('npm test > /tmp/test.log 2>&1'), []],
   ['write a CSV report', wrote('/workspace/reports/activations.csv'), ['deliver-files']],
   ['write a PDF', wrote('/workspace/invoice.pdf'), ['deliver-files']],
