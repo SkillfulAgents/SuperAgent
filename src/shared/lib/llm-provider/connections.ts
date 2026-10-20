@@ -255,6 +255,22 @@ export async function saveConnection(
   })
 }
 
+export async function shareConnection(id: string, viewer: ConnectionViewer): Promise<void> {
+  await mutateConnections(async () => {
+    const row = await getConnection(id)
+    if (!row) throw new Error('Connection not found')
+    assertManageConnection(row, viewer)
+    if (row.userId === null) return
+    if (!viewer.admin) throw new Error('Only administrators can share connections with everyone')
+    const updated = await db
+      .update(llmConnections)
+      .set({ userId: null, updatedAt: new Date(), generation: sql`${llmConnections.generation} + 1` })
+      .where(and(eq(llmConnections.id, id), eq(llmConnections.generation, row.generation)))
+      .run()
+    if (!changesOf(updated)) throw new Error('Connection changed while saving. Please retry.')
+  })
+}
+
 export async function deleteConnection(id: string, viewer: ConnectionViewer): Promise<void> {
   await mutateConnections(async () => {
     const row = await getConnection(id)
