@@ -102,3 +102,52 @@ describe('built-in hints', () => {
     expect(builtinHintsEnabled(value)).toBe(expected)
   })
 })
+
+describe('built-in hint triggers', () => {
+  const context = async (input: HookInput) => {
+    const result = await createHintsHook(builtinHints, () => 1)(input, 'tool-1', options)
+    return (result as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput?.additionalContext
+  }
+  const fileTool = (event: 'PostToolUse', tool: string, file_path: string) =>
+    ({ hook_event_name: event, tool_name: tool, tool_input: { file_path } }) as HookInput
+
+  it.each([
+    'agent-browser open https://example.com',
+    '  agent-browser snapshot',
+    'which agent-browser',
+    '\twhich   agent-browser; agent-browser --help',
+  ])('agent-browser-bash warns without denying: %s', async (command) => {
+    expect(await context(bash('PreToolUse', command))).toContain('STRONG WARNING')
+  })
+
+  it.each([
+    'echo agent-browser',
+    'env | grep -i browser',
+    'which agent-browser-helper',
+    'agent-browser-helper open https://example.com',
+    '',
+    undefined,
+  ])('agent-browser-bash ignores %s', async (command) => {
+    expect(await context(bash('PreToolUse', command))).toBeUndefined()
+  })
+
+  it('agent-browser-bash warns on every call, like the hook it replaced', async () => {
+    const hook = createHintsHook(builtinHints, () => 1)
+    for (const id of ['tool-1', 'tool-2']) {
+      const result = await hook(bash('PreToolUse', 'agent-browser snapshot'), id, options)
+      expect(JSON.stringify(result)).toContain('STRONG WARNING')
+    }
+  })
+
+  it('update-skill-md follows a write or edit inside a skill', async () => {
+    expect(await context(fileTool('PostToolUse', 'Write', '/workspace/.claude/skills/fetch-weather/weather.py'))).toContain('SKILL.md')
+    expect(await context(fileTool('PostToolUse', 'Edit', '/workspace/.claude/skills/fetch-weather/SKILL.md'))).toContain('SKILL.md')
+    expect(await context(fileTool('PostToolUse', 'Write', '/workspace/reports/weather.py'))).toBeUndefined()
+  })
+
+  it('uv-run-env-file reminds before uv run, including chained commands', async () => {
+    expect(await context(bash('PreToolUse', 'uv run --with requests fetch.py'))).toContain('--env-file .env')
+    expect(await context(bash('PreToolUse', 'cd /workspace && uv run fetch.py'))).toContain('--env-file .env')
+    expect(await context(bash('PreToolUse', 'uvx ruff check'))).toBeUndefined()
+  })
+})

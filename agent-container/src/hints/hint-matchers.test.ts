@@ -44,8 +44,16 @@ describe('compileTrigger', () => {
     expect(matches({ event: 'UserPromptSubmit', prompt: 'redeployment notes' })).toBe(false)
   })
 
+  it('matches Read, Write and Edit patterns on the whole file_path', () => {
+    const matches = compileTrigger({ event: 'PostToolUse', match: 'Write(/workspace/.claude/skills/*)' })
+    const write = (file_path: string) => ({ event: 'PostToolUse' as const, toolName: 'Write', toolInput: { file_path } })
+    expect(matches(write('/workspace/.claude/skills/fetch-weather/weather.py'))).toBe(true)
+    expect(matches(write('/workspace/.claude/skills-old/a.py'))).toBe(false)
+    expect(matches(write('/workspace/notes; /workspace/.claude/skills/a.py'))).toBe(false)
+  })
+
   it('rejects a pattern on a tool with no pattern field', () => {
-    expect(() => compileTrigger({ event: 'PreToolUse', match: 'Read(/tmp/*)' })).toThrow('does not support')
+    expect(() => compileTrigger({ event: 'PreToolUse', match: 'Grep(/tmp/*)' })).toThrow('does not support')
   })
 
   it('rejects a malformed tool match', () => {

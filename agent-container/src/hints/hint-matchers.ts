@@ -6,8 +6,11 @@ export type HintMatcher = (input: HintEventInput) => boolean
 const COMMAND_SEPARATORS = /&&|\|\||[;|\n]/
 
 /** Tools whose `Tool(pattern)` form is checked against this tool_input field. */
-const TOOL_PATTERN_FIELDS: Record<string, string> = {
-  Bash: 'command',
+const TOOL_PATTERN_FIELDS: Record<string, { field: string; splitCommands?: boolean }> = {
+  Bash: { field: 'command', splitCommands: true },
+  Read: { field: 'file_path' },
+  Write: { field: 'file_path' },
+  Edit: { field: 'file_path' },
 }
 
 export function escapeRegExp(text: string): string {
@@ -39,13 +42,15 @@ function compileToolMatch(match: string): HintMatcher {
   if (pattern === undefined) {
     return (input) => 'toolName' in input && input.toolName === toolName
   }
-  const field = TOOL_PATTERN_FIELDS[toolName]
-  if (!field) throw new Error(`Tool "${toolName}" does not support a (pattern) in "${match}"`)
+  const target = TOOL_PATTERN_FIELDS[toolName]
+  if (!target) throw new Error(`Tool "${toolName}" does not support a (pattern) in "${match}"`)
   const regex = toolPatternToRegExp(pattern)
   return (input) => {
     if (!('toolName' in input) || input.toolName !== toolName) return false
-    const value = (input.toolInput as Record<string, unknown> | undefined)?.[field]
-    return typeof value === 'string' && value.split(COMMAND_SEPARATORS).some((part) => regex.test(part.trimStart()))
+    const value = (input.toolInput as Record<string, unknown> | undefined)?.[target.field]
+    if (typeof value !== 'string') return false
+    const parts = target.splitCommands ? value.split(COMMAND_SEPARATORS) : [value]
+    return parts.some((part) => regex.test(part.trimStart()))
   }
 }
 
