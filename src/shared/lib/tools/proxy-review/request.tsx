@@ -1,5 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type ReactElement, type ReactNode } from 'react'
 import { useNavigate, useRouter } from '@tanstack/react-router'
 import { ShieldCheck, ShieldX, ChevronDown, ChevronRight, ArrowUp, Settings, Info } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -88,31 +88,14 @@ interface ProxyReviewRequestItemProps {
 
 type RequestStatus = 'pending' | 'submitting' | 'allowed' | 'denied'
 
-/**
- * The service, method and path, and what the request sends. The body starts open when the card
- * cannot name the call: it is then the only thing that says what the call does.
- */
-/** A faint info icon that shows a menu option's explanation on hover. */
-function InfoHint({ text }: { text: string }) {
+const HINT_ICON = <Info aria-hidden className="!size-3 shrink-0 text-muted-foreground/40" />
+
+/** Shows a menu option's explanation when the option is hovered or focused. */
+function InfoHint({ text, children }: { text: string; children: ReactElement }) {
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
-        <TooltipTrigger asChild>
-          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
-          <span
-            data-testid="proxy-review-info-hint"
-            aria-label={text}
-            // The hint sits inside a menu option; clicking it must not choose the option.
-            onClick={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-            }}
-            className="ml-0.5 inline-flex shrink-0 text-muted-foreground/40 transition-colors hover:text-muted-foreground"
-          >
-            {/* `!` beats Button's [&_svg]:size-4 */}
-            <Info className="!size-3" />
-          </span>
-        </TooltipTrigger>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
         <TooltipContent side="right" className="max-w-[240px] text-xs font-normal">
           {text}
         </TooltipContent>
@@ -121,6 +104,10 @@ function InfoHint({ text }: { text: string }) {
   )
 }
 
+/**
+ * The service, method and path, and what the request sends. The body starts open when the card
+ * cannot name the call: it is then the only thing that says what the call does.
+ */
 function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
   toolkit: ReactNode
   requestLabel: string
@@ -180,7 +167,6 @@ function ScopeReviewRequestItem({
   method,
   targetPath,
   matchedScopes,
-  scopeDescriptions,
   displayText,
   endpointDescription,
   requestBody,
@@ -217,9 +203,6 @@ function ScopeReviewRequestItem({
   // A require rule held this request: changing the policy wouldn't stop the
   // rule holding the next one, so only one-off decisions are offered.
   const heldByRule = heldByRequireRule(ruleOutcomes)
-  // An unnamed API call's scopes union every action on its path, so allowing any of
-  // them can allow a delete. Those cards offer no label or scope allow either.
-  const policyAllows = !heldByRule && (!isApiReview || named)
 
   const navigate = useNavigate()
   const router = useRouter()
@@ -252,7 +235,7 @@ function ScopeReviewRequestItem({
         type="button"
         data-testid="proxy-review-connection-link"
         onClick={openConnection}
-        className={cn(className, 'hover:underline')}
+        className={cn(className, 'capitalize hover:underline')}
       >
         {toolkit}
       </button>
@@ -297,7 +280,7 @@ function ScopeReviewRequestItem({
     }
   }
 
-  const handleAlways = async (decision: 'allow' | 'deny', scope: string) => {
+  const handleAlways = async (scope: string) => {
     setStatus('submitting')
     setError(null)
     try {
@@ -307,7 +290,7 @@ function ScopeReviewRequestItem({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            decision,
+            decision: 'allow',
             scope,
             accountId,
             reviewType: resolvedReviewType,
@@ -316,14 +299,14 @@ function ScopeReviewRequestItem({
       )
       if (!response.ok) {
         if (response.status === 404) {
-          setStatus(decision === 'allow' ? 'allowed' : 'denied')
+          setStatus('allowed')
           completeTimerRef.current = setTimeout(() => onComplete(), 1000)
           return
         }
         const data = await response.json()
         throw new Error(data.error || 'Failed to save policy')
       }
-      setStatus(decision === 'allow' ? 'allowed' : 'denied')
+      setStatus('allowed')
       completeTimerRef.current = setTimeout(() => onComplete(), 2000)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save policy')
@@ -413,61 +396,13 @@ function ScopeReviewRequestItem({
               onCloseAutoFocus={() => setDenyReason('')}
             >
               <div className="flex flex-col items-start gap-0">
-                {matchedScopes.length > 0 && (
-                  <div className="w-full py-2">
-                    <div className="flex flex-col items-start gap-1">
-                      {matchedScopes.map((scope) => (
-                        <Button
-                          key={scope}
-                          data-testid={`proxy-review-always-deny-${scope}`}
-                          onClick={() => {
-                            setDenyMenuOpen(false)
-                            handleAlways('deny', scope)
-                          }}
-                          disabled={status === 'submitting'}
-                          variant="ghost"
-                          size="xs"
-                          className="h-auto w-full justify-start py-2 text-foreground hover:bg-muted"
-                        >
-                          <span className="flex flex-col items-start text-left">
-                            <span>
-                              Always deny{' '}
-                              <span className="ml-1 inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
-                                {scope}
-                              </span>
-                            </span>
-                            {scopeDescriptions[scope] && (
-                              <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                                <Markdown
-                                  components={{
-                                    p: ({ children }) => <>{children}</>,
-                                    a: ({ href, children }) => (
-                                      <a href={href} target="_blank" rel="noopener noreferrer">
-                                        {children}
-                                      </a>
-                                    ),
-                                  }}
-                                >
-                                  {scopeDescriptions[scope]}
-                                </Markdown>
-                              </span>
-                            )}
-                          </span>
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <div className="w-full pt-0">
-                  {matchedScopes.length > 0 && <div className="mx-3 border-t border-border" />}
-                  <div className="w-full px-3 pt-3 pb-0 text-foreground">
-                    <span className="flex flex-col items-start text-left">
-                      <span className="text-xs font-medium text-foreground">Deny with reason</span>
-                      <span className="text-xs font-normal text-muted-foreground/80">
-                        Add a note explaining why this action should be denied
-                      </span>
-                    </span>
-                  </div>
+                  <InfoHint text="Add a note explaining why this action should be denied">
+                    <div className="flex w-full items-center gap-1 px-3 pt-2 pb-0 text-xs font-medium text-foreground">
+                      <span>Deny with reason</span>
+                      {HINT_ICON}
+                    </div>
+                  </InfoHint>
                   <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
                     <textarea
                       ref={denyReasonInputRef}
@@ -514,12 +449,13 @@ function ScopeReviewRequestItem({
           onClick={() => handleDecision('allow')}
           disabled={status === 'submitting'}
           size="xs"
-          variant="outline"
-          className="border-border text-foreground hover:bg-muted"
+          variant={heldByRule ? 'default' : 'outline'}
+          className={heldByRule ? 'bg-orange-600 text-white hover:bg-orange-700' : 'border-border text-foreground hover:bg-muted'}
         >
           Allow Once
         </Button>
 
+        {!heldByRule && (
         <div className="flex items-stretch">
           <Popover
             open={allowMenuOpen}
@@ -536,15 +472,26 @@ function ScopeReviewRequestItem({
                 <ChevronDown className={cn('ml-1.5 h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-auto max-w-[min(380px,calc(100vw-2rem))] p-1">
+            <PopoverContent
+              align="end"
+              className="w-auto max-w-[min(380px,calc(100vw-2rem))] p-1"
+              // Focusing the first option would open its hint on every open.
+              onOpenAutoFocus={(e) => {
+                e.preventDefault()
+                if (e.currentTarget instanceof HTMLElement) e.currentTarget.focus()
+              }}
+            >
               <div className="flex flex-col items-start gap-0">
-                {/* Minimal risk group — smallest "allow all" that still covers this request */}
-                {policyAllows && isApiReview && minimalLabel && (
+                {/* Minimal risk group — smallest "allow all" that still covers this request.
+                    An unnamed API call's scopes union every action on its path, so allowing
+                    any of them can allow a delete: those cards skip it. */}
+                {isApiReview && named && minimalLabel && (
+                  <InfoHint text={`Auto-allow every ${minimalLabel}-level scope for this account`}>
                   <Button
                     data-testid={`proxy-review-allow-label-${minimalLabel}`}
                     onClick={() => {
                       setAllowMenuOpen(false)
-                      handleAlways('allow', labelDefaultKey(minimalLabel))
+                      handleAlways(labelDefaultKey(minimalLabel))
                     }}
                     disabled={status === 'submitting'}
                     variant="ghost"
@@ -560,23 +507,20 @@ function ScopeReviewRequestItem({
                         <span className="shrink-0">
                           requests to <span className="capitalize">{toolkit}</span>
                         </span>
-                        <InfoHint text={`Auto-allow every ${minimalLabel}-level scope for this account`} />
+                        {HINT_ICON}
                       </span>
                     </span>
                   </Button>
+                  </InfoHint>
                 )}
 
                 {/* Allow everything for this account */}
-                {heldByRule ? (
-                  <p className="px-3 py-2 text-xs text-muted-foreground" data-testid="proxy-review-held-by-rule-note">
-                    A rule requires review for requests like this. To stop asking, change or delete the rule on the connection.
-                  </p>
-                ) : (
+                <InfoHint text={`Allow full read/edit access to ${toolkit}`}>
                   <Button
                     data-testid="proxy-review-always-allow-all"
                     onClick={() => {
                       setAllowMenuOpen(false)
-                      handleAlways('allow', '*')
+                      handleAlways('*')
                     }}
                     disabled={status === 'submitting'}
                     variant="ghost"
@@ -588,11 +532,11 @@ function ScopeReviewRequestItem({
                         <span className="shrink-0">
                           Always allow all <span className="capitalize">{toolkit}</span> requests
                         </span>
-                        <InfoHint text={`Allow full read/edit access to ${toolkit}`} />
+                        {HINT_ICON}
                       </span>
                     </span>
                   </Button>
-                )}
+                </InfoHint>
 
                 {openConnection && (
                   <Button
@@ -614,6 +558,7 @@ function ScopeReviewRequestItem({
             </PopoverContent>
           </Popover>
         </div>
+        )}
       </RequestItemActions>
     </RequestItemShell>
   )

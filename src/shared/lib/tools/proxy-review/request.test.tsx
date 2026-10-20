@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
+import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -87,6 +88,14 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     await waitFor(() => expect(screen.getByTestId('proxy-review-completed')).toBeInTheDocument())
   })
 
+  it('sends the label default for the smallest risk group', async () => {
+    const user = userEvent.setup()
+    renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-allow-label-read'))
+    expect(sentBody()).toMatchObject({ decision: 'allow', scope: labelDefaultKey('read'), reviewType: 'api' })
+  })
+
   it('sends the stamped api type even when the path looks like a tool call', async () => {
     renderCard({ reviewType: 'api', targetPath: 'tools/call: something' })
     await chooseAlwaysAllowAll()
@@ -136,24 +145,28 @@ describe('ProxyReviewRequestItem request body', () => {
     expect(screen.queryByTestId('proxy-review-allow-label-read')).toBeNull()
     await user.click(screen.getByTestId('proxy-review-deny-btn-chevron'))
     expect(await screen.findByTestId('proxy-review-deny-reason-input')).toBeInTheDocument()
-    expect(screen.getByTestId('proxy-review-always-deny-read')).toBeInTheDocument()
     unmount()
     renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
     expect(await screen.findByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
   })
 
-  it('explains a menu option in an info hint that does not choose the option', async () => {
-    mockApiFetch.mockReset()
+  it('explains a menu option on keyboard focus, not on opening the menu', async () => {
     const user = userEvent.setup()
     renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
-    const [labelHint] = await screen.findAllByTestId('proxy-review-info-hint')
-    expect(labelHint).toHaveAttribute('aria-label', 'Auto-allow every read-level scope for this account')
-    await user.click(labelHint)
+    await screen.findByTestId('proxy-review-allow-label-read')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    act(() => screen.getByTestId('proxy-review-allow-label-read').focus())
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Auto-allow every read-level scope for this account')
+  })
 
-    expect(mockApiFetch).not.toHaveBeenCalled()
-    expect(screen.getByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
+  it('offers only Allow Once when a require rule held the request', () => {
+    renderCard({
+      ruleOutcomes: [{ ruleId: 'r1', version: 1, effect: 'require', restatement: 'Review every post', result: 'false' }],
+    })
+    expect(screen.getByTestId('proxy-review-allow-once-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-always-allow-btn')).toBeNull()
   })
 
   it('opens a folded body on click, and has nothing to open without one', async () => {

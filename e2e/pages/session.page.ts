@@ -530,15 +530,6 @@ export class SessionPage {
     await this.page.locator(`[data-testid="proxy-review-allow-label-${label}"]`).click()
   }
 
-  async alwaysDenyScope(scope: string, reviewId?: string) {
-    const container = this.getProxyReviewRequests(reviewId).first()
-    await this.paginateToCard(container)
-    // The "Always deny <scope>" options live inside the Deny chevron popover —
-    // open it first, otherwise the portaled content isn't mounted yet.
-    await container.locator('[data-testid="proxy-review-deny-btn-chevron"]').click()
-    await this.page.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
-  }
-
   async denyWithReason(reason: string, reviewId?: string) {
     const container = this.getProxyReviewRequests(reviewId).first()
     await this.paginateToCard(container)

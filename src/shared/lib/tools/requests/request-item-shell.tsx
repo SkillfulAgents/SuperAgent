@@ -167,9 +167,7 @@ export function RequestItemShell({
     </div>
   ) : null
 
-  const headerRightContent = headerRight || paginationControls
-    ? <div className="flex items-center gap-1">{headerRight}{paginationControls}</div>
-    : null
+  const headerRightContent = paginationControls ?? headerRight
   const showStopButton = !!(sessionId && agentSlug)
 
   // Action rows used to be sticky children of this scroll container. Safari
