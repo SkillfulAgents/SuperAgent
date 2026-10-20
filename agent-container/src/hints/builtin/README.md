@@ -22,4 +22,4 @@ Globs: `*` matches anything, spaces match any whitespace, and a trailing ` *` me
 
 Set `BUILTIN_HINTS=0` in the container env to turn all built-in hints off (read once at start).
 
-Adding a new event touches: `HINT_EVENTS`, the trigger schemas and `HintEventInput` (`hint-schema.ts`), `compileTrigger` (`hint-matchers.ts`), `toHintEventInput` and `createHintHookMatchers` (`hints-hook.ts`), and the `hooks` block in `claude-code.ts`.
+Adding a new event touches: `HINT_EVENTS` and the trigger schemas (`hint-schema.ts`), `HintEventInput` and `compileTrigger` (`hint-matchers.ts`), `toHintEventInput` and `createHintHookMatchers` (`hint-hook.ts`), and the `hooks` block in `claude-code.ts`.

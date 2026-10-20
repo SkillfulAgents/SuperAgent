@@ -1,4 +1,9 @@
-import type { HintEventInput, HintToolTrigger, HintTrigger } from './hint-schema'
+import type { HintToolTrigger, HintTrigger } from './hint-schema'
+
+/** One hook event, reduced to what triggers match on. */
+export type HintEventInput =
+  | { event: 'UserPromptSubmit'; prompt: string }
+  | { event: 'PreToolUse' | 'PostToolUse'; toolName: string; toolInput: unknown }
 
 export type HintMatcher = (input: HintEventInput) => boolean
 

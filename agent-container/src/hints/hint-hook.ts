@@ -1,6 +1,6 @@
 import type { HookCallback, HookCallbackMatcher, HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { compileTrigger, escapeRegExp } from './hint-matchers'
-import type { Hint, HintEvent, HintEventInput } from './hint-schema'
+import { compileTrigger, escapeRegExp, type HintEventInput } from './hint-matchers'
+import type { Hint, HintEvent } from './hint-schema'
 
 function toHintEventInput(input: HookInput): HintEventInput | undefined {
   switch (input.hook_event_name) {
