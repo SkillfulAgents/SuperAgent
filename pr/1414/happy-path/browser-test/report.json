@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response.",
+  "reason": "Verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and return the response successfully within the time limit.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut interface with agent sidebar",
-    "Found and clicked on \"QA-20261014-221654-s8sa\" agent in the sidebar — Successfully navigated to agent's chat page",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully queued and sent",
-    "Waited for agent response (up to 3 minutes) — Agent completed task and returned response within reasonable time",
-    "Verified response and took screenshot — Response clearly shows \"The page title at https://example.com is 'Example Domain'. I closed the browser afterward.\""
+    "Step 1 - Navigate to http://localhost:47891 - Successfully loaded the Gamut application homepage with the agent sidebar visible",
+    "Step 2 - Click on the \"QA-20261020-183331-8ur3\" agent in the sidebar - Successfully navigated to the agent configuration page. The agent was found in the \"Your Agents\" list in the left sidebar.",
+    "Step 3 - Send message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully typed the message into the input field and clicked the Send button. The message was transmitted to the agent and a new session was created.",
+    "Step 4 - Wait for the agent response (up to 3 minutes) - Agent successfully completed the task in 8 seconds. The working indicator disappeared and the response was available on the page. The agent used 2 tool calls and 115,885 tokens to complete the task.",
+    "Step 5 - Verify the response mentions \"Example Domain\" and take a screenshot - The agent's response clearly stated: \"The page title is \"Example Domain\". The browser is still open on https://example.com if you want to do anything else there.\" A full page screenshot was captured showing both the chat message and the browser preview panel with the Example Domain website open."
   ],
   "bugs": [],
-  "durationMs": 88838,
-  "sessionId": "5620b4e2-4e25-4d4a-9647-536f9c26834c",
+  "durationMs": 74787,
+  "sessionId": "06c54727-819a-4703-ab5c-5aa754307bf3",
   "cost": {
-    "inputTokens": 344,
-    "outputTokens": 10648,
-    "cacheCreationTokens": 75926,
-    "cacheReadTokens": 995086,
+    "inputTokens": 368,
+    "outputTokens": 11731,
+    "cacheCreationTokens": 80656,
+    "cacheReadTokens": 1108022,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.248
+    "totalCostUsd": 0.270645
   }
 }
