@@ -2,6 +2,9 @@ import type { HintEvent, HintEventInput, HintTrigger } from './hint-schema'
 
 export type HintMatcher = (input: HintEventInput) => boolean
 
+/** Splits chained shell commands so `cd /app && sleep 5` tests `cd /app` and `sleep 5`. Not quote-aware. */
+const COMMAND_SEPARATORS = /&&|\|\||[;|\n]/
+
 /** Tools whose `Tool(pattern)` form is checked against this tool_input field. */
 const TOOL_PATTERN_FIELDS: Record<string, string> = {
   Bash: 'command',
@@ -42,7 +45,7 @@ function compileToolMatch(match: string): HintMatcher {
   return (input) => {
     if (!('toolName' in input) || input.toolName !== toolName) return false
     const value = (input.toolInput as Record<string, unknown> | undefined)?.[field]
-    return typeof value === 'string' && regex.test(value.trimStart())
+    return typeof value === 'string' && value.split(COMMAND_SEPARATORS).some((part) => regex.test(part.trimStart()))
   }
 }
 
@@ -51,7 +54,7 @@ function compilePromptMatch(match: string): HintMatcher {
   return (input) => 'prompt' in input && regex.test(input.prompt)
 }
 
-/** One matcher compiler per hook event. A new event is one new entry here. */
+/** One matcher compiler per hook event. Adding an event touches more files; see builtin/README.md. */
 const MATCHER_COMPILERS: Record<HintEvent, (match: string) => HintMatcher> = {
   UserPromptSubmit: compilePromptMatch,
   PreToolUse: compileToolMatch,

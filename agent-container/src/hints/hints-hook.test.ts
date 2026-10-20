@@ -10,8 +10,8 @@ function bash(event: 'PreToolUse' | 'PostToolUse', command: unknown): HookInput 
   return { hook_event_name: event, tool_name: 'Bash', tool_input: { command } } as HookInput
 }
 
-function hint(name: string, content: string, triggers: Hint['triggers']): Hint {
-  return { name, description: `${name} hint`, content, triggers }
+function hint(name: string, content: string, triggers: Hint['triggers'], repeat: Hint['repeat'] = 'always'): Hint {
+  return { name, description: `${name} hint`, content, triggers, repeat }
 }
 
 describe('createHintsHook', () => {
@@ -27,6 +27,19 @@ describe('createHintsHook', () => {
     })
     await expect(hook(bash('PostToolUse', 'ls'), 'tool-1', options)).resolves.toEqual({
       hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'Third' },
+    })
+  })
+
+  it('shows a once hint only the first time it matches, per hook', async () => {
+    const hints = [hint('sleep', 'No sleep', [{ event: 'PreToolUse', match: 'Bash(sleep *)' }], 'once')]
+    const sessionA = createHintsHook(hints)
+    const sessionB = createHintsHook(hints)
+    await expect(sessionA(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'No sleep' },
+    })
+    await expect(sessionA(bash('PreToolUse', 'sleep 30'), 'tool-2', options)).resolves.toEqual({})
+    await expect(sessionB(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'No sleep' },
     })
   })
 

@@ -24,6 +24,20 @@ describe('compileTrigger', () => {
     expect(matches({ event: 'PreToolUse', toolName: 'Read', toolInput: {} })).toBe(false)
   })
 
+  it.each([
+    ['sleep 300', true],
+    ['cd /app && sleep 300', true],
+    ['npm start; sleep 60', true],
+    ['false || sleep 5', true],
+    ['ls | sleep 1', true],
+    ['echo start\nsleep 5', true],
+    ['echo sleep 5', false],
+    ['cd /sleep && ls', false],
+  ])('checks each part of a chained Bash command: %s is %s', (command, expected) => {
+    const matches = compileTrigger({ event: 'PreToolUse', match: 'Bash(sleep *)' })
+    expect(matches({ event: 'PreToolUse', toolName: 'Bash', toolInput: { command } })).toBe(expected)
+  })
+
   it('matches the prompt text case-insensitively', () => {
     const matches = compileTrigger({ event: 'UserPromptSubmit', match: '\\bdeploy\\b' })
     expect(matches({ event: 'UserPromptSubmit', prompt: 'Please Deploy the fix' })).toBe(true)

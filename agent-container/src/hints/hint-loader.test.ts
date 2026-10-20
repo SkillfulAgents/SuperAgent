@@ -14,6 +14,7 @@ describe('parseHint', () => {
       description: 'Avoid sleeps',
       content: 'Use schedule_resume instead.',
       triggers: [{ event: 'PreToolUse', match: 'Bash(sleep *)' }],
+      repeat: 'once',
     })
   })
 

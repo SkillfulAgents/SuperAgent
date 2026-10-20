@@ -17,10 +17,12 @@ export const hintFrontmatterSchema = z.object({
   name: z.string().min(1, 'Hint name is required'),
   description: z.string().min(1, 'Hint description is required'),
   triggers: z.array(hintTriggerSchema).min(1, 'Hint needs at least one trigger'),
+  /** `once`: shown the first time it matches in a session. `always`: every match. */
+  repeat: z.enum(['once', 'always']).default('once'),
 })
 
 export type HintTrigger = z.infer<typeof hintTriggerSchema>
-export type Hint = z.infer<typeof hintFrontmatterSchema> & { content: string }
+export type Hint = z.output<typeof hintFrontmatterSchema> & { content: string }
 
 export type HintEventInput =
   | { event: 'UserPromptSubmit'; prompt: string }

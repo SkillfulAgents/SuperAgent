@@ -16,18 +16,24 @@ function toHintEventInput(input: HookInput): HintEventInput | undefined {
 
 /**
  * One hook for UserPromptSubmit, PreToolUse and PostToolUse. Adds the body of
- * every matched hint as additional context; it never blocks.
+ * every matched hint as additional context; it never blocks. Each hook keeps
+ * its own record of shown hints, so create one per session.
  */
 export function createHintsHook(hints: Hint[]): HookCallback {
   const compiled = hints.map((hint) => ({ hint, triggers: hint.triggers.map(compileTrigger) }))
+  const shown = new Set<string>()
   return async (input) => {
     const event = toHintEventInput(input)
     if (!event) return {}
     const matched = compiled
+      .filter(({ hint }) => hint.repeat === 'always' || !shown.has(hint.name))
       .filter(({ triggers }) => triggers.some((matches) => matches(event)))
-      .map(({ hint }) => hint.content)
+      .map(({ hint }) => hint)
     if (matched.length === 0) return {}
-    return { hookSpecificOutput: { hookEventName: event.event, additionalContext: matched.join('\n\n') } }
+    for (const hint of matched) shown.add(hint.name)
+    return {
+      hookSpecificOutput: { hookEventName: event.event, additionalContext: matched.map((hint) => hint.content).join('\n\n') },
+    }
   }
 }
 

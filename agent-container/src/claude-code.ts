@@ -115,7 +115,6 @@ const SYSTEM_PROMPT = loadPrompt('system-prompt.md');
 const WEB_BROWSER_AGENT_PROMPT = loadPrompt('web-browser-agent-prompt.md');
 const COMPUTER_USE_AGENT_PROMPT = loadPrompt('computer-use-agent-prompt.md');
 const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-prompt.md');
-const HINT_HOOKS = createHintHookMatchers(builtinHints);
 
 interface RemoteMcpConfig {
   id: string;
@@ -615,6 +614,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   // session-manager persists them via the 'capability-grant' event), or the
   // host's grant record diverges and a gated launch hangs with no card.
   private sessionCapabilityGrants: Set<Capability>;
+  // Per process, so "show once" hints are tracked per session, not per container.
+  private readonly hintHooks = createHintHookMatchers(builtinHints);
   // Kept so the system prompt can be regenerated when a capability block
   // boundary flips mid-session (the prompt gates delegation sections on it).
   private availableEnvVars: string[] | undefined;
@@ -1390,10 +1391,10 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
-          ...HINT_HOOKS.UserPromptSubmit,
+          ...this.hintHooks.UserPromptSubmit,
         ],
         PreToolUse: [
-          ...HINT_HOOKS.PreToolUse,
+          ...this.hintHooks.PreToolUse,
           {
             matcher: 'mcp__user-input__.*',
             hooks: [
@@ -1501,7 +1502,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
         PostToolUse: [
-          ...HINT_HOOKS.PostToolUse,
+          ...this.hintHooks.PostToolUse,
           {
             matcher: 'Bash',
             hooks: [
