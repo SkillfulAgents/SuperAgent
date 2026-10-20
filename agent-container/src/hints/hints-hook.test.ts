@@ -10,6 +10,10 @@ function bash(event: 'PreToolUse' | 'PostToolUse', command: unknown): HookInput 
   return { hook_event_name: event, tool_name: 'Bash', tool_input: { command } } as HookInput
 }
 
+function shown(additionalContext: string) {
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } }
+}
+
 function hint(name: string, content: string, triggers: Hint['triggers'], repeat: Hint['repeat'] = 'always'): Hint {
   return { name, description: `${name} hint`, content, triggers, repeat }
 }
@@ -19,7 +23,7 @@ describe('createHintsHook', () => {
     hint('a', 'First', [{ event: 'PreToolUse', match: 'Bash(sleep *)' }, { event: 'PreToolUse', match: 'Bash' }]),
     hint('b', 'Second', [{ event: 'PreToolUse', match: 'Bash' }]),
     hint('c', 'Third', [{ event: 'PostToolUse', match: 'Bash' }]),
-  ])
+  ], () => 1)
 
   it('adds every matched hint once, even when several triggers match', async () => {
     await expect(hook(bash('PreToolUse', 'sleep 300'), 'tool-1', options)).resolves.toEqual({
@@ -32,15 +36,24 @@ describe('createHintsHook', () => {
 
   it('shows a once hint only the first time it matches, per hook', async () => {
     const hints = [hint('sleep', 'No sleep', [{ event: 'PreToolUse', match: 'Bash(sleep *)' }], 'once')]
-    const sessionA = createHintsHook(hints)
-    const sessionB = createHintsHook(hints)
-    await expect(sessionA(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'No sleep' },
-    })
+    let turn = 1
+    const sessionA = createHintsHook(hints, () => turn)
+    const sessionB = createHintsHook(hints, () => turn)
+    await expect(sessionA(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual(shown('No sleep'))
     await expect(sessionA(bash('PreToolUse', 'sleep 30'), 'tool-2', options)).resolves.toEqual({})
-    await expect(sessionB(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'No sleep' },
-    })
+    turn = 2
+    await expect(sessionA(bash('PreToolUse', 'sleep 30'), 'tool-3', options)).resolves.toEqual({})
+    await expect(sessionB(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual(shown('No sleep'))
+  })
+
+  it('shows a turn hint once per user message', async () => {
+    let turn = 1
+    const hook = createHintsHook([hint('sleep', 'No sleep', [{ event: 'PreToolUse', match: 'Bash(sleep *)' }], 'turn')], () => turn)
+    await expect(hook(bash('PreToolUse', 'sleep 30'), 'tool-1', options)).resolves.toEqual(shown('No sleep'))
+    await expect(hook(bash('PreToolUse', 'sleep 30'), 'tool-2', options)).resolves.toEqual({})
+    turn = 2
+    await expect(hook(bash('PreToolUse', 'sleep 30'), 'tool-3', options)).resolves.toEqual(shown('No sleep'))
+    await expect(hook(bash('PreToolUse', 'sleep 30'), 'tool-4', options)).resolves.toEqual({})
   })
 
   it('returns nothing when no hint matches', async () => {
@@ -51,14 +64,14 @@ describe('createHintsHook', () => {
 
 describe('createHintHookMatchers', () => {
   it('registers nothing when there are no hints', () => {
-    expect(createHintHookMatchers([])).toEqual({ UserPromptSubmit: [], PreToolUse: [], PostToolUse: [] })
+    expect(createHintHookMatchers([], () => 1)).toEqual({ UserPromptSubmit: [], PreToolUse: [], PostToolUse: [] })
   })
 
   it('limits each tool event to the exact tools its hints name', () => {
     const matchers = createHintHookMatchers([
       hint('a', 'First', [{ event: 'PreToolUse', match: 'Bash(sleep *)' }, { event: 'PreToolUse', match: 'Bash' }]),
       hint('b', 'Second', [{ event: 'PreToolUse', match: 'mcp__slack__send_message' }]),
-    ])
+    ], () => 1)
     expect(matchers.UserPromptSubmit).toEqual([])
     expect(matchers.PostToolUse).toEqual([])
     expect(matchers.PreToolUse).toHaveLength(1)
@@ -68,7 +81,7 @@ describe('createHintHookMatchers', () => {
   })
 
   it('registers UserPromptSubmit without a matcher when a hint uses it', () => {
-    const matchers = createHintHookMatchers([hint('a', 'First', [{ event: 'UserPromptSubmit', match: 'deploy' }])])
+    const matchers = createHintHookMatchers([hint('a', 'First', [{ event: 'UserPromptSubmit', match: 'deploy' }])], () => 1)
     expect(matchers.UserPromptSubmit).toHaveLength(1)
     expect(matchers.UserPromptSubmit[0].matcher).toBeUndefined()
   })
@@ -76,7 +89,7 @@ describe('createHintHookMatchers', () => {
 
 describe('built-in hints', () => {
   it('all compile', () => {
-    expect(() => createHintHookMatchers(builtinHints)).not.toThrow()
+    expect(() => createHintHookMatchers(builtinHints, () => 1)).not.toThrow()
   })
 
   it.each([

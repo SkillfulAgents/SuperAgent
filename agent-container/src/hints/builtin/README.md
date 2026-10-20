@@ -7,7 +7,7 @@ description: Shown in the hints list
 triggers:
   - event: PreToolUse        # UserPromptSubmit | PreToolUse | PostToolUse
     match: Bash(sleep *)     # tool events: Tool or Tool(pattern); UserPromptSubmit: regex on the prompt
-repeat: once                 # optional; once (default) = first match per session, always = every match
+repeat: turn                 # optional; turn (default) = first match per user message, once = per session, always = every match
 ---
 Short text the agent sees when a trigger matches.
 ```

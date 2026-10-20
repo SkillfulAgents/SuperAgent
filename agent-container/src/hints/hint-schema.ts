@@ -17,8 +17,8 @@ export const hintFrontmatterSchema = z.object({
   name: z.string().min(1, 'Hint name is required'),
   description: z.string().min(1, 'Hint description is required'),
   triggers: z.array(hintTriggerSchema).min(1, 'Hint needs at least one trigger'),
-  /** `once`: shown the first time it matches in a session. `always`: every match. */
-  repeat: z.enum(['once', 'always']).default('once'),
+  /** `turn`: first match per user message. `once`: first match per session. `always`: every match. */
+  repeat: z.enum(['turn', 'once', 'always']).default('turn'),
 })
 
 export type HintTrigger = z.infer<typeof hintTriggerSchema>

@@ -614,8 +614,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   // session-manager persists them via the 'capability-grant' event), or the
   // host's grant record diverges and a gated launch hangs with no card.
   private sessionCapabilityGrants: Set<Capability>;
-  // Per process, so "show once" hints are tracked per session, not per container.
-  private readonly hintHooks = createHintHookMatchers(builtinHints);
+  // Per process, so shown hints are tracked per session, not per container.
+  private readonly hintHooks = createHintHookMatchers(builtinHints, () => this.userMessageCount);
   // Kept so the system prompt can be regenerated when a capability block
   // boundary flips mid-session (the prompt gates delegation sections on it).
   private availableEnvVars: string[] | undefined;
