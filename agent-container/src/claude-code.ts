@@ -26,6 +26,7 @@ import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
+import { builtinHints, createHintsHook } from './hints';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
@@ -114,6 +115,7 @@ const SYSTEM_PROMPT = loadPrompt('system-prompt.md');
 const WEB_BROWSER_AGENT_PROMPT = loadPrompt('web-browser-agent-prompt.md');
 const COMPUTER_USE_AGENT_PROMPT = loadPrompt('computer-use-agent-prompt.md');
 const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-prompt.md');
+const HINTS_HOOK = createHintsHook(builtinHints);
 
 interface RemoteMcpConfig {
   id: string;
@@ -1388,8 +1390,10 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          { hooks: [HINTS_HOOK] },
         ],
         PreToolUse: [
+          { hooks: [HINTS_HOOK] },
           {
             matcher: 'mcp__user-input__.*',
             hooks: [
@@ -1497,6 +1501,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
         PostToolUse: [
+          { hooks: [HINTS_HOOK] },
           {
             matcher: 'Bash',
             hooks: [
