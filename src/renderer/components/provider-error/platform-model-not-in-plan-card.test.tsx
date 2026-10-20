@@ -89,12 +89,12 @@ describe('PlatformModelNotInPlanCard', () => {
   it('continues the chat on the best model the plan allows', async () => {
     const user = userEvent.setup()
     render(<PlatformModelNotInPlanCard message={ERROR} presentation={PRESENTATION} session={SESSION} />)
-    await user.click(screen.getByRole('button', { name: 'Continue with Opus 5.5' }))
+    await user.click(screen.getByRole('button', { name: 'Continue with Sonnet 5.5' }))
     expect(state.send).toHaveBeenCalledWith({
       ...SESSION,
       content: 'Continue',
       llmProviderId: 'platform-conn',
-      model: 'claude-opus-5-5',
+      model: 'claude-sonnet-5-5',
     })
     expect(screen.queryByTestId('model-not-in-plan-card')).not.toBeInTheDocument()
   })
@@ -104,7 +104,7 @@ describe('PlatformModelNotInPlanCard', () => {
     render(<PlatformModelNotInPlanCard message={ERROR} presentation={PRESENTATION} session={SESSION} />)
     expect(screen.queryByTestId('model-not-in-plan-upgrade')).not.toBeInTheDocument()
     expect(screen.getByText(/Ask a workspace owner or admin to upgrade/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Continue with Opus 5.5' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue with Sonnet 5.5' })).toBeInTheDocument()
   })
 
   it('offers a retry and a previously allowed model while the proxy catches up', async () => {
@@ -115,8 +115,8 @@ describe('PlatformModelNotInPlanCard', () => {
     expect(screen.getByText('Fable 5.1 is included in your plan now')).toBeInTheDocument()
     expect(screen.getByText(/Model access may take a minute to update/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry with Fable 5.1' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Continue with Opus 5.5' }))
-    expect(state.send).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-opus-5-5' }))
+    await user.click(screen.getByRole('button', { name: 'Continue with Sonnet 5.5' }))
+    expect(state.send).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-sonnet-5-5' }))
     expect(screen.queryByTestId('model-not-in-plan-upgrade')).not.toBeInTheDocument()
   })
 
@@ -133,7 +133,7 @@ describe('PlatformModelNotInPlanCard', () => {
     const user = userEvent.setup()
     state.sessionConnection = undefined
     render(<PlatformModelNotInPlanCard message={ERROR} presentation={PRESENTATION} session={SESSION} />)
-    await user.click(screen.getByRole('button', { name: 'Continue with Opus 5.5' }))
+    await user.click(screen.getByRole('button', { name: 'Continue with Sonnet 5.5' }))
     expect(state.send).toHaveBeenCalledWith(expect.objectContaining({ llmProviderId: 'platform-conn' }))
   })
 

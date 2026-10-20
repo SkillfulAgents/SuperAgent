@@ -100,7 +100,6 @@ describe('getProviderCatalog', () => {
         family: 'opus',
         label: 'Opus 5.5',
         isLatest: true,
-        isDefault: true,
         pricing: { inputPerMtok: 4, outputPerMtok: 20, speedMultipliers: { fast: 2 } },
       })
     }
@@ -741,8 +740,8 @@ describe('resolveModelForProvider', () => {
   })
 
   it('falls back to the provider default (alias-resolved) for an unknown family-less alias', () => {
-    // Anthropic agent default is 'opus' → resolves to its latest concrete id.
-    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5-5')
+    // Anthropic agent default is 'sonnet' → resolves to its latest concrete id.
+    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-sonnet-5-5')
     // Summarizer default 'haiku' → latest haiku.
     expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-5-5')
   })

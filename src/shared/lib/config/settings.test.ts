@@ -1265,7 +1265,7 @@ describe('getEffectiveModels', () => {
 
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('haiku')
-    expect(models.agentModel).toBe('opus')
+    expect(models.agentModel).toBe('sonnet')
     expect(models.browserModel).toBe('haiku')
   })
 
