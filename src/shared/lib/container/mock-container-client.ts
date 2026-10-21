@@ -2431,6 +2431,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File "output/voice-note.mp3" (4096 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":4096}',
       'Here is the voice note.'
     )],
+    ['deliver deck', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/deck.pptx', description: 'Quarterly deck' },
+      'File "output/deck.pptx" (4096 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":4096}',
+      'Here is the quarterly deck.'
+    )],
     // A file the drawer cannot render, so its row offers a download instead of
     // pointing at the preview. The other deliver scenarios are all previewable.
     ['deliver archive', new ToolUseScenario(
@@ -2903,6 +2909,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           error: error instanceof Error ? error.message : 'Workspace operation failed',
         }), { status, headers: { 'Content-Type': 'application/json' } })
       }
+    }
+
+    // The real container converts a deck with LibreOffice. The mock answers
+    // with a two-page PDF, one page per slide.
+    if (fetchPath === '/workspace/pdf' && init?.method === 'POST') {
+      return new Response(new Uint8Array(Buffer.from(SLIDES_PDF_BASE64, 'base64')), {
+        status: 200,
+        headers: { 'Content-Type': 'application/pdf' },
+      })
     }
 
     // Browser close — mirror the real container: kill the scenario's Chrome,
@@ -3774,3 +3789,7 @@ if (process.env.E2E_MOCK === 'true' && process.env.E2E_CONNECTION_REPLACEMENT_DE
     registerConnectionReplacementDemo()
   })
 }
+
+// Two pages, "Slide one" and "Slide two", in Helvetica.
+const SLIDES_PDF_BASE64 =
+  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFs0IDAgUiA2IDAgUl0gL0NvdW50IDIgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago0IDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNzIwIDQwNV0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgMyAwIFIgPj4gPj4gL0NvbnRlbnRzIDUgMCBSID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNDAgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiAzNjAgVGQgKFNsaWRlIG9uZSkgVGogRVQKZW5kc3RyZWFtCmVuZG9iago2IDAgb2JqCjw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNzIwIDQwNV0gL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgMyAwIFIgPj4gPj4gL0NvbnRlbnRzIDcgMCBSID4+CmVuZG9iago3IDAgb2JqCjw8IC9MZW5ndGggNDAgPj4Kc3RyZWFtCkJUIC9GMSAzNiBUZiA3MiAzNjAgVGQgKFNsaWRlIHR3bykgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgOAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAxOTEgMDAwMDAgbiAKMDAwMDAwMDMxNyAwMDAwMCBuIAowMDAwMDAwNDA3IDAwMDAwIG4gCjAwMDAwMDA1MzMgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA4IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo2MjMKJSVFT0YK'

@@ -15,6 +15,7 @@ const CONTAINER_CAPABILITY: Record<string, string[]> = {
   image: [],
   markdown: [],
   pdf: ['poppler-utils'],
+  slides: ['libreoffice-impress'],
   text: [],
   video: ['ffmpeg'],
 }

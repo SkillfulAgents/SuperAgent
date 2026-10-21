@@ -6655,6 +6655,58 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/files-pdf/* - A deck as PDF, converted in the agent's
+// container. POST and AgentUser, not AgentRead: this can start the container,
+// which is what POST /:id/start requires. Download stays on GET /files/*.
+agents.post('/:id/files-pdf/*', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    // The raw :id param, as the file route above explains.
+    const urlPath = new URL(c.req.url).pathname
+    const prefix = `/api/agents/${c.req.param('id')}/files-pdf/`
+    const filePath = urlPath.startsWith(prefix) ? decodeURIComponent(urlPath.slice(prefix.length)) : ''
+    if (!filePath) {
+      return c.json({ error: 'File path is required' }, 400)
+    }
+
+    // A missing file is answered here, so it does not start the container for nothing.
+    const actor = agentRegistry.get(agentSlug)
+    const resolved = await actor.files.resolve(filePath)
+    const stat = resolved === null ? null : await actor.files.stat(resolved)
+    if (resolved === null || !stat || stat.kind !== 'file') {
+      return c.json({ error: 'File not found' }, 404)
+    }
+
+    await actor.container.start()
+    // The container bounds the conversion itself, waiting included.
+    const response = await actor.container.fetch('/workspace/pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath }),
+      signal: c.req.raw.signal,
+    })
+    // Only a PDF or a conversion reason is the deck's answer. Anything else is the
+    // container's own failure: a 401 here would otherwise sign the user out.
+    if (response.status !== 200 && response.status !== 422) {
+      return c.json({ error: 'Failed to convert file' }, 502)
+    }
+    return new Response(response.body, {
+      status: response.status,
+      headers: {
+        'Content-Type': response.headers.get('Content-Type') ?? 'application/json',
+        'Cache-Control': 'private, no-store, max-age=0',
+      },
+    })
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid path' : error.message }, error.status)
+    }
+    if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
+    console.error('Failed to convert file to PDF:', error)
+    return c.json({ error: 'Failed to convert file' }, 500)
+  }
+})
+
 // POST /api/agents/:id/sessions/:sessionId/provide-file - Provide or decline a file request
 agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
   try {

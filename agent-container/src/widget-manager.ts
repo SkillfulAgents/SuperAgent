@@ -36,7 +36,7 @@ const FAILED_REFRESH_RETRY_SECONDS = 5 * 60
 const PREVIOUS_HTML_FILENAME = '.previous-widget.html'
 
 // How long a killed script gets to actually die before we stop waiting for it.
-const KILL_GRACE_MS = 2000
+export const KILL_GRACE_MS = 2000
 
 /**
  * The manifest script that regenerates a widget, run exactly like a
@@ -520,7 +520,7 @@ async function copyTemplateFile(
  * signalling the child alone leaves the script itself alive, still holding the
  * artifact dir it was told to write.
  */
-function killProcessGroup(proc: { pid?: number; kill: (signal: NodeJS.Signals) => boolean }, log: fs.WriteStream): void {
+export function killProcessGroup(proc: { pid?: number; kill: (signal: NodeJS.Signals) => boolean }, log: { write(chunk: string): unknown }): void {
   const killChild = () => {
     try {
       proc.kill('SIGKILL')

@@ -21,6 +21,8 @@ interface PdfRendererProps {
   agentSlug: string
   pageNumber: number
   onPageChange: (page: number) => void
+  /** What a comment calls the page it is on. */
+  partLabel?: string
 }
 
 export function PdfRenderer({
@@ -29,6 +31,7 @@ export function PdfRenderer({
   agentSlug,
   pageNumber,
   onPageChange,
+  partLabel = 'Page',
 }: PdfRendererProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
   const [loadError, setLoadError] = useState(false)
@@ -54,8 +57,8 @@ export function PdfRenderer({
 
   // The page's text has no source lines: a selection keeps its quote, anything else is the page.
   const surface = useMemo(
-    () => ({ text: { blocks: containerRef }, part: currentPage === null ? undefined : { label: 'Page', value: currentPage } }),
-    [currentPage],
+    () => ({ text: { blocks: containerRef }, part: currentPage === null ? undefined : { label: partLabel, value: currentPage } }),
+    [currentPage, partLabel],
   )
   const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
 

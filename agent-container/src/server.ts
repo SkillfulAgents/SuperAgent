@@ -46,6 +46,8 @@ import {
   type RenameWorkspaceEntryRequest,
 } from './workspace-entry-operations';
 import { registerLegacyFileRoutes } from './legacy-file-routes';
+import { resolveWorkspaceRegularFile, WorkspaceFileError } from './workspace-file-transfer';
+import { convertToPdf } from './office-convert';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
@@ -374,6 +376,23 @@ app.delete('/workspace/entries', async (c) => {
     }
     console.error('Error deleting workspace entry:', error);
     return c.json({ error: error instanceof Error ? error.message : 'Failed to delete workspace entry' }, 500);
+  }
+});
+
+// A deck as PDF for the file preview. LibreOffice is in this image, and the
+// deck is parsed inside the sandbox rather than in the app.
+app.post('/workspace/pdf', async (c) => {
+  try {
+    const body = z.object({ path: z.string().min(1) }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: 'path is required' }, 400);
+    const file = await resolveWorkspaceRegularFile(body.data.path);
+    const result = await convertToPdf(file.localPath, c.req.raw.signal);
+    if (!result.ok) return c.json({ reason: result.reason }, 422);
+    return c.body(new Uint8Array(result.pdf), 200, { 'Content-Type': 'application/pdf' });
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status);
+    console.error('Error converting file to PDF:', error);
+    return c.json({ error: 'Failed to convert file' }, 500);
   }
 });
 
