@@ -243,6 +243,15 @@ describe('observeAction', () => {
     expect(quiet.evals).toEqual([0, 200])
   })
 
+  it('rechecks a click into a field that announced loading, though a label flipped with it (MUI async autocomplete)', async () => {
+    const loading = { ...base, liveRegions: ['Loading…'], labelHash: 9, focus: 'combobox "Asynchronous"', focusId: 'input@3' }
+    const h = harness([base, loading, { ...loading, liveRegions: [], interactive: 72 }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(h.evals).toEqual([0, 300, 1200])
+    expect(out.effect?.interactiveDelta).toBe(32)
+    expect(out.effect?.announced).toEqual(['Loading…'])
+  })
+
   it('never rechecks a hover', async () => {
     const h = harness([base, { ...base }])
     const out = await h.run(ACTION_POLICIES.hover)

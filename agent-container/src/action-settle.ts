@@ -62,7 +62,9 @@ const focusedTextField = (e: ActionEffect): boolean => e.focusChanged && TEXT_FI
 const ACTIVATING_KEYS = new Set(['enter', 'return', 'space', ' '])
 
 export const ACTION_POLICIES: Record<ActionVerb, ActionPolicy> = {
-  click: { verb: 'click', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: e => !focusedTextField(e) },
+  // A click into a field that announced something (MUI's async autocomplete:
+  // "Loading…", options a second later) is not complete in itself.
+  click: { verb: 'click', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: e => !focusedTextField(e) || e.announced.length > 0 },
   press: { verb: 'press', settleMs: PRESS_SETTLE_MS, recheckMs: RECHECK_MS, countFocus: true, recheck: () => false },
   select: { verb: 'select', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: () => true },
   // A menu opens within the settle or not at all.
@@ -222,9 +224,13 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   // does not stand in for the late read (bench, Placer: the results arrived
   // after "Searching…" and the result never showed them).
   // Recheck when the content has not moved yet. For a press (countFocus) a
-  // focus move or typed value is itself the result.
+  // focus move or typed value is itself the result. An announcement with no
+  // control added or removed and no dialog is a promise ("Loading…"), even
+  // when a label flipped with it (the field's Open button now reads Close).
+  const promised = (e: ActionEffect): boolean =>
+    e.announced.length > 0 && e.interactiveDelta === 0 && e.opened.length === 0 && e.closed.length === 0 && e.blockerAppeared === ''
   const settledYet = (e: ActionEffect): boolean =>
-    contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged))
+    !promised(e) && (contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged)))
   if (effect && !settledYet(effect) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
     // Silence at the settle: a late effect is the other explanation.
     await sleep(Math.max(0, policy.recheckMs - elapsed()))
