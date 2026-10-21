@@ -1,0 +1,126 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e101]:
+            - link "Discover New Agents New" [ref=e102] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e103]
+              - generic [ref=e106]: Discover New Agents
+              - generic [ref=e107]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e108]:
+            - button "Your Agents" [ref=e109] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e110]:
+                - generic [ref=e111]: Your Agents
+                - img [ref=e113]
+            - button "New agent in Your Agents" [ref=e115] [cursor=pointer]:
+              - img [ref=e116]
+            - list [ref=e118]:
+              - button "QA-20261021-170208-ibyd Last run never Open QA-20261021-170208-ibyd New session with QA-20261021-170208-ibyd" [ref=e119] [cursor=pointer]:
+                - generic [ref=e120]:
+                  - link "QA-20261021-170208-ibyd Last run never" [ref=e121]:
+                    - /url: /agents/qa-20261021-170208-ibyd-bqdxviemwl
+                    - generic [ref=e122]: QA-20261021-170208-ibyd
+                    - generic [ref=e123]: Last run never
+                  - generic [ref=e124]:
+                    - link "Open QA-20261021-170208-ibyd" [ref=e125]:
+                      - /url: /agents/qa-20261021-170208-ibyd-bqdxviemwl
+                      - img "idle" [ref=e126]:
+                        - img [ref=e127]
+                    - link "New session with QA-20261021-170208-ibyd" [ref=e136]:
+                      - /url: /agents/qa-20261021-170208-ibyd-bqdxviemwl/sessions/new
+                      - img [ref=e137]
+              - button "QA-20261021-170207-vg7n Last run never Open QA-20261021-170207-vg7n New session with QA-20261021-170207-vg7n" [ref=e140] [cursor=pointer]:
+                - generic [ref=e141]:
+                  - link "QA-20261021-170207-vg7n Last run never" [ref=e142]:
+                    - /url: /agents/qa-20261021-170207-vg7n-1ajvr5jygp
+                    - generic [ref=e143]: QA-20261021-170207-vg7n
+                    - generic [ref=e144]: Last run never
+                  - generic [ref=e145]:
+                    - link "Open QA-20261021-170207-vg7n" [ref=e146]:
+                      - /url: /agents/qa-20261021-170207-vg7n-1ajvr5jygp
+                      - img "idle" [ref=e147]:
+                        - img [ref=e148]
+                    - link "New session with QA-20261021-170207-vg7n" [ref=e157]:
+                      - /url: /agents/qa-20261021-170207-vg7n-1ajvr5jygp/sessions/new
+                      - img [ref=e158]
+          - status [ref=e161]
+          - listitem [ref=e162]:
+            - button "Add section" [ref=e163] [cursor=pointer]:
+              - img [ref=e165]
+              - generic [ref=e166]: Add section
+      - generic [ref=e50]:
+        - button "Settings" [ref=e51] [cursor=pointer]:
+          - img [ref=e52]
+          - generic [ref=e55]: Settings
+        - button "0.5.46-rc.2" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: 0.5.46-rc.2
+      - button "Toggle Sidebar" [ref=e58]
+    - main [ref=e59]:
+      - generic [ref=e60]:
+        - generic [ref=e61]:
+          - button "Toggle Sidebar" [ref=e62] [cursor=pointer]:
+            - img
+            - generic [ref=e63]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e65] [cursor=pointer]:
+            - img [ref=e66]
+            - generic [ref=e69]: Search agents and sessions...
+            - generic [ref=e70]: Ctrl+K
+          - generic [ref=e71]:
+            - button "Card view" [pressed] [ref=e72] [cursor=pointer]:
+              - img [ref=e73]
+            - button "Graph view" [ref=e78] [cursor=pointer]:
+              - img [ref=e79]
+        - generic [ref=e88]:
+          - generic [ref=e89]:
+            - heading "Your Agents" [level=2] [ref=e90]
+            - generic [ref=e91]:
+              - button "New Agent" [ref=e92] [cursor=pointer]:
+                - img
+                - text: New Agent
+              - button "Home options" [ref=e93] [cursor=pointer]:
+                - img [ref=e94]
+          - generic [ref=e167]:
+            - generic [ref=e170]:
+              - link "Open QA-20261021-170208-ibyd" [ref=e171] [cursor=pointer]:
+                - /url: /agents/qa-20261021-170208-ibyd-bqdxviemwl
+              - generic [ref=e173]:
+                - generic [ref=e174]: Idle
+                - button "Stop agent" [ref=e175] [cursor=pointer]:
+                  - img [ref=e176]
+              - generic:
+                - generic:
+                  - generic: QA-20261021-170208-ibyd
+                  - generic: Last run never
+            - generic [ref=e185]:
+              - link "Open QA-20261021-170207-vg7n" [ref=e186] [cursor=pointer]:
+                - /url: /agents/qa-20261021-170207-vg7n-1ajvr5jygp
+              - generic [ref=e188]:
+                - generic [ref=e189]: Idle
+                - button "Stop agent" [ref=e190] [cursor=pointer]:
+                  - img [ref=e191]
+              - generic:
+                - generic:
+                  - generic: QA-20261021-170207-vg7n
+                  - generic: Last run never
+  - region "Notifications alt+T"
