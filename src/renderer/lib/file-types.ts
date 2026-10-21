@@ -29,6 +29,7 @@ export type PreviewKind =
   | 'video'
   | 'audio'
   | 'pdf'
+  | 'slides'
 
 interface FileTypeGroup {
   category: FileCategory
@@ -89,7 +90,8 @@ const FILE_TYPES: readonly FileTypeGroup[] = [
   { category: 'spreadsheet', preview: 'csv', exts: ['csv', 'tsv'] },
   { category: 'spreadsheet', exts: ['xls', 'xlsx', 'xlsm', 'xlr', 'ods', 'fods', 'numbers'] },
 
-  { category: 'presentation', exts: ['ppt', 'pptx', 'odp', 'fodp', 'key'] },
+  { category: 'presentation', preview: 'slides', exts: ['pptx'] },
+  { category: 'presentation', exts: ['ppt', 'odp', 'fodp', 'key'] },
 
   // `avif` sits with the rest: Chromium decodes it in an <img> like any other,
   // and it was previously listed as unpreviewable only here — the Markdown image

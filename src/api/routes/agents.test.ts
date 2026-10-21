@@ -2860,6 +2860,89 @@ describe('path traversal security — GET /:id/files/*', () => {
 // Bookmarked folder browser — GET /:id/folders
 // ============================================================================
 
+describe('deck preview — POST /:id/files-pdf/*', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+  })
+
+  afterEach(() => {
+    mockFsStat.mockReset()
+    mockContainerFetch.mockReset()
+  })
+
+  const postPdf = (url: string) => createApp().request(`http://localhost${url}`, { method: 'POST' })
+
+  it('starts a sleeping agent, then streams the PDF its container converted', async () => {
+    mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 100 })
+    mockContainerFetch.mockResolvedValueOnce(new Response('%PDF', { headers: { 'Content-Type': 'application/pdf' } }))
+
+    const res = await postPdf('/api/agents/test-agent/files-pdf/out/q3.pptx')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/pdf')
+    expect(await res.text()).toBe('%PDF')
+    expect(mockContainerFetch).toHaveBeenCalledWith('/workspace/pdf', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ path: 'out/q3.pptx' }),
+    }))
+    expect(mockEnsureRunning.mock.invocationCallOrder[0]).toBeLessThan(mockContainerFetch.mock.invocationCallOrder[0])
+  })
+
+  it('passes a conversion reason through and answers a container failure as its own', async () => {
+    mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 100 })
+    mockContainerFetch
+      .mockResolvedValueOnce(Response.json({ reason: 'timeout' }, { status: 422 }))
+      .mockResolvedValueOnce(Response.json({ error: 'Unauthorized' }, { status: 401 }))
+
+    const reason = await postPdf('/api/agents/test-agent/files-pdf/q3.pptx')
+    const failed = await postPdf('/api/agents/test-agent/files-pdf/q3.pptx')
+
+    expect(reason.status).toBe(422)
+    expect(await reason.json()).toEqual({ reason: 'timeout' })
+    // A container 401 must not reach the browser as a 401, which signs the user out.
+    expect(failed.status).toBe(502)
+  })
+
+  it('answers a closed preview with no error', async () => {
+    mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 100 })
+    mockContainerFetch.mockRejectedValueOnce(new DOMException('This operation was aborted', 'AbortError'))
+    const closed = new AbortController()
+    closed.abort()
+
+    const gone = await createApp().request('http://localhost/api/agents/test-agent/files-pdf/q3.pptx', { method: 'POST', signal: closed.signal })
+
+    expect(gone.status).toBe(499)
+  })
+
+  it('refuses a path outside the workspace without starting the agent', async () => {
+    const res = await postPdf('/api/agents/test-agent/files-pdf//etc/passwd')
+
+    expect(res.status).toBe(400)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+  })
+
+  it('answers a directory without starting the agent', async () => {
+    mockFsStat.mockResolvedValue({ isFile: () => false, isDirectory: () => true, size: 0 })
+
+    const res = await postPdf('/api/agents/test-agent/files-pdf/out')
+
+    expect(res.status).toBe(404)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('answers a missing file without starting the agent', async () => {
+    mockFsRealpath.mockResolvedValueOnce('/mock/workspace').mockRejectedValueOnce(enoent())
+
+    const res = await postPdf('/api/agents/test-agent/files-pdf/gone.pptx')
+
+    expect(res.status).toBe(404)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+})
+
 describe('bookmarked workspace folder listing', () => {
   let app: ReturnType<typeof createApp>
 

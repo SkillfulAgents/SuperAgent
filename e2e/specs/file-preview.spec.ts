@@ -917,6 +917,30 @@ test.describe('File Preview', () => {
     await expect.poll(() => page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(false)
   })
 
+  test('shows a deck as slides and comments name the slide', async ({ page }) => {
+    await agentPage.createAgent(`DeckPreview ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/deck.pptx', 'converted by the mock container')
+    await sessionPage.sendMessage('deliver deck')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'deck.pptx').first().click()
+
+    const tray = page.getByTestId('file-preview-tray')
+    await expect(tray.getByText('Slide one')).toBeVisible({ timeout: 15000 })
+    await tray.getByRole('button', { name: 'Next PDF page' }).click()
+    const slide = tray.getByText('Slide two')
+    await expect(slide).toBeVisible()
+
+    await slide.click({ clickCount: 3 })
+    const overlay = page.locator('[data-comment-overlay]')
+    await overlay.getByRole('button', { name: 'Comment' }).click()
+    await expect(overlay.getByText('Slide 2: > "Slide two"')).toBeVisible()
+    await page.getByPlaceholder('Add your comment...').fill('Cut this slide')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+    await page.getByTestId('file-preview-tray').getByRole('button', { name: 'Submit' }).click()
+    await expect(sessionPage.getMessageInput()).toContainText('Slide 2: > "Slide two"')
+  })
+
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
     await agentPage.createAgent(`MultiFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)

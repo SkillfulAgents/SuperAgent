@@ -58,7 +58,7 @@ describe('FileDeliveryRow', () => {
   )
 
   // Nothing to show for these, so downloading is the only useful action.
-  it.each(['sheet.xlsx', 'bundle.zip', 'deck.pptx', 'Inter.ttf', 'part.stl'])(
+  it.each(['sheet.xlsx', 'bundle.zip', 'deck.key', 'Inter.ttf', 'part.stl'])(
     'offers a download for %s',
     (name) => {
       render(<FileDeliveryRow filePath={`/workspace/output/${name}`} agentSlug="test-agent" />)

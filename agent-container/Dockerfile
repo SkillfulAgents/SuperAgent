@@ -44,6 +44,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Document/media reading (formats the product renders)
     poppler-utils \
     ffmpeg \
+    # pptx → PDF. The fonts stand in for Calibri, Arial and Times, and Inter is Google Slides' default
+    libreoffice-impress \
+    fonts-crosextra-carlito \
+    fonts-liberation \
+    fonts-dejavu \
+    fonts-inter \
     # FUSE for volumes at /mounts/<name> (fusermount3 lets the non-root user mount)
     fuse3 \
     && rm -rf /var/lib/apt/lists/*

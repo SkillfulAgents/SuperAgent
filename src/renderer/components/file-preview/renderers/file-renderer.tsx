@@ -11,6 +11,13 @@ import { UnsupportedRenderer } from './unsupported-renderer'
 import { previewKind } from '@renderer/lib/file-types'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
+const SlidesRenderer = lazy(() => import('./slides-renderer').then(m => ({ default: m.SlidesRenderer })))
+
+export const LAZY_FALLBACK = (
+  <div className="flex items-center justify-center py-12">
+    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  </div>
+)
 
 interface FileRendererProps {
   filePath: string
@@ -53,16 +60,26 @@ export function FileRenderer({
 
     case 'pdf':
       return (
-        <Suspense fallback={
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        }>
+        <Suspense fallback={LAZY_FALLBACK}>
           <PdfRenderer
             key={`${filePath}:${fileUrl}`}
             url={fileUrl}
             filePath={filePath}
             agentSlug={agentSlug}
+            pageNumber={pdfPage}
+            onPageChange={onPdfPageChange}
+          />
+        </Suspense>
+      )
+
+    case 'slides':
+      return (
+        <Suspense fallback={LAZY_FALLBACK}>
+          <SlidesRenderer
+            key={`${filePath}:${fileUrl}`}
+            filePath={filePath}
+            agentSlug={agentSlug}
+            downloadUrl={downloadUrl}
             pageNumber={pdfPage}
             onPageChange={onPdfPageChange}
           />
