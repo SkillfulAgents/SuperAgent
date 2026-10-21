@@ -45,7 +45,11 @@ export function mapExaSearchResponse(raw: unknown): WebSearchResponse {
 export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetchResult {
   const parsed = ExaContentsResponseSchema.parse(raw)
   const first = parsed.results[0]
-  if (!first) throw new Error('Exa returned no content for the requested URL')
+  if (!first) {
+    throw new Error(
+      'Exa returned no content for the requested URL. For JSON APIs or simple public pages, try curl from Bash.',
+    )
+  }
   return {
     url: first.url,
     title: first.title ?? null, // failed/empty stubs (filterEmptyResults:false) may omit title
