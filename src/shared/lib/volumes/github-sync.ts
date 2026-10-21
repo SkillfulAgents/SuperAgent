@@ -14,6 +14,10 @@ import type { GithubFile, GithubVolumeConfig, SyncState } from './github-schema'
 import { blobSha, emptySyncState, loadSyncState, saveSyncState, snapshotCollisions, fileBlobSha, volumeFolder } from './github-sync-state'
 
 const syncs = new Map<string, GithubSync>()
+/** A read never shows the branch older than this, as Google Drive's listing cache allows. */
+const FRESH_MS = 30_000
+/** How long a stale read waits for the check before serving the copy. The proxy can hold a request while an account reconnects. */
+const FRESH_WAIT_MS = 5_000
 type GithubVolume = { id: string; name: string; config: GithubVolumeConfig }
 
 export class GithubSync {
@@ -25,6 +29,7 @@ export class GithubSync {
   private caseInsensitive = false
   private syncing: Promise<void> | null = null
   private checkedAt = 0
+  private waitUntil = 0
   private removed = false
   private failure: string | null = null
   private clash: string | null = null
@@ -80,8 +85,24 @@ export class GithubSync {
   }
 
   keepFresh(): void {
-    if (this.removed || this.syncing || this.checkedAt > Date.now() - 30_000) return
+    if (this.removed || this.syncing || this.checkedAt > Date.now() - FRESH_MS) return
     void this.run()
+  }
+
+  /** Before a read: a copy checked over 30 s ago waits for the check. Every read waiting on one check shares its 5 s. */
+  async fresh(): Promise<void> {
+    if (this.removed) return
+    await this.loaded.catch(() => {})
+    if (!this.prepared) return this.keepFresh()
+    if (!this.syncing) {
+      if (this.checkedAt > Date.now() - FRESH_MS) return
+      this.waitUntil = Date.now() + FRESH_WAIT_MS
+    }
+    const left = this.waitUntil - Date.now()
+    if (left <= 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([this.run(), new Promise<void>(resolve => { timer = setTimeout(resolve, left) })])
+    clearTimeout(timer)
   }
 
   async run(): Promise<void> {
