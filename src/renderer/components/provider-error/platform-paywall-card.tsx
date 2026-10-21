@@ -348,8 +348,12 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   useEffect(() => {
     if (shownRef.current || billing.loading || billing.cleared || dismissed) return
     shownRef.current = true
-    track('paywall_shown', { ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown' })
-  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, track])
+    // Only Platform-served turns reach the platform billing gate.
+    track('paywall_shown', {
+      ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown',
+      session_id: session?.sessionId ?? null, credential_source: 'platform',
+    })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, session?.sessionId, track])
   useEffect(() => {
     if (!shownRef.current || clearedRef.current || !billing.cleared || holding) return
     clearedRef.current = true

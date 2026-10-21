@@ -1,5 +1,5 @@
 // Shared types and utilities for fetching agent status
-// Used by both the system tray and the application menu
+// Used by the system tray, the application menu and Spotlight
 
 import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import type { ContainerStatus } from '@shared/lib/container/types'
@@ -9,7 +9,7 @@ import { SKIP_BOOT_PREFETCH_HEADER } from '@shared/lib/services/cloud-boot-prefe
 // the same proxy paths as the boot prefetches, which are one-shot and reserved
 // for the reloading renderer. Marked out so a poll racing a switch cannot
 // consume the renderer's head start.
-const POLL_HEADERS = { [SKIP_BOOT_PREFETCH_HEADER]: '1' }
+export const POLL_HEADERS = { [SKIP_BOOT_PREFETCH_HEADER]: '1' }
 
 export type ActivityStatus = AgentActivityStatus
 

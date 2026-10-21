@@ -6,7 +6,9 @@
  * the `AGENTS.md` in its workspace, read and written through the agent
  * actor's `config` document `instructions`. The frontmatter of that document
  * is a projection of the catalog row that the host writes on create and
- * rename, so the agent still sees who it is and exports still carry it.
+ * rename, so the agent still sees who it is and exports still carry it. The
+ * agent may edit the name and description there; its container reports the
+ * edit and the host reads them back.
  */
 
 import {
@@ -23,6 +25,7 @@ import {
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
+import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -394,6 +397,29 @@ export async function adoptAgentIdentityFromWorkspace(
       return (await agentCatalog.update(slug, { name, description })) ?? record
     }
     return commitIdentity(record, { name, description }, document, document.body)
+  })
+}
+
+/**
+ * Take the name and description the agent wrote into its own `AGENTS.md`
+ * frontmatter into the row. A missing, blank or invalid field leaves that
+ * column alone. Returns the fields that changed.
+ */
+export async function syncAgentIdentityFromWorkspace(slug: string): Promise<Array<'name' | 'description'>> {
+  return withIdentityLock(slug, async () => {
+    const record = await agentCatalog.get(slug)
+    if (!record) return []
+    const document = await readInstructionsDocument(slug)
+    if (!document) return []
+    const carried = identityFromInstructions(document.raw)
+    const name = workspaceAgentNameSchema.safeParse(carried.name)
+    const description = workspaceAgentDescriptionSchema.safeParse(carried.description)
+    const changes: { name?: string; description?: string } = {}
+    if (name.success && name.data !== record.name) changes.name = name.data
+    if (description.success && description.data !== record.description) changes.description = description.data
+    const fields = Object.keys(changes) as Array<'name' | 'description'>
+    if (fields.length > 0) await agentCatalog.update(slug, changes)
+    return fields
   })
 }
 

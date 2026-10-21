@@ -491,7 +491,7 @@ function ConnectionsCrumbs({
   detail,
 }: {
   slug: string
-  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs' } | null
+  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs'; from?: string } | null
 }) {
   const { data: accountsData } = useConnectedAccounts()
   const { data: mcpsData } = useRemoteMcps()
@@ -534,7 +534,7 @@ function ConnectionsCrumbs({
         <AppLink
           to="/agents/$slug/connections"
           params={{ slug }}
-          search={{ detail: detail.rowKey, source: detail.source }}
+          search={{ detail: detail.rowKey, source: detail.source, from: detail.from }}
           noDrag
           className="text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
         >

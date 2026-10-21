@@ -77,7 +77,7 @@ export function VolumesTab() {
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
                 <span className="inline-flex shrink-0 items-center gap-1">{volume.userId === null ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.userId === null ? 'Public' : 'Private'}</span>
                 <span className="shrink-0">·</span>
-                <span className="shrink-0">{volume.attachmentCount === 0 ? 'Not added' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
+                <span className="shrink-0">{volume.globalAccess ? 'Every agent' : volume.attachmentCount === 0 ? 'Not added' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
               </>}
               onActivate={() => openVolume(volume.id)}
               ariaLabel={`Open ${volume.name} drive settings`}

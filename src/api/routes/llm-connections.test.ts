@@ -136,6 +136,24 @@ describe('connection API ownership and root protection', () => {
     expect((await request('', 'POST', draft(), 'alice')).status).toBe(400)
     expect((await request('', 'POST', draft('bob'), 'alice')).status).toBe(400)
   })
+  it('lets an admin share only their own personal connection so it can become the app default', async () => {
+    await database.db.insert(user).values({ id: 'admin', name: 'Admin', email: 'admin@example.com' }).run()
+    const { id: aliceOwn } = await (await request('', 'POST', draft('alice'), 'alice')).json()
+    const { id: adminOwn } = await (await request('', 'POST', draft('admin'))).json()
+    expect((await request(`/${aliceOwn}/share`, 'POST', undefined, 'alice')).status).toBe(403)
+    expect((await request(`/${aliceOwn}/share`, 'POST', undefined, 'admin')).status).toBe(400)
+    expect((await getConnection(aliceOwn))?.userId).toBe('alice')
+    expect((await request('/defaults/default', 'PUT', { llmProviderId: adminOwn, model: 'model' })).status).toBe(400)
+
+    const shared = await request(`/${adminOwn}/share`, 'POST')
+    expect(shared.status).toBe(200)
+    expect((await getConnection(adminOwn))?.userId).toBeNull()
+    expect((await (await request('', 'GET', undefined, 'bob')).json()).connections).toEqual([
+      expect.objectContaining({ id: adminOwn, userId: null }),
+    ])
+    expect((await request(`/${adminOwn}/share`, 'POST')).status).toBe(200)
+    expect((await request('/defaults/default', 'PUT', { llmProviderId: adminOwn, model: 'model' })).status).toBe(200)
+  })
   it('enforces root/catalog protection through direct HTTP mutations', async () => {
     const { id } = await (await request('', 'POST', draft())).json()
     const write = await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' })

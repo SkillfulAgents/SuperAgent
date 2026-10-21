@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, exists, sql } from 'drizzle-orm'
+import { and, asc, eq, exists, isNotNull, isNull, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
@@ -23,14 +23,35 @@ function availableMountName(slug: string, base: string) {
     order by n limit 1)`
 }
 
+/** The agent's own drives, then every global drive it does not already have. Its own access wins. */
 export async function getMounts(slug: string): Promise<MountedVolume[]> {
   const rows = await db.select({ volume: volumeDefinitions, mount: agentVolumes })
     .from(agentVolumes).innerJoin(volumeDefinitions, eq(agentVolumes.volumeId, volumeDefinitions.id))
     .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
-  return rows.flatMap(({ volume, mount }) => {
+  const own: MountedVolume[] = rows.flatMap(({ volume, mount }) => {
     const stored = storedDefinition(volume)
     return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id, volumeName: volume.name, readOnly: mount.readOnly }] : []
   })
+  const globals = await db.select().from(volumeDefinitions)
+    .where(and(isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId)))
+    .orderBy(asc(volumeDefinitions.createdAt), asc(volumeDefinitions.id)).all()
+  const names = new Set(own.map(mount => mount.name))
+  const global: MountedVolume[] = globals.flatMap(volume => {
+    const stored = own.some(mount => mount.volumeId === volume.id) ? null : storedDefinition(volume)
+    if (!stored) return []
+    const name = uniqueName(volume.name, names)
+    names.add(name)
+    // One id per agent, as with attachment rows: providers keep upload state per mount id.
+    return [{ ...stored, id: `global-${slug}-${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess !== 'write', global: true }]
+  })
+  return [...own, ...global]
+}
+
+function uniqueName(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base
+  let n = 2
+  while (taken.has(`${base}-${n}`)) n++
+  return `${base}-${n}`
 }
 
 /** The folder picker creates a source and attaches it atomically. */
@@ -77,11 +98,13 @@ export async function setMountReadOnly(slug: string, mountId: string, readOnly: 
   return changesOf(result) > 0
 }
 
-export async function removeMount(slug: string, mountId: string): Promise<void> {
-  await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+/** False when the agent has no such attachment, including a global drive. */
+export async function removeMount(slug: string, mountId: string): Promise<boolean> {
+  const result = await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+  return changesOf(result) > 0
 }
 
-/** The attachment is the grant; knowing a shared definition's id grants no access. */
+/** The agent's own attachment or a global drive is the grant; knowing a shared definition's id grants no access. */
 export async function resolveVolume(slug: string, mountId: string) {
   const row = (await getMounts(slug)).find(m => m.id === mountId)
   if (!row) return null
@@ -112,5 +135,6 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
   return (await judgeVolumes(slug)).map(({ row, reason }) => ({
     ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: reason === null ? 'ok' : 'missing',
+    ...(row.global ? { global: true as const } : {}),
   }))
 }

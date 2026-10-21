@@ -44,6 +44,7 @@ import type { SessionNotification } from '../host-port'
 import { WaitForIdleTimeoutError } from './wait-for-idle'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
+import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 const SESSION_ID = 'test-session-1'
 const AGENT_SLUG = 'test-agent'
@@ -140,6 +141,35 @@ describe('replayable turn outcomes', () => {
     expect(snapshot()).toMatchObject({ status: 'failed', responseText: 'Invoice 42 was sent.' })
     idle()
     expect(snapshot()?.status).toBe('failed')
+  })
+})
+
+describe('turn analytics', () => {
+  const emit = (content: Record<string, unknown>) => mockClient.emit(content)
+  const responses = () => live.host.sent('analytics').filter(e => e.event.startsWith('agent_response_'))
+
+  it('records which credential served a completed turn', () => {
+    rememberSessionRuntime(AGENT_SLUG, SESSION_ID, { provider: 'claude-subscription' } as ConnectionRuntime)
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
+    expect(responses()).toEqual([{
+      event: 'agent_response_completed',
+      properties: { agentSlug: AGENT_SLUG, session_id: SESSION_ID, credential_source: 'byo:claude-subscription' },
+    }])
+  })
+
+  it('records a failed Platform turn with its terminal reason, and nothing for a stop', () => {
+    rememberSessionRuntime(AGENT_SLUG, SESSION_ID, { provider: 'platform' } as ConnectionRuntime)
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', result: 'Payment required' })
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'error_during_execution', terminal_reason: 'aborted_streaming' })
+    expect(responses()).toEqual([{
+      event: 'agent_response_failed',
+      properties: expect.objectContaining({
+        agentSlug: AGENT_SLUG, session_id: SESSION_ID, credential_source: 'platform', terminal_reason: 'api_error',
+      }),
+    }])
   })
 })
 

@@ -26,6 +26,12 @@ vi.mock('@renderer/hooks/use-rename-untitled-agent', () => ({
   useRenameUntitledAgent: () => ({ mutate: mockRenameUntitled }),
 }))
 
+const mockTrack = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/context/analytics-context', async importOriginal => ({
+  ...await importOriginal<typeof import('@renderer/context/analytics-context')>(),
+  useAnalyticsTracking: () => ({ track: mockTrack }),
+}))
+
 // Mock hooks
 const mockSendMessage = {
   mutateAsync: vi.fn().mockResolvedValue({ success: true, uuid: 'server-uuid-1', queued: false }),
@@ -721,6 +727,18 @@ describe('MessageInput', () => {
     await waitFor(() => {
       expect(onMessageUuidAssigned).toHaveBeenCalledWith(onMessageSent.mock.calls[0][1], 'server-uuid-1', false)
     })
+  })
+
+  it('records the session and the credential the server used for a sent message', async () => {
+    mockSendMessage.mutateAsync.mockResolvedValueOnce({ success: true, uuid: 'server-uuid-1', queued: false, credentialSource: 'byo:codex-subscription' })
+    const user = userEvent.setup()
+    renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+    await user.type(screen.getByTestId('message-input'), 'Hello')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(mockTrack).toHaveBeenCalledWith('message_sent', {
+      origin: 'user', input_mode: 'text', session_id: 's-1', credential_source: 'byo:codex-subscription',
+      notify_only: false,
+    }))
   })
 
   it('reports failure so the optimistic copy can be dropped', async () => {

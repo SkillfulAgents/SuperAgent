@@ -26,15 +26,23 @@ export const chatSearchSchema = z.object({
 // route and the global settings connections tab, so the two can't drift.
 const connectionDetailKey = z.string().regex(/^(account|mcp)-.+$/)
 
+// Open-redirect-safe internal path. ONE definition for the whole app: the same
+// `isSafeInternalPath` (safe-internal-path.ts, re-exported by api.ts) applied on
+// the stash/redirect path (rejects `//host`, `/\host`, and a leading encoded
+// `/%2f`/`/%5c`), so the schema gate and the sanitizer can't drift. Shared by
+// the post-login `redirect` and the settings and connection-detail `from` close-targets.
+const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
+
 // Connections detail overlay on the list. `detail` is the unified-row key;
 // `source` decides the breadcrumb + back-target. They travel together — today
 // both live inside one optional `detail` object on the `connections` AgentView
-// variant.
+// variant. `from` overrides the back-target with the page that opened the detail.
 export const connectionsSearchSchema = z
   .object({
     detail: connectionDetailKey.optional(),
     source: z.enum(['home', 'list']).optional(),
     connectionView: z.literal('logs').optional(),
+    from: internalPath.optional(),
   })
   .refine((s) => (s.detail == null) === (s.source == null), {
     message: 'detail and source must be set together',
@@ -42,13 +50,6 @@ export const connectionsSearchSchema = z
   .refine((s) => !s.connectionView || !!s.detail, {
     message: 'a connection subview requires detail',
   })
-
-// Open-redirect-safe internal path. ONE definition for the whole app: the same
-// `isSafeInternalPath` (safe-internal-path.ts, re-exported by api.ts) applied on
-// the stash/redirect path (rejects `//host`, `/\host`, and a leading encoded
-// `/%2f`/`/%5c`), so the schema gate and the sanitizer can't drift. Shared by
-// the post-login `redirect` and the settings `from` close-target.
-const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
 
 // Deep-link-through-login target.
 export const rootSearchSchema = z.object({

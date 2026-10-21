@@ -22,7 +22,7 @@ export async function mockDropboxVolumes(page: Page, agentSlug?: string) {
     created.push(body)
     const source: VolumeDefinitionSummary = {
       id: `dropbox-volume-${definitions.length + 1}`, name: body.name ?? 'Dropbox', type: 'dropbox', hostPath: null,
-      sourceLabel: `Dropbox · ${body.config.path || '/'}`, userId: null, canManage: true, health: 'ok', attachmentCount: 0,
+      sourceLabel: `Dropbox · ${body.config.path || '/'}`, userId: null, canManage: true, health: 'ok', attachmentCount: 0, globalAccess: null,
     }
     definitions.push(source)
     return source
