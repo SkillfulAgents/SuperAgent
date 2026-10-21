@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, MAX_BROWSER_ERROR_CHARS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS } from './browser-output'
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, navigationNetError, MAX_BROWSER_ERROR_CHARS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS } from './browser-output'
 import { SNAPSHOT_SOFT_CAP_CHARS } from './snapshot-format'
 
 describe('capBrowserOutput', () => {
@@ -117,6 +117,16 @@ describe('stripWebMcpNotices', () => {
   it('leaves page text that merely mentions WebMCP alone', () => {
     expect(stripWebMcpNotices('- heading "WebMCP tools changed: our roadmap" [ref=e1]')).toBe('- heading "WebMCP tools changed: our roadmap" [ref=e1]')
     expect(stripWebMcpNotices('plain output')).toBe('plain output')
+  })
+})
+
+describe('navigationNetError', () => {
+  it('names the net error of a navigation Chrome answered with its error page, and nothing else', () => {
+    expect(navigationNetError('✗ Navigation failed: net::ERR_CONNECTION_REFUSED')).toBe('ERR_CONNECTION_REFUSED')
+    expect(navigationNetError('✗ Navigation failed: net::ERR_NAME_NOT_RESOLVED')).toBe('ERR_NAME_NOT_RESOLVED')
+    expect(navigationNetError('✗ Navigation failed: net::ERR_CERT_DATE_INVALID')).toBe('ERR_CERT_DATE_INVALID')
+    expect(navigationNetError('agent-browser open produced no result within 30005 ms and was stopped.')).toBeNull()
+    expect(navigationNetError('✗ Daemon failed to start')).toBeNull()
   })
 })
 

@@ -95,6 +95,16 @@ export function describeExecFailure(err: ExecFailure, verb: string, elapsedMs: n
   return `agent-browser ${verb} failed (exit ${code}) without output.`
 }
 
+/**
+ * The Chrome net error of a navigation the CLI reported as failed
+ * (`✗ Navigation failed: net::ERR_CONNECTION_REFUSED`), or null for any other
+ * failure. Such a navigation still commits Chrome's error page in the tab.
+ */
+export function navigationNetError(stdout: string): string | null {
+  const m = /Navigation failed: net::(ERR_[A-Z0-9_]+)/.exec(stdout)
+  return m ? m[1] : null
+}
+
 // --- WebMCP notices ------------------------------------------------------------
 
 /**

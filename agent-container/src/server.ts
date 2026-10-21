@@ -797,7 +797,7 @@ import { classifyWaitTarget, WAIT_PAGE_PROBE_SCRIPT, parseWaitPageProbe } from '
 /** Budget for the page probe around a wait — independent of the exec ceiling. */
 const WAIT_PAGE_PROBE_TIMEOUT_MS = 3000;
 import { resolveCommittedValue } from './field-value-readback';
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, extractScreenshotPath, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, extractScreenshotPath, navigationNetError, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
@@ -1372,15 +1372,23 @@ app.post('/browser/open', async (c) => {
 
     let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
+    // A navigation Chrome answered with its own error page (refused
+    // connection, unknown host, TLS failure) is the browser working: the CLI
+    // exits non-zero, but the tab is on Chrome's error document for that
+    // address, and the landing report below says so. Treating it as a launch
+    // failure killed the daemon and Chrome — every open tab with it — before
+    // retrying a URL that fails the same way.
+    const navNetError = result.exitCode !== 0 ? navigationNetError(result.stdout) : null;
+
     // Retry once on failure — agent-browser daemon startup can be flaky
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !navNetError) {
       console.error('[Browser] First open attempt failed, retrying:', result.stdout);
       cleanupAgentBrowserDaemon();
       await new Promise(r => setTimeout(r, 1000));
       result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
     }
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !navNetError) {
       const debugInfo = ` [location=${location}, attempts=2]`;
       return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
@@ -1401,7 +1409,10 @@ app.post('/browser/open', async (c) => {
 
     browserOpenGeneration++;
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
+    // The daemon's count, not 1: an open in a live browser keeps its other
+    // tabs, and a stale 1 made the next tab command report a "new tab".
     tabManager.resetTabCount();
+    await tabManager.syncTabCount();
     resetUrlTracking();
     // A new document: no tree from before it can be diffed against.
     resetTreeBaseline();
@@ -1411,7 +1422,12 @@ app.post('/browser/open', async (c) => {
     // HTTP status, challenge wall, net error — instead of echoing the requested
     // URL (transcript-mining theme 2: a 429, a login redirect and about:blank
     // all used to read "Browser opened and navigating to <url>").
-    const page = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
+    const observed = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
+    // The headless shell's error page carries no ERR_ code in its text; the
+    // CLI's navigation error does.
+    const page = navNetError && observed.url && (!observed.netError || observed.netError === 'net error')
+      ? { ...observed, netError: navNetError }
+      : observed;
     noteChallenge(page);
     if (page.url) {
       observeUrl(page.url);
