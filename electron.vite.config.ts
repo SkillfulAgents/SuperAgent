@@ -35,6 +35,12 @@ export default defineConfig({
     },
     build: {
       outDir: 'dist/preload',
+      rollupOptions: {
+        input: {
+          index: path.resolve(__dirname, 'src/preload/index.ts'),
+          'find-bar': path.resolve(__dirname, 'src/preload/find-bar.ts'),
+        },
+      },
     },
   },
   renderer: {

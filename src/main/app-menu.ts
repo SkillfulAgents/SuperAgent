@@ -2,6 +2,7 @@ import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
 import type { ApiTarget } from '@shared/lib/api-target'
 import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import { openFindBar } from './find-in-page'
 
 let mainWindowRef: BrowserWindow | null = null
 // A getter rather than a stored URL: in cloud mode the effective base is the
@@ -238,6 +239,14 @@ async function buildAppMenu(): Promise<void> {
         { role: 'copy' },
         { role: 'paste' },
         { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Find…',
+          accelerator: 'CmdOrCtrl+F',
+          click: (_item, window) => {
+            if (window instanceof BrowserWindow) openFindBar(window)
+          },
+        },
       ],
     },
     // View menu
