@@ -91,9 +91,16 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
   resolveApiPolicy: (...args: unknown[]) => mockResolveApiPolicy(...args),
 }))
 
+// The agent's reviews, as its router answers the actor's review ops: a
+// request resolves to its outcome; resume and settle follow a recheck.
+const mockResumeReview = vi.fn(async (..._args: unknown[]): Promise<string> => 'allow')
+const mockSettleReview = vi.fn(async (_slug: string, _id: string, decision: string): Promise<string> => decision)
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReview({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
+    resume: (...args: unknown[]) => mockResumeReview(...args),
+    settle: (slug: string, id: string, decision: string) => mockSettleReview(slug, id, decision),
   },
 }))
 
@@ -1202,10 +1209,10 @@ describe('proxy policy enforcement', () => {
     expect(mockRequestReview).toHaveBeenCalledOnce()
     // Stamped as an API review: "always allow" must write apiScopePolicies
     // keyed by this connected account, never the MCP table.
+    // A sweep that changes the policy hands it back to decide again.
     expect(mockRequestReview).toHaveBeenCalledWith(
       expect.objectContaining({ reviewType: 'api', accountId: 'acc-123' }),
-      expect.anything(),
-      expect.objectContaining({ reevaluate: expect.any(Function) }),
+      { id: expect.any(String), recheck: true },
     )
   })
 
@@ -1219,7 +1226,9 @@ describe('proxy policy enforcement', () => {
       endpointAmbiguous: true,
       resolvedFrom: 'scope_policy',
     })
-    mockRequestReview.mockResolvedValue('allow')
+    // A sweep asks to decide again; the policy still says review, so the card stays for the person.
+    mockRequestReview.mockResolvedValue('recheck')
+    mockResumeReview.mockResolvedValueOnce('allow')
     mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
     const body = '{"query":"mutation { issueDelete(id: \\"LIN-1\\") { success } }"}'
 
@@ -1230,12 +1239,12 @@ describe('proxy policy enforcement', () => {
     expect(mockRequestReview).toHaveBeenCalledWith(
       expect.objectContaining({ endpointAmbiguous: true, requestBody: 'mutation { issueDelete(id: "LIN-1") { success } }' }),
       expect.anything(),
-      expect.anything(),
     )
     // The matcher gets the body, to name a GraphQL operation, again when a sweep re-decides the request.
     expect(new TextDecoder().decode(mockMatchScopes.mock.calls[0][4])).toBe(body)
-    await expect(mockRequestReview.mock.calls[0][2].reevaluate()).resolves.toBe('review')
     expect(new TextDecoder().decode(mockMatchScopes.mock.calls[1][4])).toBe(body)
+    expect(mockResumeReview).toHaveBeenCalledOnce()
+    expect(mockSettleReview).not.toHaveBeenCalled()
     // The body read for the card is the one forwarded.
     expect(new TextDecoder().decode(mockMakeApiCall.mock.calls[0][0].body)).toBe(body)
   })
@@ -1264,7 +1273,7 @@ describe('proxy policy enforcement', () => {
 
     await app.request(request)
     expect(readBeforeReview).toBe(false)
-    expect(mockRequestReview).toHaveBeenCalledWith(expect.objectContaining({ requestBody: undefined }), expect.anything(), expect.anything())
+    expect(mockRequestReview).toHaveBeenCalledWith(expect.objectContaining({ requestBody: undefined }), expect.anything())
     expect(new Uint8Array(mockMakeApiCall.mock.calls[0][0].body)).toEqual(upload)
   })
 
@@ -1297,7 +1306,7 @@ describe('proxy policy enforcement', () => {
       scopeDescriptions: {},
       resolvedFrom: 'scope_policy',
     })
-    mockRequestReview.mockRejectedValue(new Error('Review timeout'))
+    mockRequestReview.mockResolvedValue('timeout')
 
     const res = await makeRequest(
       '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',

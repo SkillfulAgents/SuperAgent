@@ -30,6 +30,7 @@ import {
   agentConnectedAccounts,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const proxy = new Hono()
 
@@ -349,7 +350,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     const ruleOutcomes = reviewRuleOutcomes(ruleGate.evaluations)
     const rules = reportedRules(ruleGate)
     try {
-      const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
+      const reviews = agentRegistry.get(agentSlug).inputs.reviews
+      const decision = await awaitReview(reviews, (raise) => reviews.request({
         accountId,
         reviewType: 'api',
         toolkit: account.toolkitSlug,
@@ -361,7 +363,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         endpointAmbiguous: policyResult.endpointAmbiguous,
         requestBody: requestBodyPreview(textBody),
         ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
-      }, c.req.raw.signal, {
+      }, raise), {
+        signal: c.req.raw.signal,
         // When an "always" decision on another card changes the policy, this
         // request is decided again rather than released.
         reevaluate: async () => {

@@ -11,6 +11,7 @@ import type { McpToolInfo } from './types'
 import type { McpAccessResult, McpAuthorization, McpConnection, McpInvocation, McpRecoveryResult } from './connection-types'
 import { auditRuleOutcomes, decidingRuleVersionId, evaluateRulesForRequest, reportedRules, reviewRuleOutcomes } from '../proxy/rules/gate'
 import { buildMcpRuleInput } from '../proxy/rules/input'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 async function loadAssignedMcp(agentSlug: string, mcpId: string): Promise<RemoteMcpServer | null> {
   const [mapping] = await db.select({ mcp: remoteMcpServers }).from(agentRemoteMcps)
@@ -70,12 +71,14 @@ class AccountMcpConnection implements McpConnection {
     const reviewOutcomes = gate ? reviewRuleOutcomes(gate.evaluations) : []
     const rules = gate ? reportedRules(gate) : []
     try {
-      const decision = await agentRegistry.get(this.agentSlug).inputs.reviews.request({
+      const reviews = agentRegistry.get(this.agentSlug).inputs.reviews
+      const decision = await awaitReview(reviews, (raise) => reviews.request({
         accountId: this.row.id, reviewType: 'mcp', toolkit: this.row.name, method: call.method,
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
         ...(reviewOutcomes.length > 0 ? { ruleOutcomes: reviewOutcomes } : {}),
-      }, call.signal, {
+      }, raise), {
+        signal: call.signal,
         // When an "always" decision on another card changes the policy, this
         // call is decided again rather than released.
         reevaluate: async () => {

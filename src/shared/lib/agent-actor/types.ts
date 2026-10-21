@@ -69,7 +69,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -697,21 +697,30 @@ export interface ReviewOps {
   resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): void
   /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
-  /** `AgentReviews.request` — the review is this agent's. */
-  request(
-    details: Omit<ReviewDetails, 'agentSlug'>,
-    signal?: AbortSignal,
-    options?: { reevaluate?: () => Promise<'allow' | 'deny' | 'review'> },
-  ): Promise<'allow' | 'deny'>
+  /**
+   * `AgentReviews.request`: park a call on a review card of this agent until
+   * its outcome. The caller names the review (`options.id`) to withdraw it
+   * (its request was aborted), or to resume or settle it after a `recheck`.
+   * `awaitReview` (proxy/review-request) is the host's way to wait for one.
+   */
+  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
-    targetAgentSlug: string,
-    targetAgentName: string,
-    operation: 'list' | 'read' | 'invoke' | 'create',
-    preview?: string,
-    fileTransfer?: XAgentFileTransfer,
-    signal?: AbortSignal,
-  ): Promise<'allow' | 'deny'>
+    request: {
+      targetAgentSlug: string
+      targetAgentName: string
+      operation: 'list' | 'read' | 'invoke' | 'create'
+      preview?: string
+      fileTransfer?: XAgentFileTransfer
+    },
+    options: { id: string },
+  ): Promise<ReviewOutcome>
+  /** `AgentReviews.withdraw`: the caller is gone; close the card. */
+  withdraw(id: string): Promise<void>
+  /** `AgentReviews.resume`: after a recheck that still needs the person, wait for the next outcome. */
+  resume(id: string): Promise<ReviewOutcome>
+  /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
+  settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
 }
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */

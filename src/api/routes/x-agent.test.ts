@@ -223,9 +223,15 @@ const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
   if (!next) throw new Error('No queued review decision')
   return next
 })
+// The caller's reviews, as its router answers the actor's review ops: the
+// queued decision is the request's outcome, under the arguments it was raised with.
+type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown }
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestXAgentReview: (...args: unknown[]) => mockRequestXAgentReview(...args),
+    requestXAgent: (callerSlug: string, request: XAgentReviewRequest) => mockRequestXAgentReview(
+      callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
+    ),
+    withdraw: vi.fn(),
   },
 }))
 

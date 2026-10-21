@@ -63,6 +63,7 @@ import {
   findDeliveredFile,
   pageTranscript,
 } from './x-agent-transcript-view'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 const invokingSessions = new Set<string>()
@@ -231,13 +232,11 @@ async function checkAgentPolicy(
   }
 
   try {
-    const userDecision = await agentRegistry.get(callerSlug).inputs.reviews.requestXAgent(
-      targetSlug ?? '',
-      targetName,
-      operation,
-      preview,
-      fileTransfer,
-    )
+    const reviews = agentRegistry.get(callerSlug).inputs.reviews
+    const userDecision = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+      raise,
+    ))
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
     }

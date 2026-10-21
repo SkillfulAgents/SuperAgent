@@ -62,9 +62,12 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
   resolveMcpPolicy: (...args: unknown[]) => mockResolveMcpPolicy(...args),
 }))
 
+// The agent's reviews, as its router answers the actor's review ops: a
+// request resolves to its outcome.
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReview({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
   },
 }))
 
@@ -2023,8 +2026,7 @@ describe('mcp-proxy route', () => {
       // mcpToolPolicies no matter what the request path looks like.
       expect(mockRequestReview).toHaveBeenCalledWith(
         expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'tools/call: search' }),
-        expect.anything(),
-        expect.objectContaining({ reevaluate: expect.any(Function) }),
+        { id: expect.any(String), recheck: true },
       )
     })
 
@@ -2052,8 +2054,7 @@ describe('mcp-proxy route', () => {
       expect(mockRequestReview).toHaveBeenCalledOnce()
       expect(mockRequestReview).toHaveBeenCalledWith(
         expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'resources/read', matchedScopes: [] }),
-        expect.anything(),
-        expect.objectContaining({ reevaluate: expect.any(Function) }),
+        { id: expect.any(String), recheck: true },
       )
     })
 

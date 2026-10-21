@@ -357,8 +357,11 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
     resolveMatchingXAgent: (operation, decision) =>
       deps.reviewManager.resolveMatchingXAgentByOperation(slug, operation, decision),
-    request: (details, ...rest) => deps.reviewManager.requestReview({ ...details, agentSlug: slug }, ...rest),
-    requestXAgent: (...args) => deps.reviewManager.requestXAgentReview(slug, ...args),
+    request: (details, options) => deps.reviewManager.request(slug, details, options),
+    requestXAgent: (request, options) => deps.reviewManager.requestXAgent(slug, request, options),
+    withdraw: async (id) => deps.reviewManager.withdraw(slug, id),
+    resume: (id) => deps.reviewManager.resume(slug, id),
+    settle: (id, decision) => deps.reviewManager.settle(slug, id, decision),
   }
 }
 

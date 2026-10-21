@@ -142,12 +142,10 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     const decision = original.agentRegistry
       .get('a')
-      .inputs.reviews.request(reviewDetails)
-      .catch(() => 'rejected')
+      .inputs.reviews.request(reviewDetails, { id: 'review-a' })
     const bare = original.agentRegistry
       .get('b')
-      .inputs.reviews.request(reviewDetails)
-      .catch(() => 'rejected')
+      .inputs.reviews.request(reviewDetails, { id: 'review-b' })
     const [entry] = original.agentRegistry.get('a').inputs.reviews.pending()
     const [bareEntry] = original.agentRegistry.get('b').inputs.reviews.pending()
 
@@ -210,13 +208,12 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     const decision = original.agentRegistry
       .get('a')
-      .inputs.reviews.request(reviewDetails)
-      .catch((error: Error) => error.message)
+      .inputs.reviews.request(reviewDetails, { id: 'review-a' })
 
     const reloaded = await reload()
     reloaded.agentRegistry.evict('a')
 
-    await expect(decision).resolves.toBe('Review timeout')
+    await expect(decision).resolves.toBe('timeout')
     expect(reloaded.agentRegistry.get('a').inputs.reviews.pending()).toEqual([])
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a')).toEqual([])
   })

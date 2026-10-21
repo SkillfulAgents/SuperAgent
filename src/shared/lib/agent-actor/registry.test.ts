@@ -403,7 +403,7 @@ describe('createAgentRegistry', () => {
         matchedScopes: ['read'],
         scopeDescriptions: {},
       }
-      const decision = actor.inputs.reviews.request(details)
+      const decision = actor.inputs.reviews.request(details, { id: 'review-1' })
       const [open] = actor.inputs.openForAgent()
       expect(open).toMatchObject({ kind: 'proxy_review', scope: { agentSlug: 'a' }, payload: { ...details, agentSlug: 'a' } })
       expect(actor.inputs.reviews.pending().map((r) => r.id)).toEqual([open.id])
@@ -604,7 +604,7 @@ describe('createAgentRegistry', () => {
 
       // Plant state of every kind the actor owns.
       actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
-      const review = actor.inputs.reviews.request(reviewDetails)
+      const review = actor.inputs.reviews.request(reviewDetails, { id: 'review-1' })
       const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' })
       const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' })
       actor.inputs.computerUse.grant('use_host_shell', 'once')
@@ -617,7 +617,7 @@ describe('createAgentRegistry', () => {
 
       registry.evict('a')
 
-      await expect(review).rejects.toThrow('Review timeout')
+      await expect(review).resolves.toBe('timeout')
       await expect(account).rejects.toThrow(/no longer held by this process/)
       await expect(mcp).rejects.toThrow(/no longer held by this process/)
       // Every settlement went out as a transition, so the wire and the index heard of it.
@@ -656,13 +656,13 @@ describe('createAgentRegistry', () => {
       const registry = createAgentRegistry(fake.deps)
       const a = registry.get('a')
       const b = registry.get('b')
-      const reviewA = a.inputs.reviews.request(reviewDetails)
-      const reviewB = b.inputs.reviews.request(reviewDetails)
+      const reviewA = a.inputs.reviews.request(reviewDetails, { id: 'review-a' })
+      const reviewB = b.inputs.reviews.request(reviewDetails, { id: 'review-b' })
 
       registry.evictAll()
 
-      await expect(reviewA).rejects.toThrow('Review timeout')
-      await expect(reviewB).rejects.toThrow('Review timeout')
+      await expect(reviewA).resolves.toBe('timeout')
+      await expect(reviewB).resolves.toBe('timeout')
       // The host forgets the runtimes its own way (a starting one is kept).
       expect(fake.containerHost.dropRuntime).not.toHaveBeenCalled()
       expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)
