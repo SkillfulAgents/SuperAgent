@@ -18,7 +18,7 @@ const authenticodeSignatureSchema = z.object({
   SignerCertificate: z.object({ Subject: z.string() }).nullish(),
 })
 
-function runPowerShell(command: string, timeout: number): Promise<string> {
+function runPowerShell(command: string, timeout: number, { ignoreStderr = false }: { ignoreStderr?: boolean } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     // Matches upstream: an empty PSModulePath and the UTF-8 code page avoid
     // module-load and umlaut-in-certificate failures (electron-builder #7127,
@@ -32,7 +32,7 @@ function runPowerShell(command: string, timeout: number): Promise<string> {
           reject(new Error(`Timed out after ${timeout / 1000}s verifying the update's code signature`))
         } else if (error) {
           reject(error)
-        } else if (stderr) {
+        } else if (stderr && !ignoreStderr) {
           reject(new Error(`Cannot execute Get-AuthenticodeSignature, stderr: ${stderr}. Failing signature validation due to unknown stderr.`))
         } else {
           resolve(stdout)
@@ -45,7 +45,10 @@ function runPowerShell(command: string, timeout: number): Promise<string> {
 /** True when PowerShell can't run ConvertTo-Json (missing, or older than 3.0). */
 async function powerShellUnusable(): Promise<boolean> {
   try {
-    await runPowerShell('ConvertTo-Json test', POWERSHELL_PROBE_TIMEOUT_MS)
+    // Upstream's execFileSync probe only fails on a process error, not stderr.
+    // Diagnostics from a successful probe must not turn a failed signature
+    // check into acceptance by incorrectly declaring PowerShell unusable.
+    await runPowerShell('ConvertTo-Json test', POWERSHELL_PROBE_TIMEOUT_MS, { ignoreStderr: true })
     return false
   } catch {
     return true

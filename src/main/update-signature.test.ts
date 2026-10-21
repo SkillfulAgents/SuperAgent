@@ -111,6 +111,20 @@ describe('verifyUpdateSignature', () => {
     await expect(verifyUpdateSignature(['Datawizz Inc.'], UPDATE_FILE)).rejects.toThrow(/Microsoft\.PowerShell\.Security/)
   })
 
+  it.each([
+    { name: 'process failure', signature: { error: { message: 'signature command failed' } }, expected: /signature command failed/ },
+    { name: 'timeout', signature: { error: { killed: true } }, expected: /Timed out after 180s/ },
+    { name: 'signature stderr', signature: { stderr: 'signature diagnostic' }, expected: /signature diagnostic/ },
+    { name: 'path mismatch', signature: { stdout: signatureJson({ Path: 'C:\\elsewhere\\Setup.exe' }) }, expected: /LiteralPath/ },
+  ])('preserves $name when a successful usability probe writes to stderr', async ({ signature, expected }) => {
+    powershell({
+      signature,
+      probe: { stdout: '"test"', stderr: 'probe diagnostic' },
+    })
+
+    await expect(verifyUpdateSignature(['Datawizz Inc.'], UPDATE_FILE)).rejects.toThrow(expected)
+  })
+
   it('skips validation, like upstream, when PowerShell itself cannot run', async () => {
     powershell({
       signature: { error: { message: 'Command failed: powershell.exe' } },

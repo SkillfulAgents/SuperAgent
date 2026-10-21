@@ -24,7 +24,7 @@ import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import type { ReadableStream } from 'stream/web'
 import { verifySignature as upstreamVerifySignature } from 'electron-updater/out/windowsExecutableCodeSignatureVerifier'
-import { verifyUpdateSignature } from '../src/main/update-signature'
+import { verifyUpdateSignature, SIGNATURE_CHECK_TIMEOUT_MS } from '../src/main/update-signature'
 
 const FEED_URL = 'https://updates.gamutagents.com/'
 const PUBLISHER = 'Datawizz Inc.'
@@ -56,10 +56,14 @@ async function downloadReleaseInstaller(dir: string): Promise<string> {
 }
 
 function signerSubject(file: string): string {
+  // Windows PowerShell cannot load PowerShell 7's inherited modules. Remove
+  // the variable entirely (an empty value disables module discovery) so it
+  // rebuilds its own defaults, as the production verifier's `set` does.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'))
   return execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command',
     `(Get-AuthenticodeSignature -LiteralPath '${file.replace(/'/g, "''")}').SignerCertificate.Subject`,
-  ], { encoding: 'utf8' }).trim()
+  ], { encoding: 'utf8', env, timeout: SIGNATURE_CHECK_TIMEOUT_MS, windowsHide: true }).trim()
 }
 
 async function outcome(run: () => Promise<string | null>): Promise<Outcome> {
