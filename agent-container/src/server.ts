@@ -2531,17 +2531,23 @@ app.post('/browser/run', async (c) => {
     }
 
     const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
+    const verb = commandArgs[0].toLowerCase();
+    const joined = commandArgs.join(' ').toLowerCase();
+    const navigates = verb.startsWith('tab') || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb);
+    // A navigation Chrome answered with its own error page still happened:
+    // `tab new <dead url>` leaves a new tab in front. The error stands, and
+    // the bookkeeping below runs as for a success, so the tab is reported now
+    // rather than on some later command.
+    const navFailed = result.exitCode !== 0 && navigates && navigationNetError(result.stdout) !== null;
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !navFailed) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const verb = commandArgs[0].toLowerCase();
-    const joined = commandArgs.join(' ').toLowerCase();
     // A different tab or document: the tree baseline belongs to the old one,
     // and the next action is compared with the URL that is now in front (a
     // tab close used to make the next click read as a navigation).
-    if (verb.startsWith('tab') || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb)) {
+    if (navigates) {
       resetTreeBaseline();
       const front = await observeNow();
       if (front.url) observeUrl(front.url);
@@ -2558,6 +2564,10 @@ app.post('/browser/run', async (c) => {
     let tabInfo = null;
     if (verb.startsWith('tab') || verb === 'click' || verb === 'dblclick' || joined.includes('.click(')) {
       tabInfo = await tabManager.detectNewTab();
+    }
+    if (navFailed) {
+      notifyBrowserAction();
+      return c.json({ error: `${result.stdout}${tabInfo ? tabManager.formatTabNotification(tabInfo) : ''}`, success: false }, 500);
     }
 
     // `get url` on Chrome's error page reads chrome-error://; report the
