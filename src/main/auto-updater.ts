@@ -2,8 +2,10 @@ import { BrowserWindow, ipcMain, app, powerMonitor } from 'electron'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import type { NsisUpdater } from 'electron-updater'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { verifyUpdateSignature } from './update-signature'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -367,6 +369,12 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       // runtime, but the type declares it readonly — cast to bypass the check.
       ;(autoUpdater as any).currentVersion = fakeVersion
       console.log(`[auto-updater] TEST MODE: pretending to be v${fakeVersion}, feed=${cfgPath}`)
+    }
+
+    // electron-updater's own Windows signature check gives up after 20s, too
+    // short for slow machines and VDIs (see update-signature.ts).
+    if (process.platform === 'win32') {
+      ;(autoUpdater as NsisUpdater).verifyUpdateCodeSignature = verifyUpdateSignature
     }
 
     // Don't auto-download — let the user choose
