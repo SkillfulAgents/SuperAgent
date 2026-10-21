@@ -897,6 +897,22 @@ describe('download and install lifecycle', () => {
     expect(captureException).toHaveBeenCalled()
   })
 
+  it('signature check killed by timeout → Sentry gets killed/signal/code', () => {
+    const err = Object.assign(
+      new Error(`Command failed: powershell.exe -Command "Get-AuthenticodeSignature -LiteralPath 'C:\\Users\\Dave\\AppData\\Local\\superagent-updater\\pending\\temp-Gamut-0.5.45-Setup.exe'"`),
+      { code: null, killed: true, signal: 'SIGTERM' },
+    )
+    events['download-progress']?.({ percent: 100 })
+
+    events['error']?.(err)
+
+    expect(captureException).toHaveBeenCalledWith(err, expect.objectContaining({
+      extra: expect.objectContaining({ state: 'downloading', killed: true, signal: 'SIGTERM' }),
+    }))
+    const extra = vi.mocked(captureException).mock.calls[0][1]!.extra!
+    expect(extra).not.toHaveProperty('errorCode')
+  })
+
   it('install-update quits and installs', async () => {
     await handlers['install-update']()
     expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledTimes(1)

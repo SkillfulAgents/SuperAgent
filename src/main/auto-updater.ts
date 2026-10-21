@@ -72,6 +72,16 @@ function isChannelFileNotFoundError(err: unknown): boolean {
   return /Cannot find .*latest-mac\.yml.*404/.test(message)
 }
 
+// Node's execFile error keeps exit code / timeout kill only as fields, not in
+// the message, e.g. electron-updater's Windows Get-AuthenticodeSignature check.
+function childProcessErrorDetails(err: unknown): Record<string, unknown> {
+  if (!err || typeof err !== 'object') return {}
+  const { code, killed, signal } = err as { code?: unknown; killed?: unknown; signal?: unknown }
+  return Object.fromEntries(
+    Object.entries({ errorCode: code, killed, signal }).filter(([, v]) => v !== undefined && v !== null),
+  )
+}
+
 function sendStatusToRenderer() {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
     mainWindowRef.webContents.send('update-status', currentStatus)
@@ -320,7 +330,11 @@ export function registerUpdateHandlers() {
     } catch (err) {
       captureException(err, {
         tags: { component: 'auto-updater', operation: 'download' },
-        extra: { currentVersion: app.getVersion(), targetVersion: currentStatus.version },
+        extra: {
+          currentVersion: app.getVersion(),
+          targetVersion: currentStatus.version,
+          ...childProcessErrorDetails(err),
+        },
       })
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
@@ -425,6 +439,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
             currentVersion: app.getVersion(),
             state: currentStatus.state,
             userVisible: runIsUserVisible,
+            ...childProcessErrorDetails(err),
           },
           level: 'warning',
         })
