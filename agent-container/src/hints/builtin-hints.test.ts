@@ -11,6 +11,7 @@ const bash = (command: string): HintEventInput => ({ event: 'PreToolUse', toolNa
 const read = (file_path: string): HintEventInput => ({ event: 'PreToolUse', toolName: 'Read', toolInput: { file_path } })
 const wrote = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Write', toolInput: { file_path } })
 const edited = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Edit', toolInput: { file_path } })
+const ran = (command: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Bash', toolInput: { command } })
 const before = (toolName: string, toolInput: Record<string, unknown> = {}): HintEventInput => ({ event: 'PreToolUse', toolName, toolInput })
 
 // Every row lists the exact hints a call triggers. A new hint that also fires on another hint's example
@@ -49,6 +50,11 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['write a CSV report', wrote('/workspace/reports/activations.csv'), ['deliver-files']],
   ['write a PDF', wrote('/workspace/invoice.pdf'), ['deliver-files']],
   ['write a temp CSV', wrote('/tmp/scratch.csv'), []],
+  ['script made a spreadsheet', ran("uv run --with openpyxl python - <<'EOF'\nfrom openpyxl import Workbook\nwb = Workbook()\nwb.save('/workspace/reports/q3.xlsx')\nEOF"), ['deliver-files']],
+  ['script made a slide deck', ran("python3 - <<'EOF'\nfrom pptx import Presentation\nEOF"), ['deliver-files']],
+  ['script wrote a CSV with pandas', ran('uv run --with pandas python -c "import pandas as pd; pd.DataFrame(rows).to_csv(\'/workspace/out.csv\')"'), ['deliver-files']],
+  ['script read a CSV', ran('uv run --with pandas python -c "import pandas as pd; print(pd.read_csv(\'/workspace/in.csv\').shape)"'), []],
+  ['grep a CSV', ran('grep -c signup /workspace/reports/signups.csv'), []],
   ['agent-browser and uv run in one command', bash('agent-browser snapshot && uv run report.py'), ['agent-browser-bash', 'uv-run-env-file']],
   ['wait, then print secrets', bash('sleep 2; cat /workspace/.env'), ['no-foreground-wait', 'no-secret-values']],
   ['wait, then write a deck', bash('sleep 5 && uv run --env-file .env python - <<\'EOF\'\nurl = f"{proxy}/acc-gslides/slides.googleapis.com/v1/presentations/{pid}:batchUpdate"\nEOF'), ['no-foreground-wait', 'shared-doc-revision', 'uv-run-env-file']],

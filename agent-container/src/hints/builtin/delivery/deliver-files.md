@@ -1,6 +1,6 @@
 ---
 name: deliver-files
-description: Reminds the agent to deliver files it wrote for the user
+description: Reminds the agent to deliver files it made for the user
 triggers:
   - event: PostToolUse
     tool: Write
@@ -22,6 +22,54 @@ triggers:
     tool: Write
     input:
       file_path: /workspace/*.pptx
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*openpyxl*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*xlsxwriter*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*reportlab*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*weasyprint*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*fpdf*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*from pptx*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*import pptx*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*from docx*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*import docx*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*to_excel(*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*to_csv(*"
+  - event: PostToolUse
+    tool: Bash
+    input:
+      command: "*csv.writer(*"
 repeat: turn
 ---
-If this file is for the user, deliver it with `mcp__user-input__deliver_file` so it appears as a download in the chat.
+If you made a file for the user, deliver it with `mcp__user-input__deliver_file` so it appears as a download in the chat.
