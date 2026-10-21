@@ -1,4 +1,12 @@
 export { MemoryError, MAX_MEMORY_BYTES } from './memory-schema'
+export {
+  deliveryFailure,
+  startFailure,
+  type DeliveryErrorCode,
+  type DeliveryFailure,
+  type StartErrorCode,
+  type StartFailure,
+} from './delivery-errors'
 export { agentRegistry, completeMcpReauth } from './registry'
 export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './agent-catalog'
@@ -36,6 +44,8 @@ export type {
   ComputerUseOps,
   ConfigOps,
   ContainerOps,
+  DeliverRequest,
+  DeliverResult,
   FileEntry,
   FileKind,
   FileOps,
@@ -50,6 +60,10 @@ export type {
   OpenWebSocketInit,
   ReviewOps,
   SessionOps,
+  StartSessionRequest,
+  StopSessionOptions,
+  StopSessionResult,
   UsageOps,
+  UserMessageEcho,
   WriteOptions,
 } from './types'

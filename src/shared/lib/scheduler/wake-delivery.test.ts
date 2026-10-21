@@ -42,10 +42,9 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
-    withSend: async (agentSlug, sessionId, _client, send) => {
+    markSending: (agentSlug, sessionId) => {
       mockMarkSessionActive(agentSlug, sessionId)
-      try { return await send() }
-      catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
+      return { queued: false, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
     subscribe: (...args) => mockSubscribeToSession(...args),
     markActive: (...args) => mockMarkSessionActive(...args),
@@ -80,6 +79,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 }))
 
 import { deliverSessionWake } from './wake-delivery'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 
 const wakeExecutionAt = new Date('2026-06-26T17:00:00.000Z')
 
@@ -120,7 +120,7 @@ describe('deliverSessionWake', () => {
     mockGetScheduledTask.mockImplementation(async () => createWakeTask())
     mockMarkTaskExecuted.mockResolvedValue(undefined)
     mockEnsureRunning.mockResolvedValue({ sendMessage: mockSendMessage })
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     mockSubscribeToSession.mockResolvedValue(undefined)
     mockIsSubscribed.mockReturnValue(false)
     mockCancelAwaitingInput.mockResolvedValue(undefined)
@@ -138,7 +138,9 @@ describe('deliverSessionWake', () => {
     const [sessionId, content, , options] = mockSendMessage.mock.calls[0]
     expect(sessionId).toBe('sleeping-session-1')
     expect(content.startsWith('[SYSTEM] ')).toBe(true)
-    expect(options).toEqual({ shouldQuery: true })
+    expect(options).toMatchObject({ shouldQuery: true })
+    expect(options).not.toHaveProperty('preserveRuntime')
+    expect(mockCancelAwaitingInput).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',
@@ -163,7 +165,7 @@ describe('deliverSessionWake', () => {
     // Slow send: both callers are inside deliverSessionWake at the same time
     let releaseSend!: () => void
     mockSendMessage.mockImplementation(
-      () => new Promise<void>((resolve) => { releaseSend = () => resolve() })
+      () => new Promise((resolve) => { releaseSend = () => resolve({}) })
     )
 
     const task = createWakeTask()
@@ -225,8 +227,8 @@ describe('deliverSessionWake', () => {
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
-  it('reverts the optimistic active flag when the send fails, then rethrows', async () => {
-    mockSendMessage.mockRejectedValue(new Error('container is restarting'))
+  it('reverts the optimistic active flag when the container refuses the send, then rethrows', async () => {
+    mockSendMessage.mockRejectedValue(new MessageNotAcceptedError('unavailable', 'container is restarting'))
 
     await expect(deliverSessionWake(createWakeTask(), 'scheduled')).rejects.toThrow(
       'container is restarting'

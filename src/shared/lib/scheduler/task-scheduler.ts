@@ -256,33 +256,28 @@ class TaskScheduler {
       agentPrefs,
       models,
     )
-    const containerSession = await actor.sessions.create({
-      availableEnvVars:
-        availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars:
+          availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+        scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+        automationStatus: 'running',
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task'
-
-    await actor.sessions.register(sessionId, sessionName, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
-      automationStatus: 'running',
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`

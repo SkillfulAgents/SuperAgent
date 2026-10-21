@@ -59,7 +59,9 @@ import {
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
 import { syncProviderSettings, ensureManagedPlatformConnection } from './connection-settings'
-import { connectionRuntime, withSessionSelection } from './connection-runtime'
+import { connectionNeedsAttachment, connectionRuntime } from './connection-runtime'
+import { runWithRequestUser } from '../platform-attribution/request-context'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 
 let handle: TestDatabase
 const admin = { userId: null, admin: true }
@@ -324,26 +326,18 @@ it('uses session connection overrides and falls back to its main model when remo
   })
 })
 
-it('serializes edits for one session without serializing independent sessions', async () => {
-  const order: string[] = []
-  let release!: () => void
-  const first = withSessionSelection('agent', 'session', async () => {
-    order.push('first')
-    await new Promise<void>((resolve) => {
-      release = resolve
-    })
-    order.push('first-done')
-  })
-  const second = withSessionSelection('agent', 'session', async () => {
-    order.push('second')
-  })
-  await withSessionSelection('agent', 'other-session', async () => {
-    order.push('independent')
-  })
-  expect(order).toEqual(['first', 'independent'])
-  release()
-  await Promise.all([first, second])
-  expect(order).toEqual(['first', 'independent', 'first-done', 'second'])
+it('lets a session send bind another member\'s connection only while the session holds it', async () => {
+  await state
+    .db!.insert(user)
+    .values({ id: 'alice', name: 'Alice', email: 'alice@example.com' })
+    .run()
+  const personal = await add('Personal', 'alice')
+  const shared = await add('Shared')
+  expect(await connectionNeedsAttachment(undefined)).toBe(false)
+  expect(await runWithRequestUser('bob', () => connectionNeedsAttachment(shared))).toBe(false)
+  expect(await runWithRequestUser('alice', () => connectionNeedsAttachment(personal))).toBe(false)
+  expect(await runWithRequestUser('bob', () => connectionNeedsAttachment(personal))).toBe(true)
+  await expect(connectionNeedsAttachment('missing')).rejects.toThrow(LlmProviderNotFoundError)
 })
 
 it('migrates version pins in SQL and old file selections before applying strict membership', async () => {

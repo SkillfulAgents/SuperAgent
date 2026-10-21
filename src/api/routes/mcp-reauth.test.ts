@@ -28,6 +28,7 @@ vi.mock('@shared/lib/container/container-host', () => ({
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),
+      ensureRunning: async () => {},
       getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
     }),
   },
@@ -36,6 +37,12 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: (...args: unknown[]) => syncEnvironment(...args),
 }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
+// The replacement notice's delivery reads the session; this agent has no files.
+vi.mock('@shared/lib/services/session-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-service')>()),
+  getSessionMetadata: async () => null,
+  updateSessionMetadata: async () => undefined,
+}))
 vi.mock('@shared/lib/platform-attribution', () => ({}))
 vi.mock('@shared/lib/utils/file-storage', () => ({ resolveAgentId: vi.fn() }))
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() }))
@@ -88,7 +95,7 @@ beforeEach(() => {
   syncEnvironment.mockReset().mockResolvedValue(true)
   activeSessions.mockReset().mockReturnValue([])
   interrupt.mockReset().mockResolvedValue({ interrupted: true, processKept: true })
-  send.mockReset().mockResolvedValue(undefined)
+  send.mockReset().mockResolvedValue({})
   userInputRequestManager.reset()
   for (const id of ['owner', 'member', 'viewer', 'stranger']) {
     testDb.insert(schema.user).values({ id, name: id, email: `${id}@test.example` }).run()
@@ -127,7 +134,7 @@ describe('MCP connection replacement', () => {
     expect(interrupt).toHaveBeenCalledWith('running-session', { scope: 'turn' })
     expect(send).toHaveBeenCalledWith('running-session',
       expect.stringContaining('[SYSTEM] Connection to "Custom MCP" was replaced.'),
-      expect.any(String), { shouldQuery: true })
+      expect.any(String), expect.objectContaining({ shouldQuery: true }))
     expect(send.mock.calls[0][1]).toContain('ID: mine.')
   })
 

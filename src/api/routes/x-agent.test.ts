@@ -20,6 +20,7 @@ import { agentRegistry } from '@shared/lib/agent-actor/registry'
 import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { WaitForIdleTimeoutError } from '@shared/lib/agent-actor/live/wait-for-idle'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as schema from '@shared/lib/db/schema'
 
 // Shrink the readLastAssistantMessage retry budget in tests (default is 10×500ms).
@@ -110,6 +111,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
     return null
   },
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
+  finalizeAutomationStatus: vi.fn(async () => 'not-automation'),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
   getSessionMetadata: (...args: unknown[]) => mockGetSessionMetadata(...args),
   sessionIsKnown: (...args: unknown[]) => mockSessionIsKnown(...args),
@@ -180,7 +182,7 @@ function expectBoundedSyncWait(sessionId: string): void {
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
-const mockSubscribeToSession = vi.fn()
+const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
 const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
 const mockPublishGlobal = vi.fn()
@@ -190,9 +192,10 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
-    withSend: async (agentSlug, sessionId, _client, send) => {
+    markSending: (agentSlug, sessionId) => {
+      const queued = mockIsSessionActive(agentSlug, sessionId)
       mockMarkSessionActive(agentSlug, sessionId)
-      return send()
+      return { queued, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
     isActive: (agentSlug, sessionId) => mockIsSessionActive(agentSlug, sessionId),
     isAwaitingInput: (agentSlug, sessionId) => mockIsSessionAwaitingInput(agentSlug, sessionId),
@@ -1016,7 +1019,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       expect.any(String),
-      { isAutomated: true },
+      expect.objectContaining({ isAutomated: true }),
     )
     const sentMessageUuid = mockSendMessage.mock.calls[0][2]
     const targetAuthors = await testDb
@@ -1056,11 +1059,11 @@ describe('/invoke', () => {
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
-  it('removes continued-session attribution when sendMessage fails', async () => {
+  it('removes continued-session attribution when the container refuses the message', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     await grantCallerOwnerTargetAccess()
-    mockSendMessage.mockRejectedValueOnce(new Error('send failed'))
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('rejected', 'send refused'))
 
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
@@ -1076,10 +1079,28 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([])
   })
 
-  it('releases an existing session and staged files when the container confirms a failed send never started', async () => {
+  it('releases an existing session and staged files when the container refuses the message', async () => {
     reviewDecisions.push('allow')
-    mockSendMessage.mockRejectedValueOnce(new Error('send rejected'))
-    mockEnsureRunning.mockResolvedValueOnce({
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('rejected', 'send rejected'))
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(500)
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith(TARGET_SLUG, 'existing-sess')
+    expect(mockTargetDelete).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace\/uploads\/x-agent\//), { recursive: true, confined: true })
+  })
+
+  it('settles a failed send the container is not running, but keeps the files and author a sent message may need', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockSendMessage.mockRejectedValueOnce(new Error('socket hang up'))
+    mockEnsureRunning.mockResolvedValue({
       createSession: mockCreateSession,
       sendMessage: mockSendMessage,
       deleteSession: mockDeleteSession,
@@ -1096,6 +1117,25 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(500)
     expect(mockMarkSessionIdle).toHaveBeenCalledWith(TARGET_SLUG, 'existing-sess')
+    expect(mockTargetDelete).not.toHaveBeenCalled()
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'existing-sess'))
+    expect(targetAuthors).toHaveLength(1)
+  })
+
+  it('answers 409 without sending when the target session started running meanwhile', async () => {
+    reviewDecisions.push('allow')
+    // Idle when the route checks, running by the delivery's own turn.
+    mockIsSessionActive.mockReturnValueOnce(false).mockReturnValue(true)
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockSendMessage).not.toHaveBeenCalled()
     expect(mockTargetDelete).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace\/uploads\/x-agent\//), { recursive: true, confined: true })
   })
 
@@ -1663,7 +1703,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       undefined,
-      { isAutomated: true },
+      expect.objectContaining({ isAutomated: true }),
     )
     expect(mockCreateSession).not.toHaveBeenCalled()
   })
@@ -1685,7 +1725,7 @@ describe('/invoke', () => {
       'existing-sess',
       expect.stringMatching(/^continued file\n\n\[Attached files:\]\n- \/workspace\/uploads\/x-agent\/[\w-]+\/0\/data\.txt$/),
       undefined,
-      { isAutomated: true },
+      expect.objectContaining({ isAutomated: true }),
     )
   })
 

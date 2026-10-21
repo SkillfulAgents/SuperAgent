@@ -1,4 +1,3 @@
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
 import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { IntegrationDeliveryQueue, DeliveryCancelled, PermanentDeliveryError, type DeliveryAttempt } from './delivery-queue'
 import { parseDeliveryEnvelope } from './delivery-schema'
@@ -20,6 +19,7 @@ import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './regis
 import { integrationRelays } from './relay-transport'
 import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
+import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import {
   listStartupIntegrations,
   getIntegration,
@@ -87,7 +87,6 @@ interface ManagedSession {
   recovery?: Promise<void>
   recovered?: boolean
   recoveryClears?: number
-  updatingProvisionalActivity?: boolean
   recoveryReported?: boolean
   recoveryTimer?: ReturnType<typeof setTimeout>
 }
@@ -776,8 +775,7 @@ export class AgentIntegrationManager {
     session.sseUnsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
       // Provisional activity is visible to the app, but is not a real turn
       // start/completion for the integration's durable work queue.
-      const type = (event as { type?: string } | null)?.type
-      if (session.updatingProvisionalActivity && (type === 'session_active' || type === 'session_idle')) return
+      if ((event as { provisional?: boolean } | null)?.provisional) return
       this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
     })
     session.connector.observeSession(session.context)
@@ -828,23 +826,14 @@ export class AgentIntegrationManager {
         if (!actor.sessions.isStreamSubscribed(row.sessionId) || actor.sessions.activity(row.sessionId) === 'idle') {
           if (!actor.sessions.isStreamSubscribed(row.sessionId)) await actor.container.start()
           if (!current() || !(await this.isAllowed(integrationId, externalId)) || !current()) return
-          // Cold hosts otherwise discard terminal replay as already settled.
-          // Only an explicit recovery demand reaches here; idle historical
-          // mappings are never marked active or attached on their own.
-          let revert: (() => void) | undefined
-          session.updatingProvisionalActivity = true
-          try {
-            if (actor.sessions.activity(row.sessionId) === 'idle') revert = actor.sessions.markProvisionalActive(row.sessionId)
-          } finally { session.updatingProvisionalActivity = false }
-          try {
-            // Host delivery is already listening; the handshake can replay idle/error.
-            await actor.sessions.subscribeStream(row.sessionId, row.sessionId)
-          } finally {
-            // A cold resume may have no turn to replay. Also undo on a failed
-            // attach, so unknown activity can retry instead of remaining busy.
-            session.updatingProvisionalActivity = true
-            try { revert?.() } finally { session.updatingProvisionalActivity = false }
-          }
+          // Cold hosts otherwise discard terminal replay as already settled, so
+          // the attach marks an idle session active around it, and undoes the
+          // mark after (a cold resume may have no turn to replay; a failed
+          // attach must leave unknown activity free to retry). Only an explicit
+          // recovery demand reaches here; idle historical mappings are never
+          // marked active or attached on their own. Host delivery is already
+          // listening; the handshake can replay idle/error.
+          await actor.sessions.attach(row.sessionId, { replayTerminal: true })
         }
         if (!current()) return
         session.recovered = true
@@ -1139,7 +1128,7 @@ export class AgentIntegrationManager {
       // a definitively missing session rotates; uncertain sends never do.
       this.subscribeChatSession(integrationId, chatId, sessionId)
       try {
-        if (!actor.sessions.isStreamSubscribed(sessionId)) await actor.sessions.subscribeStream(sessionId, sessionId)
+        await actor.sessions.attach(sessionId)
       } catch (error) {
         if (!this.isSessionGoneError(error)) throw error
         await this.teardownManagedSession(integrationId, chatId, { archive: chatSession!.id })
@@ -1175,13 +1164,19 @@ export class AgentIntegrationManager {
     attempt.assertCurrent()
     if (this.connections.get(integrationId) !== conn || this.generationOf(integrationId) !== generation) throw new DeliveryCancelled()
     const send = async (targetSession: string) => {
-      await this.showInput(integration, conn.connector, actor, targetSession, attempt.id, input, { live: true })
-      return actor.messages.withSend(targetSession, () =>
-        attempt.handoff(targetSession, () => actor.messages.send(targetSession, input.text, attempt.id), check))
+      const display = await this.recordInput(integration, conn.connector, targetSession, attempt.id, input)
+      // Watchers of the session get the card live, as for a message sent
+      // from the app, once the handoff's checks have passed.
+      return attempt.handoff(targetSession, () => actor.messages.deliver({
+        sessionId: targetSession,
+        content: input.text,
+        uuid: attempt.id,
+        ...(display ? { echo: { content: input.text, integration: display } } : {}),
+      }), check)
     }
     try { await send(sessionId) }
     catch (error) {
-      if (!(error instanceof MessageNotAcceptedError) || error.reason !== 'session-gone') throw error
+      if (deliveryFailure(error)?.code !== 'session-gone') throw error
       const missing = await getIntegrationSession(integrationId, chatId)
       if (missing?.sessionId !== sessionId) throw new DeliveryCancelled()
       await this.teardownManagedSession(integrationId, chatId, { archive: missing.id })
@@ -1206,12 +1201,11 @@ export class AgentIntegrationManager {
    * delivery ID, stable across retries), before the handoff, so the transcript
    * entry resolves to it on arrival. A handoff that fails or is uncertain keeps
    * its row: an accepted message must not lose its card, and an unaccepted one
-   * never matches a transcript entry. Watchers of an existing session get the
-   * card live, as for a message sent from the app.
+   * never matches a transcript entry. Resolves to the card, null when there is none.
    */
-  private async showInput(integration: AgentIntegrationRecord, connector: AgentIntegration, actor: AgentActor, sessionId: string, uuid: string, input: PreparedIntegrationInput, opts: { live: boolean }): Promise<void> {
-    if (!input.display) return
-    const display = await recordIntegrationMessage({
+  private async recordInput(integration: AgentIntegrationRecord, connector: AgentIntegration, sessionId: string, uuid: string, input: PreparedIntegrationInput): Promise<IntegrationMessageDisplay | null> {
+    if (!input.display) return null
+    return recordIntegrationMessage({
       id: uuid, sessionId, agentSlug: integration.agentSlug,
       display: {
         ...input.display,
@@ -1224,13 +1218,6 @@ export class AgentIntegrationManager {
         },
       } satisfies IntegrationMessageDisplay,
     })
-    if (!display || !opts.live) return
-    // Decoration only: a failed broadcast must never block the handoff.
-    try {
-      actor.messages.broadcastEvent(sessionId, { type: 'user_message', uuid, content: input.text, queued: actor.sessions.isActive(sessionId), integration: display })
-    } catch (error) {
-      reportError(error, 'broadcast-message-display', { integrationId: integration.id, provider: integration.provider }, 'warning')
-    }
   }
 
   /** Creation sends the initial input and is itself a durable runtime handoff. */
@@ -1282,7 +1269,7 @@ export class AgentIntegrationManager {
     const sessionId = containerSession.id
     await attempt.bind(sessionId)
     // Nobody can be watching a session that did not exist: the transcript carries it.
-    await this.showInput(integration, connector, actor, sessionId, attempt.id, input, { live: false })
+    await this.recordInput(integration, connector, sessionId, attempt.id, input)
     // Runtime acceptance outlives a socket. Finish routing under the delivery's
     // durable ownership rather than the connector/generation captured at send.
     const checkSetup = async () => {
@@ -1326,7 +1313,7 @@ export class AgentIntegrationManager {
     if (!managed) return
     managed.context = this.withActivity({ integration, externalId: chatId, sessionId, interactionId: route.interactionId, replyTarget: route.replyTarget }, managed)
     this.subscribeChatSession(integration.id, chatId, sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
+    await actor.sessions.attach(sessionId)
     if (this.isCurrentSession(integration.id, chatId, managed, sessionId)) managed.recovered = true
   }
 

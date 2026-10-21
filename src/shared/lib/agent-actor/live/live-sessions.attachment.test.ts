@@ -1,7 +1,8 @@
 /**
  * An agent's live sessions and their container streams (`LiveSessions`):
- * subscribing and reattaching, the send boundary (`withSend`) and what a
- * failed send rolls back, an automation's stream released once it settles,
+ * subscribing and reattaching, a send's turn and mark (`inDeliveryTurn`,
+ * `markSending`) and what a failed send rolls back, an automation's stream
+ * released once it settles,
  * and how one agent's sessions stay apart from another's.
  *
  * The sessions are real (`attachLiveSessionsHarness`), fed frame by frame
@@ -35,7 +36,6 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { SessionNotification } from '../host-port'
-import { isQueuedSessionSend } from '@shared/lib/container/session-send-context'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 
 const live = attachLiveSessionsHarness()
@@ -82,29 +82,53 @@ describe('LiveSessions', () => {
     sessions().unsubscribe(SESSION_ID)
   })
 
-  describe('withSend', () => {
+  describe('a send: its turn, its mark and the rollback', () => {
     const emitResult = (subtype = 'success') => mockClient.emit({
       type: 'result', subtype, is_error: subtype !== 'success', num_turns: 1,
       usage: { input_tokens: 1, output_tokens: 1 },
     })
     const emitIdle = () => mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
-    const send = (delivery: () => Promise<void>) =>
-      sessions().withSend(SESSION_ID, mockClient, delivery)
+    // A delivery's frame around its POST, as `messages.deliver` composes it:
+    // in the session's turn, attach, mark, post; a send that was not
+    // accepted rolls back its mark.
+    const send = (post: () => Promise<void>, client: import('@shared/lib/container/types').ContainerClient = mockClient) =>
+      sessions().inDeliveryTurn(SESSION_ID, async () => {
+        if (!sessions().isSubscribed(SESSION_ID)) await sessions().subscribe(SESSION_ID, client, SESSION_ID)
+        const mark = sessions().markSending(SESSION_ID)
+        try {
+          await post()
+        } catch (error) {
+          mark.rollback()
+          throw error
+        }
+      })
 
     beforeEach(() => {
       mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'process-1' })
     })
 
-    it('keeps queued automation delivery on the running connection and isolates the context by session', async () => {
-      await send(async () => {
-        expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(false)
+    it('marks a message queued only when it joins a running turn of that session', async () => {
+      expect(sessions().markSending(SESSION_ID).queued).toBe(false)
+      expect(sessions().markSending(SESSION_ID).queued).toBe(true)
+      expect(sessions().markSending('other-session').queued).toBe(false)
+      expect(sessions('other-agent').markSending(SESSION_ID).queued).toBe(false)
+    })
+
+    it('runs one delivery of a session at a time, and other sessions alongside', async () => {
+      const order: string[] = []
+      let releaseFirst!: () => void
+      const first = sessions().inDeliveryTurn(SESSION_ID, async () => {
+        order.push('first')
+        await new Promise<void>((resolve) => { releaseFirst = resolve })
+        order.push('first done')
       })
-      await send(async () => {
-        expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(true)
-        expect(isQueuedSessionSend(AGENT_SLUG, 'other-session')).toBe(false)
-        expect(isQueuedSessionSend('other-agent', SESSION_ID)).toBe(false)
-      })
-      expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(false)
+      const second = sessions().inDeliveryTurn(SESSION_ID, async () => { order.push('second') })
+      const other = sessions().inDeliveryTurn('other-session', async () => { order.push('other') })
+      await other
+      expect(order).toEqual(['first', 'other'])
+      releaseFirst()
+      await Promise.all([first, second])
+      expect(order).toEqual(['first', 'other', 'first done', 'second'])
     })
 
     it.each(['before', 'after'] as const)('preserves an active turn when its final idle arrives %s a follow-up fails', async (timing) => {
@@ -317,10 +341,10 @@ describe('LiveSessions', () => {
         await send(async () => { emitResult(); emitIdle() })
         expect(sessions().isSubscribed(SESSION_ID)).toBe(false)
         const idleEventsBefore = sseEvents.filter(e => e.type === 'session_idle').length
-        pendingSend = sessions().withSend(SESSION_ID, client, async () => {
+        pendingSend = send(async () => {
           sendStarted()
           await deliveryAccepted
-        })
+        }, client)
         const socket = await socketConnected
         await capabilitiesReceived
         const replayReceived = new Promise<void>(resolve => {

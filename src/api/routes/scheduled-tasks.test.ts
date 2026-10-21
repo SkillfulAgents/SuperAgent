@@ -30,7 +30,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 }))
 
 const mockGetSessionsByScheduledTask = vi.fn()
-const mockRegisterSession = vi.fn()
+const mockRegisterSession = vi.fn(async (..._args: unknown[]) => {})
 const mockUpdateSessionMetadata = vi.fn()
 const mockGetSessionMetadata = vi.fn((..._args: unknown[]) => Promise.resolve({ name: 'Sleeping session' }))
 
@@ -80,9 +80,8 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 const mockLiveSessions = vi.hoisted(() => ({
-  withSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
   isActive: vi.fn(),
-  subscribe: vi.fn(),
+  subscribe: vi.fn(async (..._args: unknown[]) => {}),
   markActive: vi.fn(),
   markIdle: vi.fn(),
   isSubscribed: vi.fn(() => false),
@@ -266,17 +265,18 @@ describe('scheduled-tasks route', () => {
       dashboardBuilderModel: undefined,
       effort: 'low',
     })
-    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report')
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', {
-      isScheduledExecution: true,
-      scheduledTaskId: 'task-1',
-      scheduledTaskName: 'Daily report',
-    })
+    // Registered as a scheduled execution in one write, then attached with that metadata.
+    const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report' }
+    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report', registered)
+    expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()
     expect(mockLiveSessions.subscribe).toHaveBeenCalledWith(
       'agent-one',
       'container-session-1',
       { createSession: mockCreateSession },
       'container-session-1',
+      registered,
+      // Frames wait for the registration, so a run that settles at once finds its status.
+      { holdFramesUntil: expect.any(Promise) },
     )
     expect(mockLiveSessions.markActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
@@ -309,7 +309,11 @@ describe('scheduled-tasks route', () => {
       model: 'custom-model',
       effort: 'high',
     }))
-    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Scheduled Task (Run Now)')
+    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Scheduled Task (Run Now)', {
+      isScheduledExecution: true,
+      scheduledTaskId: 'task-1',
+      scheduledTaskName: undefined,
+    })
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
   })
@@ -333,7 +337,7 @@ describe('scheduled-tasks route', () => {
 
     it('run-now resumes the target session instead of creating a new one', async () => {
       task = createWakeTask()
-      const mockSendMessage = vi.fn()
+      const mockSendMessage = vi.fn(async (_sessionId: string, _content: string, _uuid?: string, _options?: unknown) => ({}))
       mockEnsureRunning.mockResolvedValue({
         createSession: mockCreateSession,
         sendMessage: mockSendMessage,
@@ -355,7 +359,8 @@ describe('scheduled-tasks route', () => {
       expect(sessionId).toBe('sleeping-session-1')
       expect(content.startsWith('[SYSTEM] ')).toBe(true)
       expect(content).toContain('Check whether Dana replied')
-      expect(options).toEqual({ shouldQuery: true })
+      expect(options).toMatchObject({ shouldQuery: true })
+      expect(options).not.toHaveProperty('preserveRuntime')
 
       expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
         expect.objectContaining({ slug: 'agent-one' }),

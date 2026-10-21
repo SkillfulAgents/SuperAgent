@@ -22,6 +22,8 @@ import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
+import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
@@ -136,8 +138,9 @@ export class LocalAgentActor implements AgentActor {
     this.memories = createMemoryOps(this.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
-    this.sessions = createSessionOps(slug, this.store, this.state.sessions, deps)
-    this.messages = createMessageOps(slug, this.store, this.state.sessions, deps)
+    const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
+    this.sessions = createSessionOps(slug, this.store, this.state.sessions, delivery, deps)
+    this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
   }
@@ -187,7 +190,13 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
   }
 }
 
-function createSessionOps(slug: AgentSlug, store: SessionStore, live: LiveSessions, deps: LocalActorDeps): SessionOps {
+function createSessionOps(
+  slug: AgentSlug,
+  store: SessionStore,
+  live: LiveSessions,
+  delivery: SessionDelivery,
+  deps: LocalActorDeps,
+): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
@@ -225,7 +234,12 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, live: LiveSessio
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
     getLive: (sessionId) => client().getSession(sessionId),
-    create: (options) => client().createSession(options),
+    // Creating a session delivers its first message: a refusal reads as a delivery's does.
+    create: (options) =>
+      client().createSession(options).catch((error: unknown) => {
+        throw error instanceof MessageNotAcceptedError ? notAcceptedError(error) : error
+      }),
+    start: (request) => delivery.start(request),
     fork: (sessionId) => client().forkSession(sessionId),
     deleteLive: (sessionId) => client().deleteSession(sessionId),
     warm: (sessionId) => client().warmSession(sessionId),
@@ -234,17 +248,13 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, live: LiveSessio
     isActive: (sessionId) => live.isActive(sessionId),
     isAwaitingInput: (sessionId) => live.isAwaitingInput(sessionId),
     markActive: (sessionId) => live.markActive(sessionId),
-    markProvisionalActive: (sessionId) => live.markProvisionallyActive(sessionId),
     markIdle: (sessionId) => {
       // Going idle is the last moment the session was busy.
       deps.containerHost.runtime(slug).noteSessionActivity()
       live.markIdle(sessionId)
     },
-    markInterrupted: (sessionId, options) => live.markInterrupted(sessionId, options),
-    turnGeneration: (sessionId) => live.turnGeneration(sessionId),
     turnOutcome: (sessionId) => live.turnOutcome(sessionId),
     isWaitingBackground: (sessionId) => live.isWaitingBackground(sessionId),
-    hasOnlyUntrackedBackgroundWork: (sessionId) => live.hasOnlyUntrackedBackgroundWork(sessionId),
     stopTask: (sessionId, taskId) => client().stopTask(sessionId, taskId),
     waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
     activeIds: () => live.activeIds(),
@@ -261,20 +271,27 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, live: LiveSessio
     backgroundTasks: (sessionId) => live.backgroundTasks(sessionId),
     activeSubagents: (sessionId) => live.activeSubagents(sessionId),
 
-    subscribeStream: (sessionId, containerSessionId, ...metadata) =>
-      live.subscribe(sessionId, client(), containerSessionId, ...metadata),
+    attach: (sessionId, options) => delivery.attach(sessionId, options),
     unsubscribeStream: (sessionId) => live.unsubscribe(sessionId),
     isStreamSubscribed: (sessionId) => live.isSubscribed(sessionId),
   }
 }
 
-function createMessageOps(slug: AgentSlug, store: SessionStore, live: LiveSessions, deps: LocalActorDeps): MessageOps {
+function createMessageOps(
+  slug: AgentSlug,
+  store: SessionStore,
+  live: LiveSessions,
+  delivery: SessionDelivery,
+  deps: LocalActorDeps,
+): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     send: (...args) => client().sendMessage(...args),
-    cancelQueued: (sessionId, uuid) => client().cancelQueuedMessage(sessionId, uuid),
+    deliver: (request) => delivery.deliver(request),
+    // A message held while the session recovers never reached the container.
+    cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
     interrupt: (...args) => client().interruptSession(...args),
-    withSend: (sessionId, send) => live.withSend(sessionId, client(), send),
+    stop: (sessionId, options) => delivery.stop(sessionId, options),
 
     list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
@@ -292,8 +309,6 @@ function createMessageOps(slug: AgentSlug, store: SessionStore, live: LiveSessio
     subscribe: (sessionId, listener) => live.listen(sessionId, listener),
     follow: (sessionId, { after }, onFrame) => live.follow(sessionId, after, onFrame),
     broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
-    coalesceIfRecovering: (sessionId, message) => live.coalesceIfRecovering(sessionId, message),
-    dropCoalescedUserMessage: (sessionId, uuid) => live.dropCoalesced(sessionId, uuid),
   }
 }
 

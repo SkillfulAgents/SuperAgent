@@ -320,30 +320,24 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       models,
     )
 
-    const containerSession = await actor.sessions.create({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task (Run Now)',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task (Run Now)'
-
-    await actor.sessions.register(sessionId, sessionName)
-    await actor.sessions.updateMetadata(sessionId, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution

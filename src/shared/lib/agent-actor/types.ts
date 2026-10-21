@@ -37,7 +37,7 @@ import type {
   SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
-import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
 import type { ActiveSubagentSnapshot } from './live/subagents'
 import type { WireFrame } from './live/session-channel'
@@ -334,8 +334,20 @@ export interface SessionOps {
 
   /** Inspect the running container session, including whether a send was accepted. */
   getLive(sessionId: string): Promise<ContainerSession | null>
-  /** `client.createSession` */
+  /**
+   * `client.createSession` alone: the container creates the session and
+   * starts its turn with the first message. Nothing is marked, attached or
+   * registered; `start` does all of that.
+   */
   create(options: CreateSessionOptions): Promise<ContainerSession>
+  /**
+   * Create a session and take it live: the container creates it with its
+   * first message, then the session is marked active, its stream attached
+   * and its metadata registered with the commands the container listed. A
+   * step after create that fails, or a create that lands after `notAfter`,
+   * revokes the container's session; `StartError` says where it stopped.
+   */
+  start(request: StartSessionRequest): Promise<ContainerSession>
   /** `client.forkSession` */
   fork(sessionId: string): Promise<{ id: string } | null>
   /** `client.deleteSession` — the container's copy, not the stored files. */
@@ -353,20 +365,12 @@ export interface SessionOps {
   isAwaitingInput(sessionId: string): boolean
   /** `LiveSessions.markActive` */
   markActive(sessionId: string): void
-  /** Mark active; the returned undo runs only if no new send, turn, or output took ownership. */
-  markProvisionalActive(sessionId: string): () => void
   /** `LiveSessions.markIdle` */
   markIdle(sessionId: string): void
-  /** `LiveSessions.markInterrupted` */
-  markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): void
-  /** `LiveSessions.turnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
-  turnGeneration(sessionId: string): number
   /** Last emitted backend outcome, replayed on renderer reconnect and heartbeat. */
   turnOutcome(sessionId: string): import('../container/session-turn-outcome-schema').SessionTurnOutcome | null
   /** `LiveSessions.isWaitingBackground` */
   isWaitingBackground(sessionId: string): boolean
-  /** `LiveSessions.hasOnlyUntrackedBackgroundWork` */
-  hasOnlyUntrackedBackgroundWork(sessionId: string): boolean
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
   /** `LiveSessions.waitForIdle` */
@@ -412,10 +416,19 @@ export interface SessionOps {
   // container's stream for a session and persists what arrives.
 
   /**
-   * `LiveSessions.subscribe` with this agent's client. `metadata`
-   * is the session's entry as the caller just read it (null: none).
+   * Follow the session's container stream; resolves once it is attached and
+   * the container has replayed the last turn's terminal frames. A no-op when
+   * the stream is attached already. `metadata` is the session's entry as the
+   * caller just read it (null: none).
+   *
+   * `replayTerminal` is for a caller that lost track of the session (a
+   * restart, a dropped connector): it attaches again even when attached and
+   * idle, so the replay reaches it, and marks an idle session active around
+   * the attach, so the replay is not discarded as already settled. That mark
+   * and its undo are tagged `provisional: true` on the session's events.
+   * Attached and busy, the live stream already carries what it needs.
    */
-  subscribeStream(sessionId: string, containerSessionId: string, metadata?: SessionMetadata | null): Promise<void>
+  attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
   /** `LiveSessions.unsubscribe` */
   unsubscribeStream(sessionId: string): void
   /** `LiveSessions.isSubscribed` */
@@ -425,14 +438,32 @@ export interface SessionOps {
 export interface MessageOps {
   // Live — ContainerClient.
 
-  /** `client.sendMessage` */
+  /**
+   * `client.sendMessage` alone: no mark, no stream, no ordering with other
+   * sends. For a message that starts no turn (`shouldQuery: false`) into a
+   * session the caller knows is live; everything else goes through `deliver`.
+   */
   send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
-  /** `client.cancelQueuedMessage` */
+  /**
+   * The one way a message reaches a session (see `DeliverRequest`). In one
+   * turn of the actor, after the session's earlier deliveries: start the
+   * container and attach the stream, cancel what the session waits on if
+   * asked, decide whether the message joins a running turn (`queued`), mark
+   * the session active, show the echo, send it, and store the session's
+   * runtime selection. A send that is not accepted rolls back only its own
+   * mark. Failures throw `DeliveryError`.
+   */
+  deliver(request: DeliverRequest): Promise<DeliverResult>
+  /** Cancel a queued (not yet picked up) message, the copy held while recovering included. False: too late. */
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
-  /** `client.interruptSession` */
+  /** `client.interruptSession` alone: the session's state is not touched. Stopping a session is `stop`. */
   interrupt(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
-  /** `LiveSessions.withSend` with this agent's client — brackets a send so a fast reply cannot land before the active mark. */
-  withSend<T>(sessionId: string, send: () => Promise<T>): Promise<T>
+  /**
+   * Stop the session's turn and mark it interrupted, in one turn of the
+   * actor: the container is asked when it runs, and the session is marked
+   * locally when it does not or when the interrupt throws.
+   */
+  stop(sessionId: string, options: StopSessionOptions): Promise<StopSessionResult>
 
   // Transcript reads and edits — session-service.
 
@@ -480,10 +511,105 @@ export interface MessageOps {
   follow(sessionId: string, options: { after?: string }, onFrame: (frame: WireFrame) => void): Promise<() => void>
   /** `LiveSessions.emit` */
   broadcastEvent(sessionId: string, data: unknown): void
-  /** `LiveSessions.coalesceIfRecovering` */
-  coalesceIfRecovering(sessionId: string, message: CoalescedUserMessage): boolean
-  /** `LiveSessions.dropCoalesced` */
-  dropCoalescedUserMessage(sessionId: string, uuid: string): boolean
+}
+
+/** A message for a session, as `messages.deliver` takes it. */
+export interface DeliverRequest {
+  sessionId: string
+  content: string
+  /** The message's id, which the transcript entry takes. */
+  uuid?: string
+  /**
+   * The turn's runtime options. A message that joins a running turn drops
+   * model, provider, effort and speed: the container would restart the turn
+   * for them. `shouldQuery: false` appends the message to the transcript
+   * and starts no turn: nothing is cancelled or marked, and the running
+   * turn's runtime is kept.
+   */
+  options?: RuntimeOptions & { isAutomated?: boolean }
+  /** Stored with the session when the message is sent, besides the runtime selection. */
+  metadataUpdates?: Partial<SessionMetadata>
+  /** A person sent it: a hidden automation becomes a regular session first. */
+  promote?: boolean
+  /**
+   * The caller may bind `options.llmProviderId` only because the session
+   * holds it (another member's connection): refused with
+   * `provider-not-attached` once the session holds another. An append
+   * (`shouldQuery: false`) never uses it.
+   */
+  requireStoredProvider?: boolean
+  /** Cancel what the session waits on first, so the message starts a fresh turn. */
+  cancelAwaiting?: boolean
+  /** Hold the message while the session recovers from a runtime death; the recovery sends it. */
+  coalesce?: boolean
+  /**
+   * Refuse to join a running turn: `busy` instead. Decided with the queued
+   * decision, after the attach (which can reveal a running turn). An append
+   * starts no turn, so it is never refused.
+   */
+  ifIdle?: boolean
+  /** The `user_message` the session's viewers see, sent once it is known whether the message is queued. */
+  echo?: UserMessageEcho
+}
+
+export type DeliverResult =
+  | { status: 'sent'; queued: boolean }
+  /** Held for the recovery to send. */
+  | { status: 'coalesced' }
+  /** `ifIdle` and the session was running: nothing was sent. */
+  | { status: 'busy' }
+
+/** What a `user_message` echo shows besides the delivery's uuid and queued flag. */
+export interface UserMessageEcho {
+  content: string
+  /** Who sent it, where several people share the agent. */
+  sender?: { id: string; name: string; image?: string | null }
+  /** The integration card the message arrived with. */
+  integration?: unknown
+}
+
+/** A session to create and take live, as `sessions.start` takes it. */
+export interface StartSessionRequest {
+  create: CreateSessionOptions
+  name: string
+  /** Registered with the session, and read for the stream's lifecycle. */
+  metadata?: Partial<SessionMetadata>
+  /** Epoch ms. A create that lands later was not wanted any more: it is revoked (`created-late`). */
+  notAfter?: number
+  /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
+  attachTimeoutMs?: number
+}
+
+export interface StopSessionOptions {
+  scope: 'turn' | 'all'
+  /** Only a session that is running: an idle one is left alone (`skipped-idle`). */
+  ifActive?: boolean
+  /**
+   * A turn stop that would leave only untracked background work open (the
+   * runtime lists it, the session's task list does not) stops everything
+   * instead: nothing would be left to stop it with.
+   */
+  escalateUntracked?: boolean
+  /** Deny the agent's pending API reviews too: the user stopped the agent. */
+  denyReviews?: boolean
+  /**
+   * Mark the session stopped only once the container confirms the interrupt:
+   * a failed or empty one leaves it to its stream. Without it the session is
+   * marked stopped either way (the user asked).
+   */
+  onlyIfConfirmed?: boolean
+}
+
+export interface StopSessionResult extends InterruptSessionResult {
+  /**
+   * - `interrupted`: the container was asked (`interrupted` says whether it did);
+   * - `not-running`: the container is not running, so the session was marked locally;
+   * - `interrupt-failed`: the interrupt threw, and the session was marked locally (unless `onlyIfConfirmed`);
+   * - `skipped-idle`: `ifActive` and the session was idle.
+   */
+  path: 'interrupted' | 'not-running' | 'interrupt-failed' | 'skipped-idle'
+  /** The turn stop became a full stop (`escalateUntracked`). */
+  escalated: boolean
 }
 
 export interface InputOps {

@@ -18,10 +18,10 @@ const state = vi.hoisted(() => ({
   authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
   syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
-  markActive: vi.fn(), markIdle: vi.fn(), markProvisionalActive: vi.fn(), open: vi.fn(() => []),
+  markActive: vi.fn(), markIdle: vi.fn(), attach: vi.fn(), open: vi.fn(() => []),
   activity: vi.fn(() => 'idle'), recovery: [] as Array<{ externalId: string; sessionId?: string }>,
-  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn(() => false), register: vi.fn(), metadata: vi.fn(),
-  broadcast: vi.fn(), isActive: vi.fn(() => false),
+  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn((_sessionId?: string) => false), register: vi.fn(), metadata: vi.fn(),
+  broadcast: vi.fn(), isActive: vi.fn((_sessionId?: string) => false),
   recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
 }))
 vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ recordIntegrationMessage: state.recordMessage }))
@@ -50,11 +50,17 @@ vi.mock('@shared/lib/agent-actor', () => ({
     inputs: { claim: state.claim, open: state.open },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
-      activity: state.activity, isActive: state.isActive, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, markProvisionalActive: state.markProvisionalActive, subscribeStream: state.subscribeStream, isStreamSubscribed: state.isStreamSubscribed,
+      activity: state.activity, isActive: state.isActive, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, attach: state.attach, isStreamSubscribed: state.isStreamSubscribed,
     },
     messages: {
       send: state.send, interrupt: state.interrupt, broadcastEvent: state.broadcast,
-      withSend: (_session: string, callback: () => Promise<void>) => callback(),
+      // The actor's delivery as the manager sees it: the echo reaches the
+      // session's viewers with the actor's queued flag, then the message goes.
+      deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
+        if (request.echo) state.broadcast(request.sessionId, { type: 'user_message', ...request.echo, uuid: request.uuid, queued: state.isActive(request.sessionId) })
+        await state.send(request.sessionId, request.content, request.uuid)
+        return { status: 'sent', queued: false }
+      },
       subscribe: (session: string, callback: (event: unknown) => void) => {
         state.streams.set(session, callback)
         return () => { state.streams.delete(session) }
@@ -118,14 +124,28 @@ beforeEach(async () => {
   state.rows = [record('installation-a')]
   state.recovery = []
   state.activity.mockReturnValue('idle')
-  state.markProvisionalActive.mockImplementation((id: string) => {
-    state.markActive(id)
-    state.activity.mockReturnValue('working')
-    state.streams.get(id)?.({ type: 'session_active' })
-    return () => {
-      state.markIdle(id)
-      state.activity.mockReturnValue('idle')
-      state.streams.get(id)?.({ type: 'session_idle' })
+  // The actor's attach over the container's (`subscribeStream`): a no-op
+  // when attached; a replaying one marks an idle session active around the
+  // attach and undoes it after, tagging those events provisional.
+  state.attach.mockImplementation(async (id: string, options?: { replayTerminal?: boolean }) => {
+    if (!options?.replayTerminal) {
+      if (!state.isStreamSubscribed(id)) await state.subscribeStream(id, id)
+      return
+    }
+    const marked = state.activity() === 'idle'
+    if (marked) {
+      state.markActive(id)
+      state.activity.mockReturnValue('working')
+      state.streams.get(id)?.({ type: 'session_active', provisional: true })
+    }
+    try {
+      await state.subscribeStream(id, id)
+    } finally {
+      if (marked) {
+        state.markIdle(id)
+        state.activity.mockReturnValue('idle')
+        state.streams.get(id)?.({ type: 'session_idle', provisional: true })
+      }
     }
   })
   state.mappings.clear()
@@ -134,7 +154,7 @@ beforeEach(async () => {
   state.subscribeStream.mockResolvedValue(undefined)
   state.isStreamSubscribed.mockReturnValue(false)
   state.start.mockResolvedValue(undefined)
-  state.send.mockResolvedValue(undefined)
+  state.send.mockResolvedValue({})
   adapter = new ObjectIntegration()
   registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
@@ -872,7 +892,7 @@ describe('manager-owned runtime recovery', () => {
     mapping('object-7', 'old-session')
     await manager.start()
     const context = await adapter.session('object-7')
-    expect(state.markProvisionalActive).toHaveBeenCalledWith('old-session')
+    expect(state.attach).toHaveBeenCalledWith('old-session', { replayTerminal: true })
     expect(state.markIdle).toHaveBeenCalledWith('old-session')
     expect(context?.activity).toBe('idle')
     await new Promise(resolve => setTimeout(resolve, 0))

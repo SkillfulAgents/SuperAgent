@@ -963,10 +963,12 @@ describe('late-join replayed frames', () => {
     vi.mocked(getSessionMetadata).mockResolvedValue(metadata as never)
     const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
     let finishReplay!: () => void
-    vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => ({
-      ...subscribe(...args),
-      ready: new Promise<void>(resolve => { finishReplay = resolve }),
-    }))
+    let release!: ReturnType<typeof vi.fn<() => void>>
+    vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => {
+      const stream = subscribe(...args)
+      release = vi.fn(stream.unsubscribe)
+      return { unsubscribe: release, ready: new Promise<void>(resolve => { finishReplay = resolve }) }
+    })
     const subscription = sessions().subscribe(SESSION_ID, mockClient, SESSION_ID)
     try {
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -974,9 +976,11 @@ describe('late-join replayed frames', () => {
       mockClient.emit({ type: 'result', subtype: 'success', is_error: false, replayed: true })
       mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true })
       expect(sessions().isActive(SESSION_ID)).toBe(false)
-      expect(sessions().isSubscribed(SESSION_ID)).toBe(true)
+      // Still attaching: the stream is held until the attach is done.
+      expect(release).not.toHaveBeenCalled()
       finishReplay()
       await subscription
+      expect(release).toHaveBeenCalled()
       expect(sessions().isSubscribed(SESSION_ID)).toBe(false)
     } finally {
       finishReplay()

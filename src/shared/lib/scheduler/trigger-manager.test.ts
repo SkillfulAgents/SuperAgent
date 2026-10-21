@@ -38,7 +38,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   }),
 }))
 
-const mockSubscribeToSession = vi.fn()
+const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
 const mockMarkSessionActive = vi.fn()
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({

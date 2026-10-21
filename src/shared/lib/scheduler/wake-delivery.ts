@@ -43,8 +43,9 @@ const inFlightWakes = new Set<string>()
 /**
  * Deliver a session wake. Throws on transient delivery failure (container
  * unreachable, send error) with the task left pending — callers decide the
- * retry policy. The optimistic active flag is reverted before rethrowing so a
- * failed delivery never leaves the session looking busy.
+ * retry policy. A wake the container certainly did not take, or whose session
+ * it is not running, leaves the session idle; one it may be running keeps the
+ * session busy until its stream settles it.
  */
 export async function deliverSessionWake(
   staleTask: ScheduledTask,
@@ -92,24 +93,18 @@ export async function deliverSessionWake(
       return { outcome: 'agent-missing' }
     }
 
-    // Cold start is fine: sendMessage into a session with no live process
-    // resumes it from the container's session descriptor.
-    await actor.container.start()
-
-    if (!actor.sessions.isStreamSubscribed(sessionId)) {
-      await actor.sessions.subscribeStream(sessionId, sessionId)
-    }
-
+    // Cold start is fine: the delivery starts the container, and a session
+    // with no live process resumes from the container's session descriptor.
     // If the session went to sleep with a blocking user-input request still
-    // open (agent asked, nobody answered), cancel it so the wake message
-    // starts a fresh turn instead of deadlocking behind the blocked tool.
-    await actor.inputs.cancelAwaiting(sessionId)
-
-    await actor.messages.withSend(sessionId, () =>
-      actor.messages.send(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
-        shouldQuery: true,
-      }),
-    )
+    // open (agent asked, nobody answered), it is cancelled so the wake
+    // message starts a fresh turn instead of deadlocking behind the blocked tool.
+    await actor.messages.deliver({
+      sessionId,
+      content: buildWakeMessage(task, trigger),
+      uuid: randomUUID(),
+      options: { shouldQuery: true },
+      cancelAwaiting: true,
+    })
 
     // Side effect landed; record the slot so a crash between here and
     // markTaskExecuted can't double-deliver on the next attempt.
