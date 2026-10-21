@@ -17,13 +17,27 @@ const DOCKERFILE_PATH = path.resolve(__dirname, '../Dockerfile')
 const dockerfile = fs.readFileSync(DOCKERFILE_PATH, 'utf-8')
 
 describe('Dockerfile agent-browser config', () => {
-  it('installs agent-browser 0.27.2 or later', () => {
+  it('installs agent-browser 0.39.1 or later', () => {
     const match = dockerfile.match(/agent-browser@(\d+\.\d+\.\d+)/)
     expect(match).not.toBeNull()
     const [major, minor, patch] = match![1].split('.').map(Number)
-    // Must be >= 0.27.2: stable tab ids (0.26.0), off-viewport click
-    // scroll-into-view, wait --timeout handling, daemon latency/respawn fixes (0.27.2)
-    expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThanOrEqual(27_002)
+    // Must be >= 0.39.1: persistent refs, which the after-action tree read
+    // relies on (0.38.0, #1443), screenshot --if-changed (0.38.0), tab
+    // targetId (0.34.0), no retry of a mutating command after a lost reply (0.39.1)
+    expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThanOrEqual(39_001)
+  })
+
+  it('turns off the idle shutdown and WebMCP (SUP-1265)', () => {
+    // 0.33.1+: the daemon exits after an hour idle unless told otherwise.
+    expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0$/m)
+    // 0.36+: WebMCP announcements land in observer eval output.
+    expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_NO_WEBMCP=1$/m)
+  })
+
+  it('prunes other platforms\' binaries only when agent-browser links straight to this one', () => {
+    const install = dockerfile.slice(dockerfile.indexOf('npm install -g agent-browser@'))
+    expect(install).toMatch(/case "\$keep" in\s*\\\s*\*\/agent-browser-linux-\*\)/)
+    expect(install.indexOf('agent-browser --version')).toBeGreaterThan(install.indexOf('rm -f "$f"'))
   })
 
   it('AGENT_BROWSER_ARGS must NOT contain --remote-debugging-port', () => {

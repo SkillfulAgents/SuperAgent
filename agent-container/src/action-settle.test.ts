@@ -4,10 +4,12 @@ import {
   ACTION_POLICIES,
   diffObservations,
   effectHasChange,
+  effectWantsTree,
   formatActionEffect,
   observeAction,
   pressPolicy,
 } from './action-settle'
+import { parseTreeRefs, type TreeDiff } from './tree-diff'
 
 const base: PageObservation = {
   ...EMPTY_OBSERVATION, url: 'https://a.com', readyState: 'complete', interactive: 40, textChars: 500, contentChars: 500, contentHash: 1, stateHash: 7, focus: 'nothing focused', focusId: 'body@-1',
@@ -135,6 +137,18 @@ function harness(reads: Array<PageObservation | null>) {
 }
 
 describe('observeAction', () => {
+  it('hands the action its before-read, so how to act can depend on the page', async () => {
+    let seen: PageObservation | null | undefined
+    await observeAction({
+      exec: async (before) => { seen = before; return { exitCode: 0 } },
+      isFailure: r => r.exitCode !== 0,
+      evalScript: async () => JSON.stringify({ ...base, blocker: 'Cloudflare' }),
+      policy: ACTION_POLICIES.hover,
+      sleep: async () => {},
+    })
+    expect(seen?.blocker).toBe('Cloudflare')
+  })
+
   it('reads a baseline, acts, settles, and reports a change found at the settle', async () => {
     const h = harness([base, { ...base, interactive: 52, top: [{ kind: 'dialog', name: 'Filters' }] }])
     const out = await h.run()
@@ -200,5 +214,53 @@ describe('observeAction', () => {
       expect(out.effect?.focusChanged).toBe(true)
       expect(h.evals).toEqual([0, 50])
     }
+  })
+})
+
+describe('effectWantsTree', () => {
+  it('reads the tree for structural changes, and for in-place text changes only after verbs that load results', () => {
+    expect(effectWantsTree(diffObservations(base, { ...base, interactive: 41 }), 'hover')).toBe(true)
+    expect(effectWantsTree(diffObservations(base, { ...base, stateHash: 8 }), 'fill')).toBe(true)
+    expect(effectWantsTree(diffObservations(base, { ...base, top: [{ kind: 'dialog', name: 'Cart' }] }), 'press')).toBe(true)
+    const text = diffObservations(base, { ...base, contentHash: 2, contentChars: 640 })
+    expect(effectWantsTree(text, 'click')).toBe(true)
+    expect(effectWantsTree(text, 'select')).toBe(true)
+    expect(effectWantsTree(text, 'hover')).toBe(false)
+    expect(effectWantsTree(text, 'fill')).toBe(false)
+    expect(effectWantsTree(diffObservations(base, { ...base, liveRegions: ['Saved'], focus: 'button "x"' }), 'click')).toBe(false)
+  })
+})
+
+describe('formatActionEffect with a tree diff', () => {
+  const diff = (over: Partial<TreeDiff> = {}): TreeDiff => ({ added: [], returned: [], changed: [], removed: [], ...over })
+  const tree = (d: TreeDiff) => ({ diff: d, baselineAgeMs: 2000, baselineSource: 'snapshot' as const })
+  const opened = parseTreeRefs('- link "Menu A" [ref=e18]\n- link "Menu B" [ref=e19]')
+
+  it('lists the elements in place of the census and state counts', () => {
+    const effect = diffObservations(base, { ...base, interactive: 42, stateHash: 8, focus: 'button "Open menu"', focusId: 'button@3' })
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'click', treeDiff: tree(diff({ added: [...opened.lines.values()] })) })).toBe(
+      '\nEffect: focus: button "Open menu"\nTree changes since your snapshot 2s ago (2 added):\n+ link "Menu A" [ref=e18]\n+ link "Menu B" [ref=e19]',
+    )
+    const quiet = diffObservations(base, { ...base, interactive: 42 })
+    expect(formatActionEffect(quiet, { settleMs: 300, verb: 'hover', treeDiff: tree(diff({ added: [...opened.lines.values()] })) }))
+      .toBe('\nEffect: tree changes since your snapshot 2s ago (2 added):\n+ link "Menu A" [ref=e18]\n+ link "Menu B" [ref=e19]')
+  })
+
+  it('keeps the counts when the tree read found nothing, and keeps dialogs and announcements first', () => {
+    const effect = diffObservations(base, { ...base, stateHash: 8 })
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'click', treeDiff: tree(diff()) })).toBe('\nEffect: control state changed (checked/pressed/expanded/selected)')
+    const dialog = diffObservations(base, { ...base, interactive: 3, top: [{ kind: 'dialog', name: 'Cart' }], liveRegions: ['Added'] })
+    const page = parseTreeRefs('- button "A" [ref=e1]\n- button "B" [ref=e2]')
+    expect(formatActionEffect(dialog, { settleMs: 300, verb: 'click', treeDiff: tree(diff({ added: [...parseTreeRefs('- button "Close" [ref=e9]').lines.values()], removed: [...page.lines.values()] })) })).toBe(
+      '\nEffect: dialog "Cart" opened · announced: "Added"\nTree changes since your snapshot 2s ago (1 added, 2 removed):\n+ button "Close" [ref=e9]\n− 2 other elements are not in the tree while the dialog is open',
+    )
+  })
+
+  it('with the target read back, says nothing when only the target changed', () => {
+    const effect = diffObservations(base, { ...base, stateHash: 8, interactive: 41 })
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true, treeDiff: tree(diff()) })).toBe('')
+    expect(formatActionEffect(diffObservations(base, { ...base }), { settleMs: 200, verb: 'fill', valueReadBack: true })).toBe('')
+    // No tree read (no baseline): the counts stay.
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true })).toBe('\nEffect: +1 interactive elements · control state changed (checked/pressed/expanded/selected)')
   })
 })

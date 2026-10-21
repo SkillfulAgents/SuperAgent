@@ -20,11 +20,17 @@
  * the element disabled or the page finished — the agent can establish those
  * with a snapshot or a screenshot, and a wrong verdict here costs more than
  * the step it would have saved.
+ *
+ * When the observer sees a structural change (effectWantsTree), the server
+ * reads the interactive tree once and the result lists the changed elements
+ * with their refs under the Effect line (tree-diff.ts) — agent-browser 0.38+
+ * keeps refs across snapshots, so that read no longer renumbers anything.
  */
 import { observerScript, parseObservation, type PageObservation, type TopLayerEntry } from './page-observer'
-import { PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS } from './browser-digest'
+import { FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS } from './browser-digest'
+import { formatTreeDiff, treeDiffIsEmpty, type TreeDiff, type TreeDiffFormatOptions } from './tree-diff'
 
-export type ActionVerb = 'click' | 'press' | 'select' | 'hover'
+export type ActionVerb = 'click' | 'press' | 'select' | 'hover' | 'fill' | 'type'
 
 export interface ActionPolicy {
   verb: ActionVerb
@@ -61,6 +67,10 @@ export const ACTION_POLICIES: Record<ActionVerb, ActionPolicy> = {
   select: { verb: 'select', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: () => true },
   // A menu opens within the settle or not at all.
   hover: { verb: 'hover', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: () => false },
+  // The field's own value is read back separately; the settle is for what the
+  // input set off — a suggestion list, a validation message, revealed fields.
+  fill: { verb: 'fill', settleMs: FILL_SETTLE_MS, recheckMs: RECHECK_MS, countFocus: false, recheck: () => false },
+  type: { verb: 'type', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: () => false },
 }
 
 /**
@@ -137,8 +147,12 @@ export interface SettleResult {
 }
 
 export interface ObserveActionOptions<R> {
-  /** Run the action; a failed action (non-zero exit) ends the settle at once. */
-  exec: () => Promise<R>
+  /**
+   * Run the action; a failed action (non-zero exit) ends the settle at once.
+   * Gets the before-read, so how to act can depend on the page (a challenge
+   * wall switches the click to a human-like mouse path).
+   */
+  exec: (before: PageObservation | null) => Promise<R>
   isFailure: (r: R) => boolean
   /** Run an observer script in the page and return its stdout, or null if it could not run. */
   evalScript: (script: string) => Promise<string | null>
@@ -163,7 +177,7 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   }
 
   const before = await read()
-  const result = await opts.exec()
+  const result = await opts.exec(before)
   if (opts.isFailure(result)) return { result, before, after: null, effect: null, waitedMs: 0 }
 
   const actedAt = now()
@@ -184,10 +198,34 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   return { result, before, after, effect, waitedMs: Math.round(elapsed()) }
 }
 
+/**
+ * Is the change one the tree can show? Dialogs, the interactive census and
+ * control state are structural; a text change is, for the verbs that load
+ * results in place (a filter click, Enter in a search box, a select). A
+ * live-region announcement or a focus move alone is not worth a tree read.
+ */
+export function effectWantsTree(e: ActionEffect, verb: ActionVerb): boolean {
+  if (e.opened.length > 0 || e.closed.length > 0 || e.interactiveDelta !== 0 || e.stateChanged) return true
+  return e.textChanged && (verb === 'click' || verb === 'press' || verb === 'select')
+}
+
+export interface EffectTreeDiff extends Pick<TreeDiffFormatOptions, 'baselineSource'> {
+  diff: TreeDiff
+  baselineAgeMs: number
+}
+
 export interface EffectFormatOptions {
   /** How long after the action the reported state was read. */
   settleMs: number
   verb: ActionVerb
+  /** The tree diff read after the action, when the observer saw a structural change and a baseline existed. */
+  treeDiff?: EffectTreeDiff | null
+  /**
+   * The result already reads the target field back (fill, type into a ref):
+   * leave out the field-value clause, and say nothing when nothing else
+   * changed — "none observed" after every fill is noise.
+   */
+  valueReadBack?: boolean
 }
 
 /** What the observer looks at — named when nothing was seen, so the agent knows the scope of that silence. */
@@ -201,18 +239,30 @@ const OBSERVED_SCOPE = 'dialogs, live regions, page text, control state, focus'
  */
 export function formatActionEffect(effect: ActionEffect | null, opts: EffectFormatOptions): string {
   if (!effect) return ''
+  const tree = opts.treeDiff && !treeDiffIsEmpty(opts.treeDiff.diff)
+    ? formatTreeDiff(opts.treeDiff.diff, {
+      baselineAgeMs: opts.treeDiff.baselineAgeMs,
+      baselineSource: opts.treeDiff.baselineSource,
+      dialogOpened: effect.opened.length > 0,
+    })
+    : ''
+  // The tree lines name the elements; the census and the state hash would
+  // only repeat them as a count. With the target read back, an empty diff
+  // (the target's own subtree is left out of it) means the target was all
+  // that changed — the counts would be about it alone.
+  const counted = !tree && !(opts.valueReadBack && opts.treeDiff)
   const parts: string[] = []
   for (const e of effect.opened) parts.push(`${e.kind}${e.name ? ` ${JSON.stringify(e.name)}` : ''} opened`)
   for (const e of effect.closed) parts.push(`${e.kind}${e.name ? ` ${JSON.stringify(e.name)}` : ''} closed`)
   if (effect.announced.length > 0) parts.push(`announced: ${effect.announced.map(s => JSON.stringify(s)).join(' | ')}`)
-  if (effect.interactiveDelta !== 0) {
+  if (effect.interactiveDelta !== 0 && counted) {
     parts.push(`${effect.interactiveDelta > 0 ? '+' : ''}${effect.interactiveDelta} interactive elements`)
-  } else if (parts.length === 0 && effect.textChanged) {
+  } else if (parts.length === 0 && effect.textChanged && counted) {
     const d = effect.textDelta
     parts.push(`page text changed (${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars)`)
   }
-  if (effect.stateChanged) parts.push('control state changed (checked/pressed/expanded/selected)')
-  if (effect.focusValueChanged) {
+  if (effect.stateChanged && counted) parts.push('control state changed (checked/pressed/expanded/selected)')
+  if (effect.focusValueChanged && !opts.valueReadBack) {
     const preview = effect.focusValue.length < effect.focusValueChars
     parts.push(`field value now ${JSON.stringify(effect.focusValue)}${preview ? ` (${effect.focusValueChars} chars, first ${effect.focusValue.length} shown)` : ''}`)
   }
@@ -220,9 +270,12 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
   // goes; for a click it shows which element took the click.
   const focusNote = effect.focus && (opts.verb === 'press' || (opts.verb === 'click' && effect.focusChanged)) ? `focus: ${effect.focus}` : ''
   if (parts.length === 0) {
+    // "Effect: tree changes since …" — the tree is the whole observation.
+    if (tree) return focusNote ? `\nEffect: ${focusNote}${tree}` : `\nEffect: t${tree.slice(2)}`
+    if (opts.valueReadBack) return ''
     if (focusNote && effect.focusChanged) return `\nEffect: ${focusNote}`
     return `\nEffect: none observed within ${opts.settleMs}ms (${OBSERVED_SCOPE})${focusNote ? ` — ${focusNote}` : ''}`
   }
   if (focusNote) parts.push(focusNote)
-  return `\nEffect: ${parts.join(' · ')}`
+  return `\nEffect: ${parts.join(' · ')}${tree}`
 }

@@ -9,12 +9,12 @@
  * page navigate, what's the URL now, did the value commit, where is the
  * viewport.
  *
- * The tree-diff part of the original design is deliberately deferred: running
- * a snapshot per action would rotate the CLI's ref registry and fire the
- * stale-ref renumbering trap (upstream vercel-labs/agent-browser#1443) after
- * every single action. The DOM effect (dialogs, announcements, control state,
- * interactive census) comes from action-settle.ts instead, via two evals that
- * never touch the ref registry.
+ * The DOM effect (dialogs, announcements, control state, interactive census)
+ * comes from action-settle.ts, via two evals around the action; when that
+ * shows a structural change, one tree read lists the changed elements by ref
+ * (tree-diff.ts). That read became possible with agent-browser 0.38's
+ * persistent refs — before it, every extra snapshot renumbered the agent's
+ * refs (upstream vercel-labs/agent-browser#1443).
  */
 
 /** Settle delays before reading post-action state (React/async effects). */

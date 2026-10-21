@@ -19,14 +19,21 @@ import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
 import { landedElsewhere, pageWarnings } from '../page-status'
-import { formatActionEffect, type ActionEffect, type ActionVerb } from '../action-settle'
+import { formatActionEffect, type ActionEffect, type ActionVerb, type EffectTreeDiff } from '../action-settle'
 import { classifyWaitTarget, formatWaitResult } from '../wait-target'
+import { stripAnsi, extractScreenshotPath } from '../browser-output'
 
-/** The effect line for a mutating action's result, from the server's settle-and-diff. */
-function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number): string {
+/** The effect line for a mutating action's result, from the server's settle-and-diff (and tree diff, when one was read). */
+function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number, opts: { valueReadBack?: boolean } = {}): string {
   const effect = (data?.effect as ActionEffect | undefined) ?? null
   const settleMs = typeof data?.settleMs === 'number' ? data.settleMs : fallbackSettleMs
-  return formatActionEffect(effect, { settleMs, verb })
+  const treeDiff = (data?.treeDiff as EffectTreeDiff | undefined) ?? null
+  return formatActionEffect(effect, { settleMs, verb, treeDiff, valueReadBack: opts.valueReadBack })
+}
+
+function ageText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 120 ? `${s}s ago` : `${Math.round(s / 60)} min ago`
 }
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
@@ -53,17 +60,7 @@ function getTabWarning(): string {
   return tabManager.formatTabWarning(tabManager.getTabCount())
 }
 
-export function stripAnsi(str: string): string {
-  // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1b\[[0-9;]*m/g, '')
-}
-
-export function extractScreenshotPath(output: string): string {
-  const clean = stripAnsi(output).trim()
-  // Extract file path - look for an absolute path ending with .png or .jpg/.jpeg
-  const match = clean.match(/(\/\S+\.(?:png|jpe?g))/i)
-  return match ? match[1] : clean
-}
+export { stripAnsi, extractScreenshotPath }
 
 async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
   try {
@@ -205,9 +202,11 @@ const browserSnapshotTool = tool(
   'browser_snapshot',
   `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
 
-The default view shows interactive elements only — it drops ALL static text (prices, prose, error messages, table values). A footer says how much text was dropped and what the page's live regions (alerts, status, toasts) currently say. Two knobs handle what the default view misses:
-- fullText=true: THE way to read a page. Adds the static text to the same compact tree; refs are identical in both views. Use it to extract data, read results or errors, or check on-page copy — not browser_eval innerText scrapers, not screenshots.
+The default view shows interactive elements only — it drops ALL static text (prices, prose, error messages, table values). A footer says how much text was dropped and what the page's live regions (alerts, status, toasts) currently say. To read a page's text without refs (articles, docs, search results, listings), use browser_read — smaller and faster than any snapshot. Two knobs handle what the default view misses:
+- fullText=true: adds the static text to the same compact tree, beside the refs; refs are identical in both views. Use it when text and controls must be read together — a form's validation errors next to its fields, a table whose rows have buttons. Not browser_eval innerText scrapers, not screenshots.
 - scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Combine with fullText on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
+
+Refs are stable: an element keeps its ref across snapshots and actions until it is removed from the page or the page navigates.
 
 Frames — cross-origin ones such as Stripe payment frames included — are normally merged into the tree with working refs; use those refs like any other. A frame whose contents the tree could not read is listed below the tree.
 Very large snapshots are truncated with a note rather than failing — scope to recover the rest.`,
@@ -269,7 +268,9 @@ Very large snapshots are truncated with a note rather than failing — scope to 
 
 const browserClickTool = tool(
   'browser_click',
-  `Click an element on the page by its ref (e.g., @e1). Get refs from browser_snapshot.`,
+  `Click an element on the page by its ref (e.g., @e1). Get refs from browser_snapshot.
+
+The result reports what the click changed: navigation, dialogs, announcements, and — when the page's controls changed — the elements added, changed or removed, with their refs, so a menu or dialog that opened can be used without another snapshot.`,
   {
     ref: z.string().describe('Element ref from snapshot (e.g., "@e1")'),
   },
@@ -282,7 +283,10 @@ const browserClickTool = tool(
 
     // A click that opened a new tab did its work there; the effect line is about
     // this tab and would only read as "nothing happened".
-    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
+    // A challenge wall (or a site that served one) gets a human-like mouse
+    // path; it explains the slower click and a "covered by" error.
+    const human = data?.humanInput === true ? ' (human-like mouse path: this site served a challenge page)' : ''
+    let text = `Clicked ${args.ref}.${human}${formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -310,7 +314,7 @@ const browserFillTool = tool(
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
     const committed = typeof data?.committedValue === 'string' ? data.committedValue : null
-    let text = `Filled ${args.ref}.${formatFillReadback(args.value, committed)}`
+    let text = `Filled ${args.ref}.${formatFillReadback(args.value, committed)}${effectText(data, 'fill', 200, { valueReadBack: true })}`
     text += getTabWarning()
     return {
       content: [
@@ -413,7 +417,9 @@ This cannot type text — multi-character strings are rejected. To type into the
 
 const browserScreenshotTool = tool(
   'browser_screenshot',
-  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page. Use annotate=true to overlay numbered labels on interactive elements — each label [N] corresponds to ref @eN, so you can click elements by their visual label.`,
+  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page. Use annotate=true to overlay numbered labels on interactive elements — each label [N] corresponds to ref @eN, so you can click elements by their visual label.
+
+When no pixel has changed since the last screenshot of this tab (same full/viewport mode), no new image is attached: the result names the earlier file and its age instead. Read that file if the image is no longer in your context, or pass force=true to always get a new capture. annotate=true always captures.`,
   {
     full: z
       .boolean()
@@ -425,13 +431,27 @@ const browserScreenshotTool = tool(
       .optional()
       .default(false)
       .describe('Overlay numbered labels on interactive elements matching snapshot refs (default: false)'),
+    force: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Always capture and attach a new image, even when the page looks unchanged since the last screenshot (default: false)'),
   },
   async (args) => {
-    const result = await browserFetch('screenshot', { full: args.full, annotate: args.annotate })
+    const result = await browserFetch('screenshot', { full: args.full, annotate: args.annotate, force: args.force })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
+    if (data.unchanged === true && typeof data.previousPath === 'string') {
+      const age = typeof data.previousAgeMs === 'number' ? ageText(data.previousAgeMs) : 'earlier'
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Screenshot unchanged: no pixel differs from ${data.previousPath} (captured ${age}), so no new image is attached. Read that file if it is not in your context; force=true captures a new one.`,
+        }],
+      }
+    }
     const rawOutput = data.output ? String(data.output) : ''
-    const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
+    const filePath = typeof data.path === 'string' ? data.path : rawOutput ? extractScreenshotPath(rawOutput) : ''
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
 
@@ -459,7 +479,7 @@ const browserSelectTool = tool(
   'browser_select',
   `Select an option in a NATIVE <select> element by its ref, using the option's value or visible label. The committed value is verified by read-back and returned — if nothing committed, this errors instead of pretending.
 
-Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool. For those: browser_click the trigger, re-snapshot, type into the popup's filter input, click the option's fresh ref, then re-snapshot to verify.`,
+Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool. For those: browser_click the trigger (its result lists the options that appeared, with refs), type into the popup's filter input if it has one, click the option's ref, and check the click's result for the committed state.`,
   {
     ref: z.string().describe('Select element ref from snapshot (e.g., "@e3")'),
     value: z.string().describe('The option value or visible label to select'),
@@ -471,7 +491,7 @@ Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool.
     const committed = data?.committedValue
     return {
       content: [
-        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — the element's value is now "${committed}".${effectText(data, 'select', 300)}` },
+        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — the element's value is now "${committed}".${effectText(data, 'select', 300, { valueReadBack: true })}` },
       ],
     }
   }
@@ -583,9 +603,9 @@ Notes: this APPENDS to existing content (it does not clear first — use browser
     const data = result.data as Record<string, unknown> | undefined
     let text: string
     if (data && typeof data.committedValue === 'string') {
-      text = `Typed ${args.text.length} chars into ${args.ref} — field value is now: "${data.committedValue}".`
+      text = `Typed ${args.text.length} chars into ${args.ref} — field value is now: "${data.committedValue}".${effectText(data, 'type', 300, { valueReadBack: true })}`
     } else {
-      text = `Typed ${args.text.length} chars into the focused element. If the field is inside a payment iframe, verify visually with browser_screenshot.`
+      text = `Typed ${args.text.length} chars into the focused element. If the field is inside a payment iframe, verify visually with browser_screenshot.${effectText(data, 'type', 300, { valueReadBack: Boolean(args.ref) })}`
     }
     text += getTabWarning()
     return {
@@ -653,8 +673,9 @@ Available commands:
 - cookies / cookies set/clear — Cookie management
 - storage local/session [get/set/clear] — Storage management
 - mouse move/down/up/wheel — Low-level mouse control
-- network route/unroute/requests — Network interception
+- network route/unroute/requests — Network interception (to record traffic to a file, use browser_capture_traffic)
 - console / errors — Debug info
+- a11y — Accessibility audit of the current page (axe-core): violations by severity with the offending elements
 - wait <selector|ms|--text|--url|--load|--fn> — Wait for conditions`,
   {
     command: z.string().optional().describe('Command string for simple commands, e.g. "get url". Provide either this or args, not both.'),
@@ -724,7 +745,8 @@ const browserGetStateTool = tool(
       fullText: args.fullText,
       includeUrls: args.includeUrls,
     })
-    const screenshotResult = args.screenshot === false ? null : await browserFetch('screenshot', { full: false })
+    // get_state promises an image: never the "unchanged" answer.
+    const screenshotResult = args.screenshot === false ? null : await browserFetch('screenshot', { full: false, force: true })
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
     const parts: string[] = []
@@ -746,7 +768,7 @@ const browserGetStateTool = tool(
     } else if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
       const rawOutput = data.output ? String(data.output) : ''
-      const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
+      const filePath = typeof data.path === 'string' ? data.path : rawOutput ? extractScreenshotPath(rawOutput) : ''
       if (!filePath) {
         screenshotFailure = 'no screenshot path returned'
       } else {
@@ -797,10 +819,64 @@ const browserGetStateTool = tool(
   }
 )
 
+const browserReadTool = tool(
+  'browser_read',
+  `Read the current page's visible text as light markdown — headings (#), list items (-) and table rows (| a | b |) — with no refs, roles or attributes. THE way to read articles, docs, search results, listings and other text-heavy pages: on a long article it is a fraction of the size of browser_snapshot(fullText) and several times faster.
+
+- Only rendered text: anything the page hides (closed menus and dialogs, collapsed sections, other tabs' panels) is left out, so what you read is what is on screen or reachable by scrolling.
+- Long pages: outline=true returns just the headings; section="<heading text>" returns the sections whose heading contains that text. Use them instead of reading 40,000 chars at once.
+- No refs: to act on something you read, take browser_snapshot (scope it to the region). For text next to controls — form validation errors, table rows with buttons — browser_snapshot(fullText) is the better fit.
+- The top document only: text inside iframes (embedded widgets, payment frames) is not included. Link targets are not included — use browser_snapshot(includeUrls) for those.`,
+  {
+    outline: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Return only the page\'s headings as an indented outline (default: false)'),
+    section: z
+      .string()
+      .optional()
+      .describe('Return only the sections whose heading contains this text (case-insensitive), each up to the next heading of the same level'),
+  },
+  async (args) => {
+    const result = await browserFetch('read', { outline: args.outline, section: args.section })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown>
+    const text = typeof data.text === 'string' && data.text ? data.text : '(the page has no visible text)'
+    return {
+      content: [{ type: 'text' as const, text: text + getTabWarning() }],
+    }
+  }
+)
+
+const browserCaptureTrafficTool = tool(
+  'browser_capture_traffic',
+  `Record the network traffic of the active tab while you use the site, and save it as a HAR file in the workspace. Use it to find the JSON endpoints a site's pages are built from, so a task that repeats (a scheduled report, a widget, a price check) can call them directly with a script instead of driving the browser every run.
+
+1. action="start", then do the steps you want recorded in this tab (search, open a result, page through results — run each flow twice with different inputs so the varying parameters show).
+2. action="stop" saves /workspace/captures/<label>-<time>.har and lists the responses that look like data (JSON/XML/CSV, first-party first) with method, status, URL and size.
+
+The saved file is redacted: values of cookies, auth/token/session headers, token-like URL parameters and JSON fields, and JWTs are replaced with [REDACTED] (REDACTED inside URLs; names are kept, so you can see which ones a request needs). Response bodies are text only, capped per response. Requests in other tabs are not recorded.`,
+  {
+    action: z.enum(['start', 'stop']).describe('"start" begins recording; "stop" saves the HAR and summarises it'),
+    label: z.string().optional().describe('Short name for the saved file on stop, e.g. "zillow-search" (default: "traffic")'),
+  },
+  async (args) => {
+    const result = await browserFetch('capture-traffic', { action: args.action, label: args.label })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown>
+    const text = args.action === 'start'
+      ? `Recording network traffic in this tab${typeof data.url === 'string' && data.url ? ` (started on ${data.url})` : ''}. Do the steps to record, then call browser_capture_traffic with action="stop".`
+      : String(data.summary ?? `Saved to ${data.path}.`)
+    return { content: [{ type: 'text' as const, text }] }
+  }
+)
+
   return [
     browserOpenTool,
     browserCloseTool,
     browserSnapshotTool,
+    browserReadTool,
     browserClickTool,
     browserFillTool,
     browserScrollTool,
@@ -815,5 +891,6 @@ const browserGetStateTool = tool(
     browserEvalTool,
     browserRunTool,
     browserGetStateTool,
+    browserCaptureTrafficTool,
   ]
 }

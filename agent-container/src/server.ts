@@ -797,12 +797,17 @@ import { classifyWaitTarget, WAIT_PAGE_PROBE_SCRIPT, parseWaitPageProbe } from '
 /** Budget for the page probe around a wait — independent of the exec ceiling. */
 const WAIT_PAGE_PROBE_TIMEOUT_MS = 3000;
 import { resolveCommittedValue } from './field-value-readback';
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
-import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, extractScreenshotPath, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
-import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
+import { observeAction, pressPolicy, effectWantsTree, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
+import { acknowledgeTreeValue, diffTrees, getTreeBaseline, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
+import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead } from './page-reader';
+import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
+import { noteChallenge, useHumanInput } from './challenge-input';
+import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName } from './traffic-capture';
 import {
   observeUrl, resetUrlTracking,
   FILL_SETTLE_MS,
@@ -880,7 +885,7 @@ async function execBrowser(
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
-    return { stdout: capBrowserOutput(stdout.trim(), outputCap), exitCode: 0 };
+    return { stdout: capBrowserOutput(stripWebMcpNotices(stdout.trim()), outputCap), exitCode: 0 };
   } catch (error: any) {
     // Full, unsanitized detail (incl. the command line with the CDP URL) goes
     // to container logs for connectivity debugging — never to the model.
@@ -937,27 +942,82 @@ async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObs
   return obs ? withAddressBarUrl(obs) : EMPTY_OBSERVATION;
 }
 
+/** Budget for the tree read after an action — a heavy page's tree takes ~1 s. */
+const TREE_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * Read the interactive tree after an action and diff it, by ref, against the
+ * last tree the agent was shown on this page (tree-diff.ts). The read becomes
+ * the new baseline either way. Null when it could not run or there was no
+ * baseline for this page to compare with.
+ */
+async function readTreeDiff(url: string, excludeRefs: string[]): Promise<EffectTreeDiff | null> {
+  const prior = getTreeBaseline(url);
+  const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+  if (r.exitCode !== 0) return null;
+  const now = Date.now();
+  // Diff before the read becomes the baseline: the baseline's `seen` lines
+  // carry over to the next one and would already include this read.
+  const result = prior
+    ? {
+      diff: diffTrees(prior.refs, parseTreeRefs(r.stdout), { excludeRefs, seen: prior.seen, acknowledged: prior.acknowledged }),
+      baselineAgeMs: now - prior.takenAt,
+      baselineSource: prior.source,
+    }
+    : null;
+  setTreeBaseline(url, r.stdout, 'action', now);
+  return result;
+}
+
 /**
  * Run a mutating action through the settle primitive (action-settle.ts) so
  * the result can say what the action did rather than only whether the URL
  * moved. The "after" observation also supplies the URL, so this replaces the
  * post-action `get url` at no extra round trip; a failed read falls back to
- * it. No effect is reported across a navigation.
+ * it. No effect is reported across a navigation. When the effect is
+ * structural, the changed elements come back as a tree diff with their refs.
  */
 async function runWithEffect(
-  action: () => Promise<{ exitCode: number; stdout: string }>,
+  action: (before: PageObservation | null) => Promise<{ exitCode: number; stdout: string }>,
   policy: ActionPolicy,
-): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number }> {
+  opts: { excludeRefs?: string[] } = {},
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number; treeDiff: EffectTreeDiff | null }> {
   const settled = await observeAction({
     exec: action,
     isFailure: r => r.exitCode !== 0,
     evalScript: observePage,
     policy,
   });
-  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0 };
+  noteChallenge(settled.before);
+  noteChallenge(settled.after);
+  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, treeDiff: null };
   const digest = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
   const effect = digest?.navigated ? null : settled.effect;
-  return { result: settled.result, digest, effect, settleMs: settled.waitedMs };
+  const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
+    ? await readTreeDiff(digest.url, opts.excludeRefs ?? [])
+    : null;
+  return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff };
+}
+
+/** The daemon's active tab, as a key for per-tab state: its CDP target id when the daemon reports one. */
+async function activeTabKey(): Promise<string> {
+  try {
+    const active = (await tabManager.queryTabs()).find(t => t.active);
+    return active?.targetId || active?.tabId || 'active';
+  } catch {
+    return 'active';
+  }
+}
+
+/**
+ * Forget everything kept about the browser that just went away: the tree the
+ * next action would be diffed against, the screenshots an "unchanged" answer
+ * would name, and a traffic capture the daemon took with it.
+ */
+function resetPerBrowserState(): void {
+  resetTreeBaseline();
+  forgetScreenshots();
+  setCapture(null);
 }
 
 /**
@@ -1267,6 +1327,7 @@ app.post('/browser/open', async (c) => {
       broadcastBrowserEvent(false);
       _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
       tabManager.resetTabCount();
+      resetPerBrowserState();
       inputManager.rejectByType(
         'browser_input',
         'The browser provider changed before the user completed this request'
@@ -1279,6 +1340,7 @@ app.post('/browser/open', async (c) => {
       if (matchingTab) {
         await execBrowser(['tab', matchingTab.tabId], browserState.cdpUrl || undefined);
         await tabManager.syncTabCount();
+        resetTreeBaseline();
         observeUrl(matchingTab.url); // seed URL baseline for post-action digests
         notifyBrowserAction();
         return c.json({
@@ -1341,6 +1403,8 @@ app.post('/browser/open', async (c) => {
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
     resetUrlTracking();
+    // A new document: no tree from before it can be diffed against.
+    resetTreeBaseline();
     // Read the landing page once: it seeds the URL baseline so the FIRST
     // post-action digest can distinguish "navigated" from "unchanged", and it
     // tells the tool where the browser actually ended up — final URL, title,
@@ -1348,6 +1412,7 @@ app.post('/browser/open', async (c) => {
     // URL (transcript-mining theme 2: a 429, a login redirect and about:blank
     // all used to read "Browser opened and navigating to <url>").
     const page = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
+    noteChallenge(page);
     if (page.url) {
       observeUrl(page.url);
     } else {
@@ -1388,6 +1453,7 @@ app.post('/browser/close', async (c) => {
     broadcastBrowserEvent(false);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
+    resetPerBrowserState();
 
     // A browser_input request is only answerable while the browser exists —
     // and it may belong to a session OTHER than the closer (e.g. a background
@@ -1456,6 +1522,7 @@ async function handleExternalBrowserClose(
     broadcastBrowserEvent(false, ownerSessionId);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
+    resetPerBrowserState();
     console.log(`[Browser] Browser closed externally (${reason}), state cleaned up`);
   }
   // Outside the guard: an external close can race the active flag, and a
@@ -1527,6 +1594,7 @@ app.post('/browser/snapshot', async (c) => {
       return out === null ? null : parseObservation(out);
     });
     const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
+    noteChallenge(probe);
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
@@ -1557,6 +1625,12 @@ app.post('/browser/snapshot', async (c) => {
     // static text), so compaction has to happen here to stay text-preserving.
     const fullText = Boolean(body.fullText);
     const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
+
+    // The tree the agent now holds is what the next action is diffed
+    // against. Refs are assigned page-wide in every mode, so the default and
+    // the fullText views both serve; a scoped tree holds only part of the
+    // page and would read as everything else having been removed.
+    if (!body.scope && probe.url) setTreeBaseline(probe.url, result.stdout, 'snapshot');
 
     const header = formatStatusLine(probe, refCount, { waitedMs });
     return c.json({
@@ -1593,8 +1667,14 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect, settleMs } = await runWithEffect(
-      () => execBrowser(['click', body.ref], browserState.cdpUrl || undefined),
+    // On a challenge wall, and on a site that served one, the click moves the
+    // mouse along a human-like path first (challenge-input.ts).
+    let humanInput = false;
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+      (before) => {
+        humanInput = useHumanInput(before);
+        return execBrowser(['click', body.ref, ...(humanInput ? ['--human'] : [])], browserState.cdpUrl || undefined);
+      },
       ACTION_POLICIES.click,
     );
 
@@ -1604,7 +1684,7 @@ app.post('/browser/click', async (c) => {
 
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(treeDiff && { treeDiff }), ...(tabInfo && { tabInfo }), ...(humanInput ? { humanInput: true } : {}) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
     return c.json({ error: error.message || 'Failed to click' }, 500);
@@ -1629,20 +1709,30 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined);
+    // Through the settle like a click: a fill can open a suggestion list,
+    // raise a validation message or reveal fields, and the result should say
+    // so. The field's own line is left out of the tree diff — the read-back
+    // below reports it.
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+      () => execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined),
+      ACTION_POLICIES.fill,
+      { excludeRefs: [body.ref] },
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    // Read the value back after a settle: the CLI reports success regardless
+    // Read the value back after the settle: the CLI reports success regardless
     // of what the page kept (maxlength truncation, JS reformatting,
     // keystroke-only widgets — audit F6).
-    await sleep(FILL_SETTLE_MS);
     const committedValue = await readCommittedFieldValue(body.ref);
+    // The agent now knows this field's value: the next tree diff must not
+    // report it as a change since the baseline.
+    if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue);
 
     notifyBrowserAction();
-    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
+    return c.json({ success: true, settleMs, ...(committedValue !== null && { committedValue }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error filling:', error);
     return c.json({ error: error.message || 'Failed to fill' }, 500);
@@ -1777,7 +1867,7 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect, settleMs } = await runWithEffect(
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
       () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
       pressPolicy(body.key),
     );
@@ -1788,7 +1878,7 @@ app.post('/browser/press', async (c) => {
 
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(treeDiff && { treeDiff }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
     return c.json({ error: error.message || 'Failed to press key' }, 500);
@@ -1798,7 +1888,7 @@ app.post('/browser/press', async (c) => {
 // POST /browser/screenshot - Take screenshot
 app.post('/browser/screenshot', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; full?: boolean; annotate?: boolean }>();
+    const body = await c.req.json<{ sessionId: string; full?: boolean; annotate?: boolean; force?: boolean }>();
 
     if (!body.sessionId) {
       return c.json({ error: 'sessionId is required' }, 400);
@@ -1813,20 +1903,191 @@ app.post('/browser/screenshot', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const screenshotArgs = ['screenshot'];
-    if (body.full) screenshotArgs.push('--full');
-    if (body.annotate) screenshotArgs.push('--annotate');
+    const capture = async (extra: string[]) => {
+      const args = ['screenshot', ...extra];
+      if (body.full) args.push('--full');
+      if (body.annotate) args.push('--annotate');
+      return execBrowser(args, browserState.cdpUrl || undefined);
+    };
 
-    const result = await execBrowser(screenshotArgs, browserState.cdpUrl || undefined);
+    // An annotated capture is for its labels, and force asks for an image
+    // regardless: both always capture.
+    if (body.annotate || body.force) {
+      const result = await capture([]);
+      if (result.exitCode !== 0) {
+        return c.json({ error: result.stdout, success: false }, 500);
+      }
+      return c.json({ success: true, output: result.stdout });
+    }
 
+    // Otherwise only when the page looks different from the last image this
+    // tab and mode produced (screenshot-memory.ts).
+    const key = screenshotKey(await activeTabKey(), Boolean(body.full));
+    const conditional = await capture(['--if-changed', '--json']);
+    if (conditional.exitCode !== 0) {
+      return c.json({ error: cliJsonError(conditional.stdout), success: false }, 500);
+    }
+    const shot = parseIfChangedOutput(conditional.stdout);
+    if (shot?.changed && shot.path) {
+      rememberScreenshot(key, shot.path);
+      return c.json({ success: true, path: shot.path });
+    }
+    if (shot && !shot.changed) {
+      const previous = recallScreenshot(key);
+      if (previous && fs.existsSync(previous.path)) {
+        return c.json({
+          success: true,
+          unchanged: true,
+          previousPath: previous.path,
+          previousAgeMs: Date.now() - previous.takenAt,
+          pixelChangeRatio: shot.pixelChangeRatio,
+        });
+      }
+    }
+
+    // Unchanged against an image this server cannot name (taken before a
+    // restart, swept, or too old to offer), or output it could not read: take
+    // a plain capture. When the CLI said "unchanged", the new file shows the
+    // same pixels as its baseline, so it is what the next "unchanged" names.
+    const result = await capture([]);
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
-
+    const path = extractScreenshotPath(result.stdout);
+    if (shot && !shot.changed && path.startsWith('/')) rememberScreenshot(key, path);
     return c.json({ success: true, output: result.stdout });
   } catch (error: any) {
     console.error('[Browser] Error taking screenshot:', error);
     return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
+  }
+});
+
+// POST /browser/read - The page's visible text as light markdown (page-reader.ts)
+app.post('/browser/read', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; outline?: boolean; section?: string }>();
+
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    // Same hold as a snapshot while the document is still loading; the
+    // observation also supplies the status line.
+    const { obs: observed, waitedMs } = await waitForLoaded(async () => {
+      const out = await observePage(observerScript());
+      return out === null ? null : parseObservation(out);
+    });
+    const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
+    noteChallenge(probe);
+
+    // The page's whole text comes back as one JSON string: past the default
+    // exec cap it would be cut mid-string and unparseable.
+    const raw = await execBrowser(['eval', readerScript()], browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
+    const read = raw.exitCode === 0 ? parseReadResult(raw.stdout) : null;
+    if (!read) {
+      return c.json({ error: 'The page text could not be read (the page did not answer the read script).', success: false }, 500);
+    }
+
+    const text = tidyRead(read.text);
+    let content: string;
+    let note = '';
+    if (body.outline) {
+      content = outlineOf(text);
+      if (!content) note = 'The page has no headings.';
+    } else if (body.section && body.section.trim()) {
+      content = sectionOf(text, body.section);
+      if (!content) {
+        const outline = outlineOf(text);
+        note = `No heading contains ${JSON.stringify(body.section.trim())}.${outline ? ` Headings on this page:\n${outline}` : ' The page has no headings.'}`;
+      }
+    } else {
+      content = text;
+    }
+
+    const header = formatStatusLine(probe, null, { waitedMs });
+    return c.json({
+      success: true,
+      text: (header ? `${header}\n\n` : '') + (content ? capReadText(content, { collectTruncated: read.truncated && !body.outline && !body.section }) : '') + (note ? `${content ? '\n\n' : ''}${note}` : ''),
+      chars: content.length,
+    });
+  } catch (error: any) {
+    console.error('[Browser] Error reading page:', error);
+    return c.json({ error: error.message || 'Failed to read page' }, 500);
+  }
+});
+
+const WORKSPACE_CAPTURES_DIR = '/workspace/captures';
+
+// POST /browser/capture-traffic - Record network traffic to a redacted HAR (traffic-capture.ts)
+app.post('/browser/capture-traffic', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; action?: string; label?: string }>();
+
+    if (!body.sessionId || (body.action !== 'start' && body.action !== 'stop')) {
+      return c.json({ error: 'sessionId and action ("start" or "stop") are required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const current = getCapture();
+    if (body.action === 'start') {
+      if (current) {
+        return c.json({ error: `A capture is already recording (started ${Math.round((Date.now() - current.startedAt) / 1000)}s ago). Stop it first.`, success: false }, 409);
+      }
+      const r = await execBrowser(['network', 'har', 'start', '--content', 'text'], browserState.cdpUrl || undefined);
+      if (r.exitCode !== 0) {
+        return c.json({ error: r.stdout, success: false }, 500);
+      }
+      const page = await observeNow();
+      setCapture({ startedAt: Date.now(), url: page.url });
+      return c.json({ success: true, started: true, url: page.url });
+    }
+
+    if (!current) {
+      return c.json({ error: 'No traffic capture is recording. Start one with action "start" before the steps you want recorded.', success: false }, 409);
+    }
+    const rawPath = path.join('/tmp', `superagent-har-${process.pid}-${Date.now()}.har`);
+    const stopped = await execBrowser(['network', 'har', 'stop', rawPath], browserState.cdpUrl || undefined);
+    setCapture(null);
+    try {
+      if (stopped.exitCode !== 0) {
+        return c.json({ error: stopped.stdout, success: false }, 500);
+      }
+      const har = harSchema.parse(JSON.parse(await fs.promises.readFile(rawPath, 'utf-8')));
+      const redacted = redactHar(har);
+      await fs.promises.mkdir(WORKSPACE_CAPTURES_DIR, { recursive: true });
+      const outPath = path.join(WORKSPACE_CAPTURES_DIR, captureFileName(body.label));
+      await fs.promises.writeFile(outPath, JSON.stringify(redacted, null, 2));
+      const { endpoints, more } = summarizeEndpoints(redacted, current.url);
+      return c.json({
+        success: true,
+        path: outPath,
+        requestCount: redacted.log.entries.length,
+        summary: formatCaptureSummary({ path: outPath, requestCount: redacted.log.entries.length, endpoints, more, durationMs: Date.now() - current.startedAt }),
+      });
+    } finally {
+      // The raw file holds live credentials: never leave it behind.
+      await fs.promises.rm(rawPath, { force: true });
+    }
+  } catch (error: any) {
+    console.error('[Browser] Error capturing traffic:', error);
+    return c.json({ error: error.message || 'Failed to capture traffic' }, 500);
   }
 });
 
@@ -1858,9 +2119,10 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const { result, effect, settleMs } = await runWithEffect(
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
       () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
       { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
+      { excludeRefs: [body.ref] },
     );
 
     if (result.exitCode !== 0) {
@@ -1887,9 +2149,12 @@ app.post('/browser/select', async (c) => {
     if (!judgement.ok) {
       return c.json({ error: judgement.reason, success: false }, 500);
     }
+    // The tree shows the chosen option's label, the read-back its value:
+    // acknowledge the select (and its options) without comparing.
+    if (digest) acknowledgeTreeValue(digest.url, body.ref, null);
 
     notifyBrowserAction();
-    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }) });
+    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1914,7 +2179,7 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, effect, settleMs } = await runWithEffect(
+    const { result, effect, settleMs, treeDiff } = await runWithEffect(
       () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
       ACTION_POLICIES.hover,
     );
@@ -1924,7 +2189,7 @@ app.post('/browser/hover', async (c) => {
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(effect && { effect }) });
+    return c.json({ success: true, settleMs, ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);
@@ -2007,17 +2272,21 @@ app.post('/browser/type', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    if (body.ref) {
-      const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
-      if (focusResult.exitCode !== 0) {
-        return c.json({ error: focusResult.stdout, success: false }, 500);
-      }
-    }
-
     // `keyboard type` dispatches real key events into whatever has focus —
     // this is what drives keystroke-listening widgets (Stripe card fields,
-    // OTP boxes, typeaheads) that programmatic fill cannot.
-    const result = await execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);
+    // OTP boxes, typeaheads) that programmatic fill cannot. Through the
+    // settle, so a suggestion list the typing opened is reported.
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+      async () => {
+        if (body.ref) {
+          const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
+          if (focusResult.exitCode !== 0) return focusResult;
+        }
+        return execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);
+      },
+      ACTION_POLICIES.type,
+      { excludeRefs: body.ref ? [body.ref] : [] },
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
@@ -2029,10 +2298,11 @@ app.post('/browser/type', async (c) => {
     let committedValue: string | null = null;
     if (body.ref) {
       committedValue = await readCommittedFieldValue(body.ref);
+      if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue);
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
+    return c.json({ success: true, settleMs, ...(committedValue !== null && { committedValue }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error typing:', error);
     return c.json({ error: error.message || 'Failed to type' }, 500);
@@ -2106,6 +2376,15 @@ app.post('/browser/run', async (c) => {
       }, 400);
     }
 
+    // A HAR written by the CLI itself carries the session's cookies and
+    // tokens unredacted, to wherever the agent points it.
+    if (commandArgs[0] === 'network' && commandArgs[1]?.toLowerCase() === 'har') {
+      return c.json({
+        error: 'Use the `browser_capture_traffic` tool to record traffic: it saves a HAR with cookies, tokens and auth headers redacted. `network har` through browser_run is not available.',
+        success: false,
+      }, 400);
+    }
+
     // Same guard as /browser/press for the raw CLI form: `press` with a
     // non-key string silently types nothing while reporting success.
     if (commandArgs[0] === 'press' && commandArgs.length === 2) {
@@ -2123,6 +2402,8 @@ app.post('/browser/run', async (c) => {
 
     const verb = commandArgs[0].toLowerCase();
     const joined = commandArgs.join(' ').toLowerCase();
+    // A different tab or document: the tree baseline belongs to the old one.
+    if (verb.startsWith('tab') || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb)) resetTreeBaseline();
     let tabInfo = null;
     if (verb.startsWith('tab') || verb === 'click' || verb === 'dblclick' || joined.includes('.click(')) {
       tabInfo = await tabManager.detectNewTab();
@@ -3033,7 +3314,10 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     const claimedTargetIds = new Set<string>();
     let tabs: BrowserTabInfo[] = [];
     for (const dt of daemonTabs) {
-      const target = allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
+      // By target id when the daemon reports it (exact even when two tabs
+      // share a URL); by URL otherwise.
+      const target = (dt.targetId ? allTargets.find(t => t.id === dt.targetId && !claimedTargetIds.has(t.id)) : undefined)
+        ?? allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
       if (!target) continue; // skip tabs with no CDP match (timing edge case, resolves on next poll)
       claimedTargetIds.add(target.id);
       tabs.push({
@@ -3041,7 +3325,8 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         // Positional index for the renderer's display fallback only — the daemon's
         // stable ids (t1, t2, …) are strings and tab switching uses targetId
         index: tabs.length,
-        url: dt.url,
+        // Chrome's URL is the address bar's; the daemon's can lag a navigation.
+        url: target.url || dt.url,
         // Prefer Chrome's title (actual <title> tag) over daemon's (often just domain)
         title: target.title || dt.title || '',
         faviconUrl: target.faviconUrl,

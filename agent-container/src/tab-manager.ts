@@ -12,6 +12,12 @@ const DEFAULT_MAX_TABS = 10;
 export interface TabInfo {
   /** Stable tab id assigned by the agent-browser daemon (e.g. "t1") — does not shift when other tabs close */
   tabId: string;
+  /**
+   * The tab's CDP target id (agent-browser 0.34+). Matches Chrome's own
+   * target list exactly — the URL does not when two tabs share one, or when
+   * the daemon's copy of it is stale (host mode, Chrome's error page).
+   */
+  targetId?: string;
   /** Optional user-assigned label (tab new --label <name>) */
   label: string | null;
   url: string;

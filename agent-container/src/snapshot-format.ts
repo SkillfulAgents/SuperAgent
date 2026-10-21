@@ -123,6 +123,25 @@ export function capSnapshot(text: string, scopeUsed: boolean): string {
   )
 }
 
+/**
+ * Cap browser_read text the same way, cutting at a line break, and name the
+ * two ways to get the rest: the outline and a section by heading.
+ * `collectTruncated`: the page reader itself stopped collecting, so the
+ * total is a lower bound.
+ */
+export function capReadText(text: string, opts: { collectTruncated?: boolean } = {}): string {
+  const more = opts.collectTruncated ? 'more than ' : ''
+  if (text.length <= SNAPSHOT_SOFT_CAP_CHARS) {
+    return opts.collectTruncated ? `${text}\n…[the page has ${more}${text.length} chars of text; the reader stopped there]` : text
+  }
+  const nl = text.lastIndexOf('\n', SNAPSHOT_SOFT_CAP_CHARS)
+  const at = nl > SNAPSHOT_SOFT_CAP_CHARS * 0.8 ? nl : SNAPSHOT_SOFT_CAP_CHARS
+  return (
+    `${text.slice(0, at)}\n` +
+    `…[text truncated — ${more}${text.length} chars total, showing ${at}. outline:true lists the headings; section:"<heading text>" returns one section]`
+  )
+}
+
 /** Count the refs a rendered tree exposes (`[ref=e12]`, `[level=1, ref=e2]`). */
 export function countRefs(tree: string): number {
   return (tree.match(/\bref=e\d+/g) ?? []).length
@@ -352,7 +371,7 @@ export function formatTextFooter(obs: PageObservation, opts: { fullText: boolean
     const preview = previewText ? ` Starts: ${JSON.stringify(previewText)}` : ''
     parts.push(
       `Page text (~${obs.textChars.toLocaleString('en-US')} chars ${where}) is NOT in this interactive view — prices, prose, errors, table values are all dropped.${preview}\n` +
-      `To read it: browser_snapshot with fullText:true (add scope:"<css selector>" to keep it small). Refs are the same in both views.`
+      `To read it: browser_read for the text alone (articles, docs, results), or browser_snapshot with fullText:true for text beside refs (forms, errors next to fields; add scope:"<css selector>" to keep it small). Refs are the same in both snapshot views.`
     )
   }
   return parts.length > 0 ? `\n\n${parts.join('\n')}` : ''
