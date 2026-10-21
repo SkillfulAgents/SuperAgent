@@ -69,3 +69,4 @@ export type {
   UserMessageEcho,
   WriteOptions,
 } from './types'
+export type { SessionEvent, WireFrame } from './live/session-channel'

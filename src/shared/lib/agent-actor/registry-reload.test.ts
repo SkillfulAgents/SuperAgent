@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
 import type { LocalAgentActor } from './local-agent-actor'
+import { drain, drained } from './testing/drain'
 
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
@@ -96,7 +97,7 @@ describe('the actors\' state survives a backend module reload', () => {
   it('the live sessions held before the reload are the ones after it, and the container host reaches them', async () => {
     const original = await load()
     const heard: unknown[] = []
-    original.agentRegistry.get('a').messages.subscribe('s', (event) => heard.push(event))
+    drain(await original.agentRegistry.get('a').messages.subscribe('s'), (event) => heard.push(event))
     const sessions = (original.agentRegistry.get('a') as LocalAgentActor).state.sessions
 
     const reloaded = await reload()
@@ -104,6 +105,7 @@ describe('the actors\' state survives a backend module reload', () => {
     expect((reloaded.agentRegistry.get('a') as LocalAgentActor).state.sessions).toBe(sessions)
     // A tab listening before the reload hears what the reloaded code emits.
     reloaded.agentRegistry.get('a').sessions.broadcastUpdate('s')
+    await drained()
     expect(heard).toEqual([{ type: 'session_updated' }])
     // The reloaded registry attached the reloaded host to the same sessions.
     const { containerHost } = await import('@shared/lib/container/container-host')

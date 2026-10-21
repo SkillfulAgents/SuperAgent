@@ -119,6 +119,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 }))
 
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { drain } from '@shared/lib/agent-actor/testing/drain'
 import { taskScheduler } from './task-scheduler'
 
 // ----- Fixture plumbing -----
@@ -206,8 +207,8 @@ describe('overlap guard against a real background-bash capture', () => {
     mockClient = client
 
     const sseTypes: unknown[] = []
-    const removeSseClient = actor.messages.subscribe(sessionId, (data) => {
-      sseTypes.push((data as { type?: unknown }).type)
+    const removeSseClient = drain(await actor.messages.subscribe(sessionId), (data) => {
+      sseTypes.push(data.type)
     })
     await actor.sessions.attach(sessionId)
     actor.sessions.markActive(sessionId)

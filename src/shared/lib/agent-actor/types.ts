@@ -40,7 +40,7 @@ import type {
 import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
 import type { ActiveSubagentSnapshot } from './live/subagents'
-import type { WireFrame } from './live/session-channel'
+import type { SessionEvent, WireFrame } from './live/session-channel'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
@@ -514,14 +514,19 @@ export interface MessageOps {
 
   // Fan-out and recovery — the agent's `LiveSessions`.
 
-  /** `LiveSessions.listen` — returns the unsubscribe function. */
-  subscribe(sessionId: string, listener: (data: unknown) => void): () => void
+  /**
+   * `LiveSessions.listen` — every event of the session from now on, for the
+   * app's own consumers. Resolves once listening; cancel the stream to stop.
+   */
+  subscribe(sessionId: string): Promise<ReadableStream<SessionEvent>>
   /**
    * `LiveSessions.follow` — a viewer's wire: the frames it missed since
    * `after` (the last frame id it got), or a snapshot, then every event, each
-   * frame with its id. Resolves to the unsubscribe once attached.
+   * frame with its id, and a `ping` every 30s. A viewer that falls far behind
+   * finds the stream ended and comes back with its last id. Resolves once
+   * attached; cancel the stream to stop.
    */
-  follow(sessionId: string, options: { after?: string }, onFrame: (frame: WireFrame) => void): Promise<() => void>
+  follow(sessionId: string, options: { after?: string }): Promise<ReadableStream<WireFrame>>
   /** `LiveSessions.emit` */
   broadcastEvent(sessionId: string, data: unknown): void
 }

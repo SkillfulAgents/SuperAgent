@@ -21,6 +21,7 @@ import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
+import type { WireFrame } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -1517,9 +1518,9 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
 
   describe('teardown', () => {
     const STREAM_URL = 'http://localhost/api/agents/authorized-agent/sessions/new-session/stream'
-    const timer = {} as ReturnType<typeof setInterval>
-    let unsubscribe: ReturnType<typeof vi.fn<() => void>>
-    let pingTick: (() => Promise<void>) | undefined
+    // The actor's side of the wire: what it has sent, and whether the route let it go.
+    let frames: ReadableStreamDefaultController<WireFrame>
+    let cancel: ReturnType<typeof vi.fn<() => void>>
 
     /** Hono's StreamingApi abort semantics: `abort()` sets the flag, then runs each listener once; `onAbort` never replays. */
     function fakeSSEStream() {
@@ -1566,48 +1567,36 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     }
 
     /** The stream is set up and waiting for the client to leave. */
-    async function waitingForClient(handlerPromise: Promise<void>): Promise<void> {
-      await vi.waitFor(() => expect(globalThis.setInterval).toHaveBeenCalledOnce())
+    async function waitingForClient(handlerPromise: Promise<void>, stream: FakeSSEStream): Promise<void> {
+      await vi.waitFor(() => expect(stream.writeSSE).toHaveBeenCalled())
       expect(await settles(handlerPromise)).toBe(false)
-      expect(unsubscribe).not.toHaveBeenCalled()
+      expect(cancel).not.toHaveBeenCalled()
     }
 
     function expectReleased() {
       const actor = agentRegistry.get('authorized-agent')
       expect(actor.messages.follow).toHaveBeenCalledOnce()
-      expect(unsubscribe).toHaveBeenCalledOnce()
-      expect(globalThis.clearInterval).toHaveBeenCalledWith(timer)
+      expect(cancel).toHaveBeenCalledOnce()
     }
 
     beforeEach(() => {
       const actor = agentRegistry.get('authorized-agent')
-      unsubscribe = vi.fn()
+      cancel = vi.fn()
       // The actor catches the viewer up with its snapshot frame, then attaches.
-      vi.spyOn(actor.messages, 'follow').mockImplementation(async (_sessionId, _options, onFrame) => {
-        onFrame({ id: 'e:0', data: '{"type":"connected"}' })
-        return unsubscribe
-      })
-      vi.spyOn(actor.sessions, 'isActive').mockReturnValue(false)
-      vi.spyOn(actor.sessions, 'turnOutcome').mockReturnValue(null)
-
-      pingTick = undefined
-      vi.spyOn(globalThis, 'setInterval').mockImplementation(((handler: () => Promise<void>) => {
-        pingTick = handler
-        return timer
-      }) as unknown as typeof setInterval)
-      vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => undefined)
+      vi.spyOn(actor.messages, 'follow').mockImplementation(async () => new ReadableStream<WireFrame>({
+        start(controller) {
+          frames = controller
+          controller.enqueue({ id: 'e:0', data: '{"type":"connected"}' })
+        },
+        cancel,
+      }))
     })
 
-    afterEach(() => {
-      vi.mocked(globalThis.setInterval).mockRestore()
-      vi.mocked(globalThis.clearInterval).mockRestore()
-    })
-
-    it('releases the subscription and the ping when the client disconnects', async () => {
+    it('lets go of the actor stream when the client disconnects', async () => {
       const controller = new AbortController()
       const stream = fakeSSEStream()
       const { handlerPromise } = await openStream(stream, controller.signal)
-      await waitingForClient(handlerPromise)
+      await waitingForClient(handlerPromise, stream)
 
       // The hangup as @hono/node-server reports it under a piped body: the
       // stream aborts, and the request signal aborts too.
@@ -1618,11 +1607,11 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       expectReleased()
     })
 
-    it('releases them when the request signal alone reports the hangup', async () => {
+    it('lets it go when the request signal alone reports the hangup', async () => {
       const controller = new AbortController()
       const stream = fakeSSEStream()
       const { handlerPromise } = await openStream(stream, controller.signal)
-      await waitingForClient(handlerPromise)
+      await waitingForClient(handlerPromise, stream)
 
       controller.abort()
 
@@ -1631,7 +1620,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       expectReleased()
     })
 
-    it('releases them when the stream had already aborted as its callback started', async () => {
+    it('lets it go when the stream had already aborted as its callback started', async () => {
       const stream = fakeSSEStream()
       stream.abort()
 
@@ -1641,7 +1630,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       expectReleased()
     })
 
-    it('releases them when the client aborts during the initial connection write', async () => {
+    it('lets it go when the client aborts during the initial connection write', async () => {
       const stream = fakeSSEStream()
       stream.writeSSE.mockImplementationOnce(async () => {
         stream.abort()
@@ -1653,7 +1642,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       expectReleased()
     })
 
-    it('releases them when the hangup lands while a setup write waits for a reader that never comes', async () => {
+    it('lets it go when the hangup lands while a write waits for a reader that never comes', async () => {
       const controller = new AbortController()
       const stream = fakeSSEStream()
       // A body @hono/node-server never piped: the write waits until the stream aborts.
@@ -1683,34 +1672,46 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
 
       expect(await settles(handlerPromise)).toBe(true)
       expect(agentRegistry.get('authorized-agent').messages.follow).not.toHaveBeenCalled()
-      expect(globalThis.setInterval).not.toHaveBeenCalled()
       expect(stream.writeSSE).not.toHaveBeenCalled()
     })
 
-    it('ends the stream through the same cleanup when a ping cannot be sent', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    it('ends the response when the actor ends the stream, after the frames it sent', async () => {
       const stream = fakeSSEStream()
       const { handlerPromise } = await openStream(stream)
-      await waitingForClient(handlerPromise)
+      await waitingForClient(handlerPromise, stream)
 
-      vi.mocked(agentRegistry.get('authorized-agent').sessions.turnOutcome).mockImplementation(() => {
-        throw new Error('turn outcome unavailable')
-      })
-      await pingTick!()
+      // A viewer too far behind is cut off: the browser reconnects with its last id.
+      frames.enqueue({ id: 'e:1', data: '{"type":"stream_delta"}' })
+      frames.close()
 
       expect(await settles(handlerPromise)).toBe(true)
-      expect(stream.abort).toHaveBeenCalled()
-      expectReleased()
-      consoleError.mockRestore()
+      expect(stream.writeSSE).toHaveBeenLastCalledWith({ id: 'e:1', data: '{"type":"stream_delta"}', event: 'message' })
+    })
+
+    it('writes each frame only once the one before it is written', async () => {
+      const stream = fakeSSEStream()
+      let written!: () => void
+      stream.writeSSE.mockImplementationOnce(() => new Promise<undefined>((resolve) => { written = () => resolve(undefined) }))
+      const { handlerPromise } = await openStream(stream)
+      await vi.waitFor(() => expect(stream.writeSSE).toHaveBeenCalledOnce())
+
+      frames.enqueue({ id: 'e:1', data: '{"type":"stream_delta"}' })
+      expect(await settles(handlerPromise)).toBe(false)
+      expect(stream.writeSSE).toHaveBeenCalledOnce()
+
+      written()
+      await vi.waitFor(() => expect(stream.writeSSE).toHaveBeenCalledTimes(2))
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
     })
 
     it('forwards the actor\'s frames with their ids, resuming after the Last-Event-ID the browser sent back', async () => {
       const stream = fakeSSEStream()
       const { handlerPromise } = await openStream(stream, undefined, { 'Last-Event-ID': 'e:41' })
-      await waitingForClient(handlerPromise)
+      await waitingForClient(handlerPromise, stream)
 
       expect(agentRegistry.get('authorized-agent').messages.follow)
-        .toHaveBeenCalledWith('new-session', { after: 'e:41' }, expect.any(Function))
+        .toHaveBeenCalledWith('new-session', { after: 'e:41' })
       expect(stream.writeSSE).toHaveBeenCalledWith({ id: 'e:0', data: '{"type":"connected"}', event: 'message' })
       stream.abort()
       expect(await settles(handlerPromise)).toBe(true)
@@ -1719,29 +1720,10 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     it('starts a viewer that sent no Last-Event-ID from a snapshot', async () => {
       const stream = fakeSSEStream()
       const { handlerPromise } = await openStream(stream)
-      await waitingForClient(handlerPromise)
+      await waitingForClient(handlerPromise, stream)
 
       expect(agentRegistry.get('authorized-agent').messages.follow)
-        .toHaveBeenCalledWith('new-session', { after: undefined }, expect.any(Function))
-      stream.abort()
-      expect(await settles(handlerPromise)).toBe(true)
-    })
-
-    it('pings through the actor it opened with', async () => {
-      const stream = fakeSSEStream()
-      const { handlerPromise } = await openStream(stream)
-      await waitingForClient(handlerPromise)
-      vi.mocked(agentRegistry.get('authorized-agent').sessions.isActive).mockReturnValue(true)
-      const get = vi.spyOn(agentRegistry, 'get')
-
-      await pingTick!()
-
-      expect(get).not.toHaveBeenCalled()
-      get.mockRestore()
-      expect(stream.writeSSE).toHaveBeenLastCalledWith({
-        data: JSON.stringify({ type: 'ping', isActive: true, turnOutcome: null }),
-        event: 'message',
-      })
+        .toHaveBeenCalledWith('new-session', { after: undefined })
       stream.abort()
       expect(await settles(handlerPromise)).toBe(true)
     })

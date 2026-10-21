@@ -27,6 +27,7 @@ import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
+import { sessionEvents, sessionFrames } from './session-streams'
 import type {
   AccountReauthOps,
   AgentActor,
@@ -307,8 +308,8 @@ function createMessageOps(
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
     media: (...args) => deps.transcripts.openMedia(store, ...args),
 
-    subscribe: (sessionId, listener) => live.listen(sessionId, listener),
-    follow: (sessionId, { after }, onFrame) => live.follow(sessionId, after, onFrame),
+    subscribe: async (sessionId) => sessionEvents(live, sessionId),
+    follow: (sessionId, { after }) => sessionFrames(live, sessionId, after),
     broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
   }
 }

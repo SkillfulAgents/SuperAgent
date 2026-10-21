@@ -3169,45 +3169,19 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
     // The client left during the awaits above: nothing to set up for it.
     if (clientSignal.aborted) return
     const clientGone = waitForClientGone(clientSignal, stream)
-    let pingInterval: ReturnType<typeof setInterval> | null = null
-    let unsubscribe: (() => void) | null = null
-
+    // The actor catches the client up (the frames it missed since the last id
+    // it got, or a snapshot), then sends every event and a keep-alive ping;
+    // each event's frame carries its id, which the browser sends back as
+    // Last-Event-ID when it reconnects. The stream ending (the client fell too
+    // far behind) ends the response, and the browser reconnects.
+    const frames = (await actor.messages.follow(sessionId, { after: c.req.header('Last-Event-ID') })).getReader()
+    void clientGone.then(() => frames.cancel())
     try {
-      // The actor catches the client up (the frames it missed since the last
-      // id it got, or a snapshot) and then forwards every event; each frame
-      // carries its id, which the browser sends back as Last-Event-ID when it
-      // reconnects.
-      unsubscribe = await actor.messages.follow(sessionId, { after: c.req.header('Last-Event-ID') }, (frame) => {
-        stream.writeSSE({ id: frame.id, data: frame.data, event: 'message' }).catch((error) => {
-          console.error('Error sending SSE message:', error)
-        })
-      })
-
-      // Keep-alive ping every 30 seconds
-      pingInterval = setInterval(async () => {
-        try {
-          await stream.writeSSE({
-            data: JSON.stringify({
-              type: 'ping',
-              isActive: actor.sessions.isActive(sessionId),
-              turnOutcome: actor.sessions.turnOutcome(sessionId),
-            }),
-            event: 'message',
-          })
-        } catch (error) {
-          // Not a failed write: hono swallows those, and the hangup behind one
-          // aborts the stream, which clientGone hears. This is a ping that could
-          // not be built; end the stream (the client reconnects) through the
-          // same cleanup as a hangup rather than keep a broken ping running.
-          console.error('Error sending SSE ping:', error)
-          stream.abort()
-        }
-      }, 30000)
-
-      await clientGone
+      for (let next = await frames.read(); !next.done; next = await frames.read()) {
+        await stream.writeSSE({ id: next.value.id, data: next.value.data, event: 'message' })
+      }
     } finally {
-      if (pingInterval) clearInterval(pingInterval)
-      if (unsubscribe) unsubscribe()
+      await frames.cancel()
     }
   })
 })

@@ -61,9 +61,16 @@ vi.mock('@shared/lib/agent-actor', () => ({
         await state.send(request.sessionId, request.content, request.uuid)
         return { status: 'sent', queued: false }
       },
-      subscribe: (session: string, callback: (event: unknown) => void) => {
-        state.streams.set(session, callback)
-        return () => { state.streams.delete(session) }
+      // The actor's event stream for the session.
+      subscribe: async (session: string) => {
+        let listener: (event: unknown) => void
+        return new ReadableStream({
+          start(controller) {
+            listener = (event) => controller.enqueue(event)
+            state.streams.set(session, listener)
+          },
+          cancel() { if (state.streams.get(session) === listener) state.streams.delete(session) },
+        })
       },
     },
   }) },
