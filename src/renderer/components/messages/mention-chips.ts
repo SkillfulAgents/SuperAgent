@@ -2,7 +2,7 @@ import type { DOMOutputSpec } from 'prosemirror-model'
 import { mentionName } from '@shared/lib/utils/mentions'
 import type { Chip } from '@renderer/lib/chip-marker'
 import type { ComposerChipKind, ComposerChipTrigger } from './composer-chips'
-import { AgentMentionIcon, MENTION_CHIP_CLASS, UserMentionIcon, agentForSlug } from './mention-chip'
+import { AgentMentionIcon, ChatMentionIcon, MENTION_CHIP_CLASS, UserMentionIcon, agentForSlug } from './mention-chip'
 import { offerReach, offerShare } from './mention-access-gate'
 import { MentionMenu } from './mention-menu'
 
@@ -49,7 +49,17 @@ export const agentChip: ComposerChipKind = {
   beforeSend: offerReach,
 }
 
-/** `@` picks a teammate or another agent. */
+/** One of this agent's chats: the referent is its session id, the label its title. */
+export const chatChip: ComposerChipKind = {
+  kind: 'chat',
+  referent: /^[A-Za-z0-9_-]+$/,
+  render: renderMention('chat-mention'),
+  Icon: ChatMentionIcon,
+  toAgentText,
+  mention: (chip) => ({ kind: 'chat', id: chip.referent, name: chip.label }),
+}
+
+/** `@` picks a teammate, another agent, or one of this agent's chats. */
 export const mentionTrigger: ComposerChipTrigger = {
   char: '@',
   available: ({ agentSlug }) => !!agentSlug,

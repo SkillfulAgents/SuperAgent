@@ -190,6 +190,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
 
   const composer = useMessageComposer({
     agentSlug,
+    sessionId,
     uploadFile: useCallback(
       ({ file, onProgress, signal, stallMs }) => uploadFile.mutateAsync({ sessionId: sessionId ?? undefined, agentSlug, file, onProgress, signal, stallMs }),
       [uploadFile, sessionId, agentSlug]

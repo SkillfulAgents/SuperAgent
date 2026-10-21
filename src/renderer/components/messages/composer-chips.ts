@@ -5,7 +5,7 @@ import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { appendMentions, parseMentions, type Mention } from '@shared/lib/utils/mentions'
 import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
-import { agentChip, mentionTrigger, userChip } from './mention-chips'
+import { agentChip, chatChip, mentionTrigger, userChip } from './mention-chips'
 
 /** Someone who can open the agent. */
 export interface ChipPerson {
@@ -27,6 +27,8 @@ export interface ChipAgent {
 export interface ChipContext {
   /** The agent the draft is for. */
   agentSlug?: string
+  /** The chat the draft is for, when it has one. */
+  sessionId?: string
   /** Env vars of the agent's saved secrets; undefined until they load. */
   secretEnvVars?: ReadonlySet<string>
   /** The people who can open the agent, by user id; undefined outside auth mode or until they load. */
@@ -103,7 +105,7 @@ export interface ComposerChipKind {
   opensSilently?: boolean
 }
 
-export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind[] = [secretChip, userChip, agentChip]
+export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind[] = [secretChip, userChip, agentChip, chatChip]
 
 /** What a trigger's picker receives. It shows at the caret while the query is typed. */
 export interface ChipPickerProps {
@@ -218,8 +220,9 @@ export const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g
 export function draftFromAgentText(text: string, agentId: (slug: string) => string): string {
   const { cleanText, mentions } = parseMentions(text)
   if (mentions.length === 0) return text
-  const markers = new Map(mentions.map((mention) => [mention.name, formatChipMarker(mention.kind === 'user'
-    ? { kind: userChip.kind, referent: mention.id, label: mention.name }
+  const markers = new Map(mentions.map((mention) => [mention.name, formatChipMarker(
+    mention.kind === 'user' ? { kind: userChip.kind, referent: mention.id, label: mention.name }
+    : mention.kind === 'chat' ? { kind: chatChip.kind, referent: mention.id, label: mention.name }
     : { kind: agentChip.kind, referent: agentId(mention.slug), label: mention.name })]))
   // Longer names first, so `@Ann Lee` is not read as `@Ann`.
   const names = [...markers.keys()].sort((a, b) => b.length - a.length)

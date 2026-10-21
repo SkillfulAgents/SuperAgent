@@ -1,10 +1,12 @@
 import { useMemo } from 'react'
-import { Bot } from 'lucide-react'
+import { Bot, MessageSquare } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { Mention } from '@shared/lib/utils/mentions'
 import type { Chip } from '@renderer/lib/chip-marker'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
+import { AppLink } from '@renderer/components/ui/app-link'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import type { ChipAgent, ChipContext, ChipPerson } from './composer-chips'
@@ -55,15 +57,34 @@ export function AgentMentionIcon({ chip, context }: { chip: Chip; context: ChipC
   return <AgentIcon agent={agentForSlug(context.agents, chip.referent)} />
 }
 
-/** A mention in a sent message: the same chip the composer drew. */
+export function ChatMentionIcon() {
+  return <MessageSquare className="size-3.5 shrink-0" aria-hidden />
+}
+
+/** A mention in a sent message: the same chip the composer drew. A chat opens on click. */
 export function MentionChip({ mention, agentSlug }: { mention: Mention; agentSlug?: string }) {
   const { members, agents } = useMentionDirectory(agentSlug)
+  if (mention.kind === 'chat' && agentSlug) {
+    return (
+      <AppLink
+        to="/agents/$slug/sessions/$sessionId"
+        params={{ slug: agentSlug, sessionId: mention.id }}
+        className={cn(MENTION_CHIP_CLASS, 'hover:underline')}
+        data-testid="chat-mention"
+      >
+        <span data-chip-icon=""><ChatMentionIcon /></span>
+        @{mention.name}
+      </AppLink>
+    )
+  }
   return (
     <span className={MENTION_CHIP_CLASS} data-testid={`${mention.kind}-mention`}>
       <span data-chip-icon="">
         {mention.kind === 'user'
           ? <PersonAvatar id={mention.id} name={mention.name} members={members} />
-          : <AgentIcon agent={agentForSlug(agents, mention.slug)} />}
+          : mention.kind === 'chat'
+            ? <ChatMentionIcon />
+            : <AgentIcon agent={agentForSlug(agents, mention.slug)} />}
       </span>
       @{mention.name}
     </span>

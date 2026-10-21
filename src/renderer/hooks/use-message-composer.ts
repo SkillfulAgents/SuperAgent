@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { toast } from 'sonner'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
 import { useUploadQueue } from './use-upload-queue'
@@ -14,6 +15,10 @@ import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import { chipsToAgentText, silentOpener, type ChipContext } from '@renderer/components/messages/composer-chips'
 import { secretMarker } from '@renderer/components/messages/secret-chip'
+import { agentForSlug } from '@renderer/components/messages/mention-chip'
+import { formatChipMarker } from '@renderer/lib/chip-marker'
+import { readChatDrag } from '@renderer/lib/chat-drag'
+import { recordChatUse } from '@renderer/lib/chat-usage'
 import {
   findPotentialSecrets,
   type PotentialSecret,
@@ -22,6 +27,8 @@ import { useComposerChips } from './use-composer-chips'
 
 interface UseMessageComposerOptions {
   agentSlug: string
+  /** The chat this composer sends to, which a dropped chat cannot mention. */
+  sessionId?: string | null
   /** Upload a single file. Caller provides the right endpoint (session-level or agent-level). */
   uploadFile: (args: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => Promise<{ path: string }>
   /** Upload a folder via Electron fs.cp. Caller provides the right endpoint. */
@@ -52,7 +59,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
-  const chips = useComposerChips(agentSlug)
+  const chips = useComposerChips(agentSlug, options.sessionId)
   const chipContext = chips.context
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -143,7 +150,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     clearAttachments: clearAttachmentsRaw,
     handleFileSelect,
     handleFolderSelect,
-    dragHandlers,
+    dragHandlers: attachmentDragHandlers,
   } = useAttachments({
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
@@ -331,6 +338,24 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
     return true
   }
+
+  // A chat dragged from the sidebar becomes a chat chip at the end of the draft.
+  const dragHandlers = useMemo(() => ({
+    ...attachmentDragHandlers,
+    onDrop: (event: React.DragEvent) => {
+      const chat = readChatDrag(event.dataTransfer)
+      // Clears the drop cue; a dragged chat carries no files to attach.
+      void attachmentDragHandlers.onDrop(event)
+      if (!chat || !agentSlug || chat.sessionId === chipContext.sessionId) return
+      if (chat.agentSlug !== (agentForSlug(chipContext.agents, agentSlug)?.slug ?? agentSlug)) {
+        toast.error("Only this agent's chats can be mentioned here")
+        return
+      }
+      recordChatUse(chat.sessionId)
+      const marker = formatChipMarker({ kind: 'chat', referent: chat.sessionId, label: chat.name })
+      setMessage((current) => `${current}${current && !/\s$/.test(current) ? ' ' : ''}${marker} `)
+    },
+  }), [attachmentDragHandlers, agentSlug, chipContext.agents, chipContext.sessionId])
 
   const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
 

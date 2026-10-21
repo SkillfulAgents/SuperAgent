@@ -14,6 +14,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 import { useSessionSearch } from '@renderer/hooks/use-session-search'
+import { recordChatUse } from '@renderer/lib/chat-usage'
 import { SessionSearchBar } from '@renderer/components/messages/session-search-bar'
 
 interface SessionViewProps {
@@ -55,6 +56,10 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
   // Context usage: prefer live stream data, fall back to persisted session metadata
   const contextUsage = sessionId ? streamContextUsage ?? session?.lastUsage ?? null : null
   const contextPercent = contextUsage ? computeContextPercent(contextUsage) : null
+
+  useEffect(() => {
+    if (sessionId) recordChatUse(sessionId)
+  }, [sessionId])
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {

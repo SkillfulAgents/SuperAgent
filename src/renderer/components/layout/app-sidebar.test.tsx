@@ -31,6 +31,7 @@ const mockOpenDashboardExternal = vi.hoisted(() => vi.fn())
 const mockNavigate = vi.hoisted(() => vi.fn())
 const mockGetItemsFromDataTransfer = vi.hoisted(() => vi.fn())
 const mockToastError = vi.hoisted(() => vi.fn())
+const mockSortablePointerDown = vi.hoisted(() => vi.fn())
 
 vi.mock('sonner', async (importOriginal) => ({
   ...await importOriginal<typeof import('sonner')>(),
@@ -356,7 +357,7 @@ vi.mock('@dnd-kit/sortable', () => ({
   sortableKeyboardCoordinates: vi.fn(),
   useSortable: () => ({
     attributes: {},
-    listeners: {},
+    listeners: { onPointerDown: mockSortablePointerDown },
     setNodeRef: vi.fn(),
     setActivatorNodeRef: vi.fn(),
     transform: null,
@@ -910,6 +911,25 @@ describe('AppSidebar — agent rows', () => {
         params: { slug: 'test-agent', sessionId: 'session-1' },
       })
     })
+  })
+
+  it('drags a session row as a chat to mention, not as its agent', () => {
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('session-item-session-1').closest('li')!
+
+    fireEvent.pointerDown(screen.getByTestId('session-item-session-1'))
+    expect(mockSortablePointerDown).not.toHaveBeenCalled()
+    fireEvent.pointerDown(screen.getByTestId('agent-item-test-agent'))
+    expect(mockSortablePointerDown).toHaveBeenCalledTimes(1)
+
+    expect(row).toHaveAttribute('draggable', 'true')
+    const dataTransfer = { setData: vi.fn(), clearData: vi.fn() }
+    fireEvent.dragStart(row, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      'application/x-gamut-chat',
+      JSON.stringify({ agentSlug: 'test-agent', sessionId: 'session-1', name: 'Session 1' }),
+    )
   })
 
   it('refuses file drops on a session awaiting input, which has no composer mounted', async () => {
