@@ -43,6 +43,7 @@ describe('diffObservations', () => {
       focusValue: '',
       focusValueChars: 0,
       busyRose: false,
+      textReplaced: false,
       unreadFrames: 0,
     })
   })

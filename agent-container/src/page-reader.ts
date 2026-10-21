@@ -73,11 +73,12 @@ export function readerScript(): string {
     // hidden: what a person cannot see but innerText would read — opacity 0
     // (an inactive carousel slide; not below the fold, where it is usually
     // waiting for a fade-in on scroll), screen-reader-only boxes (1px,
-    // clipped), and fixed panels parked outside the viewport (a closed cart
-    // drawer), with everything inside them. deep: boxes whose innerText
+    // clipped), and a fixed panel that is itself outside the viewport (a
+    // closed cart drawer), with everything inside them — not what a visible
+    // fixed overlay holds past the viewport's edge (a scrolled modal). deep: boxes whose innerText
     // cannot be trusted — they hold hidden text, a shadow root (innerText
     // does not enter it) or cards — so the walk goes into them.
-    'var hidden=new Set(),deep=new Set(),fixedIn=new Set(),groups=new Map(),srBox=new Set();' +
+    'var hidden=new Set(),deep=new Set(),groups=new Map(),srBox=new Set();' +
     'var parentOf=function(e){return e.parentElement||(e.parentNode&&e.parentNode.host)||null};' +
     'var markUp=function(e){for(var a=e;a&&!deep.has(a);a=parentOf(a))deep.add(a)};' +
     // Cards: three or more sibling boxes of one tag and class (a results grid)
@@ -93,16 +94,22 @@ export function readerScript(): string {
     // A link or button with no visible text of its own: its screen-reader
     // text, all of it, is its name (an icon link: "Instagram", "(opens in a
     // new tab)").
+    // No text of its own outside screen-reader boxes. An image link like
+    // that is named by its image (a logo link), unless the card around it
+    // already says the same.
+    'var noOwnText=function(h){var tw=document.createTreeWalker(h,4);for(var t=tw.nextNode();t;t=tw.nextNode()){if(!ws(t.nodeValue))continue;var hid=false;for(var a=t.parentElement;a&&a!==h.parentElement;a=a.parentElement){if(srLike(a)){hid=true;break}}if(!hid)return false}return true};' +
     'var srLike=function(x){try{if(x.matches(SRONLY))return true;var r=x.getBoundingClientRect();if(r.width<=1&&r.height<=1){var c=getComputedStyle(x);return c.position==="absolute"||c.position==="fixed"}}catch(e){}return false};' +
-    'var onlyName=function(e){try{var h=e.parentElement&&e.parentElement.closest("a,button,[role=button],[role=link]");if(!h||!ws(e.textContent)||srLike(h))return false;var tw=document.createTreeWalker(h,4);for(var t=tw.nextNode();t;t=tw.nextNode()){if(!ws(t.nodeValue))continue;var hid=false;for(var a=t.parentElement;a&&a!==h.parentElement;a=a.parentElement){if(srLike(a)){hid=true;break}}if(!hid)return false}return true}catch(x){return false}};' +
+    'var onlyName=function(e){try{var h=e.parentElement&&e.parentElement.closest("a,button,[role=button],[role=link]");if(!h||!ws(e.textContent)||srLike(h))return false;var hr=h.getBoundingClientRect();if(hr.width<=1||hr.height<=1||hr.right<=0||hr.bottom+(window.scrollY||0)<=0)return false;return noOwnText(h)}catch(x){return false}};' +
     'var box=function(e,ty){return e.tagName==="INPUT"&&(ty==="checkbox"||ty==="radio")};' +
     'var scan=function(root){var all=root.querySelectorAll("*");for(var i=0;i<all.length;i++){var e=all[i];var p=parentOf(e);' +
     'if(p&&hidden.has(p)){hidden.add(e)}else{var cs=null;try{cs=getComputedStyle(e)}catch(x){}' +
-    'if(cs){var fx=cs.position==="fixed"||(p!==null&&fixedIn.has(p));if(fx)fixedIn.add(e);var r=null;var gone=false;' +
+    'if(cs){var fx=cs.position==="fixed";var r=null;var gone=false;' +
     // A styled-away native checkbox (opacity 0 under a custom box) still has a state.
     'if(cs.opacity==="0"&&!box(e,String(e.type||"").toLowerCase())){r=e.getBoundingClientRect();if(r.top<VH)gone=true}' +
     'if(!gone&&fx){r=r||e.getBoundingClientRect();if(r.width>0&&r.height>0&&(r.right<=0||r.left>=VW||r.bottom<=0||r.top>=VH))gone=true}' +
-    'if(!gone&&cs.position==="absolute"){r=r||e.getBoundingClientRect();if(r.width>0&&(r.right<=0||r.bottom+(window.scrollY||0)<=0)&&!onlyName(e))gone=true}' +
+    // A box with no width or height says nothing about where its content
+    // shows (Wikipedia's MediaViewer: a 0-high wrapper at the top of the page).
+    'if(!gone&&cs.position==="absolute"){r=r||e.getBoundingClientRect();if(r.width>1&&r.height>1&&(r.right<=0||r.bottom+(window.scrollY||0)<=0)&&!onlyName(e))gone=true}' +
     'if(!gone&&(cs.position==="absolute"||cs.position==="fixed")){r=r||e.getBoundingClientRect();if(r.width<=1&&r.height<=1&&(cs.overflow==="hidden"||cs.clip!=="auto"||cs.clipPath!=="none")&&!RATING.test(e.textContent||"")&&!onlyName(e)&&!isHead(e)){gone=true;srBox.add(e)}}' +
     'if(gone){hidden.add(e);if(p&&String(e.textContent||"").trim())markUp(p)}}}' +
     'if(e.shadowRoot&&!hidden.has(e)){markUp(e);scan(e.shadowRoot)}' +
@@ -120,7 +127,7 @@ export function readerScript(): string {
     // Rows of one table share the cells a rowspan carries down.
     'var spans=new Map();' +
     'var CTRL="select,input,textarea,[role=checkbox],[role=radio],[role=switch],svg[aria-label],[role=img][aria-label],img[alt]";' +
-    'var cellText=function(c){if(c.querySelector(CTRL)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join(""));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
+    'var cellText=function(c){if(c.querySelector(CTRL)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join("").split("\\n").map(function(l){return l.replace(/^\\s*(#{1,6}|-)\\s+/,"")}).join(" "));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
     'var SEP="\\n\\n---\\n\\n";' +
     'var walk=function(node,depth){if(full)return;' +
     'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);else if(t)push(" ");return}' +
@@ -134,7 +141,7 @@ export function readerScript(): string {
     'if(role==="checkbox"||role==="radio"||role==="switch"){var ac=el.getAttribute("aria-checked");push(ac==="true"?" [x] ":ac==="mixed"?" [-] ":" [ ] ")}' +
     // An icon is its name; a large image's alt is left out (a product photo
     // repeats the product name) unless the page has no text at all.
-    'if(tag==="SVG"||tag==="IMG"||(role==="img"&&!ws(el.innerText))){var il=tag==="IMG"?el.getAttribute("alt"):el.getAttribute("aria-label");var small=true;try{small=el.getBoundingClientRect().width<=48}catch(e){}if(il&&small){var ctx=tag==="IMG"?(el.closest("a,button,li,td")||el.parentElement):null;if(!(ctx&&ws(ctx.innerText).indexOf(ws(il))>=0))push(" "+ws(il)+" ")}else if(il)bigAlts.push(ws(il));return}' +
+    'if(tag==="SVG"||tag==="IMG"||(role==="img"&&!ws(el.innerText))){var il=tag==="IMG"?el.getAttribute("alt"):el.getAttribute("aria-label");var small=true;try{small=el.getBoundingClientRect().width<=48}catch(e){}var lk=tag==="IMG"?el.closest("a,button"):null;if(il&&small){var ctx=tag==="IMG"?(el.closest("a,button,li,td")||el.parentElement):null;if(!(ctx&&ws(ctx.innerText).indexOf(ws(il))>=0))push(" "+ws(il)+" ")}else if(il&&lk&&noOwnText(lk)&&!((lk.parentElement&&lk.parentElement.closest("li,article,div")||document.body).innerText||"").includes(ws(il)))push(" "+ws(il)+" ");else if(il)bigAlts.push(ws(il));return}' +
     'if(tag==="SELECT"){var so=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null;if(so)push(" "+ws(so.text)+" ");return}' +
     // A field's value; never a password.
     'if(tag==="INPUT"){if(ty!=="password"&&ty!=="hidden"&&ty!=="submit"&&ty!=="button"&&ty!=="image"&&el.value&&!clear(el)){push(" ["+ws(el.value).slice(0,200)+"] ")}return}' +

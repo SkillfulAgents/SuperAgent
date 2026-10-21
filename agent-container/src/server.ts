@@ -2144,6 +2144,8 @@ app.post('/browser/read', async (c) => {
       }
     } else {
       content = text;
+      // Nothing visible is an observation too — not an empty result to read as "no data".
+      if (!content) note = `The reader found no visible text on the page${probe.textChars > 0 ? `; the document's innerText has ${probe.textChars.toLocaleString('en-US')} chars (browser_snapshot with fullText:true shows text beside refs)` : ''}.`;
     }
 
     // A dialog or banner on top reads like the page's own text; name it.

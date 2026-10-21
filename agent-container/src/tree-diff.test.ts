@@ -300,6 +300,19 @@ describe('re-rendered elements', () => {
   })
 })
 
+describe('the same line leaving and arriving many times', () => {
+  it('is one line, so the other removals stay in view (Toyota disclaimers)', () => {
+    const disc = (base: number) => Array.from({ length: 18 }, (_, i) => `- button "disclaimer *" [ref=e${base + i}]`)
+    const before = [...disc(100), '- heading "Set Your Location" [level=2, ref=e1]', '- textbox "ZIP" [ref=e2]'].join('\n')
+    const after = ['- heading "Choose a trim" [level=2, ref=e3]', ...disc(200)].join('\n')
+    const text = formatTreeDiff(diffTrees(parseTreeRefs(before), parseTreeRefs(after), { overlayOpened: true }), { baselineAgeMs: 0, baselineSource: 'action' })
+    expect(text).toContain('± button "disclaimer *": 18 left the tree, 18 arrived (e200, e201, e202, e203, e204, e205, e206, e207, …)')
+    expect(text).toContain('− heading "Set Your Location" [level=2, ref=e1]')
+    expect(text).toContain('− textbox "ZIP" [ref=e2]')
+    expect(text).not.toContain('+ button "disclaimer *"')
+  })
+})
+
 describe('a dialog that arrived', () => {
   it('lists its own lines before other arrivals', () => {
     const late = Array.from({ length: 30 }, (_, i) => `- generic "$${500 + i} for 2 nights" [ref=e${100 + i}]`).join('\n')

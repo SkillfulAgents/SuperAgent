@@ -357,6 +357,8 @@ export const TREE_DIFF_MAX_LINES = 25
 export const TREE_DIFF_MAX_REMOVED_LINES = 6
 /** Re-rendered elements: enough old → new pairs to keep acting, then a count. */
 export const TREE_DIFF_MAX_RERENDER_LINES = 6
+/** A line leaving and arriving at least this many times is summarised in one line. */
+export const TREE_DIFF_CHURN_MIN = 3
 /** Elements back in the tree are listed up to this many, then counted. */
 export const TREE_DIFF_MAX_BACK_LINES = 5
 /** Changed lines listed ahead of the added ones; the rest follow them. */
@@ -423,18 +425,37 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
     }
     return false
   }
-  const shownAdded = d.added.filter(l => !wrappers.has(l.ref))
+  // The same line leaving and arriving many times over (Toyota: 18 ×
+  // "disclaimer *" whose surroundings changed): one line each, so what else
+  // left or arrived is not buried under them.
+  const keyCount = (ls: RefLine[]): Map<string, RefLine[]> => {
+    const m = new Map<string, RefLine[]>()
+    for (const l of ls) m.set(lineWithoutRef(l.text), [...(m.get(lineWithoutRef(l.text)) ?? []), l])
+    return m
+  }
+  const arrivedBy = keyCount(d.added.filter(l => !wrappers.has(l.ref)))
+  const leftBy = keyCount(d.removed)
+  const churn = [...arrivedBy.keys()].filter(k => (arrivedBy.get(k)?.length ?? 0) >= TREE_DIFF_CHURN_MIN && (leftBy.get(k)?.length ?? 0) >= TREE_DIFF_CHURN_MIN)
+  const churned = new Set(churn)
+  const churnLines = churn.map(k => {
+    const came = arrivedBy.get(k) ?? []
+    const refs = came.slice(0, 8).map(l => l.ref).join(', ')
+    return `± ${clip(k, 120)}: ${leftBy.get(k)?.length ?? 0} left the tree, ${came.length} arrived (${refs}${came.length > 8 ? ', …' : ''})`
+  })
+  const shownAdded = d.added.filter(l => !wrappers.has(l.ref) && !churned.has(lineWithoutRef(l.text)))
   const ordered = [...shownAdded.filter(inNewDialog), ...shownAdded.filter(l => !inNewDialog(l))]
   const main: string[] = [
     ...changedLines.slice(0, TREE_DIFF_LEADING_CHANGED_LINES),
     ...ordered.map(l => `+ ${clip(l.text, LINE_CHARS)}`),
+    ...churnLines,
     ...changedLines.slice(TREE_DIFF_LEADING_CHANGED_LINES),
   ]
+  const removedList = d.removed.filter(l => !churned.has(lineWithoutRef(l.text)))
   // A menu or listbox that arrived while many elements left: a modal menu
   // (Radix and others) takes the page out of the tree like a dialog does.
   const popup = opts.dialogOpened ? '' : d.popup ?? ''
-  const collapse = opts.dialogOpened || (popup !== '' && d.removed.length > TREE_DIFF_MAX_REMOVED_LINES)
-  const removedShown = collapse ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)
+  const collapse = opts.dialogOpened || (popup !== '' && removedList.length > TREE_DIFF_MAX_REMOVED_LINES)
+  const removedShown = collapse ? 0 : Math.min(removedList.length, TREE_DIFF_MAX_REMOVED_LINES)
   // First: refs that stopped working. Acting on one of them is the failure
   // this prevents (✗ Unknown ref after a site re-drew the page).
   const lines: string[] = []
@@ -455,8 +476,8 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   } else if (d.returned.length > 0) {
     lines.push(`+ ${d.returned.length} elements back in the tree exactly as you last saw them, same refs`)
   }
-  lines.push(...d.removed.slice(0, removedShown).map(l => `− ${clip(l.text, LINE_CHARS)}`))
-  const removedHidden = d.removed.length - removedShown
+  lines.push(...removedList.slice(0, removedShown).map(l => `− ${clip(l.text, LINE_CHARS)}`))
+  const removedHidden = removedList.length - removedShown
   if (removedHidden > 0) {
     lines.push(opts.dialogOpened
       ? `− ${removedHidden} other element${removedHidden === 1 ? ' is' : 's are'} not in the tree while the dialog is open`

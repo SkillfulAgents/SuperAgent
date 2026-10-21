@@ -122,6 +122,12 @@ export interface ActionEffect {
    * than before the action: what it started is still loading.
    */
   busyRose?: boolean
+  /**
+   * The content text changed with its length the same (a total from $37,695
+   * to $38,170). Not reported as text — a clock does that too — but worth a
+   * tree read after a click, press or select.
+   */
+  textReplaced?: boolean
   /** Visible cross-origin frames: their contents are not read. */
   unreadFrames?: number
 }
@@ -149,6 +155,7 @@ export function diffObservations(before: PageObservation, after: PageObservation
     focusValue: after.focusValue,
     focusValueChars: after.focusValueChars,
     busyRose: after.busy > before.busy,
+    textReplaced: after.contentHash !== before.contentHash && after.contentChars === before.contentChars,
     unreadFrames: after.iframes.filter(f => !f.sameOrigin).length,
   }
 }
@@ -260,7 +267,7 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   // moved (DuckDuckGo's "More results": the button turned into a spinner,
   // the results came a second later).
   const onlyClosed = (e: ActionEffect): boolean =>
-    e.interactiveDelta < 0 && e.opened.length === 0 && !e.textChanged && !e.labelsChanged && e.blockerAppeared === '' && e.announced.length === 0
+    e.interactiveDelta < 0 && e.opened.length === 0 && (!e.textChanged || e.textDelta < 0) && !e.labelsChanged && e.blockerAppeared === '' && e.announced.length === 0
   const settledYet = (e: ActionEffect): boolean =>
     !promised(e) && !e.busyRose && !((policy.verb === 'click' || policy.verb === 'press') && onlyClosed(e)) &&
     (contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged)))
@@ -295,7 +302,7 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
  */
 export function effectWantsTree(e: ActionEffect, verb: ActionVerb): boolean {
   if (e.opened.length > 0 || e.closed.length > 0 || e.interactiveDelta !== 0 || e.stateChanged) return true
-  return (e.textChanged || e.labelsChanged) && (verb === 'click' || verb === 'press' || verb === 'select')
+  return (e.textChanged || e.labelsChanged || Boolean(e.textReplaced)) && (verb === 'click' || verb === 'press' || verb === 'select')
 }
 
 export interface EffectTreeDiff extends Pick<TreeDiffFormatOptions, 'baselineSource'> {

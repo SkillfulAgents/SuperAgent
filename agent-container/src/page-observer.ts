@@ -206,7 +206,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
   return (
     '(function(){' +
     'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,labelHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:"",docStart:0,busy:0,blockerOverlay:false};' +
-    'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
+    'var ws=function(s){return String(s||"").replace(/[\\u200b\\u200c\\u2060\\ufeff]/g,"").replace(/\\s+/g," ").trim()};var body="";' +
     'var hash=function(s){var h=5381;var lim=Math.min(s.length,' + TEXT_HASH_CAP + ');for(var q=0;q<lim;q++){h=((h<<5)+h+s.charCodeAt(q))|0}return h};' +
     // checkVisibility covers visibility:hidden / opacity:0 — how many dropdowns hide
     // their closed state (Wikipedia's Vector menu keeps layout boxes for hidden
