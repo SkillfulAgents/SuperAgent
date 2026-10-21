@@ -117,7 +117,9 @@ describe('decodeBase64 + parseMessage + recipients', () => {
     const encoded = base64url(big)
     const started = performance.now()
     expect(h.decodeBase64(encoded)).toBe(big)
-    expect(performance.now() - started).toBeLessThan(400)
+    // Catches a super-linear decoder (minutes at this size). Linear takes
+    // ~40 ms alone but up to ~480 ms on CI, under coverage on a loaded runner.
+    expect(performance.now() - started).toBeLessThan(2_000)
   })
 
   it('unfolds headers and stops at the body', () => {
