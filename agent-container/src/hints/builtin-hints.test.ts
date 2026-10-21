@@ -62,6 +62,23 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['write a skill file', before('Write', { file_path: '/workspace/.claude/skills/signup-abuse-monitor/SKILL.md' }), ['live-skill-edit']],
   ['edit a skill script', before('Edit', { file_path: '/workspace/.claude/skills/fetch-weather/weather.py' }), ['live-skill-edit']],
   ['write a draft outside skills', before('Write', { file_path: '/workspace/drafts/signup-abuse-monitor.md' }), []],
+  ['sentry issue search with OR', before('mcp__sentry__search_issues', { query: 'is:unresolved (project:api OR project:web)' }), ['sentry-search-no-boolean']],
+  ['sentry issue search with AND', before('mcp__sentry__search_issues', { query: 'is:unresolved AND level:error' }), ['sentry-search-no-boolean']],
+  ['sentry issue search', before('mcp__sentry__search_issues', { query: 'is:unresolved lastSeen:-7d' }), []],
+  ['sentry word containing or', before('mcp__sentry__search_issues', { query: 'message:"order failed"' }), []],
+  ['supabase SQL', before('mcp__supabase__execute_sql', { project_id: 'abc', query: 'select id from public.orders limit 5' }), ['supabase-check-columns']],
+  ['supabase list tables', before('mcp__supabase__list_tables', { project_id: 'abc' }), []],
+  ['linear list issues', before('mcp__linear__list_issues', { assignee: 'me', fields: ['title', 'updatedAt'] }), ['linear-fields-and-ids']],
+  ['linear get issue', before('mcp__linear__get_issue', { id: 'ENG-241' }), ['linear-fields-and-ids']],
+  ['linear list teams', before('mcp__linear__list_teams'), []],
+  ['customer.io read API', before('mcp__customer_io__cio_read_api', { path: '/v1/environments/{environment_id}/campaigns' }), ['customer-io-schema-first']],
+  ['customer.io write API', before('mcp__customer_io__cio_write_api', { path: '/v1/environments/{environment_id}/campaigns/{campaign_id}', method: 'PUT' }), ['customer-io-schema-first']],
+  ['customer.io schema', before('mcp__customer_io__cio_schema', { path: '/v1/environments/{environment_id}/campaigns' }), []],
+  ['proxy POST with -d', bash('curl -s -X POST "$PROXY_BASE_URL/acc-hubspot/api.hubapi.com/crm/v3/objects/contacts" -H "Authorization: Bearer $PROXY_TOKEN" -d "email=ann@example.com"'), ['proxy-json-body']],
+  ['proxy POST with -d before the URL', bash('curl -s -d "name=Ann" "$PROXY_BASE_URL/acc-crm/api.example.com/v1/leads"'), ['proxy-json-body']],
+  ['proxy POST with --data-binary', bash('curl -s "$PROXY_BASE_URL/acc-drive/www.googleapis.com/upload/drive/v3/files" --data-binary @report.pdf'), ['proxy-json-body']],
+  ['proxy GET', bash('curl -s "$PROXY_BASE_URL/acc-gmail/gmail.googleapis.com/gmail/v1/users/me/profile" -H "Authorization: Bearer $PROXY_TOKEN"'), []],
+  ['curl -d without the proxy', bash('curl -s -d "q=1" https://api.example.com/search'), []],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
