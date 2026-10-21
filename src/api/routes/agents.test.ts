@@ -6202,6 +6202,19 @@ describe('decision routes settle their request immediately', () => {
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
   })
 
+  it('answers 409 to a decision whose request another decision settled between its gate and its claim', async () => {
+    parkOpen('tool-dec-11', 'browser_input')
+    // The gate saw it open; the other decision lands before this one claims.
+    vi.spyOn(agentRegistry.get('test-agent').inputs, 'claim').mockImplementationOnce(async (id) => {
+      userInputRequestManager.resolve(id, 'answered', 'test-agent')
+      return userInputRequestManager.claimRequest(id, 'test-agent')
+    })
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-11' })
+    expect(res.status).toBe(409)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
   it('a failed container reject does NOT settle the request', async () => {
     parkOpen('tool-dec-10', 'secret')
     mockContainerFetch.mockResolvedValue(

@@ -36,16 +36,28 @@ export async function findAgentsAssignedConnectedAccount(accountId: string): Pro
   return mappings.map(({ agentSlug }) => agentSlug)
 }
 
-/** The MCP was re-authorized: the proxy calls parked on it go on, in every agent it is assigned to. */
+/**
+ * The MCP was re-authorized: the proxy calls parked on it go on, in every
+ * agent it is assigned to. Best effort, as the reconnect itself has already
+ * succeeded: a call left parked times out.
+ */
 export async function resumeMcpReauthWaits(mcpId: string): Promise<void> {
-  const slugs = await findAgentsAssignedRemoteMcp(mcpId)
-  await Promise.all(slugs.map((slug) => agentRegistry.get(slug).inputs.mcpReauth.completeConnection(mcpId)))
+  try {
+    const slugs = await findAgentsAssignedRemoteMcp(mcpId)
+    await Promise.all(slugs.map((slug) => agentRegistry.get(slug).inputs.mcpReauth.completeConnection(mcpId)))
+  } catch (error) {
+    console.warn(`[ConnectionSync] Failed to resume the calls parked on MCP ${mcpId}:`, error)
+  }
 }
 
-/** The account was reconnected: the proxy calls parked on it go on, in every agent it is assigned to. */
+/** The account was reconnected: as `resumeMcpReauthWaits`, for the calls parked on the account. */
 export async function resumeAccountReauthWaits(accountId: string): Promise<void> {
-  const slugs = await findAgentsAssignedConnectedAccount(accountId)
-  await Promise.all(slugs.map((slug) => agentRegistry.get(slug).inputs.accountReauth.completeAccount(accountId)))
+  try {
+    const slugs = await findAgentsAssignedConnectedAccount(accountId)
+    await Promise.all(slugs.map((slug) => agentRegistry.get(slug).inputs.accountReauth.completeAccount(accountId)))
+  } catch (error) {
+    console.warn(`[ConnectionSync] Failed to resume the calls parked on account ${accountId}:`, error)
+  }
 }
 
 export async function syncRemoteMcpAgents(agentSlugs: string[]): Promise<boolean> {

@@ -23,6 +23,10 @@ const state = vi.hoisted(() => ({
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn((_sessionId?: string) => false), register: vi.fn(), metadata: vi.fn(),
   broadcast: vi.fn(), isActive: vi.fn((_sessionId?: string) => false),
   recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
+  // Runs before each read of a session's live state: a test can hold the read there.
+  beforeLive: undefined as (() => Promise<void>) | undefined,
+  // Every delivery the manager asked the actor for, as asked.
+  deliveries: [] as Array<{ sessionId: string; content: string; uuid?: string; echo?: object }>,
 }))
 vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ recordIntegrationMessage: state.recordMessage }))
 vi.mock('./lifecycle', () => ({ onIntegrationAuthorizationLost: (callback: typeof state.authorizationLost) => { state.authorizationLost = callback; return () => { state.authorizationLost = undefined } } }))
@@ -53,7 +57,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
       create: state.create, register: state.register, updateMetadata: state.metadata,
       markActive: state.markActive, markIdle: state.markIdle, attach: state.attach,
       // One snapshot of the session, as the actor's live sessions answer it.
-      live: async (sessionId: string) => ({
+      live: async (sessionId: string) => (await state.beforeLive?.(), {
         activity: state.activity(sessionId), isActive: state.isActive(sessionId), isAwaitingInput: false,
         streamAttached: state.isStreamSubscribed(sessionId), openRequests: state.open(sessionId), runtime: null,
       }),
@@ -63,6 +67,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
       // The actor's delivery as the manager sees it: the echo reaches the
       // session's viewers with the actor's queued flag, then the message goes.
       deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
+        state.deliveries.push(request)
         if (request.echo) state.broadcast(request.sessionId, { type: 'user_message', ...request.echo, uuid: request.uuid, queued: state.isActive(request.sessionId) })
         await state.send(request.sessionId, request.content, request.uuid)
         return { status: 'sent', queued: false }
@@ -136,6 +141,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   state.rows = [record('installation-a')]
   state.recovery = []
+  state.deliveries = []
   state.activity.mockReturnValue('idle')
   // The actor's attach over the container's (`subscribeStream`): a no-op
   // when attached; a replaying one marks an idle session active around the
@@ -212,6 +218,8 @@ describe('AgentIntegration host contract', () => {
       const [, text, uuid] = state.send.mock.calls[0]
       expect(text).toBe('Object context: follow-up')
       expect(state.recordMessage).toHaveBeenLastCalledWith({ id: uuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+      // The card is the delivery's to show, once its checks pass and with its queued flag: the manager shows none of its own.
+      expect(state.deliveries.at(-1)).toEqual({ sessionId: 'session-1', content: text, uuid, echo: { content: text, integration: stored } })
       expect(state.broadcast).toHaveBeenCalledExactlyOnceWith('session-1', { type: 'user_message', uuid, content: text, queued: true, integration: stored })
     })
 
@@ -566,6 +574,32 @@ it('review: a health check does not re-observe a session cleared during its acce
   expect(observed).not.toHaveBeenCalled()
 })
 
+
+it('a health check does not observe a session cleared while its activity was read', async () => {
+  await manager.start()
+  await adapter.input('review-comment')
+  await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let reached!: () => void
+  const reading = new Promise<void>(resolve => { reached = resolve })
+  // A connector that reads the activity, so observing it reads the session.
+  Object.defineProperty(adapter, 'observesActivity', { value: true })
+  state.beforeLive = () => { reached(); return blocked }
+  const observed = vi.spyOn(adapter, 'observeSession')
+  try {
+    const healthCheck = (manager as unknown as { runHealthChecks: () => Promise<void> }).runHealthChecks()
+    await reading
+    await manager.clearSessionById('mapping-session-1')
+    expect(adapter.released).toHaveLength(1)
+    observed.mockClear()
+    release()
+    await healthCheck
+    expect(observed).not.toHaveBeenCalled()
+  } finally {
+    state.beforeLive = undefined
+  }
+})
 
 it('review: reconnect must not restore a session cleared during its access read', async () => {
   await manager.start()
@@ -1019,12 +1053,20 @@ it('does not tear down replacement authorization on a late revocation notificati
 })
 
 
-it('restores a known busy session even when its runtime transport was lost', async () => {
-  state.activity.mockReturnValue('working')
+// Busy is anything but idle: a session thinking, compacting, retrying or streaming is mid-turn too.
+it.each(['working', 'thinking', 'compacting', 'retrying', 'streaming'])('restores a known busy (%s) session even when its runtime transport was lost', async (activity) => {
+  state.activity.mockReturnValue(activity)
   state.mappings.set('installation-a:object-7', { id: 'mapping-old', integrationId: 'installation-a', externalChatId: 'object-7', sessionId: 'old' })
   state.recovery = [{ externalId: 'object-7', sessionId: 'old' }]
   await manager.start()
   await vi.waitFor(() => expect(state.subscribeStream).toHaveBeenCalledExactlyOnceWith('old', 'old'))
+})
+it.each(['working', 'thinking', 'compacting', 'retrying', 'streaming'])('reattaches a %s session whose stream was lost when its integration connects', async (activity) => {
+  // No recovery the family asks for: only the connect's own pass over its live chats.
+  state.activity.mockReturnValue(activity)
+  state.mappings.set('installation-a:object-7', { id: 'mapping-old', integrationId: 'installation-a', externalChatId: 'object-7', sessionId: 'old' })
+  await manager.start()
+  await vi.waitFor(() => expect(state.attach).toHaveBeenCalledWith('old', { replayTerminal: true }))
 })
 it('ignores mismatched and malformed session request frames', async () => {
   await manager.start(); await adapter.input('comment')
@@ -1048,13 +1090,19 @@ it('does not connect when the activation credential revision was invalidated dur
 })
 
 
-it('delivers stream output by its routing alone, reading the session once to observe it', async () => {
+it('delivers stream output by its routing alone, reading the session only for a connector that observes its activity', async () => {
   await manager.start(); await adapter.input('comment')
   await vi.waitFor(() => expect(state.mappings.size).toBe(1))
   state.activity.mockClear(); adapter.outputs = []
   state.streams.get('session-1')?.({ type: 'text_delta', text: 'hello' })
   await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
   expect(Object.keys(adapter.outputs[0].context).sort()).toEqual(['externalId', 'integration', 'interactionId', 'replyTarget', 'sessionId'])
+  expect(state.activity).not.toHaveBeenCalled()
+
+  Object.defineProperty(adapter, 'observesActivity', { value: true })
+  adapter.outputs = []
+  state.streams.get('session-1')?.({ type: 'text_delta', text: 'again' })
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
   expect(state.activity).toHaveBeenCalledExactlyOnceWith('session-1')
 })
 

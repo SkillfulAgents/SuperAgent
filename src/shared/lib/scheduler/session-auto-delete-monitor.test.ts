@@ -73,6 +73,7 @@ vi.mock('drizzle-orm', () => ({
 
 // Import after mocks are set up
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
+import { inArray } from 'drizzle-orm'
 
 // ============================================================================
 // Helpers
@@ -340,8 +341,12 @@ describe('SessionAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockDbDelete).toHaveBeenCalled()
+    // The records go only for what was deleted.
+    expect(vi.mocked(inArray)).toHaveBeenCalled()
+    expect(vi.mocked(inArray).mock.calls.every(([, ids]) => JSON.stringify(ids) === '["ok"]')).toBe(true)
+    // Every stream lets go before the delete, as a single delete's does.
     expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'ok')
-    expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('test-agent', 'failed')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'failed')
   })
 
   it('cleans notifications and message authors when not in auth mode (integrations author messages too)', async () => {

@@ -182,12 +182,8 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       await runtime().ensureRunning()
     },
     stop: (...args) => runtime().stopContainer(...args),
-    restart: async () => {
-      await runtime().restartContainer()
-    },
     keepAlive: async () => runtime().keepAlive(),
     status: async () => runtime().getCachedInfo(),
-    syncStatus: () => runtime().syncAgentStatus(),
     invalidate: async (options) => {
       if (runtime().getCachedInfo().status !== 'running') return 'not-running'
       if (!options?.restart) {
@@ -197,7 +193,6 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       await runtime().restartContainer()
       return 'restarted'
     },
-    stats: () => client().getStats(),
     info: () => client().getInfo(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
@@ -243,17 +238,15 @@ function createSessionOps(
       live.unsubscribe(sessionId)
       return deps.sessionService.deleteSession(store, sessionId)
     },
+    // Decided and let go of in one step, before the delete, as `delete` does.
     deleteMany: async (sessionIds) => {
-      const deleted = await deps.sessionService.deleteSessionsBatch(store, sessionIds)
-      for (const sessionId of deleted) live.unsubscribe(sessionId)
-      return deleted
+      const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
+      for (const sessionId of idle) live.unsubscribe(sessionId)
+      return deps.sessionService.deleteSessionsBatch(store, idle)
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
     updateMetadata: (sessionId, updates) => deps.sessionService.updateSessionMetadata(store, sessionId, updates),
-    finalizeAutomationStatus: (sessionId, status) =>
-      deps.sessionService.finalizeAutomationStatus(store, sessionId, status),
-    ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(store),
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(store, sessionId),
     usage: (sessionId) =>
       deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId) }),
@@ -271,7 +264,6 @@ function createSessionOps(
       deps.transcripts.readWorkflowAgentTranscript(store, sessionId, runId, workflowAgentId),
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
-    getLive: (sessionId) => client().getSession(sessionId),
     // Creating a session delivers its first message: a refusal reads as a delivery's does.
     create: (options) =>
       client().createSession(options).catch((error: unknown) => {
@@ -321,7 +313,6 @@ function createMessageOps(
     cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
     stop: (sessionId, options) => delivery.stop(sessionId, options),
 
-    list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
     delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
@@ -329,7 +320,6 @@ function createMessageOps(
       deps.sessionService.findLastSessionEntry(store, sessionId, matchesTranscriptQuery(query), options),
     remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(store, sessionId, messageUuid),
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
-    appendInformational: (sessionId, entry) => deps.appendInformationalEntry(store, sessionId, entry),
     appendAssistant: (sessionId, text) => deps.appendAssistantEntry(store, sessionId, text),
     forkedUserUuids: (sessionId) => deps.transcripts.forkedUserUuids(store, sessionId),
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
@@ -420,7 +410,6 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
     submit: async (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
-    denyAll: async () => deps.reviewManager.denyAllForAgent(slug),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),

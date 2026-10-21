@@ -805,18 +805,20 @@ describe('createAgentRegistry', () => {
       expect((registry.get('b') as LocalAgentActor).state.accountReauth.openEntryIds()).toHaveLength(1)
     })
 
-    it('deleting sessions lets go of their streams: before the one delete, after the batch for what it deleted', async () => {
+    it('deleting sessions lets go of their streams first; a batch keeps a session running now', async () => {
       const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
       const order: string[] = []
       sessionService.deleteSession = vi.fn(async () => { order.push('delete'); return true })
-      sessionService.deleteSessionsBatch = vi.fn(async () => { order.push('delete-batch'); return ['s2'] })
+      sessionService.deleteSessionsBatch = vi.fn(async (_store: unknown, ids: string[]) => { order.push(`delete-batch ${ids.join(',')}`); return ids })
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       vi.spyOn(actor.state.sessions, 'unsubscribe').mockImplementation((sessionId) => { order.push(`unsubscribe ${sessionId}`) })
+      // Went active after the caller listed it as idle.
+      actor.state.sessions.markActive('s4')
 
       await actor.sessions.delete('s1')
-      await actor.sessions.deleteMany(['s2', 's3'])
+      expect(await actor.sessions.deleteMany(['s2', 's3', 's4'])).toEqual(['s2', 's3'])
 
-      expect(order).toEqual(['unsubscribe s1', 'delete', 'delete-batch', 'unsubscribe s2'])
+      expect(order).toEqual(['unsubscribe s1', 'delete', 'unsubscribe s2', 'unsubscribe s3', 'delete-batch s2,s3'])
     })
   })
 })

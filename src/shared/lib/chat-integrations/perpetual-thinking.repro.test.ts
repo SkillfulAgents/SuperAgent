@@ -179,6 +179,37 @@ describe('per-session indicator tick (pull)', () => {
     }
   })
 
+  it('drops a read that an event\'s clear, or a newer read, overtook while it was out', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatAgentIntegration()
+      const managed = makeManaged(connector, 'chat-t')
+      // Each read answers when the test says, in any order.
+      const answers: Array<(activity: SessionActivity) => void> = []
+      vi.spyOn(agentRegistry.get('repro-agent').sessions, 'live').mockImplementation(() =>
+        new Promise((resolve) => answers.push((activity) => resolve({ activity } as Awaited<ReturnType<SessionOps['live']>>))))
+      startIndicatorTick(managed, 'sess-t')
+
+      // A read goes out; the session settles and an event clears; the read lands busy.
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
+      clearIndicator(managed)
+      answers[0]('working')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(connector.workingActivities).toEqual([])
+
+      // Two reads out: the newer lands idle first, then the older lands busy.
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 2)
+      answers[2]('idle')
+      await vi.advanceTimersByTimeAsync(0)
+      answers[1]('working')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(connector.workingActivities).toEqual([])
+      stopIndicatorTick(managed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('self-heals a forced-stuck indicator within one tick', async () => {
     vi.useFakeTimers()
     try {

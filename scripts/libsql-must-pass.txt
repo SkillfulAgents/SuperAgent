@@ -72,3 +72,4 @@ src/shared/lib/task-manager-integrations/github/client.test.ts
 src/shared/lib/task-manager-integrations/github/github-agent-integration.test.ts
 src/shared/lib/task-manager-integrations/github/mcp.test.ts
 src/shared/lib/services/notification-service-mentions.test.ts
+src/shared/lib/services/connection-sync-service.resume.test.ts

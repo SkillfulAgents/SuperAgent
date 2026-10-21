@@ -29,7 +29,6 @@ import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import type {
   ContainerInfo,
   ContainerSession,
-  ContainerStats,
   CreateSessionOptions,
   HealthCheckResult,
   HostPortProbeResult,
@@ -56,7 +55,6 @@ import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
 import type {
-  AutomationStatusResult,
   ListSessionsOptions,
   SessionMessagesDelta,
   SessionMessagesPage,
@@ -178,22 +176,16 @@ export interface ContainerOps {
   start(): Promise<void>
   /** `containerManager.stopContainer` */
   stop(options?: StopOptions): Promise<void>
-  /** `containerManager.restartContainer` */
-  restart(): Promise<void>
   /** `containerManager.keepAlive` */
   keepAlive(): Promise<void>
   /** `containerManager.getCachedInfo` — the cached status; no runtime is queried. */
   status(): Promise<ContainerInfo>
-  /** `containerManager.syncAgentStatus` — refresh the cache from the runtime. */
-  syncStatus(): Promise<ContainerInfo>
   /**
    * The container's environment or drives changed: a running container keeps
    * the old ones until it restarts. `restart` restarts it now; otherwise it is
    * marked stale (`AgentLiveSummary.container.stale`) for the user to restart.
    */
   invalidate(options?: { restart?: boolean }): Promise<'not-running' | 'marked-stale' | 'restarted'>
-  /** `client.getStats` */
-  stats(): Promise<ContainerStats | null>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
   info(): Promise<ContainerInfo>
   /** `updateConnectedAccountsEnvironment` (connection-runtime-sync) with this agent's client. */
@@ -270,7 +262,10 @@ export interface SessionOps {
   rename(sessionId: string, name: string): Promise<void>
   /** `deleteSession` — the files are the authority. */
   delete(sessionId: string): Promise<boolean>
-  /** `deleteSessionsBatch` */
+  /**
+   * `deleteSessionsBatch` over the sessions not running now: one that is
+   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
   metadata(sessionId: string): Promise<SessionMetadata | null>
@@ -278,10 +273,6 @@ export interface SessionOps {
   readMetadata(): Promise<SessionMetadataMap>
   /** `updateSessionMetadata` */
   updateMetadata(sessionId: string, updates: Partial<SessionMetadata>): Promise<SessionMetadata | undefined>
-  /** `finalizeAutomationStatus` */
-  finalizeAutomationStatus(sessionId: string, status: 'succeeded' | 'failed'): Promise<AutomationStatusResult>
-  /** `ensureSessionsDirectory` */
-  ensureDirectory(): Promise<void>
   /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
   fileRealPathWithinAgent(sessionId: string): Promise<boolean>
   /** `loadSessionUsageTotals` (usage-service) over this session's transcript and the files beside it. */
@@ -318,8 +309,6 @@ export interface SessionOps {
 
   // Live sessions — ContainerClient. Needs the container.
 
-  /** Inspect the running container session, including whether a send was accepted. */
-  getLive(sessionId: string): Promise<ContainerSession | null>
   /**
    * `client.createSession` alone: the container creates the session and
    * starts its turn with the first message. Nothing is marked, attached or
@@ -468,8 +457,6 @@ export interface MessageOps {
 
   // Transcript reads and edits — session-service.
 
-  /** `getSessionMessages` */
-  list(sessionId: string): Promise<JsonlMessageEntry[]>
   /** `getSessionMessagesWithCompact` */
   withCompact(sessionId: string): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]>
   /** `getSessionMessagesPage` */
@@ -492,8 +479,6 @@ export interface MessageOps {
   remove(sessionId: string, messageUuid: string): Promise<boolean>
   /** `removeToolCall` */
   removeToolCall(sessionId: string, toolCallId: string): Promise<boolean>
-  /** `appendInformationalEntry` (session-transcript-append) */
-  appendInformational(sessionId: string, entry: { uuid: string; content: string; level?: string }): Promise<void>
   /** `appendAssistantEntry` (session-transcript-append) — an assistant message delivered out of band, recorded so the transcript shows it. */
   appendAssistant(sessionId: string, text: string): Promise<void>
   /** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
@@ -696,8 +681,6 @@ export interface ReviewOps {
   get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
   submit(id: string, decision: 'allow' | 'deny'): Promise<boolean>
-  /** `AgentReviews.denyAll` */
-  denyAll(): Promise<void>
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */

@@ -810,7 +810,24 @@ export class AgentIntegrationManager {
 
   /** Let the connector see what the chat's session is doing now. */
   private async observe(session: ManagedSession): Promise<void> {
-    session.connector.observeSession(await this.observation(session))
+    if (!session.connector.observesActivity) {
+      session.connector.observeSession({ ...session.context, activity: 'unknown' })
+      return
+    }
+    const observed = await this.currentObservation(session)
+    if (observed) session.connector.observeSession(observed)
+  }
+
+  /**
+   * `observation`, or nothing when the chat was cleared or re-pointed while
+   * its session's activity was read: observing then would revive a session
+   * the connector has already released, or stamp the old session's state
+   * onto the new one.
+   */
+  private async currentObservation(session: ManagedSession): Promise<IntegrationSessionContext | undefined> {
+    const { sessionId } = session
+    const observed = await this.observation(session)
+    return this.isCurrentSession(session.integration.id, session.chatId, session, sessionId) ? observed : undefined
   }
 
   /** The chat session's context, with its session's activity read as of now. */
@@ -835,7 +852,7 @@ export class AgentIntegrationManager {
     if (cached?.recovered && cached.recoveryClears === clears && cached.sessionId &&
       (!expectedSessionId || cached.sessionId === expectedSessionId)) {
       const live = await actor.sessions.live(cached.sessionId)
-      if (live.activity === 'idle' || live.streamAttached) return this.observation(cached)
+      if (live.activity === 'idle' || live.streamAttached) return this.currentObservation(cached)
     }
     const row = await getIntegrationSession(integrationId, externalId)
     if (!row || (expectedSessionId && row.sessionId !== expectedSessionId) || this.clearedSessionRows.has(row.id) || clears !== this.sessionClears) return
@@ -898,7 +915,7 @@ export class AgentIntegrationManager {
     await session.recovery
     if (!current()) return
     if (session.recovered) session.recoveryClears = clears
-    return this.observation(session)
+    return this.currentObservation(session)
   }
 
   // `observe` is the chat session to mark live before the event is handled.

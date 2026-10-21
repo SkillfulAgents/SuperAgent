@@ -4231,9 +4231,11 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    await ungrabAC()
-    // Forgets the grab, revokes use_application for the app and tells the session's viewers.
+    // Forgets the grab, revokes use_application for the app and tells the
+    // session's viewers. Before the ungrab: the app revoked is the one the
+    // user saw, not one grabbed while the ungrab ran.
     const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseGrab(sessionId)
+    await ungrabAC()
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {

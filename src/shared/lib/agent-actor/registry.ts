@@ -107,9 +107,10 @@ export function createAgentRegistry(
     get: (slug): AgentActor => get(slug),
     evict: async (slug) => evict(slug),
     evictAll: async () => {
-      // Release every handle first, while the runtimes still exist, then let
-      // the host forget the runtimes its own way: one whose container is
-      // starting is kept, so the start still lands somewhere the host knows.
+      // Release every handle, then let the host forget the runtimes its own
+      // way: one whose container is starting is kept, so the start still
+      // lands somewhere the host knows. At shutdown the containers are
+      // stopped (and their runtimes cleared) first: see startup.ts.
       for (const actor of handles.values()) actor.dispose()
       handles.clear()
       states.clear()

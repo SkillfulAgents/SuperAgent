@@ -27,6 +27,11 @@ export interface ManagedConnector {
   // on teardown).
   indicatorShown?: boolean
   indicatorTickTimer?: ReturnType<typeof setInterval> | null
+  // The tick's reads, numbered as they start, and the newest one already
+  // overtaken: by a read that landed after it, or by a clear (the event that
+  // cleared knew more than any read out at the time). An overtaken read is dropped.
+  indicatorReads?: number
+  indicatorReadsOvertaken?: number
   // The session the tick samples; set when the tick is armed (subscribe / wake) so the
   // sleep guard and the health-check backstop can re-read its activity.
   sessionId?: string
@@ -111,6 +116,7 @@ export function reconcileIndicator(managed: ManagedConnector, activity: SessionA
  * draft, so the four immediate clears and the non-busy tick all route through here.
  */
 export function clearIndicator(managed: ManagedConnector): void {
+  managed.indicatorReadsOvertaken = managed.indicatorReads
   if (!managed.indicatorShown) return
   managed.indicatorShown = false
   managed.connector.stopWorking(managed.chatId).catch(() => {})
@@ -145,9 +151,14 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) return false
   const tick = setInterval(() => {
+    const read = (managed.indicatorReads ?? 0) + 1
+    managed.indicatorReads = read
     void sessionActivity(managed, sessionId).then((activity) => {
       // Stopped while it read: the read belongs to no tick.
       if (managed.indicatorTickTimer !== tick) return
+      // Overtaken while it read: what it read is not the latest.
+      if (read <= (managed.indicatorReadsOvertaken ?? 0)) return
+      managed.indicatorReadsOvertaken = read
       reconcileIndicator(managed, activity)
       // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
       // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
