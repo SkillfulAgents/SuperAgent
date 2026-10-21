@@ -33,7 +33,8 @@ export async function finishConnectionReplacement(
 
     const interrupted = await Promise.allSettled(sessionIds.map(async (sessionId) => {
       // A user may have stopped a session while the projection was being updated.
-      const result = await actor.messages.stop(sessionId, { scope: 'turn', ifActive: true })
+      // A turn the container did not confirm stopping is left running, and gets no notice.
+      const result = await actor.messages.stop(sessionId, { scope: 'turn', ifActive: true, onlyIfConfirmed: true })
       if (result.path === 'skipped-idle') return null
       if (!result.interrupted) throw new Error(`Failed to interrupt session ${sessionId}`)
       return sessionId

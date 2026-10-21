@@ -20,7 +20,7 @@ vi.mock('@shared/lib/services/session-summary-cache', () => ({
 
 import * as sessionService from '@shared/lib/services/session-service'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import type { ContainerClient } from '@shared/lib/container/types'
+import type { ContainerClient, StreamMessage } from '@shared/lib/container/types'
 import { createSessionDelivery } from './delivery'
 import { deliveryFailure, startFailure } from './delivery-errors'
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from './testing/live-sessions-harness'
@@ -144,12 +144,90 @@ describe('deliver', () => {
     expect(sessions().takeCoalesced(SESSION)).toEqual([{ uuid: 'm4', text: 'still there?' }])
   })
 
+  it('holds a recovering session\'s message only once it passed the provider check', async () => {
+    await delivery().attach(SESSION)
+    sessions().markActive(SESSION)
+    sessions().claimMidTurnForRecovery()
+
+    const error = await delivery()
+      .deliver({ sessionId: SESSION, content: 'x', uuid: 'm5', coalesce: true, options: { llmProviderId: 'conn-b' }, requireStoredProvider: true })
+      .catch((caught: unknown) => caught)
+    expect(deliveryFailure(error)).toEqual({ code: 'provider-not-attached', accepted: false })
+    expect(sessions().takeCoalesced(SESSION)).toEqual([])
+  })
+
+  it('holds a recovering session\'s messages in their delivery turns, in the order they came', async () => {
+    await delivery().attach(SESSION)
+    sessions().markActive(SESSION)
+    sessions().claimMidTurnForRecovery()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const read = vi.spyOn(service, 'getSessionMetadata').mockImplementationOnce(async (...args) => {
+      await gate
+      return sessionService.getSessionMetadata(...args)
+    })
+
+    const first = delivery().deliver({ sessionId: SESSION, content: 'one', uuid: 'a', coalesce: true })
+    await vi.waitFor(() => expect(read).toHaveBeenCalled())
+    const second = delivery().deliver({ sessionId: SESSION, content: 'two', uuid: 'b', coalesce: true })
+    release()
+    await Promise.all([first, second])
+
+    expect(sessions().takeCoalesced(SESSION).map((message) => message.uuid)).toEqual(['a', 'b'])
+  })
+
   it('refuses to join a running turn when asked to deliver only into an idle session', async () => {
     await delivery().attach(SESSION)
     sessions().markActive(SESSION)
 
     expect(await delivery().deliver({ sessionId: SESSION, content: 'follow-up', ifIdle: true })).toEqual({ status: 'busy' })
     expect(send()).not.toHaveBeenCalled()
+  })
+
+  it('refuses to join a running turn that only the attach reveals', async () => {
+    // Not attached (an automation's stream is released once idle), while the
+    // container runs a turn the host has not heard of: a background task's wake.
+    vi.mocked(client.subscribeToStream).mockImplementationOnce((_id: string, onMessage: (message: StreamMessage) => void) => {
+      onMessage({ type: 'message', content: { type: 'system', subtype: 'session_state_changed', state: 'running' }, timestamp: new Date(), sessionId: SESSION })
+      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
+    })
+    expect(sessions().isActive(SESSION)).toBe(false)
+
+    expect(await delivery().deliver({ sessionId: SESSION, content: 'follow-up', ifIdle: true })).toEqual({ status: 'busy' })
+    expect(send()).not.toHaveBeenCalled()
+  })
+
+  it('sends only once an attach in flight is done: the turn\'s first frames have a listener', async () => {
+    let ready!: () => void
+    vi.mocked(client.subscribeToStream).mockImplementation(() => ({
+      unsubscribe: vi.fn(),
+      ready: new Promise<void>((resolve) => {
+        ready = resolve
+      }),
+    }))
+    // The delivery's turn starts first, and is reading the session ...
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const read = vi.spyOn(service, 'getSessionMetadata').mockImplementationOnce(async (...args) => {
+      await gate
+      return sessionService.getSessionMetadata(...args)
+    })
+    const delivering = delivery().deliver({ sessionId: SESSION, content: 'hi' })
+    await vi.waitFor(() => expect(read).toHaveBeenCalled())
+    // ... when another caller starts an attach (a socket's reattach, an integration's replay).
+    const attaching = delivery().attach(SESSION)
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(send()).not.toHaveBeenCalled()
+
+    ready()
+    await Promise.all([delivering, attaching])
+    expect(send()).toHaveBeenCalledOnce()
+    expect(client.subscribeToStream).toHaveBeenCalledOnce()
   })
 
   it('refuses another member\'s connection once the session no longer holds it', async () => {
@@ -179,12 +257,14 @@ describe('deliver', () => {
   })
 
   it.each([
-    [false, false],
-    [true, true],
-    [undefined, true],
-  ])('after a send that may have gone, keeps the mark only while the container may run it (isRunning %s)', async (isRunning, active) => {
+    ['runs it', { id: SESSION, isRunning: true }, true],
+    ['is not running it', { id: SESSION, isRunning: false }, false],
+    ['does not know the session', null, false],
+    ['cannot be asked', new Error('unreachable'), true],
+  ])('after a send that may have gone, keeps the mark only while the container may run it (it %s)', async (_case, session, active) => {
     send().mockRejectedValueOnce(new Error('socket hang up'))
-    vi.mocked(client.getSession).mockResolvedValueOnce(isRunning === undefined ? null : { id: SESSION, isRunning } as never)
+    if (session instanceof Error) vi.mocked(client.getSession).mockRejectedValueOnce(session)
+    else vi.mocked(client.getSession).mockResolvedValueOnce(session as never)
 
     const error = await delivery().deliver({ sessionId: SESSION, content: 'hi' }).catch((caught: unknown) => caught)
     expect(deliveryFailure(error)).toEqual({ code: 'unknown', accepted: 'unknown' })
@@ -319,6 +399,8 @@ describe('start', () => {
     expect(startFailure(error)).toEqual({ code: 'attach-failed', revoked: true })
     expect(client.deleteSession).toHaveBeenCalledWith('new-session')
     expect(sessions().isSubscribed('new-session')).toBe(false)
+    // Registered as a running automation: its run is over, or nothing would ever end it.
+    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.automationStatus).toBe('failed')
   })
 
   it('revokes a session created after its deadline, before registering it', async () => {
@@ -326,7 +408,23 @@ describe('start', () => {
 
     const error = await delivery().start({ ...request, notAfter: Date.now() - 1 }).catch((caught: unknown) => caught)
     expect(startFailure(error)).toEqual({ code: 'created-late', revoked: true })
-    expect(client.deleteSession).toHaveBeenCalledWith('new-session')
+    await vi.waitFor(() => expect(client.deleteSession).toHaveBeenCalledWith('new-session'))
+    expect(register).not.toHaveBeenCalled()
+  })
+
+  it('answers at its deadline while create is still out, and revokes the session once it lands', async () => {
+    let created!: (session: unknown) => void
+    vi.mocked(client.createSession).mockReturnValueOnce(new Promise((resolve) => {
+      created = resolve
+    }) as never)
+    const register = vi.spyOn(service, 'registerSession')
+
+    const error = await delivery().start({ ...request, notAfter: Date.now() + 10 }).catch((caught: unknown) => caught)
+    expect(startFailure(error)).toEqual({ code: 'created-late', revoked: true })
+    expect(client.deleteSession).not.toHaveBeenCalled()
+
+    created({ id: 'late-session', createdAt: '', lastActivity: '', workingDirectory: '/workspace' })
+    await vi.waitFor(() => expect(client.deleteSession).toHaveBeenCalledWith('late-session'))
     expect(register).not.toHaveBeenCalled()
   })
 
@@ -380,6 +478,21 @@ describe('stop', () => {
     vi.mocked(client.interruptSession).mockRejectedValueOnce(new Error('container exploded'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect((await delivery().stop(SESSION, { scope: 'turn' })).path).toBe('interrupt-failed')
+    expect(sessions().isActive(SESSION)).toBe(false)
+    consoleError.mockRestore()
+  })
+
+  it('leaves a turn running when asked to mark only a confirmed interrupt and none came', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(client.interruptSession).mockRejectedValueOnce(new Error('container exploded'))
+    expect((await delivery().stop(SESSION, { scope: 'turn', onlyIfConfirmed: true })).path).toBe('interrupt-failed')
+    expect(sessions().isActive(SESSION)).toBe(true)
+
+    vi.mocked(client.interruptSession).mockResolvedValueOnce({ interrupted: false, processKept: false })
+    expect(await delivery().stop(SESSION, { scope: 'turn', onlyIfConfirmed: true })).toMatchObject({ path: 'interrupted', interrupted: false })
+    expect(sessions().isActive(SESSION)).toBe(true)
+
+    expect(await delivery().stop(SESSION, { scope: 'turn', onlyIfConfirmed: true })).toMatchObject({ path: 'interrupted', interrupted: true })
     expect(sessions().isActive(SESSION)).toBe(false)
     consoleError.mockRestore()
   })

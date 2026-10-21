@@ -542,7 +542,11 @@ export interface DeliverRequest {
   cancelAwaiting?: boolean
   /** Hold the message while the session recovers from a runtime death; the recovery sends it. */
   coalesce?: boolean
-  /** Refuse to join a running turn: `busy` instead. */
+  /**
+   * Refuse to join a running turn: `busy` instead. Decided with the queued
+   * decision, after the attach (which can reveal a running turn). An append
+   * starts no turn, so it is never refused.
+   */
   ifIdle?: boolean
   /** The `user_message` the session's viewers see, sent once it is known whether the message is queued. */
   echo?: UserMessageEcho
@@ -588,13 +592,19 @@ export interface StopSessionOptions {
   escalateUntracked?: boolean
   /** Deny the agent's pending API reviews too: the user stopped the agent. */
   denyReviews?: boolean
+  /**
+   * Mark the session stopped only once the container confirms the interrupt:
+   * a failed or empty one leaves it to its stream. Without it the session is
+   * marked stopped either way (the user asked).
+   */
+  onlyIfConfirmed?: boolean
 }
 
 export interface StopSessionResult extends InterruptSessionResult {
   /**
    * - `interrupted`: the container was asked (`interrupted` says whether it did);
    * - `not-running`: the container is not running, so the session was marked locally;
-   * - `interrupt-failed`: the interrupt threw, and the session was marked locally;
+   * - `interrupt-failed`: the interrupt threw, and the session was marked locally (unless `onlyIfConfirmed`);
    * - `skipped-idle`: `ifActive` and the session was idle.
    */
   path: 'interrupted' | 'not-running' | 'interrupt-failed' | 'skipped-idle'

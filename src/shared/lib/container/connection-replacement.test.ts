@@ -51,7 +51,7 @@ describe('connection replacement notification', () => {
     expect(mocks.order[0]).toBe('actor:shared-agent')
     expect(mocks.sync).toHaveBeenCalledWith(kind)
     for (const sessionId of ['session-1', 'session-2']) {
-      expect(mocks.stop).toHaveBeenCalledWith(sessionId, { scope: 'turn', ifActive: true })
+      expect(mocks.stop).toHaveBeenCalledWith(sessionId, { scope: 'turn', ifActive: true, onlyIfConfirmed: true })
       expect(mocks.order.indexOf(`stop:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('refresh'))
       expect(mocks.order.indexOf('release')).toBeGreaterThan(mocks.order.indexOf(`stop:${sessionId}`))
       expect(mocks.order.indexOf(`send:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('release'))

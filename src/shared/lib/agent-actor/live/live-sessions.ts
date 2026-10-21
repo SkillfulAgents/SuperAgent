@@ -166,8 +166,9 @@ export class LiveSessions {
     return this.states.get(sessionId)?.isRecovering === true
   }
 
+  /** Attached: its stream is subscribed and the handshake is done (a connect in flight is not yet). */
   isSubscribed(sessionId: string): boolean {
-    return this.subscriptions.has(sessionId)
+    return this.subscriptions.has(sessionId) && !this.connecting.has(sessionId)
   }
 
   /** The agent's active sessions: agent-scoped asks (proxy reviews) are attributed to these. */

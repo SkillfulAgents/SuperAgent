@@ -102,7 +102,6 @@ export function createSessionDelivery(
   const deliver: SessionDelivery['deliver'] = (request) => {
     const { sessionId, content, uuid } = request
     return live.inDeliveryTurn(sessionId, async (): Promise<DeliverResult> => {
-      if (request.ifIdle && live.isActive(sessionId)) return { status: 'busy' }
       const options = { ...request.options }
       const append = options.shouldQuery === false
 
@@ -151,6 +150,9 @@ export function createSessionDelivery(
 
       // Before the queued decision, so a stop it makes is reflected in it.
       if (request.cancelAwaiting) await live.cancelAwaitingInput(sessionId)
+      // Decided with the mark, nothing awaited between: a turn that started
+      // while this send waited its turn, or that the attach revealed, counts.
+      if (request.ifIdle && live.isActive(sessionId)) return { status: 'busy' }
       const mark = live.markSending(sessionId)
       // A message joining a running turn must not carry the runtime: the
       // container treats a change as an interrupt and restart of the turn.
@@ -200,35 +202,41 @@ export function createSessionDelivery(
     }
   }
 
-  /** Whether the container runs the session's turn; undefined when it cannot say. */
+  /** Whether the container runs the session's turn (one it does not know, it does not); undefined when it cannot say. */
   const runningInContainer = async (sessionId: string): Promise<boolean | undefined> => {
     try {
-      return (await client().getSession(sessionId))?.isRunning
+      return (await client().getSession(sessionId))?.isRunning ?? false
     } catch {
       return undefined
     }
   }
 
-  const start: SessionDelivery['start'] = async (request) => {
-    let session: ContainerSession
+  const revoke = async (sessionId: string) => {
+    live.unsubscribe(sessionId)
     try {
-      session = await client().createSession(request.create)
+      await client().deleteSession(sessionId)
+    } catch (error) {
+      console.error(`[SessionDelivery] Failed to revoke session ${sessionId}:`, error)
+    }
+  }
+
+  const start: SessionDelivery['start'] = async (request) => {
+    const creating = client().createSession(request.create)
+    let created: ContainerSession | typeof LATE
+    try {
+      created = await beforeDeadline(creating, request.notAfter)
     } catch (error) {
       throw new StartError('create-failed', false, errorMessage(error), { cause: error })
     }
+    if (created === LATE) {
+      // Answered at the deadline, when the caller may already be gone: the
+      // session is revoked the moment it lands, not left running for the
+      // caller's retry to duplicate.
+      creating.then((late) => revoke(late.id), () => {})
+      throw new StartError('created-late', true, 'The session was not created before its deadline')
+    }
+    const session = created
     const sessionId = session.id
-    const revoke = async () => {
-      live.unsubscribe(sessionId)
-      try {
-        await client().deleteSession(sessionId)
-      } catch (error) {
-        console.error(`[SessionDelivery] Failed to revoke session ${sessionId}:`, error)
-      }
-    }
-    if (request.notAfter !== undefined && Date.now() > request.notAfter) {
-      await revoke()
-      throw new StartError('created-late', true, 'The session was created after its deadline')
-    }
 
     const commands = session.slashCommands?.length ? session.slashCommands : undefined
     const metadata: Partial<SessionMetadata> = { ...request.metadata, ...(commands ? { slashCommands: commands } : {}) }
@@ -240,14 +248,20 @@ export function createSessionDelivery(
       // finds its status to finalize.
       await deps.sessionService.registerSession(store, sessionId, request.name, metadata)
     } catch (error) {
-      await revoke()
+      await revoke(sessionId)
       throw new StartError('register-failed', true, errorMessage(error), { cause: error })
     }
     try {
       await withTimeout(live.subscribe(sessionId, client(), sessionId, metadata), request.attachTimeoutMs)
     } catch (error) {
       // Nothing would persist the session's transcript: it would run unseen.
-      await revoke()
+      await revoke(sessionId)
+      // Registered: an automation's run ends here, or nothing would ever end it.
+      try {
+        await deps.sessionService.finalizeAutomationStatus(store, sessionId, 'failed')
+      } catch (finalizeError) {
+        console.error(`[SessionDelivery] Failed to end the run of revoked session ${sessionId}:`, finalizeError)
+      }
       throw new StartError('attach-failed', true, errorMessage(error), { cause: error })
     }
     if (commands) live.setSlashCommands(sessionId, commands)
@@ -280,11 +294,11 @@ export function createSessionDelivery(
       const { interrupted, processKept } = await client().interruptSession(sessionId, { scope })
       // processKept is the container's word, not the scope asked for: a turn
       // stop that fell back to a restart killed the background tasks.
-      live.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+      if (interrupted || !options.onlyIfConfirmed) live.markInterrupted(sessionId, { processKept, turnGenerationBefore })
       return finish({ path: 'interrupted', interrupted, processKept, escalated })
     } catch (error) {
-      console.error(`[SessionDelivery] Interrupt failed for session ${sessionId}; marking it stopped:`, error)
-      live.markInterrupted(sessionId)
+      console.error(`[SessionDelivery] Interrupt failed for session ${sessionId}:`, error)
+      if (!options.onlyIfConfirmed) live.markInterrupted(sessionId)
       return finish({ path: 'interrupt-failed', interrupted: false, processKept: false, escalated })
     }
   }
@@ -307,6 +321,23 @@ function notSent(code: Exclude<DeliveryErrorCode, 'unknown'>, error: unknown): D
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+const LATE = Symbol('late')
+
+/** What the promise resolves to, or LATE when `notAfter` (epoch ms) passes first. */
+async function beforeDeadline<T>(promise: Promise<T>, notAfter: number | undefined): Promise<T | typeof LATE> {
+  if (notAfter === undefined) return promise
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<typeof LATE>((resolve) => {
+    timer = setTimeout(() => resolve(LATE), Math.max(0, notAfter - Date.now()))
+  })
+  try {
+    const value = await Promise.race([promise, late])
+    return Date.now() > notAfter ? LATE : value
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function withTimeout(promise: Promise<void>, ms: number | undefined): Promise<void> {

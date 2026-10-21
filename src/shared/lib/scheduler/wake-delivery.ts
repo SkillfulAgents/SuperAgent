@@ -43,8 +43,9 @@ const inFlightWakes = new Set<string>()
 /**
  * Deliver a session wake. Throws on transient delivery failure (container
  * unreachable, send error) with the task left pending — callers decide the
- * retry policy. The optimistic active flag is reverted before rethrowing so a
- * failed delivery never leaves the session looking busy.
+ * retry policy. A wake the container certainly did not take, or whose session
+ * it is not running, leaves the session idle; one it may be running keeps the
+ * session busy until its stream settles it.
  */
 export async function deliverSessionWake(
   staleTask: ScheduledTask,
