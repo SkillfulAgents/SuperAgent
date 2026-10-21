@@ -171,6 +171,8 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
   async function startAndTrigger() {
     await sessionAutoDeleteMonitor.start()
     await vi.advanceTimersByTimeAsync(30_000)
+    // The run the timer started ends when its agents' ops have answered, as any I/O.
+    await vi.waitFor(() => expect(Reflect.get(sessionAutoDeleteMonitor, 'isProcessing')).toBe(false))
   }
 
   it('deletes notifications for only the actually-deleted session IDs (non-auth mode)', async () => {

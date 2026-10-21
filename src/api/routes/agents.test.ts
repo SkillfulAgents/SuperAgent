@@ -5,7 +5,7 @@ vi.mock('@shared/lib/services/agent-members-service', () => ({
   changeMemberRole: (...args: unknown[]) => mockChangeMemberRole(...args),
   removeMember: (...args: unknown[]) => mockRemoveMember(...args),
 }))
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
 // The last-owner guards live in agent-members-service (real-database tests
 // there); the routes only map its outcome to a status and a message.
@@ -1541,6 +1541,8 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     // The actor's side of the wire: what it has sent, and whether the route let it go.
     let frames: ReadableStreamDefaultController<WireFrame>
     let cancel: ReturnType<typeof vi.fn<() => void>>
+    // Held as the spy itself: reading it back off the actor gives what a caller reaches, not the spy.
+    let follow: MockInstance
 
     /** Hono's StreamingApi abort semantics: `abort()` sets the flag, then runs each listener once; `onAbort` never replays. */
     function fakeSSEStream() {
@@ -1594,8 +1596,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     }
 
     function expectReleased() {
-      const actor = agentRegistry.get('authorized-agent')
-      expect(actor.messages.follow).toHaveBeenCalledOnce()
+      expect(follow).toHaveBeenCalledOnce()
       expect(cancel).toHaveBeenCalledOnce()
     }
 
@@ -1603,7 +1604,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       const actor = agentRegistry.get('authorized-agent')
       cancel = vi.fn()
       // The actor catches the viewer up with its snapshot frame, then attaches.
-      vi.spyOn(actor.messages, 'follow').mockImplementation(async () => new ReadableStream<WireFrame>({
+      follow = vi.spyOn(actor.messages, 'follow').mockImplementation(async () => new ReadableStream<WireFrame>({
         start(controller) {
           frames = controller
           controller.enqueue({ id: 'e:0', data: '{"type":"connected"}' })
@@ -1691,7 +1692,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       const { handlerPromise } = await openStream(stream, controller.signal)
 
       expect(await settles(handlerPromise)).toBe(true)
-      expect(agentRegistry.get('authorized-agent').messages.follow).not.toHaveBeenCalled()
+      expect(follow).not.toHaveBeenCalled()
       expect(stream.writeSSE).not.toHaveBeenCalled()
     })
 
@@ -1730,7 +1731,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       const { handlerPromise } = await openStream(stream, undefined, { 'Last-Event-ID': 'e:41' })
       await waitingForClient(handlerPromise, stream)
 
-      expect(agentRegistry.get('authorized-agent').messages.follow)
+      expect(follow)
         .toHaveBeenCalledWith('new-session', { after: 'e:41' })
       expect(stream.writeSSE).toHaveBeenCalledWith({ id: 'e:0', data: '{"type":"connected"}', event: 'message' })
       stream.abort()
@@ -1742,7 +1743,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
       const { handlerPromise } = await openStream(stream)
       await waitingForClient(handlerPromise, stream)
 
-      expect(agentRegistry.get('authorized-agent').messages.follow)
+      expect(follow)
         .toHaveBeenCalledWith('new-session', { after: undefined })
       stream.abort()
       expect(await settles(handlerPromise)).toBe(true)
@@ -2087,8 +2088,11 @@ describe('agent startup — POST /:id/start', () => {
             outgoing.write('{"sessionId":')
             outgoing.end('"session-1"}')
           } else {
-            outgoing.write('{"sessionId":"session-1","padding":"')
-            outgoing.write('x'.repeat(20_000))
+            const head = '{"sessionId":"session-1","padding":"'
+            outgoing.write(head)
+            // A declared body sends exactly its declared length (more would be a
+            // malformed request the HTTP parser refuses, however slow /start is).
+            outgoing.write('x'.repeat(kind === 'oversized declared' ? 20_000 - head.length : 20_000))
             // Do not end the request: oversized input must not hold /start
             // open, and cancelling its stream must not destroy the response.
           }

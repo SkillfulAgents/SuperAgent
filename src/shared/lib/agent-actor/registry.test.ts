@@ -45,8 +45,6 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getSessionJsonlPath: vi.fn(),
 }))
 vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
-  updateConnectedAccountsEnvironment: vi.fn(),
-  updateRemoteMcpEnvironment: vi.fn(),
   syncAgentConnectionEnvironment: vi.fn(),
 }))
 vi.mock('@shared/lib/services/usage-service', () => ({ loadDailyUsageData: vi.fn(), loadSessionUsageTotals: vi.fn() }))

@@ -188,10 +188,6 @@ export interface ContainerOps {
   invalidate(options?: { restart?: boolean }): Promise<'not-running' | 'marked-stale' | 'restarted'>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
   info(): Promise<ContainerInfo>
-  /** `updateConnectedAccountsEnvironment` (connection-runtime-sync) with this agent's client. */
-  updateConnectedAccountsEnvironment(): Promise<Response>
-  /** `updateRemoteMcpEnvironment` (connection-runtime-sync) with this agent's client. */
-  updateRemoteMcpEnvironment(): Promise<Response>
   /**
    * `syncAgentConnectionEnvironment` (connection-runtime-sync) — push one
    * projection to a running container. True when it was applied or when the

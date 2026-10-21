@@ -9,11 +9,7 @@ import type { appendAssistantEntry, appendInformationalEntry } from '@shared/lib
 import type { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import type * as transcriptOps from './local-transcript-ops'
 import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import type {
-  syncAgentConnectionEnvironment,
-  updateConnectedAccountsEnvironment,
-  updateRemoteMcpEnvironment,
-} from '@shared/lib/container/connection-runtime-sync'
+import type { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
@@ -73,8 +69,6 @@ export interface LocalActorDeps {
   readonly appendAssistantEntry: typeof appendAssistantEntry
   readonly recordSessionActivity: typeof recordSessionActivity
   readonly getAgentWorkspaceDir: typeof getAgentWorkspaceDir
-  readonly updateConnectedAccountsEnvironment: typeof updateConnectedAccountsEnvironment
-  readonly updateRemoteMcpEnvironment: typeof updateRemoteMcpEnvironment
   readonly syncAgentConnectionEnvironment: typeof syncAgentConnectionEnvironment
   readonly loadDailyUsageData: typeof loadDailyUsageData
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
@@ -194,8 +188,6 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       return 'restarted'
     },
     info: () => client().getInfo(),
-    updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
-    updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
     syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind, runtime()),
     fetch: (...args) => client().fetch(...args),
     webSocketTarget: async (path, init) => {

@@ -51,6 +51,12 @@ async function reload() {
   return load()
 }
 
+/** The agent's pending reviews, once `count` have reached it: a parked request is never awaited, so wait for it to arrive. */
+async function parked(managers: { reviewManager: { getPendingReviewsForAgent(slug: string): Array<{ id: string }> } }, slug: string, count = 1) {
+  await vi.waitFor(() => expect(managers.reviewManager.getPendingReviewsForAgent(slug)).toHaveLength(count))
+  return managers.reviewManager.getPendingReviewsForAgent(slug)
+}
+
 afterEach(async () => {
   const managers = await load()
   for (const registry of registries.splice(0)) registry.evictAll()
@@ -147,8 +153,8 @@ describe('the actors\' state survives a backend module reload', () => {
     const bare = original.agentRegistry
       .get('b')
       .inputs.reviews.request(reviewDetails, { id: 'review-b' })
-    const [entry] = original.reviewManager.getPendingReviewsForAgent('a')
-    const [bareEntry] = original.reviewManager.getPendingReviewsForAgent('b')
+    const [entry] = await parked(original, 'a')
+    const [bareEntry] = await parked(original, 'b')
 
     const reloaded = await reload()
 
@@ -209,6 +215,7 @@ describe('the actors\' state survives a backend module reload', () => {
     const decision = original.agentRegistry
       .get('a')
       .inputs.reviews.request(reviewDetails, { id: 'review-a' })
+    await parked(original, 'a')
 
     const reloaded = await reload()
     await reloaded.agentRegistry.evict('a')

@@ -1,7 +1,10 @@
 /** Raised only where the host knows no runtime input was accepted. Do not infer
  * this from arbitrary HTTP 5xx bodies or a lost/timeout response. */
 export class MessageNotAcceptedError extends Error {
-  constructor(readonly reason: 'session-gone' | 'unavailable' | 'rejected', message: string, options?: ErrorOptions) { super(message, options) }
+  constructor(readonly reason: 'session-gone' | 'unavailable' | 'rejected', message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'MessageNotAcceptedError'
+  }
 }
 
 /** A refused connection/DNS failure cannot have delivered the HTTP request.
