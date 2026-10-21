@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { toast } from 'sonner'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
 import { useUploadQueue } from './use-upload-queue'
@@ -15,7 +14,7 @@ import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import { chipsToAgentText, silentOpener, type ChipContext } from '@renderer/components/messages/composer-chips'
 import { secretMarker } from '@renderer/components/messages/secret-chip'
-import { agentForSlug } from '@renderer/components/messages/mention-chip'
+import { agentForSlug, chatReferent } from '@renderer/components/messages/mention-chip'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { readChatDrag } from '@renderer/lib/chat-drag'
 import { recordChatUse } from '@renderer/lib/chat-usage'
@@ -347,12 +346,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       // Clears the drop cue; a dragged chat carries no files to attach.
       void attachmentDragHandlers.onDrop(event)
       if (!chat || !agentSlug || chat.sessionId === chipContext.sessionId) return
-      if (chat.agentSlug !== (agentForSlug(chipContext.agents, agentSlug)?.slug ?? agentSlug)) {
-        toast.error("Only this agent's chats can be mentioned here")
-        return
-      }
+      // Another agent's chat names its agent; reading it is offered on send (offerChatRead).
+      const own = chat.agentSlug === (agentForSlug(chipContext.agents, agentSlug)?.slug ?? agentSlug)
+      const owner = own ? undefined : agentForSlug(chipContext.agents, chat.agentSlug)?.name
       recordChatUse(chat.sessionId)
-      const marker = formatChipMarker({ kind: 'chat', referent: chat.sessionId, label: chat.name })
+      const marker = formatChipMarker({
+        kind: 'chat',
+        referent: chatReferent(chat.sessionId, own ? undefined : chat.agentSlug),
+        label: owner ? `${chat.name} · ${owner}` : chat.name,
+      })
       setMessage((current) => `${current}${current && !/\s$/.test(current) ? ' ' : ''}${marker} `)
     },
   }), [attachmentDragHandlers, agentSlug, chipContext.agents, chipContext.sessionId])

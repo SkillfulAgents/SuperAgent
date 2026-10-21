@@ -6,6 +6,7 @@ import { appendMentions, parseMentions, type Mention } from '@shared/lib/utils/m
 import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
 import { agentChip, chatChip, mentionTrigger, userChip } from './mention-chips'
+import { chatReferent } from './mention-chip'
 
 /** Someone who can open the agent. */
 export interface ChipPerson {
@@ -222,7 +223,7 @@ export function draftFromAgentText(text: string, agentId: (slug: string) => stri
   if (mentions.length === 0) return text
   const markers = new Map(mentions.map((mention) => [mention.name, formatChipMarker(
     mention.kind === 'user' ? { kind: userChip.kind, referent: mention.id, label: mention.name }
-    : mention.kind === 'chat' ? { kind: chatChip.kind, referent: mention.id, label: mention.name }
+    : mention.kind === 'chat' ? { kind: chatChip.kind, referent: chatReferent(mention.id, mention.agentSlug && agentId(mention.agentSlug)), label: mention.name }
     : { kind: agentChip.kind, referent: agentId(mention.slug), label: mention.name })]))
   // Longer names first, so `@Ann Lee` is not read as `@Ann`.
   const names = [...markers.keys()].sort((a, b) => b.length - a.length)

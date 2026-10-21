@@ -343,14 +343,33 @@ describe('useMessageComposer', () => {
       )
     })
 
-    it("leaves the draft alone for the open chat or another agent's chat", () => {
+    it('leaves the draft alone for the open chat', () => {
       const opts = defaultOptions()
       const { result } = renderHook(() => useMessageComposer({ ...opts, sessionId: 'open-chat' }), { wrapper: createWrapper() })
       act(() => result.current.setMessage('hello'))
       act(() => result.current.dragHandlers.onDrop(dropOf({ ...q3, sessionId: 'open-chat' })))
-      act(() => result.current.dragHandlers.onDrop(dropOf({ ...q3, agentSlug: 'billing-agent' })))
 
       expect(result.current.message).toBe('hello')
+    })
+
+    it("names another agent's chat by its agent and sends where the agents tools read it", async () => {
+      mockChips.directory = {
+        agents: new Map([['k3j4h5g6f7', { slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }]]),
+      }
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.dragHandlers.onDrop(dropOf({ agentSlug: 'k3j4h5g6f7', sessionId: 'refund-chat', name: 'Stripe refund cleanup' })))
+
+      expect(result.current.message).toBe(
+        `${formatChipMarker({ kind: 'chat', referent: 'k3j4h5g6f7/refund-chat', label: 'Stripe refund cleanup · Billing Agent' })} `,
+      )
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+      expect(opts.onSubmit.mock.calls[0][0]).toContain(
+        '- @Stripe refund cleanup · Billing Agent: chat in agent billing-agent-k3j4h5g6f7, session id refund-chat (read it with get_agent_session_transcript)',
+      )
+      mockChips.directory = {}
     })
   })
 

@@ -2,8 +2,8 @@ import type { DOMOutputSpec } from 'prosemirror-model'
 import { mentionName } from '@shared/lib/utils/mentions'
 import type { Chip } from '@renderer/lib/chip-marker'
 import type { ComposerChipKind, ComposerChipTrigger } from './composer-chips'
-import { AgentMentionIcon, ChatMentionIcon, MENTION_CHIP_CLASS, UserMentionIcon, agentForSlug } from './mention-chip'
-import { offerReach, offerShare } from './mention-access-gate'
+import { AgentMentionIcon, ChatMentionIcon, MENTION_CHIP_CLASS, UserMentionIcon, agentForSlug, parseChatReferent } from './mention-chip'
+import { offerChatRead, offerReach, offerShare } from './mention-access-gate'
 import { MentionMenu } from './mention-menu'
 
 function renderMention(testId: string) {
@@ -49,14 +49,25 @@ export const agentChip: ComposerChipKind = {
   beforeSend: offerReach,
 }
 
-/** One of this agent's chats: the referent is its session id, the label its title. */
+/** A chat: the referent is `chatReferent`, the label its title (and, for another agent's, that agent's name). */
 export const chatChip: ComposerChipKind = {
   kind: 'chat',
-  referent: /^[A-Za-z0-9_-]+$/,
+  referent: /^(?:[a-z0-9-]+\/)?[A-Za-z0-9_-]+$/,
   render: renderMention('chat-mention'),
   Icon: ChatMentionIcon,
   toAgentText,
-  mention: (chip) => ({ kind: 'chat', id: chip.referent, name: chip.label }),
+  // The display slug, as list_agents prints it; the tools resolve either.
+  mention: (chip, { agents }) => {
+    const { agentId, sessionId } = parseChatReferent(chip.referent)
+    return agentId
+      ? { kind: 'chat', id: sessionId, name: chip.label, agentSlug: agentForSlug(agents, agentId)?.displaySlug ?? agentId }
+      : { kind: 'chat', id: sessionId, name: chip.label }
+  },
+  isBacked: (chip, { agents }) => {
+    const { agentId } = parseChatReferent(chip.referent)
+    return !agentId || !agents || !!agentForSlug(agents, agentId)
+  },
+  beforeSend: offerChatRead,
 }
 
 /** `@` picks a teammate, another agent, or one of this agent's chats. */

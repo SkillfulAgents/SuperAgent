@@ -18,7 +18,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { RoleSelectItems } from '@renderer/components/agents/agent-share-popover'
 import type { ChipContext, ChipSend } from './composer-chips'
-import { agentForSlug } from './mention-chip'
+import { agentForSlug, parseChatReferent } from './mention-chip'
 
 type Decision = 'allow' | 'review' | 'block'
 type Operation = 'read' | 'invoke'
@@ -61,6 +61,18 @@ function fetchMembers(queryClient: QueryClient, agentSlug: string, staleTime: nu
   })
 }
 
+async function fetchPolicies(queryClient: QueryClient, agentSlug: string): Promise<Policy[]> {
+  const { policies } = await queryClient.fetchQuery<{ policies: Policy[] }>({
+    queryKey: ['x-agent-policies', agentSlug],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`)
+      if (!res.ok) throw new Error('Failed to fetch policies')
+      return res.json()
+    },
+  })
+  return policies
+}
+
 /**
  * The user chip's check before a send: a teammate who cannot open the agent is
  * offered a share, and the message goes with the fresh roster. Only someone who
@@ -85,14 +97,7 @@ export async function offerReach(tagged: Chip[], { agentSlug, context, silent, m
   // A silent message runs no turn, so there is nothing to reach yet.
   const agents = tagged.filter((chip) => agentForSlug(context.agents, chip.referent))
   if (silent || !manages || agents.length === 0) return context
-  const { policies } = await queryClient.fetchQuery<{ policies: Policy[] }>({
-    queryKey: ['x-agent-policies', agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/x-agent-policies`)
-      if (!res.ok) throw new Error('Failed to fetch policies')
-      return res.json()
-    },
-  })
+  const policies = await fetchPolicies(queryClient, agentSlug)
   const unreachable = agents.filter((chip) =>
     effective(policies, 'read', chip.referent) !== 'allow' && effective(policies, 'invoke', chip.referent) !== 'allow')
   if (unreachable.length === 0) return context
@@ -101,6 +106,31 @@ export async function offerReach(tagged: Chip[], { agentSlug, context, silent, m
   const agentName = agentForSlug(context.agents, agentSlug)?.name
   const allowed = await ask((done) => (
     <ReachDialog agentSlug={agentSlug} agentName={agentName} agents={unreachable} blocked={blocked} onDone={done} />
+  ))
+  return allowed ? context : null
+}
+
+/**
+ * The chat chip's check before a send: another agent's chat that this one
+ * cannot read without asking offers that access, as `offerReach` does. Only
+ * someone who manages the agent is asked; anyone else sends as is.
+ */
+export async function offerChatRead(chats: Chip[], { agentSlug, context, silent, manages, queryClient, ask }: ChipSend): Promise<ChipContext | null> {
+  const ownId = agentForSlug(context.agents, agentSlug)?.slug ?? agentSlug
+  const owners = new Map<string, Chip>()
+  for (const chip of chats) {
+    const owner = agentForSlug(context.agents, parseChatReferent(chip.referent).agentId ?? '')
+    if (owner && owner.slug !== ownId) owners.set(owner.slug, { kind: 'agent', referent: owner.slug, label: owner.name })
+  }
+  if (silent || !manages || owners.size === 0) return context
+  const policies = await fetchPolicies(queryClient, agentSlug)
+  const unreadable = [...owners.values()].filter((chip) => effective(policies, 'read', chip.referent) !== 'allow')
+  if (unreadable.length === 0) return context
+  const blocked = new Map(unreadable.map((chip) => [chip.referent,
+    effective(policies, 'read', chip.referent) === 'block' ? ['read' as const] : []]))
+  const agentName = agentForSlug(context.agents, agentSlug)?.name
+  const allowed = await ask((done) => (
+    <ReachDialog agentSlug={agentSlug} agentName={agentName} agents={unreadable} blocked={blocked} initialReach="read" onDone={done} />
   ))
   return allowed ? context : null
 }
@@ -193,16 +223,18 @@ function ShareDialog({ agentSlug, people, onDone }: { agentSlug: string; people:
   )
 }
 
-function ReachDialog({ agentSlug, agentName, agents, blocked, onDone }: {
+function ReachDialog({ agentSlug, agentName, agents, blocked, initialReach = 'both', onDone }: {
   agentSlug: string
   agentName: string | undefined
   agents: Chip[]
   /** The operations a policy blocks, per agent; the rest ask first. */
   blocked: Map<string, Operation[]>
+  /** What the dialog offers first. */
+  initialReach?: Reach
   onDone: (ok: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const [reach, setReach] = useState<Reach>('both')
+  const [reach, setReach] = useState<Reach>(initialReach)
   const caller = agentName ?? 'This agent'
   const targets = names(agents)
   const grant = async () => {

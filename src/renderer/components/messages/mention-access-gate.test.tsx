@@ -50,6 +50,8 @@ import { useComposerChips } from '@renderer/hooks/use-composer-chips'
 const sara = formatChipMarker({ kind: 'user', referent: 'sara-id', label: 'Sara Kim' })
 const mike = formatChipMarker({ kind: 'user', referent: 'mike-id', label: 'Mike Smith' })
 const billing = formatChipMarker({ kind: 'agent', referent: 'billing01x', label: 'Billing Agent' })
+const refundChat = formatChipMarker({ kind: 'chat', referent: 'billing01x/refund-chat', label: 'Stripe refund cleanup · Billing Agent' })
+const ownChat = formatChipMarker({ kind: 'chat', referent: 'q3-chat', label: 'Q3 revenue numbers' })
 
 let chips: ReturnType<typeof useComposerChips>
 function Harness() {
@@ -163,6 +165,28 @@ describe('the user and agent chips before a send', () => {
       await expect(confirm(`ask ${billing}`)).resolves.toBe(chips.context)
       expect(screen.queryByTestId('mention-access-dialog')).toBeNull()
     }
+  })
+
+  it("offers to let it read the agent behind another agent's chat, and grants only reading", async () => {
+    state.policies = [{ operation: 'invoke', targetAgentSlug: 'billing01x', decision: 'allow' }]
+    mount()
+    const result = confirm(`use the fixes in ${refundChat}`)
+    expect(await screen.findByText('Let Support Agent reach Billing Agent?')).toBeInTheDocument()
+    expect(screen.getByTestId('mention-reach-select')).toHaveTextContent('Read its sessions')
+    await userEvent.click(screen.getByRole('button', { name: 'Allow and send' }))
+
+    await expect(result).resolves.toBe(chips.context)
+    expect(writes().map((request) => request.body)).toEqual([
+      { operation: 'read', targetSlug: 'billing01x', decision: 'allow' },
+    ])
+  })
+
+  it("asks nothing about this agent's own chat, or another agent's it may already read", async () => {
+    mount()
+    await expect(confirm(`use ${ownChat}`)).resolves.toBe(chips.context)
+    state.policies = [{ operation: 'read', targetAgentSlug: null, decision: 'allow' }]
+    await expect(confirm(`use ${refundChat}`)).resolves.toBe(chips.context)
+    expect(screen.queryByTestId('mention-access-dialog')).toBeNull()
   })
 
   it('asks nothing about agents for a message that runs no turn', async () => {

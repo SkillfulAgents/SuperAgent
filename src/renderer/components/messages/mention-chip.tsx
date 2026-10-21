@@ -39,6 +39,16 @@ export function agentForSlug(agents: ReadonlyMap<string, ChipAgent> | undefined,
   return agents?.get(slug) ?? agents?.get(slug.slice(slug.lastIndexOf('-') + 1))
 }
 
+/** A chat's referent: its session id, after its agent's id when it is another agent's chat. */
+export function chatReferent(sessionId: string, agentId?: string): string {
+  return agentId ? `${agentId}/${sessionId}` : sessionId
+}
+
+export function parseChatReferent(referent: string): { agentId?: string; sessionId: string } {
+  const slash = referent.indexOf('/')
+  return slash === -1 ? { sessionId: referent } : { agentId: referent.slice(0, slash), sessionId: referent.slice(slash + 1) }
+}
+
 function PersonAvatar({ id, name, members }: { id: string; name: string; members?: ReadonlyMap<string, ChipPerson> }) {
   return <UserAvatar user={members?.get(id) ?? { id, name }} size={AVATAR_SIZE} />
 }
@@ -68,7 +78,7 @@ export function MentionChip({ mention, agentSlug }: { mention: Mention; agentSlu
     return (
       <AppLink
         to="/agents/$slug/sessions/$sessionId"
-        params={{ slug: agentSlug, sessionId: mention.id }}
+        params={{ slug: mention.agentSlug ?? agentSlug, sessionId: mention.id }}
         className={cn(MENTION_CHIP_CLASS, 'hover:underline')}
         data-testid="chat-mention"
       >
