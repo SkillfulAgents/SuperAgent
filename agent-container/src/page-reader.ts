@@ -179,7 +179,7 @@ export function readerScript(): string {
     'try{if(document.body)walk(document.body,-1)}catch(e){}' +
     // Lines tidied outside code blocks only: indentation inside them is the code.
     'var inF=false;var md=out.join("").split("\\n").map(function(l){if(/^```/.test(l)){inF=!inF;return l}if(inF)return l.replace(/\\s+$/,"");' +
-    'if(/^\\s*- /.test(l))return l.replace(/^(\\s*- )\\s+/,"$1").replace(/\\s+$/,"");return l.replace(/[ \\t]+/g," ").trim().replace(/ +([.,;:!?])(?=\\s|$)/g,"$1")}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
+    'if(/^\\s*- /.test(l))return l.replace(/^(\\s*- )\\s+/,"$1").replace(/(\\S)[ \\t]{2,}/g,"$1 ").replace(/\\s+$/,"");return l.replace(/[ \\t]+/g," ").trim().replace(/ +([.,;:!?])(?=\\s|$)/g,"$1")}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
     'if(!md&&bigAlts.length)md=bigAlts.join("\\n");' +
     // The frames the walk skipped, and how much of the viewport each covers
     // (bench, Target: a PerimeterX "Human verification challenge" frame over
