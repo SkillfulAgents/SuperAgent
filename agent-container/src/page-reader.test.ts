@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { outlineOf, parseReadResult, readerScript, sectionOf, tidyRead } from './page-reader'
+import { capSection, formatUnreadFrames, outlineOf, parseReadResult, readerScript, sectionOf, tidyRead } from './page-reader'
 
 const DOC = `# Trail runner
 
@@ -52,6 +52,16 @@ describe('sectionOf', () => {
   })
 })
 
+describe('capSection', () => {
+  it('returns a short section whole, and a long one as its start plus its sub-headings', () => {
+    expect(capSection('## A\n\nshort')).toBe('## A\n\nshort')
+    const long = `# Hotel\n\n${'x'.repeat(5000)}\n\n## Prices\n\n${'p'.repeat(2000)}\n\n## Reviews\n\nr`
+    const capped = capSection(long)
+    expect(capped.length).toBeLessThan(6000 + 300)
+    expect(capped).toMatch(/…\[this section continues for \d+ more chars; its sub-headings \(pass one as section to read just it\):\n {2}- Prices\n {2}- Reviews\]$/)
+  })
+})
+
 describe('tidyRead', () => {
   it('joins a list marker left alone on its line with the text it introduces', () => {
     expect(tidyRead('-\n\nPlatform\n\n- Pricing\n-\n\n- Nested')).toBe('- Platform\n\n- Pricing\n\n- Nested')
@@ -59,10 +69,22 @@ describe('tidyRead', () => {
   })
 })
 
+describe('formatUnreadFrames', () => {
+  it('names the frames the read did not enter, largest first, with how much of the viewport each covers', () => {
+    expect(formatUnreadFrames([
+      { name: '', host: 'ads.example.net', cover: 0.04 },
+      { name: 'Human verification challenge', host: 'captcha.px-cdn.net', cover: 1 },
+      { name: 'hidden', host: 'x.com', cover: 0 },
+    ])).toBe('\n\nIframes on the page, not included above (browser_snapshot reads into them): "Human verification challenge" (captcha.px-cdn.net) · covers 100% of the viewport; unnamed (ads.example.net) · covers 4% of the viewport')
+    expect(formatUnreadFrames([])).toBe('')
+    expect(formatUnreadFrames([{ name: 'tiny', host: '', cover: 0.001 }])).toBe('\n\nIframes on the page, not included above (browser_snapshot reads into them): "tiny" · covers <1% of the viewport')
+  })
+})
+
 describe('parseReadResult / readerScript', () => {
   it('parses the CLI\'s double-encoded output', () => {
-    expect(parseReadResult(JSON.stringify(JSON.stringify({ text: '# Hi', truncated: false })))).toEqual({ text: '# Hi', truncated: false })
-    expect(parseReadResult('{"text":"x","truncated":true}')).toEqual({ text: 'x', truncated: true })
+    expect(parseReadResult(JSON.stringify(JSON.stringify({ text: '# Hi', truncated: false })))).toEqual({ text: '# Hi', truncated: false, frames: [] })
+    expect(parseReadResult('{"text":"x","truncated":true,"frames":[{"name":"F","host":"h","cover":0.5}]}')).toEqual({ text: 'x', truncated: true, frames: [{ name: 'F', host: 'h', cover: 0.5 }] })
     expect(parseReadResult('✗ Browser not launched')).toBeNull()
     expect(parseReadResult('{"nope":1}')).toBeNull()
   })

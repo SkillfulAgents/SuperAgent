@@ -826,6 +826,8 @@ const browserReadTool = tool(
 - Only rendered text: anything the page hides (closed menus and dialogs, collapsed sections, other tabs' panels) is left out, so what you read is what is on screen or reachable by scrolling.
 - Long pages: outline=true returns just the headings; section="<heading text>" returns the sections whose heading contains that text. Use them instead of reading 40,000 chars at once.
 - No refs: to act on something you read, take browser_snapshot (scope it to the region). For text next to controls — form validation errors, table rows with buttons — browser_snapshot(fullText) is the better fit.
+- To count, total or group many items (labels across 100 rows, prices across a grid), compute it with browser_eval over the DOM rather than tallying the read by hand.
+- A dialog or banner open on top of the page is named under the status line; iframes the read did not enter are listed at the end with how much of the viewport each covers.
 - The top document only: text inside iframes (embedded widgets, payment frames) is not included. Link targets are not included — use browser_snapshot(includeUrls) for those.`,
   {
     outline: z

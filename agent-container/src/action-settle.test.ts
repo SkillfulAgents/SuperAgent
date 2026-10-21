@@ -8,6 +8,7 @@ import {
   formatActionEffect,
   observeAction,
   pressPolicy,
+  sameDocument,
 } from './action-settle'
 import { parseTreeRefs, type TreeDiff } from './tree-diff'
 
@@ -31,6 +32,8 @@ describe('diffObservations', () => {
       closed: [{ kind: 'dialog', name: 'Cart' }],
       interactiveDelta: 12,
       stateChanged: false,
+      labelsChanged: false,
+      blockerAppeared: '',
       announced: ['Tags updated'],
       textChanged: true,
       textDelta: 120,
@@ -40,6 +43,23 @@ describe('diffObservations', () => {
       focusValue: '',
       focusValueChars: 0,
     })
+  })
+
+  it('says when a challenge wall came up with the action, before anything else', () => {
+    const e = diffObservations(base, { ...base, blocker: 'PerimeterX', interactive: 41 })
+    expect(e.blockerAppeared).toBe('PerimeterX')
+    expect(formatActionEffect(e, { settleMs: 300, verb: 'click' })).toBe('\nEffect: PerimeterX challenge page now showing · +1 interactive elements')
+    expect(diffObservations({ ...base, blocker: 'PerimeterX' }, { ...base, blocker: 'PerimeterX' }).blockerAppeared).toBe('')
+  })
+
+  it('reports a view swapped in place: same count of controls, different labels', () => {
+    const e = diffObservations({ ...base, labelHash: 11 }, { ...base, labelHash: 12 })
+    expect(e.labelsChanged).toBe(true)
+    expect(effectWantsTree(e, 'click')).toBe(true)
+    expect(effectWantsTree(e, 'hover')).toBe(false)
+    expect(formatActionEffect(e, { settleMs: 300, verb: 'click' })).toBe('\nEffect: labels of visible controls changed')
+    // A different count is the census's to report, not this.
+    expect(diffObservations({ ...base, labelHash: 11 }, { ...base, interactive: 41, labelHash: 12 }).labelsChanged).toBe(false)
   })
 
   it('reports a control state change, and ignores a same-length text change (a clock, a counter)', () => {
@@ -163,6 +183,16 @@ describe('observeAction', () => {
     expect(out.effect?.interactiveDelta).toBe(12)
     expect(out.waitedMs).toBe(1200)
     expect(h.evals).toEqual([0, 300, 1200])
+  })
+
+  it('keeps the effect across a same-document URL change (pushState), not across a new document', async () => {
+    const spa = await harness([{ ...base, docStart: 1700.5 }, { ...base, url: 'https://a.com/#/filters', docStart: 1700.5, interactive: 52 }]).run()
+    expect(spa.effect?.interactiveDelta).toBe(12)
+    expect(sameDocument({ ...base, docStart: 1700.5 }, { ...base, docStart: 1700.5 })).toBe(true)
+    const reload = await harness([{ ...base, docStart: 1700.5 }, { ...base, url: 'https://a.com/next', docStart: 1800.25 }]).run()
+    expect(reload.effect).toBeNull()
+    // Unknown load start (0): a URL change is a navigation, as before.
+    expect(sameDocument({ ...base, docStart: 0 }, { ...base, docStart: 0 })).toBe(false)
   })
 
   it('reports nothing across a navigation, after a failed action, or when the page cannot be read', async () => {

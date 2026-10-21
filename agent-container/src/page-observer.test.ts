@@ -219,6 +219,29 @@ describe('observerScript', () => {
     expect(makePage({ href: 'chrome-error://chromewebdata/' }).run().netError).toBe('net error')
   })
 
+  it('recognises a vendor challenge frame laid over a normal page, only when it covers most of the viewport', () => {
+    // Target (bench, SUP-1265): PerimeterX's "Press & hold" frame over a 200 page that keeps all its controls.
+    const g = globalThis as { innerWidth?: number; innerHeight?: number }
+    g.innerWidth = 1280
+    g.innerHeight = 800
+    try {
+      const frame = (right: number, bottom: number) => Object.assign(
+        el({ tag: 'iframe', title: 'Human verification challenge' }),
+        { getBoundingClientRect: () => ({ left: 0, top: 0, right, bottom }) },
+      )
+      const controls = Array.from({ length: 40 }, () => el({ tag: 'a' }))
+      const sel = (f: unknown) => ({ [INTERACTIVE]: controls, 'iframe[title="Human verification challenge"]': [f] })
+      expect(makePage({ body: 'Search results', sel: sel(frame(1280, 800)) }).run().blocker).toBe('PerimeterX')
+      // A small frame (a widget, not the overlay) is not the wall.
+      expect(makePage({ body: 'Search results', sel: sel(frame(300, 200)) }).run().blocker).toBe('')
+      // The wording, with an apostrophe, on a challenge status.
+      expect(makePage({ body: "Press & Hold to confirm you're a human (and not a bot).", status: 403, sel: { [INTERACTIVE]: controls } }).run().blocker).toBe('PerimeterX')
+    } finally {
+      delete g.innerWidth
+      delete g.innerHeight
+    }
+  })
+
   it('survives a page whose DOM throws at every turn', () => {
     const hostile = {
       body: null,

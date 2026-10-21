@@ -59,6 +59,12 @@ export const pageObservationSchema = z.object({
    * ticks a box or toggles a button is an observed change, not silence.
    */
   stateHash: z.number().default(0),
+  /**
+   * Hash of the visible controls' labels (aria-label or text, first 60
+   * chars each): a view swap that keeps the count and the text length —
+   * results page 1 → 2, an SPA tab — changes it.
+   */
+  labelHash: z.number().default(0),
   /** Visible dialogs, alertdialogs, aria-modal containers and open popovers, with accessible names. */
   top: z.array(topLayerEntrySchema).default([]),
   /** Focused element as `role "name"`, or "nothing focused". */
@@ -78,6 +84,12 @@ export const pageObservationSchema = z.object({
   blocker: z.string().default(''),
   /** Chrome net-error code when the document is Chrome's error page, or ''. */
   netError: z.string().default(''),
+  /**
+   * performance.timeOrigin: when this document started loading. Equal on two
+   * reads ⇒ the same document — a URL change between them was a same-document
+   * navigation (pushState, hash), which keeps every ref. 0 when unreadable.
+   */
+  docStart: z.number().default(0),
 })
 
 export type PageObservation = z.infer<typeof pageObservationSchema>
@@ -148,10 +160,21 @@ const BLOCKER_SIGNATURES: Array<[string, string]> = [
   ['Imperva/Incapsula', 'request unsuccessful\\. incapsula incident id|incapsula incident id'],
   ['Akamai', 'access denied.{0,160}permission to access.{0,200}reference #\\d+\\.[0-9a-f]+\\.\\d+'],
   ['Google', 'unusual traffic from your computer network'],
-  ['PerimeterX', 'press (&|and) hold to confirm you are a human|press (&|and) hold the button'],
+  ['PerimeterX', "press (&|and) hold to confirm you(?: are|'re|’re) a human|press (&|and) hold the button"],
   ['CAPTCHA', 'complete the security check to access|please verify you are a human|prove you are human|are you a robot'],
 ]
 const BLOCKER_MAX_CONTROLS = 3
+/**
+ * A challenge served as a frame over a normal page: the site underneath keeps
+ * its controls and its 200, so neither rule above sees it. Counted only when
+ * the vendor's challenge frame is visible and covers most of the viewport —
+ * the overlay, not a widget in a form. (Target, bench SUP-1265: PerimeterX's
+ * "Human verification challenge" frame over the whole page.)
+ */
+const BLOCKER_OVERLAY_FRAMES: Array<[string, string]> = [
+  ['PerimeterX', 'iframe[title="Human verification challenge"]'],
+]
+const BLOCKER_OVERLAY_COVER = 0.5
 const BLOCKER_STATUSES = [403, 429, 503]
 
 export interface ObserverOptions {
@@ -168,7 +191,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
   const markers = JSON.stringify(BLOCKER_MARKERS)
   return (
     '(function(){' +
-    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:""};' +
+    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,labelHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:"",docStart:0};' +
     'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
     'var hash=function(s){var h=5381;var lim=Math.min(s.length,' + TEXT_HASH_CAP + ');for(var q=0;q<lim;q++){h=((h<<5)+h+s.charCodeAt(q))|0}return h};' +
     // checkVisibility covers visibility:hidden / opacity:0 — how many dropdowns hide
@@ -180,6 +203,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{o.url=String(location.href||"")}catch(e){}' +
     'try{o.title=ws(document.title).slice(0,200);o.readyState=String(document.readyState||"");o.contentType=String(document.contentType||"")}catch(e){}' +
     'try{var nav=performance.getEntriesByType("navigation")[0];o.httpStatus=(nav&&nav.responseStatus)|0}catch(e){}' +
+    'try{o.docStart=Number(performance.timeOrigin)||0}catch(e){}' +
     // Text: the whole page for the footer's count; the content region for diffs and the preview.
     'try{body=ws(document.body&&document.body.innerText);o.textChars=body.length}catch(e){}' +
     'try{var m=document.querySelector("main,[role=main]");var ct=m?ws(m.innerText):body;o.contentChars=ct.length;o.contentHash=hash(ct);o.preview=ct.slice(0,' + previewChars + ')}catch(e){}' +
@@ -198,11 +222,12 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'if(!nm)nm=String(f.title||"");return{title:nm,host:host,sameOrigin:same}})}catch(e){}' +
     // Interactive census, and the state of every visible control.
     'var act=null;try{act=document.activeElement}catch(e){}var actIx=-1;' +
-    'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";' +
+    'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";var lbs="";' +
     'for(var j=0;j<els.length;j++){var ce=els[j];if(ce===act)actIx=j;if(!vis(ce))continue;o.interactive++;' +
     'for(var j2=0;j2<sa.length;j2++){var av=ce.getAttribute(sa[j2]);if(av!==null)st+=sa[j2]+"="+av+";"}' +
-    'if(typeof ce.checked==="boolean")st+="c="+(ce.checked?1:0)+";";if(typeof ce.selectedIndex==="number")st+="s="+ce.selectedIndex+";";st+="|"}' +
-    'o.stateHash=hash(st)}catch(e){}' +
+    'if(typeof ce.checked==="boolean")st+="c="+(ce.checked?1:0)+";";if(typeof ce.selectedIndex==="number")st+="s="+ce.selectedIndex+";";st+="|";' +
+    'lbs+=String(ce.getAttribute("aria-label")||ce.textContent||"").slice(0,60)+"|"}' +
+    'o.stateHash=hash(st);o.labelHash=hash(lbs)}catch(e){}' +
     // Top layer.
     'try{var name=function(el){var n=el.getAttribute("aria-label")||"";' +
     'if(!n){var lb=el.getAttribute("aria-labelledby");if(lb){var le=document.getElementById(lb.split(" ")[0]);if(le)n=le.innerText}}' +
@@ -230,6 +255,8 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{if(document.getElementById("main-frame-error")||/^chrome-error:/.test(o.url)){var em=/\\bERR_[A-Z_]{3,}\\b/.exec(body);o.netError=em?em[0]:"net error"}}catch(e){}' +
     'try{if(/^https?:\\/\\/[^\\/]*google\\.[a-z.]+\\/sorry\\//i.test(o.url))o.blocker="Google";' +
     'if(!o.blocker&&o.interactive<=' + BLOCKER_MAX_CONTROLS + '){var mk=' + markers + ';for(var g0=0;g0<mk.length&&!o.blocker;g0++){try{if(document.querySelector(mk[g0][1]))o.blocker=mk[g0][0]}catch(e){}}}' +
+    'if(!o.blocker){var ov=' + JSON.stringify(BLOCKER_OVERLAY_FRAMES) + ';var vw=(typeof innerWidth==="number"&&innerWidth)||1,vh=(typeof innerHeight==="number"&&innerHeight)||1;for(var g1=0;g1<ov.length&&!o.blocker;g1++){try{var fs=document.querySelectorAll(ov[g1][1]);for(var g2=0;g2<fs.length&&!o.blocker;g2++){if(!vis(fs[g2]))continue;var rr=fs[g2].getBoundingClientRect();' +
+    'var cw=Math.max(0,Math.min(rr.right,vw)-Math.max(rr.left,0)),chh=Math.max(0,Math.min(rr.bottom,vh)-Math.max(rr.top,0));if(cw*chh/(vw*vh)>=' + BLOCKER_OVERLAY_COVER + ')o.blocker=ov[g1][0]}}catch(e){}}}' +
     'if(!o.blocker&&' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
     'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(hay))o.blocker=sg[g][0]}}}catch(e){}' +
     'return JSON.stringify(o)})()'

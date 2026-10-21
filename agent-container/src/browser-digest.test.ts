@@ -52,6 +52,15 @@ describe('formatUrlDigest', () => {
     expect(msg).toContain('stale')
   })
 
+  it('says a same-document URL change is no page load and the refs still work (both forms)', () => {
+    const d = { url: 'https://a.com/#/results', navigated: true, firstObservation: false, sameDocument: true }
+    for (const msg of [formatUrlDigest(d), formatUrlDigestBrief(d)]) {
+      expect(msg).toBe('\nURL changed to https://a.com/#/results — same document (no page load), so refs from your snapshot still work.')
+      expect(msg).not.toContain('NAVIGATED')
+      expect(msg).not.toContain('stale')
+    }
+  })
+
   it('reports the URL when unchanged', () => {
     const msg = formatUrlDigest({ url: 'https://a.com/', navigated: false, firstObservation: false })
     expect(msg).toContain('URL unchanged (https://a.com/)')

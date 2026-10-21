@@ -22,10 +22,20 @@
 /** Stop walking once this much text is collected; the tool shows far less. */
 const READ_COLLECT_LIMIT = 400_000
 
+export interface ReadFrame {
+  /** The frame's accessible name: aria-label, else title. */
+  name: string
+  host: string
+  /** Share of the viewport the frame covers, 0–1 — an overlay covering the page is the one that matters. */
+  cover: number
+}
+
 export interface ReadResult {
   text: string
   /** The walk stopped at READ_COLLECT_LIMIT. */
   truncated: boolean
+  /** Visible iframes: the walk does not enter them, so their text is not in `text`. */
+  frames: ReadFrame[]
 }
 
 /** Build the reader eval: one IIFE returning JSON `{text, truncated}`. */
@@ -34,19 +44,23 @@ export function readerScript(): string {
     '(function(){' +
     'var out=[];var n=0;var full=false;' +
     'var push=function(s){if(full)return;out.push(s);n+=s.length;if(n>' + READ_COLLECT_LIMIT + ')full=true};' +
-    'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};' +
+    // Zero-width spaces and joiners are layout glue, not text (Meta's ad cards: 180 lines of only U+200B).
+    'var zw=/[\\u200b-\\u200d\\u2060\\ufeff]/g;' +
+    'var ws=function(s){return String(s||"").replace(zw,"").replace(/\\s+/g," ").trim()};' +
     'var vis=function(el){try{if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,opacityProperty:true,checkVisibilityCSS:true,checkOpacity:true});return el.getClientRects().length>0}catch(e){return false}};' +
     // Block text as the browser lays it out: one line per line break, blank runs collapsed.
-    'var blockText=function(el){return String(el.innerText||"").split("\\n").map(function(l){return l.replace(/[ \\t\\u00a0]+/g," ").trim()}).filter(function(l){return l}).join("\\n")};' +
+    'var blockText=function(el){return String(el.innerText||"").replace(zw,"").split("\\n").map(function(l){return l.replace(/[ \\t\\u00a0]+/g," ").trim()}).filter(function(l){return l}).join("\\n")};' +
     'var SKIP=/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG|CANVAS|IFRAME|OBJECT|EMBED|HEAD|SELECT|OPTION|DATALIST)$/;' +
     'var BLOCK=/^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|HEADER|HR|MAIN|NAV|OL|P|SECTION|TABLE|THEAD|TBODY|TFOOT|UL|SUMMARY|CAPTION|LEGEND)$/;' +
-    'var STRUCT="h1,h2,h3,h4,h5,h6,li,tr,pre";' +
+    'var STRUCT="h1,h2,h3,h4,h5,h6,[role=heading],li,tr,pre";' +
     'var walk=function(node,depth){if(full)return;' +
-    'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(/\\s+/g," ");if(t.trim())push(t);return}' +
+    'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);return}' +
     'if(node.nodeType!==1)return;var el=node;var tag=String(el.tagName||"").toUpperCase();if(SKIP.test(tag))return;' +
     // display:contents has no box of its own but its children render.
     'if(!vis(el)){var dc=false;try{dc=getComputedStyle(el).display==="contents"}catch(e){}if(!dc)return}' +
-    'var h=/^H([1-6])$/.exec(tag);if(h){var ht=ws(el.innerText);if(ht)push("\\n\\n"+"######".slice(0,+h[1])+" "+ht+"\\n\\n");return}' +
+    // <h1>–<h6>, and ARIA headings by aria-level (Google's results use role=heading).
+    'var hl=0;var h=/^H([1-6])$/.exec(tag);if(h)hl=+h[1];else if(el.getAttribute&&el.getAttribute("role")==="heading"){hl=parseInt(el.getAttribute("aria-level")||"2",10);if(!(hl>=1&&hl<=6))hl=2}' +
+    'if(hl){var ht=ws(el.innerText);if(ht)push("\\n\\n"+"######".slice(0,hl)+" "+ht+"\\n\\n");return}' +
     'if(tag==="PRE"){push("\\n\\n```\\n"+String(el.innerText||"").replace(/\\s+$/,"")+"\\n```\\n\\n");return}' +
     // A row of a data table is one line of cells; a layout table's row (one
     // holding a table of its own — Hacker News, old forums) is walked instead.
@@ -60,7 +74,13 @@ export function readerScript(): string {
     'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;for(var k=el.firstChild;k;k=k.nextSibling)walk(k,d2);if(block)push("\\n\\n")};' +
     'try{if(document.body)walk(document.body,-1)}catch(e){}' +
     'var md=out.join("").split("\\n").map(function(l){return /^\\s*- /.test(l)?l.replace(/\\s+$/,""):l.replace(/[ \\t]+/g," ").trim()}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
-    'return JSON.stringify({text:md,truncated:full})})()'
+    // The frames the walk skipped, and how much of the viewport each covers
+    // (bench, Target: a PerimeterX "Human verification challenge" frame over
+    // the whole page read as an empty search result).
+    'var frames=[];try{var vw=(typeof innerWidth==="number"&&innerWidth)||1,vh=(typeof innerHeight==="number"&&innerHeight)||1;[].slice.call(document.querySelectorAll("iframe")).forEach(function(f){if(!vis(f)||frames.length>=12)return;var r=f.getBoundingClientRect();' +
+    'var w=Math.max(0,Math.min(r.right,vw)-Math.max(r.left,0)),h=Math.max(0,Math.min(r.bottom,vh)-Math.max(r.top,0));var host="";try{host=new URL(f.src,location.href).host}catch(e){}' +
+    'frames.push({name:ws(f.getAttribute("aria-label")||f.title||""),host:host,cover:Math.round(w*h/(vw*vh)*100)/100})})}catch(e){}' +
+    'return JSON.stringify({text:md,truncated:full,frames:frames})})()'
   )
 }
 
@@ -71,7 +91,14 @@ export function parseReadResult(stdout: string): ReadResult | null {
     if (typeof parsed === 'string') parsed = JSON.parse(parsed)
     const o = parsed as Record<string, unknown>
     if (typeof o?.text !== 'string') return null
-    return { text: o.text, truncated: o.truncated === true }
+    const frames = Array.isArray(o.frames)
+      ? (o.frames as unknown[]).filter((f): f is Record<string, unknown> => typeof f === 'object' && f !== null).map(f => ({
+        name: typeof f.name === 'string' ? f.name : '',
+        host: typeof f.host === 'string' ? f.host : '',
+        cover: typeof f.cover === 'number' ? f.cover : 0,
+      }))
+      : []
+    return { text: o.text, truncated: o.truncated === true, frames }
   } catch {
     return null
   }
@@ -100,6 +127,40 @@ export function tidyRead(text: string): string {
   }
   // Leading blank lines go; a first line's indentation is part of its list.
   return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '').trimEnd()
+}
+
+/**
+ * A line under the read naming the iframes it did not enter. Facts only: the
+ * frame's name, host, and how much of the viewport it covers — a frame over
+ * most of the page means the page text above may be under it.
+ */
+export function formatUnreadFrames(frames: ReadFrame[]): string {
+  const shown = frames.filter(f => f.cover > 0).sort((a, b) => b.cover - a.cover).slice(0, 6)
+  if (shown.length === 0) return ''
+  const items = shown.map(f => {
+    const label = f.name ? JSON.stringify(f.name.slice(0, 80)) : 'unnamed'
+    const pct = Math.round(f.cover * 100)
+    return `${label}${f.host ? ` (${f.host})` : ''} · covers ${pct < 1 ? '<1' : pct}% of the viewport`
+  })
+  const more = frames.filter(f => f.cover > 0).length - shown.length
+  return `\n\nIframes on the page, not included above (browser_snapshot reads into them): ${items.join('; ')}${more > 0 ? `; … ${more} more` : ''}`
+}
+
+/** A section longer than this comes back as its start plus its sub-headings. */
+export const SECTION_CAP_CHARS = 6000
+
+/**
+ * A long section — typically the page's h1, which spans the whole page
+ * (bench, Google Hotels: ~10 KB per hotel when ~500 chars were needed) —
+ * as its opening part and the list of sub-headings to narrow to.
+ */
+export function capSection(section: string): string {
+  if (section.length <= SECTION_CAP_CHARS) return section
+  const nl = section.lastIndexOf('\n', SECTION_CAP_CHARS)
+  const at = nl > SECTION_CAP_CHARS * 0.6 ? nl : SECTION_CAP_CHARS
+  const subs = headings(section.split('\n')).slice(1)
+  const outline = subs.length > 0 ? `; its sub-headings (pass one as section to read just it):\n${subs.map(h => `${'  '.repeat(Math.max(0, h.level - 1))}- ${h.title}`).join('\n')}` : ''
+  return `${section.slice(0, at)}\n…[this section continues for ${section.length - at} more chars${outline}]`
 }
 
 interface Heading { line: number; level: number; title: string }

@@ -40,6 +40,11 @@ export interface UrlDigest {
   navigated: boolean
   /** No prior observation existed — "unchanged" cannot be claimed. */
   firstObservation: boolean
+  /**
+   * The URL changed but the document did not (pushState, a hash): the page was
+   * not reloaded and refs still work. Set by the caller, which has the reads.
+   */
+  sameDocument?: boolean
 }
 
 /** Record the current URL and report whether it changed since last seen. */
@@ -53,9 +58,13 @@ export function observeUrl(currentUrl: string): UrlDigest {
   }
 }
 
+const SAME_DOCUMENT = (url: string): string =>
+  `\nURL changed to ${url} — same document (no page load), so refs from your snapshot still work.`
+
 /** Render the URL digest for click results (always shows the URL). */
 export function formatUrlDigest(digest: UrlDigest | null): string {
   if (!digest) return ''
+  if (digest.navigated && digest.sameDocument) return SAME_DOCUMENT(digest.url)
   if (digest.navigated) {
     return `\nPage NAVIGATED — now at ${digest.url}. Refs from previous snapshots are stale; take a fresh browser_snapshot before further ref actions.`
   }
@@ -68,6 +77,7 @@ export function formatUrlDigest(digest: UrlDigest | null): string {
 /** Render the URL digest for press results (quiet unless something moved). */
 export function formatUrlDigestBrief(digest: UrlDigest | null): string {
   if (!digest) return ''
+  if (digest.navigated && digest.sameDocument) return SAME_DOCUMENT(digest.url)
   if (digest.navigated) {
     return `\nPage NAVIGATED — now at ${digest.url}. Refs from previous snapshots are stale; take a fresh browser_snapshot before further ref actions.`
   }

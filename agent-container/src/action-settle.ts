@@ -97,6 +97,10 @@ export interface ActionEffect {
   /** after.contentChars − before.contentChars; a size for "page text changed". */
   textDelta: number
   focus: string
+  /** The visible controls' labels changed with their count the same — a view swapped in place. */
+  labelsChanged: boolean
+  /** A challenge wall the observer recognises is up now and was not before the action (vendor name), or ''. */
+  blockerAppeared: string
   /** Focus is on a different element — by identity, not only by display name (two unnamed inputs are two elements). */
   focusChanged: boolean
   /** The focused field's full value differs, with focus on the same element (typing, clear). Detected on a hash of the whole value, not the preview. */
@@ -118,6 +122,8 @@ export function diffObservations(before: PageObservation, after: PageObservation
     closed: before.top.filter(e => !afterTop.has(topKey(e))),
     interactiveDelta: after.interactive - before.interactive,
     stateChanged: after.stateHash !== before.stateHash,
+    labelsChanged: after.interactive === before.interactive && after.labelHash !== before.labelHash,
+    blockerAppeared: after.blocker && !before.blocker ? after.blocker : '',
     announced: after.liveRegions.filter(s => !beforeLive.has(s)),
     textChanged: after.contentHash !== before.contentHash && after.contentChars !== before.contentChars,
     textDelta: after.contentChars - before.contentChars,
@@ -129,12 +135,17 @@ export function diffObservations(before: PageObservation, after: PageObservation
   }
 }
 
+/** Two reads of one document: its load started at the same instant. */
+export function sameDocument(a: PageObservation | null, b: PageObservation | null): boolean {
+  return Boolean(a && b && a.docStart > 0 && a.docStart === b.docStart)
+}
+
 /** True when the diff found anything the result will report. */
 export function effectHasChange(e: ActionEffect, opts: { countFocus?: boolean } = {}): boolean {
   const countFocus = opts.countFocus ?? true
   return (
     e.opened.length > 0 || e.closed.length > 0 || e.announced.length > 0 ||
-    e.interactiveDelta !== 0 || e.stateChanged || e.textChanged || (countFocus && (e.focusChanged || e.focusValueChanged))
+    e.interactiveDelta !== 0 || e.stateChanged || e.labelsChanged || e.textChanged || e.blockerAppeared !== '' || (countFocus && (e.focusChanged || e.focusValueChanged))
   )
 }
 
@@ -182,8 +193,10 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
 
   const actedAt = now()
   const elapsed = (): number => now() - actedAt
+  // Comparable: the same URL, or the same document under a new URL (an SPA's
+  // pushState) — a reload or a real navigation is a different page.
   const diff = (after: PageObservation | null): ActionEffect | null =>
-    before && after && after.url === before.url ? diffObservations(before, after) : null
+    before && after && (after.url === before.url || sameDocument(before, after)) ? diffObservations(before, after) : null
 
   await sleep(policy.settleMs)
   let after = await read()
@@ -206,7 +219,7 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
  */
 export function effectWantsTree(e: ActionEffect, verb: ActionVerb): boolean {
   if (e.opened.length > 0 || e.closed.length > 0 || e.interactiveDelta !== 0 || e.stateChanged) return true
-  return e.textChanged && (verb === 'click' || verb === 'press' || verb === 'select')
+  return (e.textChanged || e.labelsChanged) && (verb === 'click' || verb === 'press' || verb === 'select')
 }
 
 export interface EffectTreeDiff extends Pick<TreeDiffFormatOptions, 'baselineSource'> {
@@ -252,6 +265,9 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
   // that changed — the counts would be about it alone.
   const counted = !tree && !(opts.valueReadBack && opts.treeDiff)
   const parts: string[] = []
+  // First: the page is now a challenge wall (the same recognition as the
+  // status line's ⚠ — vendor DOM or wording, never a guess).
+  if (effect.blockerAppeared) parts.push(`${effect.blockerAppeared} challenge page now showing`)
   for (const e of effect.opened) parts.push(`${e.kind}${e.name ? ` ${JSON.stringify(e.name)}` : ''} opened`)
   for (const e of effect.closed) parts.push(`${e.kind}${e.name ? ` ${JSON.stringify(e.name)}` : ''} closed`)
   if (effect.announced.length > 0) parts.push(`announced: ${effect.announced.map(s => JSON.stringify(s)).join(' | ')}`)
@@ -262,6 +278,7 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
     parts.push(`page text changed (${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars)`)
   }
   if (effect.stateChanged && counted) parts.push('control state changed (checked/pressed/expanded/selected)')
+  if (effect.labelsChanged && counted && !effect.stateChanged) parts.push('labels of visible controls changed')
   if (effect.focusValueChanged && !opts.valueReadBack) {
     const preview = effect.focusValue.length < effect.focusValueChars
     parts.push(`field value now ${JSON.stringify(effect.focusValue)}${preview ? ` (${effect.focusValueChars} chars, first ${effect.focusValue.length} shown)` : ''}`)

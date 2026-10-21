@@ -129,15 +129,19 @@ function describeWas(before: RefLine, after: RefLine): string {
   const key = (a: string): string => a.split('=')[0]
   const afterKeys = new Map(after.attrs.map(a => [key(a), a]))
   const beforeKeys = new Map(before.attrs.map(a => [key(a), a]))
-  // key=value attributes say what they were; a flag that went away was set,
-  // one that appeared was not.
+  // Each change as a transition, so "(was selected)" cannot be read either way.
+  const val = (a: string | undefined): string => (a === undefined ? 'unset' : a.includes('=') ? a.slice(a.indexOf('=') + 1) : a)
   for (const [k, a] of beforeKeys) {
-    if (afterKeys.get(k) !== a) parts.push(a)
+    const now = afterKeys.get(k)
+    if (now === a) continue
+    if (!a.includes('=')) parts.push(`no longer ${a}`)
+    else parts.push(`${k}: ${val(a)} → ${val(now)}`)
   }
   for (const [k, a] of afterKeys) {
-    if (!beforeKeys.has(k)) parts.push(a.includes('=') ? `no ${k}` : `not ${a}`)
+    if (beforeKeys.has(k)) continue
+    parts.push(a.includes('=') ? `${k}: unset → ${val(a)}` : `now ${a}`)
   }
-  if (before.value !== after.value) parts.push(before.value ? `value ${JSON.stringify(clip(before.value, 40))}` : 'empty')
+  if (before.value !== after.value) parts.push(`value ${before.value ? JSON.stringify(clip(before.value, 40)) : 'empty'} → ${after.value ? JSON.stringify(clip(after.value, 40)) : 'empty'}`)
   return parts.join(', ')
 }
 
@@ -268,7 +272,7 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   ].filter(Boolean).join(', ')
   const main: string[] = [
     ...d.added.map(l => `+ ${clip(l.text, LINE_CHARS)}`),
-    ...d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (was ${c.was})` : ''}`),
+    ...d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (${c.was})` : ''}`),
   ]
   const removedShown = opts.dialogOpened ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)
   // First: refs that stopped working. Acting on one of them is the failure
@@ -306,6 +310,12 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
 export function formatUnknownRef(ref: string, wasText: string, current: TreeRefs): string {
   const id = ref.replace(/^@/, '')
   const was = lineWithoutRef(wasText)
+  // The CLI drops its whole ref table when a snapshot fails part-way (a scope
+  // selector that matched nothing); a fresh read restores it.
+  const again = current.lines.get(id)
+  if (again) {
+    return `\n${id} is in the current tree again (${clip(lineWithoutRef(again.text), 160)}) after a fresh read — the CLI's ref table had been reset. This action was not performed.`
+  }
   const same = [...current.lines.values()].filter(l => lineWithoutRef(l.text) === was)
   const head = `\n${id} was ${clip(was, 160)} when last read; no element in the current tree has that ref.`
   if (same.length === 1) return `${head} The element with that same role, name and state now has ref @${same[0].ref}.`
@@ -318,12 +328,15 @@ export function formatUnknownRef(ref: string, wasText: string, current: TreeRefs
 
 /**
  * The last tree the agent was shown, kept so the next action can be diffed
- * against it. One per browser — the active tab's — and only for the page it
- * was read on: a different URL means a different document whose refs are not
- * comparable.
+ * against it. One per browser — the active tab's — and only for the document
+ * it was read on: refs are per document. A document is known by its load
+ * start (the observer's docStart), so an SPA that changes its URL without a
+ * page load keeps its baseline; without one, by URL.
  */
 export interface TreeBaseline {
   url: string
+  /** performance.timeOrigin of the document read, 0 when unknown. */
+  docStart: number
   refs: TreeRefs
   takenAt: number
   source: 'snapshot' | 'action'
@@ -338,27 +351,33 @@ let baseline: TreeBaseline | null = null
 /** Cap on remembered lines per page — a long infinite scroll must not grow without bound. */
 const SEEN_MAX = 20_000
 
-export function setTreeBaseline(url: string, tree: string, source: TreeBaseline['source'], now = Date.now()): void {
+/** Is `b` a read of the document at `url` / `docStart`? The load start decides when both are known. */
+function sameDocumentAs(b: TreeBaseline, url: string, docStart: number): boolean {
+  if (docStart > 0 && b.docStart > 0) return b.docStart === docStart
+  return b.url === url
+}
+
+export function setTreeBaseline(url: string, tree: string, source: TreeBaseline['source'], now = Date.now(), docStart = 0): void {
   if (!url) { baseline = null; return }
   const refs = parseTreeRefs(tree)
   // A copy: a caller may still be diffing against the previous baseline's map.
-  const seen = baseline && baseline.url === url ? new Map(baseline.seen) : new Map<string, string>()
+  const seen = baseline && sameDocumentAs(baseline, url, docStart) ? new Map(baseline.seen) : new Map<string, string>()
   for (const [ref, line] of refs.lines) {
     seen.delete(ref)
     seen.set(ref, line.text)
   }
   while (seen.size > SEEN_MAX) seen.delete(seen.keys().next().value as string)
-  baseline = { url, refs, takenAt: now, source, seen, acknowledged: new Map() }
+  baseline = { url, refs, takenAt: now, source, docStart, seen, acknowledged: new Map() }
 }
 
-/** The baseline for `url`, or null when there is none for that page. */
-export function getTreeBaseline(url: string): TreeBaseline | null {
-  return baseline && baseline.url === url ? baseline : null
+/** The baseline for this document (`docStart`, else `url`), or null when there is none. */
+export function getTreeBaseline(url: string, docStart = 0): TreeBaseline | null {
+  return baseline && sameDocumentAs(baseline, url, docStart) ? baseline : null
 }
 
 /** The agent was told `ref`'s value (null: told it changed, value not comparable). */
-export function acknowledgeTreeValue(url: string, ref: string, value: string | null): void {
-  const b = getTreeBaseline(url)
+export function acknowledgeTreeValue(url: string, ref: string, value: string | null, docStart = 0): void {
+  const b = getTreeBaseline(url, docStart)
   if (b) b.acknowledged.set(ref.replace(/^@/, ''), value)
 }
 

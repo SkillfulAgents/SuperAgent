@@ -72,14 +72,17 @@ describe('diffTrees', () => {
       .replace('- button "Add to cart" [ref=e3]', '')
     const d = diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(after))
     expect(d.added.map(l => l.text)).toEqual(['link "Menu A" [ref=e18]'])
-    expect(d.changed.map(c => [c.line.ref, c.was])).toEqual([['e7', 'expanded=false'], ['e8', 'checked=false']])
+    expect(d.changed.map(c => [c.line.ref, c.was])).toEqual([['e7', 'expanded: false → true'], ['e8', 'checked: false → true']])
     expect(d.removed.map(l => l.ref)).toEqual(['e3'])
   })
 
   it('describes flags and values: a selected option, a cleared field', () => {
     const before = parseTreeRefs('- option "Pick" [selected, ref=e14]\n- option "California" [ref=e15]\n- textbox "Name" [ref=e9]: Ada')
     const after = parseTreeRefs('- option "Pick" [ref=e14]\n- option "California" [selected, ref=e15]\n- textbox "Name" [ref=e9]')
-    expect(diffTrees(before, after).changed.map(c => c.was)).toEqual(['selected', 'not selected', 'value "Ada"'])
+    expect(diffTrees(before, after).changed.map(c => c.was)).toEqual(['no longer selected', 'now selected', 'value "Ada" → empty'])
+    // An attribute that appears is a transition from unset.
+    const appeared = diffTrees(parseTreeRefs('- button "Main menu" [ref=e6]'), parseTreeRefs('- button "Main menu" [expanded=true, ref=e6]'))
+    expect(appeared.changed[0].was).toBe('expanded: unset → true')
   })
 
   it('ignores a name present on one side only (the interactive view names cursor-interactive elements by their text)', () => {
@@ -126,7 +129,7 @@ describe('formatTreeDiff', () => {
     expect(formatTreeDiff(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(after)), opts)).toBe(
       '\nTree changes since your snapshot 4s ago (1 added, 1 changed, 1 removed):\n' +
       '+ link "Menu A" [ref=e18]\n' +
-      '~ button "Open menu" [expanded=true, ref=e7] (was expanded=false)\n' +
+      '~ button "Open menu" [expanded=true, ref=e7] (expanded: false → true)\n' +
       '− button "Add to cart" [ref=e3]',
     )
     expect(formatTreeDiff(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(INTERACTIVE)), opts)).toBe('')
@@ -218,6 +221,24 @@ describe('formatUnknownRef', () => {
       .toContain('2 elements now have that same role, name and state: @e1185, @e1186.')
     expect(formatUnknownRef('e9', 'link "Gone" [ref=e9]', current))
       .toContain('No element in the current tree has that role, name and state.')
+  })
+
+  it('says so when a fresh read brought the ref back (the CLI had reset its ref table)', () => {
+    expect(formatUnknownRef('e1233', 'button "Summary" [ref=e1233]', parseTreeRefs('- button "Summary" [ref=e1233]')))
+      .toBe('\ne1233 is in the current tree again (button "Summary") after a fresh read — the CLI\'s ref table had been reset. This action was not performed.')
+  })
+})
+
+describe('baseline per document', () => {
+  it('follows an SPA across URL changes by its load start, and drops it on a new document', () => {
+    setTreeBaseline('https://hotels.example/search?d=1', INTERACTIVE, 'snapshot', 1000, 1700.5)
+    expect(getTreeBaseline('https://hotels.example/search?d=2', 1700.5)).not.toBeNull()
+    expect(getTreeBaseline('https://hotels.example/search?d=1', 1800.25)).toBeNull()
+    // Without a load start on either side, the URL decides.
+    expect(getTreeBaseline('https://hotels.example/search?d=1')).not.toBeNull()
+    // Lines seen on the document carry over across its URL changes.
+    setTreeBaseline('https://hotels.example/search?d=3', '- button "Close" [ref=e90]', 'action', 2000, 1700.5)
+    expect(getTreeBaseline('https://hotels.example/search?d=3', 1700.5)!.seen.get('e3')).toBe('button "Add to cart" [ref=e3]')
   })
 })
 

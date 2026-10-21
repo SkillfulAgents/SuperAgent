@@ -178,7 +178,7 @@ export function redactHar(har: Har): Har {
 // --- Summary -------------------------------------------------------------------
 
 const STATIC_PATH = /\.(js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|wasm|map)(\?|$)/i
-const TELEMETRY = /(google-analytics|googletagmanager|doubleclick|segment\.(io|com)|sentry|datadog|hotjar|intercom|newrelic|optimizely|facebook\.com\/tr|clarity\.ms|amplitude|mixpanel|bugsnag)|\/(collect|track|beacon|log|events?|telemetry|metrics|pixel)(\/|\?|$)/i
+const TELEMETRY = /(google-analytics|googletagmanager|doubleclick|segment\.(io|com)|sentry|datadog|hotjar|intercom|newrelic|optimizely|facebook\.com\/tr|clarity\.ms|amplitude|mixpanel|bugsnag|awswaf|px-cloud|px-cdn|perimeterx)|\/(collect|track|beacon|log|events?|telemetry|metrics|pixel)(\/|\?|$)/i
 
 /**
  * A response that looks like data for the page rather than the page or an
@@ -187,6 +187,9 @@ const TELEMETRY = /(google-analytics|googletagmanager|doubleclick|segment\.(io|c
  */
 export function isApiLike(e: HarEntry): boolean {
   const mime = e.response.content.mimeType ?? ''
+  // Inline data (data:, blob:) and images are never an endpoint — `+xml` would
+  // otherwise take every image/svg+xml data URI (bench, USPTO: 19 KB of them).
+  if (!/^https?:/i.test(e.request.url) || /^image\//i.test(mime)) return false
   if (STATIC_PATH.test(e.request.url) || TELEMETRY.test(e.request.url)) return false
   if (/json|graphql|\+xml|text\/xml|text\/csv/i.test(mime)) return true
   const kind = typeof e._resourceType === 'string' ? e._resourceType : ''
@@ -259,7 +262,8 @@ export function formatCaptureSummary(opts: {
   } else {
     lines.push('Responses that look like data (JSON/XML/CSV, first-party first; pages, assets and telemetry left out):')
     for (const e of opts.endpoints) {
-      lines.push(`- ${e.method} ${e.status} ${e.url} · ${e.mimeType || 'unknown type'} · ${kb(e.bytes)}${e.count > 1 ? ` · ×${e.count}` : ''}${e.firstParty ? '' : ' · third-party'}`)
+      const url = e.url.length > 200 ? `${e.url.slice(0, 199)}…` : e.url
+      lines.push(`- ${e.method} ${e.status} ${url} · ${e.mimeType || 'unknown type'} · ${kb(e.bytes)}${e.count > 1 ? ` · ×${e.count}` : ''}${e.firstParty ? '' : ' · third-party'}`)
     }
     if (opts.more > 0) lines.push(`… ${opts.more} more in the file`)
   }

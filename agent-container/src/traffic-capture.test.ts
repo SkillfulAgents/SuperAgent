@@ -114,6 +114,11 @@ describe('isApiLike / summarizeEndpoints', () => {
     expect(isApiLike(entry({ url: 'https://a.com/app.js', mime: 'application/json' }))).toBe(false)
     expect(isApiLike(entry({ url: 'https://www.google-analytics.com/g/collect?v=2' }))).toBe(false)
     expect(isApiLike(entry({ url: 'https://a.com/api/track' }))).toBe(false)
+    // Inline data and images, whatever their type says (USPTO: image/svg+xml data URIs filled the summary).
+    expect(isApiLike(entry({ url: 'data:image/svg+xml;base64,PD94bWw=', mime: 'image/svg+xml' }))).toBe(false)
+    expect(isApiLike(entry({ url: 'https://a.com/icons/x', mime: 'image/svg+xml' }))).toBe(false)
+    expect(isApiLike(entry({ url: 'blob:https://a.com/1234', mime: 'application/json' }))).toBe(false)
+    expect(isApiLike(entry({ url: 'https://a.com/feed', mime: 'application/rss+xml' }))).toBe(true)
   })
 
   it('groups by method and path, first-party first, then by count', () => {

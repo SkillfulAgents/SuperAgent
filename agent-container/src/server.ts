@@ -802,9 +802,9 @@ import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlace
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
-import { observeAction, pressPolicy, effectWantsTree, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
+import { observeAction, pressPolicy, effectWantsTree, sameDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
 import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
-import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead } from './page-reader';
+import { readerScript, parseReadResult, outlineOf, sectionOf, capSection, tidyRead, formatUnreadFrames } from './page-reader';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, useHumanInput } from './challenge-input';
 import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName } from './traffic-capture';
@@ -951,8 +951,8 @@ const TREE_READ_TIMEOUT_MS = 10_000;
  * the new baseline either way. Null when it could not run or there was no
  * baseline for this page to compare with.
  */
-async function readTreeDiff(url: string, excludeRefs: string[]): Promise<EffectTreeDiff | null> {
-  const prior = getTreeBaseline(url);
+async function readTreeDiff(url: string, excludeRefs: string[], docStart = 0): Promise<EffectTreeDiff | null> {
+  const prior = getTreeBaseline(url, docStart);
   const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (r.exitCode !== 0) return null;
   const now = Date.now();
@@ -965,7 +965,7 @@ async function readTreeDiff(url: string, excludeRefs: string[]): Promise<EffectT
       baselineSource: prior.source,
     }
     : null;
-  setTreeBaseline(url, r.stdout, 'action', now);
+  setTreeBaseline(url, r.stdout, 'action', now, docStart);
   return result;
 }
 
@@ -981,7 +981,7 @@ async function runWithEffect(
   action: (before: PageObservation | null) => Promise<{ exitCode: number; stdout: string }>,
   policy: ActionPolicy,
   opts: { excludeRefs?: string[] } = {},
-): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number; treeDiff: EffectTreeDiff | null }> {
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number; treeDiff: EffectTreeDiff | null; docStart: number }> {
   const settled = await observeAction({
     exec: action,
     isFailure: r => r.exitCode !== 0,
@@ -990,13 +990,18 @@ async function runWithEffect(
   });
   noteChallenge(settled.before);
   noteChallenge(settled.after);
-  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, treeDiff: null };
-  const digest = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
-  const effect = digest?.navigated ? null : settled.effect;
+  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, treeDiff: null, docStart: 0 };
+  const observed = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
+  // A URL change inside one document (an SPA route, a hash) is not a page
+  // load: the effect and the refs carry over, and the result says so.
+  const sameDoc = Boolean(observed?.navigated) && sameDocument(settled.before, settled.after);
+  const digest = observed && sameDoc ? { ...observed, sameDocument: true } : observed;
+  const effect = digest?.navigated && !sameDoc ? null : settled.effect;
+  const docStart = settled.after?.docStart ?? 0;
   const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
-    ? await readTreeDiff(digest.url, opts.excludeRefs ?? [])
+    ? await readTreeDiff(digest.url, opts.excludeRefs ?? [], docStart)
     : null;
-  return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff };
+  return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff, docStart };
 }
 
 /**
@@ -1006,8 +1011,12 @@ async function runWithEffect(
  * element left the tree — most often a site re-rendering it under a new ref.
  * Costs one tree read, only on this error; the read becomes the baseline.
  */
-async function explainUnknownRef(stdout: string): Promise<string> {
-  const m = /Unknown ref: @?(e\d+)/.exec(stdout);
+async function explainUnknownRef(stdout: string, actionRef?: string): Promise<string> {
+  // 0.39.1 falls back to role+name for a ref whose node is gone, and says
+  // "Could not locate element with role=… name=…" when that fails too: the
+  // same situation, named by the ref the action was given.
+  const m = /Unknown ref: @?(e\d+)/.exec(stdout)
+    ?? (/Could not locate element with role=/.test(stdout) && actionRef ? /@?(e\d+)/.exec(actionRef) : null);
   if (!m) return stdout;
   const cdp = browserState.cdpUrl || undefined;
   const urlRead = await execBrowser(['get', 'url'], cdp);
@@ -1633,12 +1642,24 @@ app.post('/browser/snapshot', async (c) => {
     });
     const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
     noteChallenge(probe);
+    // What the agent now sees is the URL the next action is compared with: a
+    // site that rewrote its URL after load must not make that action read as
+    // a navigation (bench, Meta Ad Library: "Page NAVIGATED" on a dialog click).
+    if (probe.url) observeUrl(probe.url);
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
     const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
 
     if (result.exitCode !== 0) {
+      // agent-browser clears its ref table before it resolves the scope, so a
+      // selector that matched nothing left every ref "Unknown" (bench, Toyota:
+      // two clicks on refs still on the page failed). One unscoped read
+      // restores the table — refs persist, so they come back unchanged.
+      if (body.scope) {
+        const restore = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+        if (restore.exitCode === 0 && probe.url) setTreeBaseline(probe.url, restore.stdout, 'snapshot', Date.now(), probe.docStart);
+      }
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
@@ -1668,7 +1689,7 @@ app.post('/browser/snapshot', async (c) => {
     // against. Refs are assigned page-wide in every mode, so the default and
     // the fullText views both serve; a scoped tree holds only part of the
     // page and would read as everything else having been removed.
-    if (!body.scope && probe.url) setTreeBaseline(probe.url, result.stdout, 'snapshot');
+    if (!body.scope && probe.url) setTreeBaseline(probe.url, result.stdout, 'snapshot', Date.now(), probe.docStart);
 
     const header = formatStatusLine(probe, refCount, { waitedMs });
     return c.json({
@@ -1717,7 +1738,7 @@ app.post('/browser/click', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     const tabInfo = await tabManager.detectNewTab();
@@ -1751,14 +1772,14 @@ app.post('/browser/fill', async (c) => {
     // raise a validation message or reveal fields, and the result should say
     // so. The field's own line is left out of the tree diff — the read-back
     // below reports it.
-    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+    const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
       () => execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined),
       ACTION_POLICIES.fill,
       { excludeRefs: [body.ref] },
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     // Read the value back after the settle: the CLI reports success regardless
@@ -1767,7 +1788,7 @@ app.post('/browser/fill', async (c) => {
     const committedValue = await readCommittedFieldValue(body.ref);
     // The agent now knows this field's value: the next tree diff must not
     // report it as a change since the baseline.
-    if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue);
+    if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue, docStart);
 
     notifyBrowserAction();
     return c.json({ success: true, settleMs, ...(committedValue !== null && { committedValue }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
@@ -2026,6 +2047,7 @@ app.post('/browser/read', async (c) => {
     });
     const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
     noteChallenge(probe);
+    if (probe.url) observeUrl(probe.url);
 
     // The page's whole text comes back as one JSON string: past the default
     // exec cap it would be cut mid-string and unparseable.
@@ -2042,7 +2064,7 @@ app.post('/browser/read', async (c) => {
       content = outlineOf(text);
       if (!content) note = 'The page has no headings.';
     } else if (body.section && body.section.trim()) {
-      content = sectionOf(text, body.section);
+      content = capSection(sectionOf(text, body.section));
       if (!content) {
         const outline = outlineOf(text);
         note = `No heading contains ${JSON.stringify(body.section.trim())}.${outline ? ` Headings on this page:\n${outline}` : ' The page has no headings.'}`;
@@ -2051,10 +2073,14 @@ app.post('/browser/read', async (c) => {
       content = text;
     }
 
-    const header = formatStatusLine(probe, null, { waitedMs });
+    // A dialog or banner on top reads like the page's own text; name it.
+    const onTop = probe.top.length > 0
+      ? `\nOpen on top of the page: ${probe.top.map(t => `${t.kind}${t.name ? ` ${JSON.stringify(t.name)}` : ''}`).join(', ')}`
+      : '';
+    const header = formatStatusLine(probe, null, { waitedMs }) + (formatStatusLine(probe, null) ? onTop : '');
     return c.json({
       success: true,
-      text: (header ? `${header}\n\n` : '') + (content ? capReadText(content, { collectTruncated: read.truncated && !body.outline && !body.section }) : '') + (note ? `${content ? '\n\n' : ''}${note}` : ''),
+      text: (header ? `${header}\n\n` : '') + (content ? capReadText(content, { collectTruncated: read.truncated && !body.outline && !body.section }) : '') + (note ? `${content ? '\n\n' : ''}${note}` : '') + formatUnreadFrames(read.frames),
       chars: content.length,
     });
   } catch (error: any) {
@@ -2157,14 +2183,14 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+    const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
       () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
       { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
       { excludeRefs: [body.ref] },
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     const after = await readValue();
@@ -2189,7 +2215,7 @@ app.post('/browser/select', async (c) => {
     }
     // The tree shows the chosen option's label, the read-back its value:
     // acknowledge the select (and its options) without comparing.
-    if (digest) acknowledgeTreeValue(digest.url, body.ref, null);
+    if (digest) acknowledgeTreeValue(digest.url, body.ref, null, docStart);
 
     notifyBrowserAction();
     return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
@@ -2223,7 +2249,7 @@ app.post('/browser/hover', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     notifyBrowserAction();
@@ -2314,7 +2340,7 @@ app.post('/browser/type', async (c) => {
     // this is what drives keystroke-listening widgets (Stripe card fields,
     // OTP boxes, typeaheads) that programmatic fill cannot. Through the
     // settle, so a suggestion list the typing opened is reported.
-    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+    const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
       async () => {
         if (body.ref) {
           const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
@@ -2327,7 +2353,7 @@ app.post('/browser/type', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     // When we know the target, read the value back (keyboard type APPENDS to
@@ -2336,7 +2362,7 @@ app.post('/browser/type', async (c) => {
     let committedValue: string | null = null;
     if (body.ref) {
       committedValue = await readCommittedFieldValue(body.ref);
-      if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue);
+      if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue, docStart);
     }
 
     notifyBrowserAction();
@@ -2440,8 +2466,23 @@ app.post('/browser/run', async (c) => {
 
     const verb = commandArgs[0].toLowerCase();
     const joined = commandArgs.join(' ').toLowerCase();
-    // A different tab or document: the tree baseline belongs to the old one.
-    if (verb.startsWith('tab') || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb)) resetTreeBaseline();
+    // A different tab or document: the tree baseline belongs to the old one,
+    // and the next action is compared with the URL that is now in front (a
+    // tab close used to make the next click read as a navigation).
+    if (verb.startsWith('tab') || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb)) {
+      resetTreeBaseline();
+      const front = await observeNow();
+      if (front.url) observeUrl(front.url);
+      else await observeUrlDigest();
+      // agent-browser clears its ref table on every tab command (new, switch,
+      // close), so the refs the agent holds for the tab now in front all read
+      // "Unknown ref" until a snapshot. Refs persist per document, so one read
+      // brings them back unchanged.
+      if (verb.startsWith('tab') && commandArgs[1]?.toLowerCase() !== 'list' && commandArgs.length > 1) {
+        const restore = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+        if (restore.exitCode === 0 && front.url) setTreeBaseline(front.url, restore.stdout, 'action', Date.now(), front.docStart);
+      }
+    }
     let tabInfo = null;
     if (verb.startsWith('tab') || verb === 'click' || verb === 'dblclick' || joined.includes('.click(')) {
       tabInfo = await tabManager.detectNewTab();
