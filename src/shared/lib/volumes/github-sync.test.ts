@@ -139,7 +139,6 @@ it('serves through account revocation, then resumes after reconnect', async () =
   remote['notes.txt'] = Buffer.from('resumed'); head = 'b'.repeat(40)
   vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_000)
   await volume.list('')
-  await sync.run()
   expect(client.githubHead).toHaveBeenCalledOnce()
   expect(await read()).toEqual(remote['notes.txt'])
 })
@@ -168,7 +167,7 @@ it('retries a failed load and first copy through health alone', async () => {
   expect(client.githubHead).toHaveBeenCalledTimes(2)
 })
 
-it('serves an existing copy after restart without a start call or waiting for GitHub', async () => {
+it('after a restart, waits for GitHub at most 5 s before serving the copy, once for all reads of that check', async () => {
   const { row, sync } = await setup()
   vi.resetModules()
   const { GithubMountableVolume: RestartedVolume } = await import('./github-mountable-volume')
@@ -179,16 +178,29 @@ it('serves an existing copy after restart without a start call or waiting for Gi
   const volume = new RestartedVolume(row.id, row.name, row.config)
   expect(volume.sync).not.toBe(sync)
   expect(client.githubHead).not.toHaveBeenCalled()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   try {
     await expect(volume.health()).resolves.toMatchObject({ kind: 'directory' })
-    expect(await volume.list('')).toHaveLength(1)
+    const listing = volume.list('')
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await listing).toHaveLength(1)
     expect(await new Response(await (await volume.read('notes.txt')).stream()).text()).toBe('kept')
     expect(client.githubHead).toHaveBeenCalledOnce()
     expect(client.githubTarball).not.toHaveBeenCalled()
   } finally {
+    vi.useRealTimers()
     release()
     await removeRestartedSync(row.id)
   }
+})
+
+it('waits for the check on the first read after 30 s, so it returns what a teammate pushed meanwhile', async () => {
+  const { volume } = await setup()
+  remote['notes.txt'] = Buffer.from('pushed'); head = 'b'.repeat(40)
+  const text = async () => new Response(await (await volume.read('notes.txt')).stream()).text()
+  expect(await text()).toBe('kept')
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_000)
+  expect(await text()).toBe('pushed')
 })
 
 it('fetches export-ignore omissions and export-subst bytes by blob sha', async () => {

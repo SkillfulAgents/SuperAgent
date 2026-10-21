@@ -33,7 +33,7 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
   override get sourceLabel(): string { return `GitHub · ${this.config.owner}/${this.config.repo}@${this.config.branch}${this.config.path ? `/${this.config.path}` : ''}` }
 
   async list(name: string): Promise<VolumeEntry[]> {
-    this.sync.keepFresh()
+    await this.sync.fresh()
     await this.sync.ready()
     return this.sync.local.list(name)
   }
@@ -49,7 +49,7 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
   }
 
   async read(name: string): Promise<VolumeFile> {
-    this.sync.keepFresh()
+    await this.sync.fresh()
     await this.sync.ready()
     return this.sync.local.read(name)
   }
