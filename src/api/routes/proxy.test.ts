@@ -2025,9 +2025,10 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
     })
   })
 
-  it('form-encoded body returns 415 (unsupported on managed connections)', async () => {
+  it('form-encoded body is forwarded as binary_body', async () => {
     const app = await getFreshApp()
     setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: { ok: true }, headers: {} })
 
     const res = await app.request(
       'http://localhost/api/proxy/my-agent/acc-r/slack.com/api/auth.test',
@@ -2041,10 +2042,14 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
       }
     )
 
-    expect(res.status).toBe(415)
-    expect(mockProxyExecute).not.toHaveBeenCalled()
-    const body = await res.json()
-    expect(body.error).toBe('unsupported_media_type')
+    expect(res.status).toBe(200)
+    expect(mockProxyExecute).toHaveBeenCalledTimes(1)
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.body).toBeUndefined()
+    expect(arg.binaryBody).toEqual({
+      base64: Buffer.from('foo=bar').toString('base64'),
+      content_type: 'application/x-www-form-urlencoded',
+    })
   })
 
   it('multipart body returns 415', async () => {
