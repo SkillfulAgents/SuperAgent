@@ -20,5 +20,5 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "agent-container", "dist", "cloudflare"]
+  "exclude": ["node_modules", "agent-container", "dist"]
 }
