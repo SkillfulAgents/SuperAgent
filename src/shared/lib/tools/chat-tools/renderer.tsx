@@ -20,12 +20,12 @@ function ProviderBadge({ provider }: { provider?: string }) {
   )
 }
 
-// ── list_available_chat_providers ────────────────────────────
+// ── list_available_integration_providers ─────────────────────
 
 function ListChatProvidersExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">Querying available chat providers.</p>
+      <p className="text-xs text-muted-foreground">Querying available integration providers.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )
@@ -52,7 +52,7 @@ export const listAgentIntegrationsRenderer = defineToolRenderer(listAgentIntegra
   ExpandedView: ListAgentIntegrationsExpandedView,
 })
 
-// ── add_chat_integration ────────────────────────────────────
+// ── add_chat_integration (historical; see add-agent-integration) ──
 
 function AddChatIntegrationExpandedView({ input, result, isError }: ToolRendererProps) {
   const { provider, name } = input as AddChatIntegrationInput

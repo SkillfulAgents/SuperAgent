@@ -23,3 +23,4 @@ export type PendingRequestDescriptor =
   | { kind: 'x_agent_review'; key: string; reviewId: string; xAgent: XAgentReview; onComplete: () => void }
   | { kind: 'account_reauth_required'; key: string; proxyRequestId: string; accountId: string; toolkit: string; accountStatus: 'expired' | 'revoked'; onComplete: () => void }
   | { kind: 'mcp_reauth_required'; key: string; proxyRequestId: string; mcpId: string; mcpName: string; authType: 'none' | 'oauth' | 'bearer'; onComplete: () => void }
+  | { kind: 'integration_setup'; key: string; toolUseId: string; provider: string; reason?: string; prefill?: Record<string, string>; onComplete: () => void }

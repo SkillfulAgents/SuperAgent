@@ -2,9 +2,10 @@
 
 Read this guide before configuring or using an external chat integration.
 
-Chat integrations connect this agent directly to supported chat providers such
-as Email, Telegram, Slack, or iMessage. They are separate from OAuth connected
-accounts and remote MCP servers; use the `mcp__chat__*` tools for chat setup and
+Agent integrations give this agent its own identity on an external service: a
+chat bot (Telegram, Slack, iMessage), its own Email inbox, or its own Linear or
+GitHub app. They are separate from OAuth connected accounts (which act as the
+user) and remote MCP servers; use the `mcp__chat__*` tools for setup and
 delivery.
 
 ## Discover and Configure
@@ -12,11 +13,16 @@ delivery.
 1. Call `mcp__chat__list_agent_integrations` to inspect configured integrations,
    status, capabilities, and active chats.
 2. If a provider is not configured, call
-   `mcp__chat__list_available_chat_providers` to learn its required fields.
-3. Collect the required configuration from the user. Use the secret-request
-   flow for sensitive tokens when available; never echo a token back.
-4. Call `mcp__chat__add_chat_integration` with the selected provider and
-   configuration.
+   `mcp__chat__list_available_integration_providers` to learn who sets it up and
+   which fields it needs.
+3. For Telegram, Slack, or iMessage, collect the required configuration from the
+   user. Use the secret-request flow for sensitive tokens when available; never
+   echo a token back.
+4. Call `mcp__chat__add_agent_integration` with the selected provider and
+   configuration. For Email, Linear, and GitHub, only the agent's owner can set
+   up the integration: the call shows them a setup card in the app and returns
+   once it is connected, or with an error if they decline. Pass a `reason`, and
+   never collect credentials for these; the owner enters them in the app.
 5. List integrations again to confirm that setup succeeded.
 
 Do not use `request_connected_account` or remote-MCP discovery for this flow.
@@ -58,8 +64,8 @@ do not also send it with the tool. Use `deliver_file` to attach files to that re
 Reuse the same idempotency key and identical payload when retrying a send.
 A queued response means accepted, not delivered. If the tool schema has no
 `email` parameter, report that the agent runtime needs updating; do not try chat
-IDs as a workaround. Inbox creation is owner-managed through the agent’s Email
-setup in the app; `add_chat_integration` cannot create an inbox.
+IDs as a workaround. Only the owner can create an inbox: `add_agent_integration`
+with provider `platform-email` asks them in the app.
 
 ## Resolve the Destination for Other Chat Providers
 

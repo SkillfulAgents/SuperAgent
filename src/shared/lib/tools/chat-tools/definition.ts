@@ -24,9 +24,9 @@ function truncate(s: string | undefined, max = 80): string | null {
 }
 
 export const listAvailableChatProvidersDef = {
-  displayName: 'List Chat Providers',
+  displayName: 'List Integration Providers',
   parseInput: (i: unknown) => asObj<ListAvailableChatProvidersInput>(i),
-  getSummary: () => 'List supported chat providers',
+  getSummary: () => 'List supported integration providers',
 } as const
 
 export const listAgentIntegrationsDef = {

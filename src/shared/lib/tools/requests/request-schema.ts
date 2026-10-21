@@ -23,6 +23,7 @@ export const USER_INPUT_REQUEST_KINDS = [
   'x_agent_review',
   'account_reauth_required',
   'mcp_reauth_required',
+  'integration_setup',
 ] as const
 
 export const userInputRequestKindSchema = z.enum(USER_INPUT_REQUEST_KINDS)
@@ -190,6 +191,15 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       toolkit: lenientString,
       accountStatus: z.enum(['expired', 'revoked']).optional().catch(undefined),
       proxyRequestId: lenientString,
+    }),
+  }),
+  baseRequest.extend({
+    kind: z.literal('integration_setup'),
+    payload: z.looseObject({
+      provider: lenientString,
+      reason: lenientString,
+      // Suggested values for the owner's setup form; never credentials.
+      prefill: z.record(z.string(), z.string()).optional().catch(undefined),
     }),
   }),
   baseRequest.extend({

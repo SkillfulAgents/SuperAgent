@@ -54,11 +54,11 @@ import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 import { downloadAgentFileTool } from './tools/agents/download-agent-file'
-import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
+import { listAvailableIntegrationProvidersTool } from './tools/chat/list-available-integration-providers'
 import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
-import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { makeAddAgentIntegrationTool } from './tools/chat/add-agent-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
@@ -167,18 +167,19 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
  * @param getCallerSessionId - getter that returns the current Claude session ID
  *   at tool-invocation time (same pattern as createAgentsMcpServer). Lets the
  *   host recognize sends coming from a chat-conversation session and block the
- *   ones that would double-post into that session's own chat.
+ *   ones that would double-post into that session's own chat, and open an
+ *   owner setup card in the session that asked for it.
  */
 export function createChatMcpServer(getCallerSessionId: () => string) {
   return createSdkMcpServer({
     name: 'chat',
     version: '1.0.0',
     tools: [
-      listAvailableChatProvidersTool,
+      listAvailableIntegrationProvidersTool,
       listAgentIntegrationsTool,
       listChatUsersTool,
       listChatChannelsTool,
-      addChatIntegrationTool,
+      makeAddAgentIntegrationTool(getCallerSessionId),
       makeSendChatMessageTool(getCallerSessionId),
     ],
   })

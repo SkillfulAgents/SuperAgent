@@ -3,6 +3,7 @@
  */
 
 import type { AppLinkContext } from '../agent-integrations/app-link'
+import { formatProviderName } from '../agent-integrations/presentation'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 
 // Event types that need the desktop app (OAuth callbacks, browser input, script approval, etc.).
@@ -18,6 +19,7 @@ const UNSUPPORTED_IN_CHAT: ReadonlySet<UserRequestEvent['type']> = new Set([
   'capability_review_request',
   'secret_request',
   'file_request',
+  'integration_setup_request',
 ])
 
 export function isUnsupportedInChat(event: UserRequestEvent): boolean {
@@ -77,6 +79,8 @@ export function describeUnsupportedRequest(event: UserRequestEvent, appLink?: Ap
       return `The agent needs the secret ${event.secretName}, which isn't safe to provide in chat.${tail}`
     case 'file_request':
       return `The agent wants you to upload a file${event.description ? ` (${event.description})` : ''}, which isn't supported in chat.${tail}`
+    case 'integration_setup_request':
+      return `The agent asked its owner to set up ${event.provider ? formatProviderName(event.provider) : 'an integration'} for it, which isn't supported in chat.${tail}`
     default:
       return `The agent sent a "${event.type}" request that isn't supported in chat.${tail}`
   }

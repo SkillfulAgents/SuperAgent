@@ -332,8 +332,13 @@ function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps
     return resolved
   }
   return {
-    register: async (input, options) =>
-      options?.unlessRecentlyResolved && input.id && requests.getRecentResolution(input.id) ? null : requests.register(input),
+    register: async (input, options) => {
+      if (options?.unlessRecentlyResolved && input.id && requests.getRecentResolution(input.id)) return null
+      const registered = requests.register(input)
+      // A request opened off the stream (a host route) is a wait as much as one the stream opened.
+      if (registered) state.sessions.syncAwaiting()
+      return registered
+    },
     get: async (id) => requests.getOpenRequest(id),
     claim: async (id, options) => requests.claimRequest(id, options?.leaseMs),
     releaseClaim: async (id, token) => requests.releaseClaim(id, token),
