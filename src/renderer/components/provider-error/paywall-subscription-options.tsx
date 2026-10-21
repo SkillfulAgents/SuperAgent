@@ -238,6 +238,13 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
       })
       onResumed({ attemptId, provider: option.subscription.provider, scope })
     } catch (cause) {
+      track('paywall_subscription_switch_failed', {
+        ...analytics,
+        attemptId,
+        provider: option.subscription.provider,
+        scope,
+        reason: cause instanceof Error ? cause.message.slice(0, 120) : 'unknown',
+      })
       if (mounted.current) setError(cause instanceof Error ? cause.message : 'Could not switch subscriptions. Try again.')
     } finally {
       inFlight.current = false
