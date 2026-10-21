@@ -45,6 +45,9 @@ export function redactCdpUrls(text: string): string {
   return text.replace(/wss?:\/\/\S+/g, 'ws://<redacted>')
 }
 
+// Agents reuse refs after a screenshot or page change; the bare CLI error doesn't say where valid refs come from.
+export const UNKNOWN_REF_HINT = 'Refs come from the latest browser_snapshot; take a new one and use its refs.'
+
 /** Wall-clock ceiling for one agent-browser invocation. */
 export const BROWSER_EXEC_TIMEOUT_MS = 30_000
 
@@ -90,7 +93,7 @@ export function describeExecFailure(err: ExecFailure, verb: string, elapsedMs: n
   if (err.signal) {
     return `agent-browser ${verb} was terminated by ${err.signal} after ${ms} ms${detail ? '.' : ' with no output.'}${unknown}${tail}`
   }
-  if (detail) return detail
+  if (detail) return /Unknown ref/i.test(detail) ? `${detail}\n${UNKNOWN_REF_HINT}` : detail
   const code = err.code === null || err.code === undefined ? 'unknown' : String(err.code)
   return `agent-browser ${verb} failed (exit ${code}) without output.`
 }
