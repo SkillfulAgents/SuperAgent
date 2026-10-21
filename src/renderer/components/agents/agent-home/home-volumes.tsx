@@ -241,6 +241,11 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             {subtitle}
           </div>
         )}
+        {mount.attention && (
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2" title={mount.attention}>
+            {mount.attention}
+          </div>
+        )}
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>

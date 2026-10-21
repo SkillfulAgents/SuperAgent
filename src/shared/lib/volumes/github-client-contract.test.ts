@@ -5,7 +5,7 @@ vi.mock('@shared/lib/db', () => ({ db: { select: () => ({ from: () => ({ where: 
 vi.mock('@shared/lib/account-providers/provider-factory', () => ({ getAccountProviderByName: () => ({ makeApiCall: forward }) }))
 vi.mock('@shared/lib/platform-attribution', () => ({ attribution: { fromResourceCreator: owner }, runWithAttribution: (_owner: unknown, run: () => unknown) => run() }))
 vi.mock('@shared/lib/proxy/audit', () => ({ writeProxyAuditEntry: audit }))
-import { githubBlob, githubBranches, githubFolder, githubHead, githubRepo, githubRepos, githubRequest, githubTree, requireGithubAccount, type GithubTrees } from './github-client'
+import { githubBlob, githubBranches, githubCommit, githubFolder, githubHead, githubRepo, githubRepos, githubRequest, githubTree, requireGithubAccount, type GithubTrees } from './github-client'
 import { GithubMountableVolume, prepareGithubVolume } from './github-mountable-volume'
 import { withRemoteAccount } from './remote-account'
 import { githubVolumeConfigSchema } from './github-schema'
@@ -31,6 +31,22 @@ describe('GitHub responses', () => {
     owner.mockResolvedValue(null)
   })
   afterEach(() => { vi.useRealTimers() })
+
+  it('sends one commit on the expected head, never replays it, and turns a GraphQL refusal into a refusal', async () => {
+    forward.mockResolvedValueOnce(Response.json({ data: { createCommitOnBranch: { commit: { oid: childSha } } } }))
+    expect(await githubCommit(config, sha, [{ path: 'a.txt', contents: Buffer.from('a') }, { path: 'gone.txt', contents: null }], 'Update 2 files from agent')).toBe(childSha)
+    const [call] = forward.mock.calls[0]
+    expect(call).toMatchObject({ method: 'POST', targetUrl: 'https://api.github.com/graphql' })
+    expect(JSON.parse(new TextDecoder().decode(call.body)).variables.i).toEqual({
+      branch: { repositoryNameWithOwner: 'team/project', branchName: 'release/docs' }, message: { headline: 'Update 2 files from agent' }, expectedHeadOid: sha,
+      fileChanges: { additions: [{ path: 'a.txt', contents: 'YQ==' }], deletions: [{ path: 'gone.txt' }] },
+    })
+    forward.mockResolvedValueOnce(Response.json({ data: { createCommitOnBranch: null }, errors: [{ type: 'FORBIDDEN', message: 'is at x but expected y' }] }))
+    await expect(githubCommit(config, sha, [], 'x')).rejects.toMatchObject({ code: 'not-accessible', message: 'GitHub refused the push: is at x but expected y' })
+    forward.mockResolvedValueOnce(new Response('busy', { status: 502 }))
+    await expect(githubCommit(config, sha, [], 'x')).rejects.toMatchObject({ status: 503 })
+    expect(forward).toHaveBeenCalledTimes(3)
+  })
 
   it.each(['reset', 'retry-after'])('retries a rate-limited 403 with %s but refuses an ordinary 403', async header => {
     const headers = new Headers(header === 'retry-after' ? { 'retry-after': '2' }

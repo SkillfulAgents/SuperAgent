@@ -45,7 +45,14 @@ export function useSaveVolumeDefinition() {
 export function useDeleteVolumeDefinition() {
   const client = useQueryClient()
   return useMutation({
-    mutationFn: async (id: string) => checkedResponse(await apiFetch(`/api/volume-definitions/${id}`, { method: 'DELETE' })),
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, discard }: { id: string; discard: boolean }) => {
+      const response = await apiFetch(`/api/volume-definitions/${id}${discard ? '?discard=1' : ''}`, { method: 'DELETE' })
+      const body = response.status === 409 ? await response.clone().json().catch(() => null) : null
+      // Only a refusal that counts the files a delete would lose lets the next confirm discard them.
+      if (typeof body === 'object' && body && 'unsynced' in body) throw new Error(body.error, { cause: 'unsynced' })
+      return checkedResponse(response)
+    },
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['volume-definitions'] })
     },

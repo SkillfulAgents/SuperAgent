@@ -62,8 +62,8 @@ function volumeType<C, S = C>(
 
 const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   github: {
-    ...volumeType(githubVolumeConfigSchema, (row, config) => new GithubMountableVolume(row.id, row.name, config,
-      'volumeId' in row && typeof row.volumeId === 'string' ? row.volumeId : row.id), prepareGithubVolume,
+    ...volumeType(githubVolumeConfigSchema, (row, config, agentSlug) => new GithubMountableVolume(row.id, row.name, config,
+      'volumeId' in row && typeof row.volumeId === 'string' ? row.volumeId : row.id, agentSlug), prepareGithubVolume,
       { browseFolders: GithubMountableVolume.browseFolders }),
     remove: removeGithubSync,
   },

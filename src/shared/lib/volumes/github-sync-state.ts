@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createReadStream } from 'node:fs'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { writeFileAtomic, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { readJsonFileStrict, writeFileAtomic, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import type { GithubTrees } from './github-client'
 import { githubSyncStateSchema, githubTreesSchema, type SyncState } from './github-schema'
 
@@ -15,9 +15,8 @@ export function emptySyncState(): SyncState {
   return { version: 1, base: null, files: {} }
 }
 
-export async function loadSyncState(folder: string): Promise<SyncState> {
-  try { return githubSyncStateSchema.parse(JSON.parse(await fs.readFile(path.join(folder, 'sync.json'), 'utf8'))) }
-  catch { return emptySyncState() }
+export function loadSyncState(folder: string): Promise<SyncState> {
+  return readJsonFileStrict(path.join(folder, 'sync.json'), githubSyncStateSchema, emptySyncState())
 }
 
 export async function saveSyncState(folder: string, state: SyncState): Promise<void> {

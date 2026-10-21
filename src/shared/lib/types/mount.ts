@@ -14,6 +14,7 @@ export interface StoredVolume {
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   sourceLabel?: string // display-only description for remote sources
   sourceReadOnly?: boolean // the source itself refuses writes, whatever the attachment says
+  attention?: string // changes that have not reached the source, for the card
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 

@@ -34,6 +34,7 @@ export function VolumesTab() {
     : { onBack: backToList, label: undefined }
   const [deleting, setDeleting] = useState<VolumeDefinitionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [refused, setRefused] = useState(false)
   const definitions = registry.data ?? []
   const selectedVolume = definitions.find(volume => volume.id === selectedId)
 
@@ -41,24 +42,26 @@ export function VolumesTab() {
     if (!deleting) return
     try {
       setError(null)
-      await remove.mutateAsync(deleting.id)
+      await remove.mutateAsync({ id: deleting.id, discard: refused })
       setDeleting(null)
+      setRefused(false)
       if (selectedId === deleting.id) backToList()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not remove drive')
+      setRefused(err instanceof Error && err.cause === 'unsynced')
     }
   }
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
-      {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
+      {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setRefused(false); setDeleting(selectedVolume) }} />
         : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">Save folders once, then add them to any of your agents from their Drives card.</p>
         <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Add drive</Button>
       </div>
-      {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
+      {((error && !deleting) || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading drives…</p> : definitions.length === 0 ? (
         <div className="rounded-lg border border-dashed p-8 text-center">
           <Folder className="mx-auto mb-3 h-7 w-7 text-muted-foreground" />
@@ -84,7 +87,7 @@ export function VolumesTab() {
               right={<>
                 {volume.canManage && <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${volume.name}`} disabled={volume.attachmentCount > 0}
                   title={volume.attachmentCount > 0 ? 'Remove from all agents first' : 'Remove drive'}
-                  onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><X className="h-4 w-4" /></Button>}
+                  onClick={event => { event.stopPropagation(); setError(null); setRefused(false); setDeleting(volume) }}><X className="h-4 w-4" /></Button>}
                 <RowHoverChevron />
               </>}
             />
@@ -100,7 +103,9 @@ export function VolumesTab() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove drive?</AlertDialogTitle>
-            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved drives. The source folder and its files will remain unchanged.</AlertDialogDescription>
+            <AlertDialogDescription>
+              Remove &quot;{deleting?.name}&quot; from saved drives. {deleting?.attention ?? (refused ? '' : 'The source folder and its files will remain unchanged.')}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>

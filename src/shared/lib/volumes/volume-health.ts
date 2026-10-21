@@ -9,6 +9,7 @@ export function volumeSummary(row: StoredVolume): VolumeSummary {
     id: row.id, name: row.name, type: row.type, hostPath: volume?.hostPath ?? null,
     ...(volume?.sourceLabel ? { sourceLabel: volume.sourceLabel } : {}),
     ...(volume?.readOnly ? { sourceReadOnly: true } : {}),
+    ...(volume?.attention ? { attention: volume.attention } : {}),
   }
 }
 
