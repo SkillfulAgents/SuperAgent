@@ -254,7 +254,7 @@ export class ToolCalls {
   recoverParked(unresolved: Array<{ toolUseId: string; toolName: string }>): void {
     for (const { toolUseId, toolName } of unresolved) {
       const kind = getBlockingUserInputRequestKind(toolName)
-      if (!kind || this.ctx.requests.getOpenRequest(toolUseId)) continue
+      if (!kind || this.ctx.requests.getOpenRequest(toolUseId) || this.ctx.requests.getRecentResolution(toolUseId)) continue
       this.register(kind, toolUseId, { recovered: true })
     }
   }

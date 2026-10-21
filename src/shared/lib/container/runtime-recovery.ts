@@ -17,6 +17,7 @@ export type RuntimeRecoveryDeps = {
   consumeLastFatal: (agentId: string) => RuntimeFatalKind
   settleRecoveringSessions: (sessionIds: string[]) => void
   markRecovered: (sessionIds: string[]) => void
+  supersedeRequests: (sessionId: string) => void
   takeCoalescedUserMessages: (sessionId: string) => CoalescedUserMessage[]
   isSessionRecovering: (sessionId: string) => boolean
   isSubscribed: (sessionId: string) => boolean
@@ -290,11 +291,11 @@ async function deliverCoalescedMessages(
   }
 }
 
-async function resumeSessions(
+export async function resumeSessions(
   deps: RuntimeRecoveryDeps,
   client: ContainerClient,
   sessionIds: string[],
-  plan: Extract<UnexpectedDeathPlan, { action: 'recover' }>,
+  plan: { reason: string; resumePrompt: string },
 ): Promise<void> {
   const failed: string[] = []
   for (const sessionId of sessionIds) {
@@ -317,6 +318,7 @@ async function resumeSessions(
           await deps.subscribeToSession(sessionId, client, sessionId)
           if (!stillWanted()) return false
         }
+        deps.supersedeRequests(sessionId)
         await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
         const coalesced = deps.takeCoalescedUserMessages(sessionId)
         deps.markRecovered([sessionId])

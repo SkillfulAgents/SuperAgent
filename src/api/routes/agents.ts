@@ -1783,6 +1783,20 @@ agents.post('/:id/start', AgentUser(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/restart - Restart an agent's container; sessions mid-turn continue
+agents.post('/:id/restart', AgentUser(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    await agentRegistry.get(slug).container.invalidate({ restart: true })
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
+    return c.json(agent)
+  } catch (error) {
+    console.error('Failed to restart agent:', error)
+    const message = error instanceof Error ? error.message : 'Failed to restart agent'
+    return c.json({ error: message }, 500)
+  }
+})
+
 // POST /api/agents/:id/stop - Stop an agent's container
 agents.post('/:id/stop', AgentUser(), async (c) => {
   try {

@@ -8,7 +8,7 @@ const { mockApiFetch } = vi.hoisted(() => ({
   mockApiFetch: vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ id: 'v1', name: 'code', type: 'local' }), { status: 201 })),
 }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mockApiFetch }))
-let mockAgent = { slug: 'a1', status: 'running', stale: false }
+let mockAgent: { slug: string; status: string; stale: boolean; hasActiveSessions?: boolean } = { slug: 'a1', status: 'running', stale: false }
 vi.mock('./use-agents', () => ({ useAgent: () => ({ data: mockAgent }) }))
 vi.mock('./use-volume-definitions', () => ({ useVolumeDefinitions: () => ({ data: [], isLoading: false, error: null }) }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ canUseAgent: () => true }) }))
@@ -56,9 +56,16 @@ describe('useVolumesManager', () => {
     expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.pendingRestart).toBe(false)
   })
 
+  it('offers to continue running sessions only when a session is working', () => {
+    mockAgent = { slug: 'a1', status: 'running', stale: true, hasActiveSessions: true }
+    expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.continuesSessions).toBe(true)
+    mockAgent = { slug: 'a1', status: 'running', stale: true, hasActiveSessions: false }
+    expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.continuesSessions).toBe(false)
+  })
+
   it('reports a failed restart as an operation error', async () => {
     const original = mockApiFetch.getMockImplementation()!
-    mockApiFetch.mockImplementation(async (url: string) => url.endsWith('/start')
+    mockApiFetch.mockImplementation(async (url: string) => url.endsWith('/restart')
       ? new Response(JSON.stringify({ error: 'No room for the agent' }), { status: 500 })
       : new Response('[]', { status: 200 }))
     const { result } = renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper })

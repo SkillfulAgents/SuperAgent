@@ -43,7 +43,7 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
-import { recoverFromUnexpectedDeath } from './runtime-recovery'
+import { recoverFromUnexpectedDeath, resumeSessions, type RuntimeRecoveryDeps } from './runtime-recovery'
 import { prepareVolumeStop } from './volume-stop'
 
 /**
@@ -64,6 +64,9 @@ interface CachedContainerStatus {
   port: number | null
   lastSyncedAt: number
 }
+
+const RESTART_CONTINUE_PROMPT =
+  'The agent restarted to apply changes. Continue from where you left off. Check what already completed before redoing work.'
 
 /** What a runtime needs from the host it belongs to. */
 export interface RuntimeHost {
@@ -136,6 +139,8 @@ export class ContainerRuntime {
   private stopping = false
   /** In-flight ensureRunning promise — deduplicates concurrent start requests */
   private starting: Promise<ContainerClient> | null = null
+  private restarting: Promise<ContainerClient> | null = null
+  private nextRestart: Promise<ContainerClient> | null = null
   /** Counts starts, stops and disposal: a start whose number moved on was overtaken and no longer owns the banner. */
   private lifecycle = 0
   /**
@@ -233,9 +238,18 @@ export class ContainerRuntime {
 
   handleUnexpectedDeath(restrictToSessionIds?: string[]): void {
     if (this.disposed) return
-    const slug = this.slug
-    void recoverFromUnexpectedDeath({
-      agentId: slug,
+    void recoverFromUnexpectedDeath({ ...this.recoveryDeps(), restrictToSessionIds }).catch((err) => {
+      console.error(`[ContainerRuntime] Unexpected-death recovery failed for ${this.slug}:`, err)
+      captureException(err, {
+        tags: { area: 'container', op: 'runtime.recover.unhandled' },
+        extra: { agentId: this.slug },
+      })
+    })
+  }
+
+  private recoveryDeps(): RuntimeRecoveryDeps {
+    return {
+      agentId: this.slug,
       isStopping: () => this.stopping,
       getClient: () => this.getClient(),
       restartAgent: () => this.restartAgent(),
@@ -244,13 +258,13 @@ export class ContainerRuntime {
       consumeLastFatal: () => this.consumeLastFatal(),
       settleRecoveringSessions: (ids) => this.sessions().settleRecovering(ids),
       markRecovered: (ids) => this.sessions().markRecovered(ids),
+      supersedeRequests: (id) => this.sessions().supersedeRequests(id),
       takeCoalescedUserMessages: (id) => this.sessions().takeCoalesced(id),
       isSessionRecovering: (id) => this.sessions().isRecovering(id),
       isSubscribed: (id) => this.sessions().isSubscribed(id),
       subscribeToSession: (sessionId, client, containerSessionId) =>
         this.sessions().subscribe(sessionId, client, containerSessionId),
       inDeliveryTurn: (sessionId, work) => this.sessions().inDeliveryTurn(sessionId, work),
-      restrictToSessionIds,
       syncAgentStatus: async () => {
         try {
           await this.syncAgentStatus()
@@ -260,18 +274,12 @@ export class ContainerRuntime {
           this.sessions().markAllInactive()
           globalFeed.publish({
             type: 'agent_status_changed',
-            agentSlug: slug,
+            agentSlug: this.slug,
             status: 'stopped',
           })
         }
       },
-    }).catch((err) => {
-      console.error(`[ContainerRuntime] Unexpected-death recovery failed for ${slug}:`, err)
-      captureException(err, {
-        tags: { area: 'container', op: 'runtime.recover.unhandled' },
-        extra: { agentId: slug },
-      })
-    })
+    }
   }
 
   private assertNotStopping(op: 'start' | 'restart'): void {
@@ -383,7 +391,7 @@ export class ContainerRuntime {
    * Marks the runtime as "stopping" so health checks, status sync, and connection
    * error handlers stop spawning CLI commands into a potentially overloaded VM.
    */
-  async stopContainer(options?: StopOptions): Promise<void> {
+  async stopContainer(options?: StopOptions, { settleRecovering = true }: { settleRecovering?: boolean } = {}): Promise<void> {
     const slug = this.slug
     // Mark as stopping immediately to prevent health checks / sync from spawning
     // more CLI processes into an overloaded VM
@@ -429,7 +437,7 @@ export class ContainerRuntime {
         this.markAsStopped()
 
         // Mark all sessions for this agent as inactive
-        this.sessions().markAllInactive({ settleRecovering: true })
+        this.sessions().markAllInactive({ settleRecovering })
 
         // If this agent had grabbed a window, ungrab it so the halo disappears
         if (computerUsePermissionManager.getGrabbedApp(slug)) {
@@ -457,10 +465,38 @@ export class ContainerRuntime {
   /**
    * Restart the container by stopping and re-starting it.
    * Volume attachments are re-loaded from SQLite on start.
+   * Sessions mid-turn at the restart continue once it is back up.
+   * A restart asked for while one runs may carry a change that one already
+   * read (a drive attached mid-restart), so it runs once more after it.
+   * Every caller in that window shares the one rerun.
    */
-  async restartContainer(): Promise<ContainerClient> {
-    await this.stopContainer()
-    return this.ensureRunning()
+  restartContainer(): Promise<ContainerClient> {
+    if (!this.restarting) {
+      this.restarting = this.restartAndContinue().finally(() => { this.restarting = null })
+      return this.restarting
+    }
+    this.nextRestart ??= this.restarting.catch(() => {}).then(() => {
+      this.nextRestart = null
+      return this.restartContainer()
+    })
+    return this.nextRestart
+  }
+
+  private async restartAndContinue(): Promise<ContainerClient> {
+    const claimed = this.sessions().claimMidTurnForRecovery()
+    // Detach before the stop: the stop's own error result on the old stream
+    // would end a claimed session's turn before the continue.
+    this.sessions().markAllInactive()
+    let client: ContainerClient
+    try {
+      await this.stopContainer(undefined, { settleRecovering: false })
+      client = await this.ensureRunning()
+    } catch (error) {
+      this.sessions().settleRecovering(claimed)
+      throw error
+    }
+    await resumeSessions(this.recoveryDeps(), client, claimed, { reason: 'restart', resumePrompt: RESTART_CONTINUE_PROMPT })
+    return client
   }
 
   /**

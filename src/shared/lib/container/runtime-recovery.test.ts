@@ -40,6 +40,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
   observeUnexpectedDeath: ReturnType<typeof vi.fn>
   settleRecoveringSessions: ReturnType<typeof vi.fn>
   markRecovered: ReturnType<typeof vi.fn>
+  supersedeRequests: ReturnType<typeof vi.fn>
   subscribeToSession: ReturnType<typeof vi.fn>
   syncAgentStatus: ReturnType<typeof vi.fn>
 } {
@@ -50,6 +51,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
   const ensureRunning = vi.fn()
   const settleRecoveringSessions = vi.fn()
   const markRecovered = vi.fn()
+  const supersedeRequests = vi.fn()
   const subscribeToSession = vi.fn().mockResolvedValue(undefined)
   const syncAgentStatus = vi.fn().mockResolvedValue(undefined)
   let recovering = new Set<string>()
@@ -84,6 +86,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
       markRecovered(ids)
       for (const id of ids) recovering.delete(id)
     },
+    supersedeRequests,
     takeCoalescedUserMessages: () => [],
     isSessionRecovering: (id) => recovering.has(id),
     isSubscribed: () => false,
@@ -101,6 +104,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
     observeUnexpectedDeath,
     settleRecoveringSessions,
     markRecovered,
+    supersedeRequests,
     subscribeToSession,
     syncAgentStatus,
   }
@@ -125,6 +129,9 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.sendMessage.mock.calls[0][1]).toBe(TEST_RESUME_PROMPT)
     expect(deps.sendMessage.mock.calls[0][3]).toEqual({ shouldQuery: true })
     expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
+    // The dead turn's open cards close before the continue starts the new one.
+    expect(deps.supersedeRequests).toHaveBeenCalledWith('sess-1')
+    expect(deps.supersedeRequests.mock.invocationCallOrder[0]).toBeLessThan(deps.sendMessage.mock.invocationCallOrder[0])
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
     expect(deps.syncAgentStatus).not.toHaveBeenCalled()
     expect(addErrorBreadcrumb).toHaveBeenCalledWith(
@@ -172,6 +179,7 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.restartAgent).not.toHaveBeenCalled()
     expect(deps.sendMessage).not.toHaveBeenCalled()
     expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
+    expect(deps.supersedeRequests).not.toHaveBeenCalled()
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
     expect(deps.syncAgentStatus).not.toHaveBeenCalled()
     expect(deps.subscribeToSession).toHaveBeenCalled()

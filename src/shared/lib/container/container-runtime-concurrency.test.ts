@@ -21,6 +21,7 @@ const mockStart = vi.fn().mockImplementation(() => {
 })
 
 const mockStop = vi.fn().mockResolvedValue({ forceStopUsed: false })
+const mockSendMessage = vi.fn().mockResolvedValue(undefined)
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 
@@ -37,6 +38,7 @@ vi.mock('./client-factory', () => ({
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
     getRuntimeGenerationId: () => null,
+    sendMessage: mockSendMessage,
   }),
   getContainerClientClass: () => ({ requiresLocalImage: true }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
@@ -118,6 +120,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
+import { NO_LIVE_SESSIONS, type RuntimeSessions } from './agent-sessions-access'
 
 // ============================================================================
 // Concurrent ensureRunning — race conditions
@@ -639,6 +642,68 @@ describe('ContainerRuntime — restartContainer with concurrency', () => {
 
     expect(client1).toBe(client2)
     expect(mockStart).toHaveBeenCalledTimes(1)
+  })
+
+  function trackSessions(calls: string[]): RuntimeSessions {
+    const recovering = new Set<string>()
+    return {
+      ...NO_LIVE_SESSIONS,
+      claimMidTurnForRecovery: () => { calls.push('claim'); recovering.add('s1'); return ['s1'] },
+      markAllInactive: (options) => { calls.push(options?.settleRecovering ? 'inactive+settle' : 'inactive') },
+      isRecovering: (id) => recovering.has(id),
+      markRecovered: (ids) => { calls.push('recovered'); ids.forEach((id) => recovering.delete(id)) },
+      settleRecovering: (ids) => { calls.push('settle'); ids.forEach((id) => recovering.delete(id)) },
+    }
+  }
+
+  it('continues the sessions that were mid-turn, detached before the stop and kept through it', async () => {
+    const calls: string[] = []
+    mockStop.mockImplementation(async () => { calls.push('stop'); return { forceStopUsed: false } })
+    const sessions = trackSessions(calls)
+    containerHost.attachAgentSessions({ peek: () => sessions })
+    try {
+      await containerHost.runtime('test-agent').restartContainer()
+    } finally {
+      containerHost.attachAgentSessions(null)
+      mockStop.mockResolvedValue({ forceStopUsed: false })
+    }
+
+    expect(calls).toEqual(['claim', 'inactive', 'stop', 'inactive', 'recovered'])
+    expect(mockSendMessage).toHaveBeenCalledWith('s1', expect.stringContaining('restarted'), expect.any(String), { shouldQuery: true })
+  })
+
+  it('runs once more after a restart in flight, shared by every caller asking meanwhile', async () => {
+    const calls: string[] = []
+    const sessions = trackSessions(calls)
+    mockStop.mockImplementation(async () => { calls.push('stop'); return { forceStopUsed: false } })
+    containerHost.attachAgentSessions({ peek: () => sessions })
+    try {
+      const runtime = containerHost.runtime('test-agent')
+      const [, b, c] = await Promise.all([runtime.restartContainer(), runtime.restartContainer(), runtime.restartContainer()])
+      expect(b).toBe(c)
+    } finally {
+      containerHost.attachAgentSessions(null)
+      mockStop.mockResolvedValue({ forceStopUsed: false })
+    }
+
+    const run = ['claim', 'inactive', 'stop', 'inactive', 'recovered']
+    expect(calls).toEqual([...run, ...run])
+  })
+
+  it('settles the claimed sessions when the restart cannot start the agent', async () => {
+    const calls: string[] = []
+    mockStart.mockRejectedValueOnce(new Error('No room for the agent'))
+    const sessions = trackSessions(calls)
+    containerHost.attachAgentSessions({ peek: () => sessions })
+    try {
+      await expect(containerHost.runtime('test-agent').restartContainer()).rejects.toThrow('No room for the agent')
+    } finally {
+      containerHost.attachAgentSessions(null)
+      mockStop.mockResolvedValue({ forceStopUsed: false })
+    }
+
+    expect(calls).toContain('settle')
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 })
 

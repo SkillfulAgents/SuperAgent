@@ -120,6 +120,7 @@ export function useVolumesManager(agentSlug: string) {
 
   // The host marks a running agent stale on a drive change, and a stop clears it.
   const pendingRestart = isAgentRunning && agent?.stale === true
+  const continuesSessions = pendingRestart && agent?.hasActiveSessions === true
 
   const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')
@@ -165,10 +166,8 @@ export function useVolumesManager(agentSlug: string) {
     setIsRestarting(true)
     setOperationError(null)
     try {
-      const stopRes = await apiFetch(`/api/agents/${agentSlug}/stop`, { method: 'POST' })
-      if (!stopRes.ok) throw new Error(await parseErrorMessage(stopRes, 'Failed to stop agent'))
-      const startRes = await apiFetch(`/api/agents/${agentSlug}/start`, { method: 'POST' })
-      if (!startRes.ok) throw new Error(await parseErrorMessage(startRes, 'Failed to start agent'))
+      const res = await apiFetch(`/api/agents/${agentSlug}/restart`, { method: 'POST' })
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to restart agent'))
       refetch()
     } catch (error) {
       // Shown outside the prompt: a stop that went through has already hidden it.
@@ -188,6 +187,7 @@ export function useVolumesManager(agentSlug: string) {
     canModifyMounts,
     canCreateMount,
     pendingRestart,
+    continuesSessions,
     isRestarting,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,

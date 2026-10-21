@@ -62,6 +62,7 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   markAllInactive: () => {},
   claimMidTurnForRecovery: () => [],
   markRecovered: () => {},
+  supersedeRequests: () => {},
   settleRecovering: () => {},
   coalesceIfRecovering: () => false,
   takeCoalesced: () => [],
