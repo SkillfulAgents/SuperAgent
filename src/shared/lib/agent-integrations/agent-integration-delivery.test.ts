@@ -21,13 +21,15 @@ import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn() }))
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
+  // Sends to the session's last event stream.
+  emit: (_event: unknown) => {} }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
     isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
-  messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
+  messages: { findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
     subscribe: runtime.subscribe,
     // The actor's delivery: the echo with its queued flag, then the message.
     deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
@@ -115,9 +117,10 @@ beforeEach(async () => {
     return { id: `session-${runtime.create.mock.calls.length}` }
   })
   runtime.attach.mockResolvedValue(undefined); runtime.subscribed.mockReturnValue(true)
-  runtime.subscribe.mockImplementation(() => () => {})
+  runtime.subscribe.mockImplementation(async () => new ReadableStream({ start(controller) {
+    runtime.emit = (event) => controller.enqueue(event)
+  } }))
   runtime.send.mockResolvedValue({}); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
-  runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
 
@@ -308,7 +311,7 @@ describe('shared manager durability with real integration storage', () => {
     finishCreate()
     await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
     expect((await getAgentIntegrationSession('integration', 'conversation'))?.sessionId).toBe('session-1')
-    runtime.subscribe.mock.calls.at(-1)![1]({ type: 'session_idle' })
+    runtime.emit({ type: 'session_idle' })
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
     await adapter.input('follow-up')
     await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session-1', expect.stringContaining('follow-up'), expect.any(String)))
@@ -338,7 +341,7 @@ describe('shared manager durability with real integration storage', () => {
     } finally { finishDisconnect(); await reconnect }
     await vi.waitFor(() => expect(runtime.attach).toHaveBeenCalledWith('session-1', 'session-1'))
     const deliver = vi.spyOn(adapter, 'deliver')
-    runtime.subscribe.mock.calls.at(-1)![1]({ type: 'session_idle' })
+    runtime.emit({ type: 'session_idle' })
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
   })
   it.each(['pause', 'cancel', 'authorization'] as const)('%s while creation is in flight prevents a late mapping', async action => {
@@ -398,11 +401,10 @@ describe('shared manager durability with real integration storage', () => {
     manager.stop()
     const row = (await rows())[0]
     await database.update(integrationDeliveries).set({ state: 'sending', owner: 'dead-host' }).where(eq(integrationDeliveries.id, row.id)).run()
-    runtime.receipt.mockImplementation(async (_session, predicate: (entry: unknown) => boolean) => {
-      const receipt = { type: 'user', uuid: row.id }
-      expect(predicate(receipt)).toBe(true)
-      expect(predicate({ type: 'user', uuid: 'different-message' })).toBe(false)
-      return receipt
+    runtime.receipt.mockImplementation(async (_session, query: unknown) => {
+      // Positive evidence only: the user message sent with the delivery's uuid.
+      expect(query).toEqual({ kind: 'user', uuid: row.id })
+      return { type: 'user', uuid: row.id }
     })
     await start()
     await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))

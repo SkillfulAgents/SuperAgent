@@ -17,9 +17,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
-import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import type { FileOps, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { WaitForIdleTimeoutError } from '@shared/lib/agent-actor/live/wait-for-idle'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as schema from '@shared/lib/db/schema'
 
@@ -126,8 +125,8 @@ function openBytes(bytes: Uint8Array | string, size?: number, body?: ReadableStr
     readAt: vi.fn(),
   }
 }
-const mockSourceOpen = vi.fn<FileOps['open']>()
-const mockTargetOpen = vi.fn<FileOps['open']>()
+const mockSourceOpen = vi.fn<StoreFileOps['open']>()
+const mockTargetOpen = vi.fn<StoreFileOps['open']>()
 const mockTargetWrite = vi.fn<FileOps['write']>()
 const mockTargetDelete = vi.fn<FileOps['delete']>()
 
@@ -159,21 +158,12 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 // Live sessions
-// The real error the live sessions' waitForIdle throws: the routes match
-// timeout errors on error.name, so this holds them to the real class.
-function waitForIdleTimeoutError(): Error {
-  return new WaitForIdleTimeoutError(120_000)
-}
-
 // Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
 // entry minus pre-wait work), so the exact timeoutMs varies — assert the shape
-// and that it stays within (0, 120s]. requireActiveFirst is off because sync
-// callers mark/observe the session active before waiting, so "inactive" means
-// the turn already finished.
+// and that it stays within (0, 120s].
 function expectBoundedSyncWait(sessionId: string): void {
   expect(mockWaitForIdle).toHaveBeenCalledWith('target-agent', sessionId, {
     timeoutMs: expect.any(Number),
-    requireActiveFirst: false,
   })
   const opts = mockWaitForIdle.mock.calls.at(-1)?.[2] as { timeoutMs: number }
   expect(opts.timeoutMs).toBeGreaterThan(0)
@@ -181,7 +171,7 @@ function expectBoundedSyncWait(sessionId: string): void {
 }
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
-const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
+const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
 const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
 const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
@@ -230,9 +220,15 @@ const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
   if (!next) throw new Error('No queued review decision')
   return next
 })
+// The caller's reviews, as its router answers the actor's review ops: the
+// queued decision is the request's outcome, under the arguments it was raised with.
+type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown }
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestXAgentReview: (...args: unknown[]) => mockRequestXAgentReview(...args),
+    requestXAgent: (callerSlug: string, request: XAgentReviewRequest) => mockRequestXAgentReview(
+      callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
+    ),
+    withdraw: vi.fn(),
   },
 }))
 
@@ -373,7 +369,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   mockIsSessionActive.mockReturnValue(false)
   mockIsSessionAwaitingInput.mockReturnValue(false)
-  mockWaitForIdle.mockResolvedValue(undefined)
+  mockWaitForIdle.mockResolvedValue('idle')
   mockSessionIsKnown.mockResolvedValue(true)
   mockReadAgentPreferences.mockResolvedValue({})
   mockGetSessionMetadata.mockResolvedValue(null)
@@ -386,8 +382,9 @@ beforeEach(async () => {
   } as never)
   mockSourceOpen.mockImplementation(async () => openBytes('source'))
   mockTargetOpen.mockImplementation(async () => openBytes('data'))
-  const sourceFiles = agentRegistry.get(CALLER_SLUG).files
-  const targetFiles = agentRegistry.get(TARGET_SLUG).files
+  // The store's files: reads of either agent's go through their opens.
+  const sourceFiles = agentRegistry.get(CALLER_SLUG).files as StoreFileOps
+  const targetFiles = agentRegistry.get(TARGET_SLUG).files as StoreFileOps
   mockTargetWrite.mockImplementation(targetFiles.write.bind(targetFiles))
   mockTargetDelete.mockImplementation(targetFiles.delete.bind(targetFiles))
   vi.spyOn(sourceFiles, 'open').mockImplementation(mockSourceOpen)
@@ -1214,7 +1211,7 @@ describe('/invoke', () => {
     // rather than re-invoke. Left as a plain network error, callers retried the
     // invoke and spawned duplicate runs (retry storm).
     reviewDecisions.push('allow')
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'long-running task',
@@ -1240,7 +1237,7 @@ describe('/invoke', () => {
   it('promotes sync=true on an existing session to async when the wait times out', async () => {
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(false)
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'follow-up',
@@ -1343,6 +1340,7 @@ describe('/invoke', () => {
     mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
@@ -1994,6 +1992,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockImplementation(() => true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     mockGetTranscript.mockResolvedValue([])
     const res = await authedFetch('/x-agent/get-transcript', {
@@ -2013,7 +2012,7 @@ describe('/get-transcript', () => {
     // current transcript and can call again with sync=true to keep waiting.
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(true)
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     mockGetTranscript.mockResolvedValue([
       { type: 'user', message: { role: 'user', content: 'hello' } },
     ])
@@ -2047,6 +2046,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,
@@ -2075,7 +2075,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementationOnce(async () => {
       mockIsSessionActive.mockReturnValue(false) // turn ended...
-      throw waitForIdleTimeoutError() // ...but the wait had already timed out
+      return 'timeout' as const // ...but the wait had already timed out
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,

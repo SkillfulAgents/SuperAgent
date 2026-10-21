@@ -3,7 +3,7 @@ import { findGlobalPrice } from '../llm-provider/global-pricing'
 import { modelPricingCandidates } from '../llm-provider/model-pricing-ids'
 import type { GlobalModelPricing, ModelPricing } from '../llm-provider/global-pricing-schema'
 import pLimit from 'p-limit'
-import type { FileOps } from '@shared/lib/agent-actor/types'
+import type { StoreFileOps } from '@shared/lib/agent-actor/types'
 import { chunksOf } from '@shared/lib/agent-actor/jsonl-files'
 import { WorkspaceFileError, workspaceDirname } from '@shared/lib/agent-actor/workspace-path'
 import type { SessionUsageTotals } from '../types/usage'
@@ -82,13 +82,13 @@ export interface UsageLoadStatus {
 
 /** Every `.jsonl` at or below `dir` in the agent's workspace. */
 interface LoadOptions extends CommonLoadOptions {
-  files: FileOps
+  files: StoreFileOps
   dir: string
 }
 
 /** One session's transcript plus the transcripts beside it. */
 interface SessionLoadOptions extends CommonLoadOptions {
-  files: FileOps
+  files: StoreFileOps
   transcript: string
 }
 
@@ -367,7 +367,7 @@ export function calculateCost(
   )
 }
 
-async function findJsonlFiles(files: FileOps, dir: string): Promise<string[]> {
+async function findJsonlFiles(files: StoreFileOps, dir: string): Promise<string[]> {
   const results: string[] = []
   const entries = await files.list(dir)
   for (const entry of entries) {
@@ -549,7 +549,7 @@ export async function loadDailyUsageData(
   await Promise.all(
     files.map((file) =>
       limit(async () => {
-        let opened: Awaited<ReturnType<FileOps['open']>> | null = null
+        let opened: Awaited<ReturnType<StoreFileOps['open']>> | null = null
         try {
           opened = await workspace.open(file)
           const stream = opened.stream()
@@ -1055,7 +1055,7 @@ export async function loadDailyUsageData(
  * should receive a fresh total when a session is still accumulating messages.
  */
 export async function loadSessionUsageTotals(options: {
-  files: FileOps
+  files: StoreFileOps
   transcript: string
 }): Promise<SessionUsageTotals> {
   const loadStatus: UsageLoadStatus = { incomplete: false }

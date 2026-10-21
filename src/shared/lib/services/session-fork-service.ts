@@ -16,7 +16,6 @@ import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
-import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
 
@@ -149,11 +148,7 @@ export async function forkSession(
 async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string, opts: { authors: boolean }): Promise<void> {
   const slug = actor.slug
   if (!opts.authors && !(await hasIntegrationMessages(slug, sourceId))) return
-  const pairs: { newUuid: string; oldUuid: string }[] = []
-  for await (const raw of actor.messages.rawEntries(newId)) {
-    const parsed = forkedUserLineSchema.safeParse(raw)
-    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
-  }
+  const pairs = await actor.messages.forkedUserUuids(newId)
   if (pairs.length === 0) return
 
   const rows = await db

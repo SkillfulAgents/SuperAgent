@@ -44,7 +44,6 @@ import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSetti
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
-import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
   removeTransferredAttachments,
@@ -64,6 +63,7 @@ import {
   findDeliveredFile,
   pageTranscript,
 } from './x-agent-transcript-view'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 const invokingSessions = new Set<string>()
@@ -232,13 +232,11 @@ async function checkAgentPolicy(
   }
 
   try {
-    const userDecision = await agentRegistry.get(callerSlug).inputs.reviews.requestXAgent(
-      targetSlug ?? '',
-      targetName,
-      operation,
-      preview,
-      fileTransfer,
-    )
+    const reviews = agentRegistry.get(callerSlug).inputs.reviews
+    const userDecision = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+      raise,
+    ))
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
     }
@@ -488,23 +486,15 @@ async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
   }
 }
 
-// Matched by name rather than instanceof: the error class belongs to the
-// agent's live sessions (`agent-actor/live/wait-for-idle`), which routes reach
-// only through the registry, not by import.
-function isWaitForIdleTimeout(error: unknown): boolean {
-  return error instanceof Error && error.name === 'WaitForIdleTimeoutError'
-}
-
 /**
  * Wait for the target turn to finish within what's left of the caller's sync
  * budget (deadline is stamped at handler entry). Returns 'timeout' when the
- * budget is exhausted — before or during the wait — and rethrows any other
- * waitForIdle failure.
+ * budget is exhausted, before or during the wait.
  *
- * requireActiveFirst is off: every sync caller marks the session active before
- * the prompt is delivered (invoke) or checks isSessionActive just before
- * waiting (get-transcript), so an inactive session here means the turn already
- * finished — resolving immediately is correct, not a startup race.
+ * Every sync caller marks the session active before the prompt is delivered
+ * (invoke) or checks isSessionActive just before waiting (get-transcript), so
+ * an inactive session here means the turn already finished: the wait
+ * resolving at once is correct, not a startup race.
  */
 async function waitForTurnWithinBudget(
   targetSlug: string,
@@ -518,16 +508,8 @@ async function waitForTurnWithinBudget(
     // finished turn 'running' and make the caller poll for a result it has.
     return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
   }
-  try {
-    await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
-      timeoutMs: remainingMs,
-      requireActiveFirst: false,
-    })
-    return 'completed'
-  } catch (error) {
-    if (isWaitForIdleTimeout(error)) return 'timeout'
-    throw error
-  }
+  const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, { timeoutMs: remainingMs })
+  return outcome === 'idle' ? 'completed' : 'timeout'
 }
 
 function syncWaitPromotedNote(timeoutMs: number): string {
@@ -536,10 +518,6 @@ function syncWaitPromotedNote(timeoutMs: number): string {
     'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
     'Poll get_agent_session_transcript with this session_id to retrieve the result.'
   )
-}
-
-function isReturnableAssistantEntry(e: JsonlMessageEntry | JsonlSystemEntry): boolean {
-  return e.type === 'assistant' && compactMessage(e) !== null
 }
 
 /**
@@ -559,7 +537,7 @@ async function readLastAssistantMessage(
     // Only the most recent assistant entry matters, so read the transcript
     // from the tail instead of full-parsing it (transcripts reach 100MB+, and
     // this runs up to READ_RETRY_ATTEMPTS times per invoke).
-    const entry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
+    const entry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
     if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
@@ -613,7 +591,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   if (sync && actor.sessions.isActive(sessionId)) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
-    const boundaryEntry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
+    const boundaryEntry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     try {
       // 'timeout' falls through: return the transcript so far with status
       // 'running'. Sync get-transcript is a bounded long-poll the caller can
@@ -870,7 +848,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
         const replyBoundary = sync
-          ? await targetActor.messages.findLastEntry(existingSessionId, isReturnableAssistantEntry)
+          ? await targetActor.messages.findLastEntry(existingSessionId, { kind: 'assistant' })
           : null
         stage = 'subscribe'
         // Attached here rather than by the delivery, so the attach is bounded

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import { AgentInputRequests } from './agent-input-requests'
+import { AgentInputRequests, CLAIM_LEASE_MS } from './agent-input-requests'
 import { UserInputRequestManager } from './request-manager'
 import type { PendingUserInputRequestInput } from './request-schema'
 
@@ -427,7 +427,7 @@ describe('UserInputRequestManager', () => {
       const first = manager.claimRequest('tool-1')
       const second = manager.claimRequest('tool-1')
 
-      expect(first?.id).toBe('tool-1')
+      expect(first?.request.id).toBe('tool-1')
       // The whole point: two deciders that both read an open request would both
       // act on it. Exactly one may win.
       expect(second).toBeNull()
@@ -456,20 +456,49 @@ describe('UserInputRequestManager', () => {
 
     it('releaseClaim makes it claimable again — a bailed decision must not strand it', () => {
       manager.register(secretRequest())
+      const claim = manager.claimRequest('tool-1')!
+
+      manager.releaseClaim('tool-1', claim.token)
+
+      expect(manager.claimRequest('tool-1')?.request.id).toBe('tool-1')
+    })
+
+    it('releaseClaim with another holder\'s token leaves the claim held', () => {
+      manager.register(secretRequest())
       manager.claimRequest('tool-1')
 
-      manager.releaseClaim('tool-1')
+      manager.releaseClaim('tool-1', 'not-the-token')
 
-      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.claimRequest('tool-1')).toBeNull()
+    })
+
+    it('a claim nobody gives back lapses with its lease, and its late release frees nothing', () => {
+      vi.useFakeTimers()
+      try {
+        manager.register(secretRequest())
+        const lost = manager.claimRequest('tool-1')!
+        vi.advanceTimersByTime(CLAIM_LEASE_MS - 1)
+        expect(manager.claimRequest('tool-1')).toBeNull()
+
+        vi.advanceTimersByTime(1)
+        const next = manager.claimRequest('tool-1')!
+        expect(next.request.id).toBe('tool-1')
+
+        // The first holder comes back late: the request stays the second's.
+        manager.releaseClaim('tool-1', lost.token)
+        expect(manager.claimRequest('tool-1')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('releaseClaim on an unknown or already-settled id is a no-op', () => {
       manager.register(secretRequest())
-      manager.claimRequest('tool-1')
+      const claim = manager.claimRequest('tool-1')!
       manager.resolve('tool-1', 'answered')
 
-      expect(() => manager.releaseClaim('tool-1')).not.toThrow()
-      expect(() => manager.releaseClaim('never-existed')).not.toThrow()
+      expect(() => manager.releaseClaim('tool-1', claim.token)).not.toThrow()
+      expect(() => manager.releaseClaim('never-existed', claim.token)).not.toThrow()
       expect(manager.stats.claimed).toBe(0)
     })
 
@@ -483,7 +512,7 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats.claimed).toBe(0)
 
       manager.register(secretRequest())
-      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.claimRequest('tool-1')?.request.id).toBe('tool-1')
     })
 
     it('reset clears claims', () => {
@@ -499,7 +528,7 @@ describe('UserInputRequestManager', () => {
       manager.register(secretRequest())
       expect(agents.peek('agent-a')!.getOpenRequest('tool-1')?.id).toBe('tool-1')
       expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
-      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.claimRequest('tool-1')?.request.id).toBe('tool-1')
       expect(manager.resolve('tool-1', 'answered')?.id).toBe('tool-1')
       expect(manager.getOpenRequest('tool-1')).toBeNull()
       expect(manager.getRecentResolution('tool-1')?.outcome).toBe('answered')
@@ -527,8 +556,8 @@ describe('UserInputRequestManager', () => {
 
       expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
       expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
-      expect(manager.claimRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
-      expect(manager.claimRequest('tool-1', 'agent-a')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.claimRequest('tool-1', 'agent-b')?.request.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('tool-1', 'agent-a')?.request.scope.agentSlug).toBe('agent-a')
       expect(manager.enrichOpenRequestPayload('tool-1', 'secret', { note: 1 }, 'agent-b')).toBe(true)
       expect(manager.getOpenRequest('tool-1', 'agent-a')?.payload).not.toHaveProperty('note')
 

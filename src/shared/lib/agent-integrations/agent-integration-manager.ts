@@ -18,7 +18,7 @@ import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, 
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { integrationRelays } from './relay-transport'
 import type { IntegrationRelayHost, IntegrationTransport } from './transport'
-import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
+import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import {
   listStartupIntegrations,
@@ -112,7 +112,7 @@ export class AgentIntegrationManager {
       const actor = agentRegistry.get(integration.agentSlug)
       // A persisted user entry with our UUID is positive runtime acceptance.
       // Never infer rejection from an absent entry or an unavailable container.
-      const entry = await actor.messages.findLastEntry(row.sessionId, entry => entry.type === 'user' && entry.uuid === row.id)
+      const entry = await actor.messages.findLastEntry(row.sessionId, { kind: 'user', uuid: row.id })
       return !!entry
     },
     notice: (row, beforeSend) => this.deliverFailureNotice(row, beforeSend),
@@ -616,7 +616,7 @@ export class AgentIntegrationManager {
           if (!(await this.isAllowed(integration.id, event.externalId))) return
           await this.deliveries.cancel(integration.id, event.externalId)
           const session = await getIntegrationSession(integration.id, event.externalId)
-          if (session && (await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)).interrupted) event.onInterrupted?.()
+          if (session && (await agentRegistry.get(integration.agentSlug).messages.stop(session.sessionId, { scope: 'turn' })).interrupted) event.onInterrupted?.()
         }
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
         else if ((await this.isAllowed(integration.id, event.externalId))) this.preWarmContainer(integration.agentSlug)
@@ -693,7 +693,7 @@ export class AgentIntegrationManager {
       // active through every retry; the row id it marked at the start says so.
       if (live?.sessionId !== session.sessionId || this.clearedSessionRows.has(live.id)) continue
       if (this.generationOf(id) !== generation) return false
-      this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
+      await this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
       const actor = agentRegistry.get(integration.agentSlug)
       // A creation accepted during teardown can acquire its mapping after the
       // old connector vanished. Reattach that known running turn on reconnect.
@@ -755,7 +755,8 @@ export class AgentIntegrationManager {
     return session
   }
 
-  private subscribeChatSession(integrationId: string, chatId: string, sessionId: string): void {
+  /** Point the chat session at `sessionId` and listen to it; resolves once listening, so nothing it does after is missed. */
+  private async subscribeChatSession(integrationId: string, chatId: string, sessionId: string): Promise<void> {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
     const agentSlug = session.integration.agentSlug
@@ -771,14 +772,34 @@ export class AgentIntegrationManager {
     }
     session.sessionId = sessionId
     session.context = this.withActivity(session.context, session, { sessionId })
-    const actor = agentRegistry.get(agentSlug)
-    session.sseUnsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
+    // Set before the await: a later subscribe or a teardown meanwhile ends this one.
+    let reader: ReadableStreamDefaultReader<SessionEvent> | undefined
+    let ended = false
+    const unsubscribe = () => {
+      ended = true
+      void reader?.cancel()
+    }
+    session.sseUnsubscribe = unsubscribe
+    const events = await agentRegistry.get(agentSlug).messages.subscribe(sessionId)
+    if (ended) {
+      await events.cancel()
+      return
+    }
+    reader = events.getReader()
+    void this.readSessionEvents(reader, integrationId, chatId, sessionId, session)
+      .catch(error => reportError(error, 'sse-event', { integrationId, chatId }))
+    session.connector.observeSession(session.context)
+  }
+
+  /** The chat session's side of its agent session's event stream, until the stream is cancelled. */
+  private async readSessionEvents(reader: ReadableStreamDefaultReader<SessionEvent>, integrationId: string, chatId: string, sessionId: string, session: ManagedSession): Promise<void> {
+    for (let next = await reader.read(); !next.done; next = await reader.read()) {
+      const event = next.value
       // Provisional activity is visible to the app, but is not a real turn
       // start/completion for the integration's durable work queue.
-      if ((event as { provisional?: boolean } | null)?.provisional) return
+      if (event.provisional) continue
       this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
-    })
-    session.connector.observeSession(session.context)
+    }
   }
 
   private withActivity(source: IntegrationSessionContext, managed?: ManagedSession, update: Partial<Pick<IntegrationSessionContext, 'integration' | 'sessionId'>> = {}): IntegrationSessionContext {
@@ -814,7 +835,7 @@ export class AgentIntegrationManager {
     if (!(await this.isAllowed(integrationId, externalId)) || this.connections.get(integrationId) !== conn || this.generationOf(integrationId) !== generation || clears !== this.sessionClears) return
     let managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
     if (!managed || managed.sessionId !== row.sessionId) {
-      this.subscribeChatSession(integrationId, externalId, row.sessionId)
+      await this.subscribeChatSession(integrationId, externalId, row.sessionId)
       managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
     }
     if (!managed) return
@@ -872,9 +893,8 @@ export class AgentIntegrationManager {
 
   // `observe` is the chat session to mark live before the event is handled.
   // The access check behind it is a database read, so it runs on the queue:
-  // the broadcaster's callback stays synchronous, events keep the order they
-  // arrived in, and a failed check lands in the error boundary below instead
-  // of escaping as an unhandled rejection.
+  // events keep the order they arrived in, and a failed check lands in the
+  // error boundary below instead of escaping as an unhandled rejection.
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, observe?: ManagedSession): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
@@ -1126,7 +1146,7 @@ export class AgentIntegrationManager {
     if (sessionId) {
       // A failed attachment is still before handoff and is safe to retry. Only
       // a definitively missing session rotates; uncertain sends never do.
-      this.subscribeChatSession(integrationId, chatId, sessionId)
+      await this.subscribeChatSession(integrationId, chatId, sessionId)
       try {
         await actor.sessions.attach(sessionId)
       } catch (error) {
@@ -1312,7 +1332,7 @@ export class AgentIntegrationManager {
     const managed = this.getOrCreateChatSession(integration.id, chatId)
     if (!managed) return
     managed.context = this.withActivity({ integration, externalId: chatId, sessionId, interactionId: route.interactionId, replyTarget: route.replyTarget }, managed)
-    this.subscribeChatSession(integration.id, chatId, sessionId)
+    await this.subscribeChatSession(integration.id, chatId, sessionId)
     await actor.sessions.attach(sessionId)
     if (this.isCurrentSession(integration.id, chatId, managed, sessionId)) managed.recovered = true
   }
@@ -1602,11 +1622,11 @@ export class AgentIntegrationManager {
     // request and both proceed. claimRequest is a synchronous check-and-mark,
     // so exactly one presser wins.
     const actor = agentRegistry.get(integration.agentSlug)
-    let open = actor.inputs.claim(toolUseId)
-    if (!open && await this.recoverOpenQuestion(integration, chatId, toolUseId)) open = actor.inputs.claim(toolUseId)
-    if (!open || open.scope.agentSlug !== integration.agentSlug) {
+    let claim = await actor.inputs.claim(toolUseId)
+    if (!claim && await this.recoverOpenQuestion(integration, chatId, toolUseId)) claim = await actor.inputs.claim(toolUseId)
+    if (!claim || claim.request.scope.agentSlug !== integration.agentSlug) {
       // Wrong agent: release immediately, we never had the right to hold it.
-      if (open) actor.inputs.releaseClaim(toolUseId)
+      if (claim) await actor.inputs.releaseClaim(toolUseId, claim.token)
       await this.replyAlreadyHandled(integrationId, chatId)
       return
     }
@@ -1650,9 +1670,8 @@ export class AgentIntegrationManager {
       // Unconditional: on the success path the claim is already gone (resolve
       // drops it with the entry), so this only matters for the paths that bail
       // — a container that never came up, a failed resolve, a settle that beat
-      // us. A leaked claim would make the request undecidable forever, which is
-      // worse than the race it guards.
-      actor.inputs.releaseClaim(toolUseId)
+      // us. A leaked claim would hold the request until its lease ran out.
+      await actor.inputs.releaseClaim(toolUseId, claim.token)
     }
   }
 

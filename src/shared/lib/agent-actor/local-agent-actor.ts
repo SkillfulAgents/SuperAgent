@@ -20,13 +20,14 @@ import { runComputerUse, runScript } from './host-runs'
 import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
-import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
+import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
+import { sessionEvents, sessionFrames } from './session-streams'
 import type {
   AccountReauthOps,
   AgentActor,
@@ -135,7 +136,7 @@ export class LocalAgentActor implements AgentActor {
       })
     this.store = this.state.store
     this.files = this.store.files
-    this.memories = createMemoryOps(this.files)
+    this.memories = createMemoryOps(this.store.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
@@ -175,15 +176,15 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
     syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind, runtime()),
     fetch: (...args) => client().fetch(...args),
-    openWebSocket: (path, init) => {
+    webSocketTarget: async (path, init) => {
       const info = runtime().getCachedInfo()
-      if (info.status !== 'running' || !info.port) {
-        throw new Error(`Container for agent ${slug} is not running`)
-      }
+      if (info.status !== 'running' || !info.port) return null
       const c = client()
-      return new WebSocket(`${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`, init?.protocols, {
+      return {
+        url: `${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`,
+        ...(init?.protocols !== undefined ? { protocols: init.protocols } : {}),
         headers: { ...init?.headers, ...c.getHostAuthHeaders() },
-      })
+      }
     },
     hostBridgeIp: () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
@@ -286,28 +287,27 @@ function createMessageOps(
 ): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
-    send: (...args) => client().sendMessage(...args),
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.
     cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
-    interrupt: (...args) => client().interruptSession(...args),
     stop: (sessionId, options) => delivery.stop(sessionId, options),
 
     list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
     delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
-    findLastEntry: (...args) => deps.sessionService.findLastSessionEntry(store, ...args),
+    findLastEntry: (sessionId, query, options) =>
+      deps.sessionService.findLastSessionEntry(store, sessionId, matchesTranscriptQuery(query), options),
     remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(store, sessionId, messageUuid),
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
     appendInformational: (sessionId, entry) => deps.appendInformationalEntry(store, sessionId, entry),
     appendAssistant: (sessionId, text) => deps.appendAssistantEntry(store, sessionId, text),
-    rawEntries: (sessionId) => deps.transcripts.streamRawEntries(store, sessionId),
+    forkedUserUuids: (sessionId) => deps.transcripts.forkedUserUuids(store, sessionId),
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
     media: (...args) => deps.transcripts.openMedia(store, ...args),
 
-    subscribe: (sessionId, listener) => live.listen(sessionId, listener),
-    follow: (sessionId, { after }, onFrame) => live.follow(sessionId, after, onFrame),
+    subscribe: async (sessionId) => sessionEvents(live, sessionId),
+    follow: (sessionId, { after }) => sessionFrames(live, sessionId, after),
     broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
   }
 }
@@ -319,8 +319,8 @@ function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps
     open: (sessionId) => requests.getOpenRequestsForSession(sessionId),
     openForAgent: () => requests.getOpenRequests(),
     get: (id) => requests.getOpenRequest(id),
-    claim: (id) => requests.claimRequest(id),
-    releaseClaim: (id) => requests.releaseClaim(id),
+    claim: async (id, options) => requests.claimRequest(id, options?.leaseMs),
+    releaseClaim: async (id, token) => requests.releaseClaim(id, token),
     resolve: (id, outcome) => requests.resolve(id, outcome),
     recentResolution: (id) => requests.getRecentResolution(id),
     snapshot: (sessionId) => requests.getSnapshotForScope(sessionId),
@@ -356,8 +356,11 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
     resolveMatchingXAgent: (operation, decision) =>
       deps.reviewManager.resolveMatchingXAgentByOperation(slug, operation, decision),
-    request: (details, ...rest) => deps.reviewManager.requestReview({ ...details, agentSlug: slug }, ...rest),
-    requestXAgent: (...args) => deps.reviewManager.requestXAgentReview(slug, ...args),
+    request: (details, options) => deps.reviewManager.request(slug, details, options),
+    requestXAgent: (request, options) => deps.reviewManager.requestXAgent(slug, request, options),
+    withdraw: async (id) => deps.reviewManager.withdraw(slug, id),
+    resume: (id) => deps.reviewManager.resume(slug, id),
+    settle: (id, decision) => deps.reviewManager.settle(slug, id, decision),
   }
 }
 
@@ -400,7 +403,8 @@ function createUsageOps(store: SessionStore, deps: LocalActorDeps): UsageOps {
 
 function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps {
   return {
-    request: (details, ...rest) => deps.mcpReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
+    request: (details, options) => deps.mcpReauthManager.request(slug, details, options),
+    withdraw: async (waitId) => deps.mcpReauthManager.withdraw(slug, waitId),
     dismiss: (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
     replace: (entryId, replacementMcpId) => deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId),
   }
@@ -408,8 +412,8 @@ function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps
 
 function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps): AccountReauthOps {
   return {
-    request: (details, ...rest) =>
-      deps.accountReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
+    request: (details, options) => deps.accountReauthManager.request(slug, details, options),
+    withdraw: async (waitId) => deps.accountReauthManager.withdraw(slug, waitId),
     dismiss: (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
     replace: (entryId, replacementAccountId) =>
       deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId),

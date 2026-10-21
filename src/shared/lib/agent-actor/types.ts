@@ -30,18 +30,14 @@ import type {
   CreateSessionOptions,
   HealthCheckResult,
   HostPortProbeResult,
-  InterruptSessionOptions,
   InterruptSessionResult,
-  SendMessageOptions,
-  SendMessageResult,
   SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
 import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
 import type { ActiveSubagentSnapshot } from './live/subagents'
-import type { WireFrame } from './live/session-channel'
-import type { WebSocket } from 'ws'
+import type { SessionEvent, WireFrame } from './live/session-channel'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
@@ -70,9 +66,10 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
+import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
 import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
@@ -236,11 +233,12 @@ export interface ContainerOps {
   /** `client.fetch` — an HTTP request to the container API. Counted by the lint fence until its direct callers move inward. */
   fetch(path: string, init?: RequestInit): Promise<Response>
   /**
-   * A WebSocket to the container API at `path`, authenticated the way `fetch`
-   * is. Returned before it opens so the caller attaches its own listeners.
-   * Throws when the container is not running.
+   * Where to open a WebSocket to the container API at `path`, authenticated
+   * the way `fetch` is: the URL, the subprotocols to offer and the headers
+   * (`init.headers` with the container's auth headers added after, which
+   * win). The caller opens the socket. Null when the container is not running.
    */
-  openWebSocket(path: string, init?: OpenWebSocketInit): WebSocket
+  webSocketTarget(path: string, init?: OpenWebSocketInit): Promise<WebSocketTarget | null>
 
   // Host capabilities. These describe the machine running the API, not the
   // container's transport: an actor whose container is elsewhere answers
@@ -250,6 +248,12 @@ export interface ContainerOps {
   hostBridgeIp(): string | null
   /** `client.probeHostPortFromRunner` — whether the container's network can reach a port on this host. */
   probeHostPort(host: string, port: number): Promise<HostPortProbeResult>
+}
+
+export interface WebSocketTarget {
+  url: string
+  protocols?: string | string[]
+  headers: Record<string, string>
 }
 
 export interface OpenWebSocketInit {
@@ -373,11 +377,11 @@ export interface SessionOps {
   isWaitingBackground(sessionId: string): boolean
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
-  /** `LiveSessions.waitForIdle` */
-  waitForIdle(
-    sessionId: string,
-    opts?: { timeoutMs?: number; signal?: AbortSignal; requireActiveFirst?: boolean; observeMs?: number },
-  ): Promise<void>
+  /**
+   * `LiveSessions.waitForIdle`: `'idle'` once the session is not active (at
+   * once when it is not running), `'timeout'` when it still is after `timeoutMs`.
+   */
+  waitForIdle(sessionId: string, opts?: { timeoutMs?: number }): Promise<'idle' | 'timeout'>
   /** `LiveSessions.activeIds` */
   activeIds(): string[]
   /** `LiveSessions.hasActive` */
@@ -439,12 +443,6 @@ export interface MessageOps {
   // Live — ContainerClient.
 
   /**
-   * `client.sendMessage` alone: no mark, no stream, no ordering with other
-   * sends. For a message that starts no turn (`shouldQuery: false`) into a
-   * session the caller knows is live; everything else goes through `deliver`.
-   */
-  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
-  /**
    * The one way a message reaches a session (see `DeliverRequest`). In one
    * turn of the actor, after the session's earlier deliveries: start the
    * container and attach the stream, cancel what the session waits on if
@@ -456,8 +454,6 @@ export interface MessageOps {
   deliver(request: DeliverRequest): Promise<DeliverResult>
   /** Cancel a queued (not yet picked up) message, the copy held while recovering included. False: too late. */
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
-  /** `client.interruptSession` alone: the session's state is not touched. Stopping a session is `stop`. */
-  interrupt(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
   /**
    * Stop the session's turn and mark it interrupted, in one turn of the
    * actor: the container is asked when it runs, and the session is marked
@@ -478,10 +474,13 @@ export interface MessageOps {
   ): Promise<SessionMessagesPage>
   /** `getSessionMessagesDelta` */
   delta(sessionId: string, opts: { after: string; signal?: AbortSignal; media?: 'ref' }): Promise<SessionMessagesDelta>
-  /** `findLastSessionEntry` */
+  /**
+   * `findLastSessionEntry`: the last transcript entry `query` names, read
+   * from the tail. `endOffset` stops the search at that byte of the transcript.
+   */
   findLastEntry(
     sessionId: string,
-    predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+    query: TranscriptEntryQuery,
     options?: { endOffset?: number | null },
   ): Promise<JsonlMessageEntry | JsonlSystemEntry | null>
   /** `removeMessage` */
@@ -492,8 +491,8 @@ export interface MessageOps {
   appendInformational(sessionId: string, entry: { uuid: string; content: string; level?: string }): Promise<void>
   /** `appendAssistantEntry` (session-transcript-append) — an assistant message delivered out of band, recorded so the transcript shows it. */
   appendAssistant(sessionId: string, text: string): Promise<void>
-  /** `streamJsonlFile` over the transcript — every raw entry, in order. */
-  rawEntries(sessionId: string): AsyncIterable<unknown>
+  /** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
+  forkedUserUuids(sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>>
   /** The transcript file's bytes for the debug view, or null when there is no transcript. */
   rawLog(sessionId: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
@@ -501,17 +500,31 @@ export interface MessageOps {
 
   // Fan-out and recovery — the agent's `LiveSessions`.
 
-  /** `LiveSessions.listen` — returns the unsubscribe function. */
-  subscribe(sessionId: string, listener: (data: unknown) => void): () => void
+  /**
+   * `LiveSessions.listen` — every event of the session from now on, for the
+   * app's own consumers. Resolves once listening; cancel the stream to stop.
+   */
+  subscribe(sessionId: string): Promise<ReadableStream<SessionEvent>>
   /**
    * `LiveSessions.follow` — a viewer's wire: the frames it missed since
    * `after` (the last frame id it got), or a snapshot, then every event, each
-   * frame with its id. Resolves to the unsubscribe once attached.
+   * frame with its id, and a `ping` every 30s. A viewer that falls far behind
+   * finds the stream ended and comes back with its last id. Resolves once
+   * attached; cancel the stream to stop.
    */
-  follow(sessionId: string, options: { after?: string }, onFrame: (frame: WireFrame) => void): Promise<() => void>
+  follow(sessionId: string, options: { after?: string }): Promise<ReadableStream<WireFrame>>
   /** `LiveSessions.emit` */
   broadcastEvent(sessionId: string, data: unknown): void
 }
+
+/** Which transcript entry `messages.findLastEntry` looks for. */
+export type TranscriptEntryQuery =
+  /** The user message sent with this uuid. */
+  | { kind: 'user'; uuid: string }
+  /** The last assistant message. */
+  | { kind: 'assistant' }
+  /** The last message a person wrote (see `userRequestText`). */
+  | { kind: 'user-request' }
 
 /** A message for a session, as `messages.deliver` takes it. */
 export interface DeliverRequest {
@@ -627,10 +640,15 @@ export interface InputOps {
   openForAgent(): PendingUserInputRequest[]
   /** `AgentInputRequests.getOpenRequest` */
   get(id: string): PendingUserInputRequest | null
-  /** `AgentInputRequests.claimRequest` */
-  claim(id: string): PendingUserInputRequest | null
-  /** `AgentInputRequests.releaseClaim` */
-  releaseClaim(id: string): void
+  /**
+   * `AgentInputRequests.claimRequest`: reserve an open request for a
+   * decision. The first caller gets the request and a token, every other one
+   * null, until the claim is released, the request settles or the lease
+   * (`leaseMs`, default `CLAIM_LEASE_MS`) runs out.
+   */
+  claim(id: string, options?: { leaseMs?: number }): Promise<{ token: string; request: PendingUserInputRequest } | null>
+  /** `AgentInputRequests.releaseClaim`: give back the claim this token holds. */
+  releaseClaim(id: string, token: string): Promise<void>
   /** `AgentInputRequests.resolve` */
   resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null
   /** `AgentInputRequests.getRecentResolution` */
@@ -671,21 +689,30 @@ export interface ReviewOps {
   resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): void
   /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
-  /** `AgentReviews.request` — the review is this agent's. */
-  request(
-    details: Omit<ReviewDetails, 'agentSlug'>,
-    signal?: AbortSignal,
-    options?: { reevaluate?: () => Promise<'allow' | 'deny' | 'review'> },
-  ): Promise<'allow' | 'deny'>
+  /**
+   * `AgentReviews.request`: park a call on a review card of this agent until
+   * its outcome. The caller names the review (`options.id`) to withdraw it
+   * (its request was aborted), or to resume or settle it after a `recheck`.
+   * `awaitReview` (proxy/review-request) is the host's way to wait for one.
+   */
+  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
-    targetAgentSlug: string,
-    targetAgentName: string,
-    operation: 'list' | 'read' | 'invoke' | 'create',
-    preview?: string,
-    fileTransfer?: XAgentFileTransfer,
-    signal?: AbortSignal,
-  ): Promise<'allow' | 'deny'>
+    request: {
+      targetAgentSlug: string
+      targetAgentName: string
+      operation: 'list' | 'read' | 'invoke' | 'create'
+      preview?: string
+      fileTransfer?: XAgentFileTransfer
+    },
+    options: { id: string },
+  ): Promise<ReviewOutcome>
+  /** `AgentReviews.withdraw`: the caller is gone; close the card. */
+  withdraw(id: string): Promise<void>
+  /** `AgentReviews.resume`: after a recheck that still needs the person, wait for the next outcome. */
+  resume(id: string): Promise<ReviewOutcome>
+  /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
+  settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
 }
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
@@ -715,8 +742,15 @@ export interface ComputerUseOps {
 
 /** Remote MCP re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface McpReauthOps {
-  /** `AgentReauthWaits.request` — the wait is this agent's. */
-  request(details: Omit<McpReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /**
+   * `AgentReauthWaits.request`: park a call on this agent's re-auth card
+   * until the MCP is re-authorized, replaced or dismissed (`ReauthOutcome`).
+   * The caller names the wait (`waitId`) to withdraw it; `awaitReauth`
+   * (proxy/reauth-request) is the host's way to wait for one.
+   */
+  request(details: Omit<McpReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome>
+  /** `AgentReauthWaits.withdraw`: the caller is gone. */
+  withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
   /** `AgentReauthWaits.replace` — settle the wait with a different connection. */
@@ -725,8 +759,10 @@ export interface McpReauthOps {
 
 /** Connected-account re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface AccountReauthOps {
-  /** `AgentReauthWaits.request` — the wait is this agent's. */
-  request(details: Omit<AccountReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /** `AgentReauthWaits.request`, as `McpReauthOps.request` for a connected account. */
+  request(details: Omit<AccountReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome>
+  /** `AgentReauthWaits.withdraw`: the caller is gone. */
+  withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
   /** `AgentReauthWaits.replace` — release only this agent's calls; other agents still use the old account. */
@@ -792,13 +828,8 @@ export interface WriteOptions {
   existingParent?: boolean
   /** With `confined`: refuse a root that no longer resolves to itself, so nothing is staged where a link leads. */
   exactRoot?: boolean
-  /** Filesystem only: a lock held around the final publish and a failed write's cleanup, not while content is written. It also turns on the check that the staged file is still this write's. */
-  lock?: (fn: () => Promise<void>) => Promise<void>
-  /** Filesystem only: called under `lock` just before the destination is published; throwing refuses it. */
-  beforePublish?: (destination: string) => Promise<void>
   /** Publish only if no destination exists, including racing writers. */
   overwrite?: boolean
-  signal?: AbortSignal
   /**
    * File mode to apply. Advisory: a filesystem implementation applies it (the
    * container must be able to read `.env`), anything else ignores it.
@@ -817,14 +848,32 @@ export interface WriteOptions {
 /**
  * The agent's configuration documents (see `config-schema.ts`), typed and
  * validated. A JSON document that does not parse or fit its schema is
- * `corrupt`: `get` throws `ConfigDocError` and an `update` aborts before
- * writing, so a broken file is never silently replaced.
+ * `corrupt`: `get` and `read` throw `ConfigDocError`, so a read-modify-write
+ * stops before writing and a broken file is never silently replaced.
+ *
+ * A read-modify-write is a compare-and-set: `read` gives the document's
+ * revision and `put` with `ifRevision` stores only while it is still that one
+ * (`updateConfigDoc` loops over it). The comparison runs under the lock the
+ * container honours for a document it also writes (`.env`).
  */
 export interface ConfigOps {
   /** The document, or null when it does not exist yet. */
   get<K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null>
-  /** Validate and store a whole document atomically. */
-  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void>
+  /** The document and its revision; both null when it does not exist yet. */
+  read<K extends ConfigDocId>(id: K): Promise<{ doc: ConfigDoc<K> | null; revision: string | null }>
+  /**
+   * Validate and store a whole document atomically. With `ifRevision`, only
+   * while the stored one is still that revision (null: still absent); false
+   * when it is not, and nothing is written.
+   */
+  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>, options?: { ifRevision?: string | null }): Promise<boolean>
+}
+
+/**
+ * `ConfigOps` as the actor's own storage reaches it: with a serialized
+ * read-modify-write that takes a function, which cannot cross a transport.
+ */
+export interface StoreConfigOps extends ConfigOps {
   /**
    * Read-modify-write, serialized per document: no two updates interleave,
    * and for a document another process also writes, neither do theirs. A
@@ -866,7 +915,11 @@ export interface FileOps {
   getDoc(path: string): Promise<Uint8Array | null>
   /** Replace a whole file atomically; missing parent directories are created. */
   putDoc(path: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void>
-  /** Write a file of any size from a stream; parents are created; nothing is left behind on failure. */
+  /**
+   * Write a file of any size from a stream; parents are created; nothing is
+   * left behind on failure. A caller that gives up errors or cancels the
+   * stream, which fails the write.
+   */
   write(path: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: WriteOptions): Promise<{ size: number }>
   /** Remove a file, or a directory tree with `recursive`. An absent path is a no-op. */
   delete(path: string, options?: { recursive?: boolean; confined?: boolean }): Promise<void>
@@ -878,6 +931,20 @@ export interface FileOps {
    * directory → `not-a-file`.
    */
   append(path: string, bytes: Uint8Array | string): Promise<void>
+  /**
+   * A whole file's size and its bytes from one open, the stream bounded to
+   * that size even while the file grows. With `confined`, a path that leads
+   * out of the workspace through a link is refused. Absent → `not-found`; a
+   * directory → `not-a-file`. A caller that does not read the stream cancels it.
+   */
+  readSized(path: string, options?: { confined?: boolean }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }>
+}
+
+/**
+ * `FileOps` as the actor's own storage reaches it, never handed out: an open
+ * file for reads at byte offsets is a handle, and one cannot cross a transport.
+ */
+export interface StoreFileOps extends FileOps {
   /**
    * Open a file for reads at byte offsets: what a transcript reader that
    * pages backward from the end, or serves one span out of the middle, needs

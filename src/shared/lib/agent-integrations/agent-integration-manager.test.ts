@@ -1,7 +1,7 @@
 vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import * as integrationStore from './store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InterruptSessionResult } from '../container/types'
+import type { StopSessionOptions, StopSessionResult } from '../agent-actor/types'
 import type { GlobalFeedEvent } from '../notifications/global-feed'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
@@ -14,7 +14,7 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
-  global: undefined as ((event: GlobalFeedEvent) => void) | undefined, interrupt: vi.fn<(sessionId: string) => Promise<InterruptSessionResult>>(),
+  global: undefined as ((event: GlobalFeedEvent) => void) | undefined, stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
   authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
   syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
@@ -53,7 +53,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
       activity: state.activity, isActive: state.isActive, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, attach: state.attach, isStreamSubscribed: state.isStreamSubscribed,
     },
     messages: {
-      send: state.send, interrupt: state.interrupt, broadcastEvent: state.broadcast,
+      stop: state.stop, broadcastEvent: state.broadcast,
       // The actor's delivery as the manager sees it: the echo reaches the
       // session's viewers with the actor's queued flag, then the message goes.
       deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
@@ -61,9 +61,16 @@ vi.mock('@shared/lib/agent-actor', () => ({
         await state.send(request.sessionId, request.content, request.uuid)
         return { status: 'sent', queued: false }
       },
-      subscribe: (session: string, callback: (event: unknown) => void) => {
-        state.streams.set(session, callback)
-        return () => { state.streams.delete(session) }
+      // The actor's event stream for the session.
+      subscribe: async (session: string) => {
+        let listener: (event: unknown) => void
+        return new ReadableStream({
+          start(controller) {
+            listener = (event) => controller.enqueue(event)
+            state.streams.set(session, listener)
+          },
+          cancel() { if (state.streams.get(session) === listener) state.streams.delete(session) },
+        })
       },
     },
   }) },
@@ -494,16 +501,16 @@ describe('AgentIntegration host contract', () => {
     await manager.start()
     const acknowledged = vi.fn()
     await adapter.cancel(acknowledged)
-    expect(state.interrupt).not.toHaveBeenCalled()
+    expect(state.stop).not.toHaveBeenCalled()
     expect(acknowledged).not.toHaveBeenCalled()
     await adapter.input('comment')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
-    state.interrupt.mockResolvedValue({ interrupted: false, processKept: true })
+    state.stop.mockResolvedValue({ path: 'interrupted', interrupted: false, processKept: true, escalated: false })
     await adapter.cancel(acknowledged)
     expect(acknowledged).not.toHaveBeenCalled()
-    state.interrupt.mockResolvedValue({ interrupted: true, processKept: false })
+    state.stop.mockResolvedValue({ path: 'interrupted', interrupted: true, processKept: false, escalated: false })
     await adapter.cancel(acknowledged)
-    expect(state.interrupt).toHaveBeenCalledWith('session-1')
+    expect(state.stop).toHaveBeenCalledWith('session-1', { scope: 'turn' })
     expect(acknowledged).toHaveBeenCalledOnce()
   })
   it.each(['global-first', 'session-first'])('routes reviews once when resolution arrives %s', async order => {
@@ -848,9 +855,9 @@ it('rejects cancellation when the external target loses access', async () => {
   await vi.waitFor(() => expect(state.mappings.size).toBe(1))
   adapter.allowed = false
   const acknowledged = vi.fn()
-  state.interrupt.mockResolvedValue({ interrupted: true, processKept: false })
+  state.stop.mockResolvedValue({ path: 'interrupted', interrupted: true, processKept: false, escalated: false })
   await adapter.cancel(acknowledged)
-  expect(state.interrupt).not.toHaveBeenCalled()
+  expect(state.stop).not.toHaveBeenCalled()
   expect(acknowledged).not.toHaveBeenCalled()
 })
 

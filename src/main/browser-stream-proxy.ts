@@ -72,15 +72,14 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     try {
         // Cached status only — no runtime query
         const actor = agentRegistry.get(agentSlug)
-        const info = actor.container.status()
-
-        if (info.status !== 'running' || !info.port) {
+        const target = await actor.container.webSocketTarget('/browser/stream')
+        if (!target) {
           ws.close(1011, 'Agent container is not running')
           return
         }
 
         console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
-        const upstream = actor.container.openWebSocket('/browser/stream')
+        const upstream = new WebSocket(target.url, target.protocols, { headers: target.headers })
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)

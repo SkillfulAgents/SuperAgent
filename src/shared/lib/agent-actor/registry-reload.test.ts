@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
 import type { LocalAgentActor } from './local-agent-actor'
+import { drain, drained } from './testing/drain'
 
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
@@ -96,7 +97,7 @@ describe('the actors\' state survives a backend module reload', () => {
   it('the live sessions held before the reload are the ones after it, and the container host reaches them', async () => {
     const original = await load()
     const heard: unknown[] = []
-    original.agentRegistry.get('a').messages.subscribe('s', (event) => heard.push(event))
+    drain(await original.agentRegistry.get('a').messages.subscribe('s'), (event) => heard.push(event))
     const sessions = (original.agentRegistry.get('a') as LocalAgentActor).state.sessions
 
     const reloaded = await reload()
@@ -104,6 +105,7 @@ describe('the actors\' state survives a backend module reload', () => {
     expect((reloaded.agentRegistry.get('a') as LocalAgentActor).state.sessions).toBe(sessions)
     // A tab listening before the reload hears what the reloaded code emits.
     reloaded.agentRegistry.get('a').sessions.broadcastUpdate('s')
+    await drained()
     expect(heard).toEqual([{ type: 'session_updated' }])
     // The reloaded registry attached the reloaded host to the same sessions.
     const { containerHost } = await import('@shared/lib/container/container-host')
@@ -142,12 +144,10 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     const decision = original.agentRegistry
       .get('a')
-      .inputs.reviews.request(reviewDetails)
-      .catch(() => 'rejected')
+      .inputs.reviews.request(reviewDetails, { id: 'review-a' })
     const bare = original.agentRegistry
       .get('b')
-      .inputs.reviews.request(reviewDetails)
-      .catch(() => 'rejected')
+      .inputs.reviews.request(reviewDetails, { id: 'review-b' })
     const [entry] = original.agentRegistry.get('a').inputs.reviews.pending()
     const [bareEntry] = original.agentRegistry.get('b').inputs.reviews.pending()
 
@@ -165,12 +165,11 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     const parked = original.accountReauthManager
       .requestReauth({ agentSlug: 'a', accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' })
-      .catch(() => 'rejected')
 
     const reloaded = await reload()
 
     expect(reloaded.accountReauthManager.completeAccount('acct')).toBe(1)
-    await expect(parked).resolves.toBeUndefined()
+    await expect(parked).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('the reloaded handle reads the session store the live sessions write to', async () => {
@@ -210,13 +209,12 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     const decision = original.agentRegistry
       .get('a')
-      .inputs.reviews.request(reviewDetails)
-      .catch((error: Error) => error.message)
+      .inputs.reviews.request(reviewDetails, { id: 'review-a' })
 
     const reloaded = await reload()
     reloaded.agentRegistry.evict('a')
 
-    await expect(decision).resolves.toBe('Review timeout')
+    await expect(decision).resolves.toBe('timeout')
     expect(reloaded.agentRegistry.get('a').inputs.reviews.pending()).toEqual([])
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a')).toEqual([])
   })

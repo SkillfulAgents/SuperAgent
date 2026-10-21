@@ -6,8 +6,6 @@ import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,
 } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
-import { isReauthDismissed } from './reauth-dismissal'
-import { getReplacementMcpId } from './mcp-replacement'
 
 const DETAILS = {
   agentSlug: 'agent-1',
@@ -66,7 +64,7 @@ describe('McpReauthManager', () => {
     manager.completeMcp('mcp-1')
     expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(2)
     expect(syncAwaiting.get('agent-2')).not.toHaveBeenCalled()
-    return expect(promise).resolves.toBeUndefined()
+    return expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('resumes every proxy request parked on the reconnected MCP', async () => {
@@ -75,11 +73,11 @@ describe('McpReauthManager', () => {
     const unrelated = manager.requestReauth({ ...DETAILS, mcpId: 'mcp-2' })
 
     expect(manager.completeMcp('mcp-1')).toBe(2)
-    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(1)
 
     manager.completeMcp('mcp-2')
-    await expect(unrelated).resolves.toBeUndefined()
+    await expect(unrelated).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('deduplicates concurrent waits for one MCP into a single agent card', async () => {
@@ -88,26 +86,26 @@ describe('McpReauthManager', () => {
 
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
     expect(manager.completeMcp('mcp-1')).toBe(2)
-    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
   })
 
   it('keeps the shared card open when only one concurrent MCP request aborts', async () => {
     const controller = new AbortController()
     const aborted = manager.requestReauth(DETAILS, controller.signal)
     const remaining = manager.requestReauth(DETAILS)
-    const rejection = expect(aborted).rejects.toThrow('aborted')
+    const rejection = expect(aborted).resolves.toEqual({ outcome: 'withdrawn' })
 
     controller.abort()
 
     await rejection
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
     expect(manager.completeMcp('mcp-1')).toBe(1)
-    await expect(remaining).resolves.toBeUndefined()
+    await expect(remaining).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('settles an abandoned request after the timeout', async () => {
     const promise = manager.requestReauth(DETAILS)
-    const rejection = expect(promise).rejects.toThrow('timed out')
+    const rejection = expect(promise).resolves.toEqual({ outcome: 'timeout' })
 
     await vi.advanceTimersByTimeAsync(MCP_REAUTH_TIMEOUT_MS)
 
@@ -119,7 +117,7 @@ describe('McpReauthManager', () => {
   it('cancels the wait when the proxy request is aborted', async () => {
     const controller = new AbortController()
     const promise = manager.requestReauth(DETAILS, controller.signal)
-    const rejection = expect(promise).rejects.toThrow('aborted')
+    const rejection = expect(promise).resolves.toEqual({ outcome: 'withdrawn' })
 
     controller.abort()
 
@@ -130,30 +128,30 @@ describe('McpReauthManager', () => {
   it('clears the card and the parked request when a user dismisses it', async () => {
     const promise = manager.requestReauth(DETAILS)
     const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
-    const rejection = promise.catch((error: unknown) => error)
 
     expect(manager.dismiss(request.id, 'agent-1', 'not my server')).toBe(true)
 
-    const error = await rejection
-    expect(isReauthDismissed(error)).toBe(true)
-    expect((error as Error).message).toContain('not my server')
+    expect(await promise).toEqual({ outcome: 'dismissed', reason: 'not my server' })
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
   })
 
   it('releases replaced calls for this agent while preserving another agent’s wait', async () => {
-    const first = manager.requestReauth(DETAILS).catch(getReplacementMcpId)
-    const second = manager.requestReauth(DETAILS).catch(getReplacementMcpId)
+    const first = manager.requestReauth(DETAILS)
+    const second = manager.requestReauth(DETAILS)
     const other = manager.requestReauth({ ...DETAILS, agentSlug: 'agent-2' })
     const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
     expect(manager.replaceMcp(request.id, 'agent-2', 'new-mcp')).toBe(false)
     expect(manager.replaceMcp(request.id, 'agent-1', 'new-mcp')).toBe(true)
-    expect(await Promise.all([first, second])).toEqual(['new-mcp', 'new-mcp'])
+    expect(await Promise.all([first, second])).toEqual([
+      { outcome: 'replaced', replacementId: 'new-mcp' },
+      { outcome: 'replaced', replacementId: 'new-mcp' },
+    ])
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
     expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
     manager.completeMcp('mcp-1')
-    await expect(other).resolves.toBeUndefined()
+    await expect(other).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('refuses a dismissal aimed at another agent', async () => {
@@ -164,6 +162,6 @@ describe('McpReauthManager', () => {
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
 
     manager.completeMcp('mcp-1')
-    await expect(promise).resolves.toBeUndefined()
+    await expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 })

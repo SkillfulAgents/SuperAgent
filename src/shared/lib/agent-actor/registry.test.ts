@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WebSocket } from 'ws'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
 import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
@@ -51,7 +50,6 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: vi.fn(),
 }))
 vi.mock('@shared/lib/services/usage-service', () => ({ loadDailyUsageData: vi.fn(), loadSessionUsageTotals: vi.fn() }))
-vi.mock('ws', () => ({ WebSocket: vi.fn() }))
 
 type FakeRequest = {
   id: string
@@ -184,7 +182,6 @@ describe('createAgentRegistry', () => {
     vi.restoreAllMocks()
     userInputRequestManager.reset()
     fake = fakeDeps()
-    vi.mocked(WebSocket).mockClear()
   })
 
   it('returns one stable handle per slug, created on first get', () => {
@@ -308,14 +305,6 @@ describe('createAgentRegistry', () => {
       expect(fake.runtimes.get('a')?.ensureRunning).toHaveBeenCalledTimes(1)
     })
 
-    it('messages.send goes to this agent\'s client', async () => {
-      const actor = createAgentRegistry(fake.deps).get('a')
-      await actor.messages.send('s1', 'hi', 'u1', { isAutomated: true })
-      expect(fake.containerHost.runtime).toHaveBeenCalledWith('a')
-      expect(fake.runtimes.get('a')?.getClient).toHaveBeenCalledTimes(1)
-      expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
-    })
-
     it('sessions.broadcastUpdate and syncAwaiting reach this agent\'s live sessions only', () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor
@@ -332,28 +321,27 @@ describe('createAgentRegistry', () => {
       expect(otherSyncAwaiting).not.toHaveBeenCalled()
     })
 
-    it('container.openWebSocket targets this agent\'s container and adds its auth headers last', () => {
+    it('container.webSocketTarget targets this agent\'s container and adds its auth headers last', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(fake.containerHost.runtime).not.toHaveBeenCalled()
 
-      actor.container.openWebSocket('/browser/stream', {
+      expect(await actor.container.webSocketTarget('/browser/stream', {
         search: '?since=1',
         protocols: ['p1'],
         headers: { 'x-forwarded': 'yes', 'x-host': 'spoofed' },
-      })
-
-      expect(fake.runtimes.get('a')?.getCachedInfo).toHaveBeenCalledTimes(1)
-      expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
-      expect(vi.mocked(WebSocket)).toHaveBeenCalledWith('ws://127.0.0.1:4321/browser/stream?since=1', ['p1'], {
+      })).toEqual({
+        url: 'ws://127.0.0.1:4321/browser/stream?since=1',
+        protocols: ['p1'],
         headers: { 'x-forwarded': 'yes', 'x-host': '1' },
       })
+      expect(fake.runtimes.get('a')?.getCachedInfo).toHaveBeenCalledTimes(1)
+      expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
     })
 
-    it('container.openWebSocket refuses while the container is not running', () => {
+    it('container.webSocketTarget has none while the container is not running', async () => {
       fake.containerHost.runtime('a').getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
       const actor = createAgentRegistry(fake.deps).get('a')
-      expect(() => actor.container.openWebSocket('/browser/stream')).toThrow(/not running/)
-      expect(vi.mocked(WebSocket)).not.toHaveBeenCalled()
+      expect(await actor.container.webSocketTarget('/browser/stream')).toBeNull()
     })
 
     it('container.syncConnectionEnvironment pushes one projection through this agent\'s runtime', async () => {
@@ -407,7 +395,7 @@ describe('createAgentRegistry', () => {
         matchedScopes: ['read'],
         scopeDescriptions: {},
       }
-      const decision = actor.inputs.reviews.request(details)
+      const decision = actor.inputs.reviews.request(details, { id: 'review-1' })
       const [open] = actor.inputs.openForAgent()
       expect(open).toMatchObject({ kind: 'proxy_review', scope: { agentSlug: 'a' }, payload: { ...details, agentSlug: 'a' } })
       expect(actor.inputs.reviews.pending().map((r) => r.id)).toEqual([open.id])
@@ -494,13 +482,13 @@ describe('createAgentRegistry', () => {
       expect(fake.inputManager.report).toHaveBeenCalledWith({ type: 'created', request: stored })
     })
 
-    it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', () => {
+    it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', async () => {
       const registry = createAgentRegistry(fake.deps)
       const stored = register(registry, 'b', 'rb')
       const a = registry.get('a').inputs
 
       expect(a.get('rb')).toBeNull()
-      expect(a.claim('rb')).toBeNull()
+      expect(await a.claim('rb')).toBeNull()
       expect(a.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(false)
       expect(a.resolve('rb', outcome)).toBeNull()
       expect(a.snapshot()).toEqual([])
@@ -509,13 +497,13 @@ describe('createAgentRegistry', () => {
       expect(stored!.payload).toEqual({})
     })
 
-    it('the owning agent can still see, claim, settle and read back its own request', () => {
+    it('the owning agent can still see, claim, settle and read back its own request', async () => {
       const registry = createAgentRegistry(fake.deps)
       register(registry, 'b', 'rb')
       const b = registry.get('b').inputs
 
       expect(b.get('rb')?.id).toBe('rb')
-      expect(b.claim('rb')?.id).toBe('rb')
+      expect((await b.claim('rb'))?.request.id).toBe('rb')
       expect(b.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(true)
       expect(b.resolve('rb', outcome)?.id).toBe('rb')
       expect(b.recentResolution('rb')?.id).toBe('rb')
@@ -523,16 +511,17 @@ describe('createAgentRegistry', () => {
       expect(registry.get('a').inputs.recentResolution('rb')).toBeUndefined()
     })
 
-    it('releaseClaim only drops a claim this agent could have taken', () => {
+    it('releaseClaim only drops a claim this agent could have taken', async () => {
       const registry = createAgentRegistry(fake.deps)
       register(registry, 'b', 'rb')
-      expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
+      const claim = await registry.get('b').inputs.claim('rb')
+      expect(claim?.request.id).toBe('rb')
 
-      registry.get('a').inputs.releaseClaim('rb')
-      expect(registry.get('b').inputs.claim('rb')).toBeNull()
+      await registry.get('a').inputs.releaseClaim('rb', claim!.token)
+      expect(await registry.get('b').inputs.claim('rb')).toBeNull()
 
-      registry.get('b').inputs.releaseClaim('rb')
-      expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
+      await registry.get('b').inputs.releaseClaim('rb', claim!.token)
+      expect((await registry.get('b').inputs.claim('rb'))?.request.id).toBe('rb')
     })
   })
 
@@ -607,9 +596,9 @@ describe('createAgentRegistry', () => {
 
       // Plant state of every kind the actor owns.
       actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
-      const review = actor.inputs.reviews.request(reviewDetails)
-      const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' })
-      const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' })
+      const review = actor.inputs.reviews.request(reviewDetails, { id: 'review-1' })
+      const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' }, { waitId: 'wait-1' })
+      const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
       actor.inputs.computerUse.grant('use_host_shell', 'once')
       actor.inputs.computerUse.setGrabbedApp('Calculator')
       getSessionSummaryCacheSlot(actor.store).revision = 7
@@ -620,9 +609,9 @@ describe('createAgentRegistry', () => {
 
       registry.evict('a')
 
-      await expect(review).rejects.toThrow('Review timeout')
-      await expect(account).rejects.toThrow(/no longer held by this process/)
-      await expect(mcp).rejects.toThrow(/no longer held by this process/)
+      await expect(review).resolves.toBe('timeout')
+      await expect(account).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
+      await expect(mcp).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
       // Every settlement went out as a transition, so the wire and the index heard of it.
       const resolved = fake.inputManager.report.mock.calls
         .map(([transition]) => transition as { type: string; request: { id: string; kind: string }; outcome?: string })
@@ -659,13 +648,13 @@ describe('createAgentRegistry', () => {
       const registry = createAgentRegistry(fake.deps)
       const a = registry.get('a')
       const b = registry.get('b')
-      const reviewA = a.inputs.reviews.request(reviewDetails)
-      const reviewB = b.inputs.reviews.request(reviewDetails)
+      const reviewA = a.inputs.reviews.request(reviewDetails, { id: 'review-a' })
+      const reviewB = b.inputs.reviews.request(reviewDetails, { id: 'review-b' })
 
       registry.evictAll()
 
-      await expect(reviewA).rejects.toThrow('Review timeout')
-      await expect(reviewB).rejects.toThrow('Review timeout')
+      await expect(reviewA).resolves.toBe('timeout')
+      await expect(reviewB).resolves.toBe('timeout')
       // The host forgets the runtimes its own way (a starting one is kept).
       expect(fake.containerHost.dropRuntime).not.toHaveBeenCalled()
       expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)

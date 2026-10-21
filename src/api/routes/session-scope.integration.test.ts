@@ -196,6 +196,7 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 // Import after every mock is registered.
 import agents from './agents'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { drain, drained } from '@shared/lib/agent-actor/testing/drain'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import { registerSession, sessionExists } from '@shared/lib/services/session-service'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
@@ -272,8 +273,8 @@ beforeEach(async () => {
 
   victimEvents = []
   attackerEvents = []
-  cleanupVictimSse = agentRegistry.get(VICTIM).messages.subscribe(victimSession, (d) => { victimEvents.push(d) })
-  cleanupAttackerSse = agentRegistry.get(ATTACKER).messages.subscribe(attackerSession, (d) => { attackerEvents.push(d) })
+  cleanupVictimSse = drain(await agentRegistry.get(VICTIM).messages.subscribe(victimSession), (d) => { victimEvents.push(d) })
+  cleanupAttackerSse = drain(await agentRegistry.get(ATTACKER).messages.subscribe(attackerSession), (d) => { attackerEvents.push(d) })
 })
 
 afterEach(() => {
@@ -290,7 +291,8 @@ afterEach(() => {
  * The property under test, stated once. Every attack asserts exactly this.
  * Note what it does NOT mention: status codes, ownership indexes, map keys.
  */
-function expectVictimUntouched(): void {
+async function expectVictimUntouched(): Promise<void> {
+  await drained()
   expect(agentRegistry.get(VICTIM).sessions.isActive(victimSession)).toBe(true)
   expect(agentRegistry.get(VICTIM).sessions.isStreamSubscribed(victimSession)).toBe(true)
   expect(victimEvents).toEqual([])
@@ -303,40 +305,40 @@ describe('a session id from another agent cannot drive that agent’s live sessi
     const res = await post(url(ATTACKER, victimSession, '/interrupt'))
     expect(res.status).toBe(404)
     expect(mockInterruptSession).not.toHaveBeenCalled()
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('interrupt, when the container call throws (the handler’s catch path)', async () => {
     mockInterruptSession.mockRejectedValue(new Error('container exploded'))
     const res = await post(url(ATTACKER, victimSession, '/interrupt'))
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('message', async () => {
     const res = await post(url(ATTACKER, victimSession, '/messages'), { content: 'hi' })
     expect(res.status).toBe(404)
     expect(mockSendMessage).not.toHaveBeenCalled()
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('typing', async () => {
     const res = await post(url(ATTACKER, victimSession, '/typing'))
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('delete', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(res.status).toBe(404)
     expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('a session id that escapes the agent’s own session directory', async () => {
     const res = await post(url(ATTACKER, '..%2F..%2Fvictim-agent%2Fvictim-session-0000', '/interrupt'))
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -356,23 +358,23 @@ describe('a forged transcript does not buy access to another agent’s live sess
 
   it('interrupt', async () => {
     await post(url(ATTACKER, victimSession, '/interrupt'))
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('message', async () => {
     await post(url(ATTACKER, victimSession, '/messages'), { content: 'injected' })
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('typing', async () => {
     await post(url(ATTACKER, victimSession, '/typing'))
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('delete leaves the victim’s real transcript on disk', async () => {
     await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -395,27 +397,27 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
   it('the messages listing refuses the id', async () => {
     const res = await app().request(url(ATTACKER, victimSession, '/messages'), { method: 'GET' })
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('the single-session read refuses the id', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'GET' })
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('interrupt refuses the id', async () => {
     const res = await post(url(ATTACKER, victimSession, '/interrupt'))
     expect(res.status).toBe(404)
     expect(mockInterruptSession).not.toHaveBeenCalled()
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('delete refuses the id and leaves the victim’s real transcript', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(res.status).toBe(404)
     expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('media refuses the id even when the attacker also forges its metadata', async () => {
@@ -425,7 +427,7 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
     await registerSession(createLocalSessionStore(ATTACKER), victimSession, 'Forged')
     const res = await app().request(url(ATTACKER, victimSession, '/media/anyref'), { method: 'GET' })
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -436,7 +438,7 @@ describe('the subagent-messages route stays inside the agent’s own tree', () =
       { method: 'GET' },
     )
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('refuses a traversal-shaped subagent id that escapes the session tree', async () => {
@@ -449,7 +451,7 @@ describe('the subagent-messages route stays inside the agent’s own tree', () =
       { method: 'GET' },
     )
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -462,6 +464,7 @@ describe('scoping does not over-block the caller’s own session', () => {
   it('broadcasts typing into its own session only', async () => {
     const res = await post(url(ATTACKER, attackerSession, '/typing'))
     expect(res.status).toBe(200)
+    await drained()
     expect(attackerEvents).toContainEqual(expect.objectContaining({ type: 'user_typing' }))
     expect(victimEvents).toEqual([])
   })

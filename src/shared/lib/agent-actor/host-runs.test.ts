@@ -25,8 +25,8 @@ function fakeActor(options: { containerOk?: boolean } = {}) {
   }
   const actor: HostRunActor = {
     inputs: {
-      claim: (id) => requests.claimRequest(id),
-      releaseClaim: (id) => requests.releaseClaim(id),
+      claim: async (id) => requests.claimRequest(id),
+      releaseClaim: async (id, token) => requests.releaseClaim(id, token),
       resolve: (id, outcome) => {
         settled.push({ id, how: 'resolve', outcome })
         return requests.resolve(id, outcome)

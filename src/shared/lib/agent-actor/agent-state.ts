@@ -65,8 +65,8 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
   // goes through the sessions, so it reaches the session's wire.
   const hostRuns: HostRunActor = {
     inputs: {
-      claim: (id) => inputRequests.claimRequest(id),
-      releaseClaim: (id) => inputRequests.releaseClaim(id),
+      claim: async (id, options) => inputRequests.claimRequest(id, options?.leaseMs),
+      releaseClaim: async (id, token) => inputRequests.releaseClaim(id, token),
       resolve: (id, outcome) => inputRequests.resolve(id, outcome),
       complete: (sessionId, id, outcome) => sessions?.completeRequest(sessionId, id, outcome),
       computerUse: {
@@ -105,7 +105,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
  * not to the process.
  */
 export function releaseAgentState(state: AgentState): void {
-  const gone = (what: string) => new Error(`${what} dropped: the agent is no longer held by this process`)
+  const gone = (what: string) => `${what} dropped: the agent is no longer held by this process`
   state.reviews.rejectAll()
   state.accountReauth.rejectAll(gone('Account re-authentication'))
   state.mcpReauth.rejectAll(gone('MCP re-authentication'))

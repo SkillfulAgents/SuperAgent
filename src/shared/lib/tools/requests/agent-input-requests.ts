@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import {
   pendingUserInputRequestSchema,
@@ -63,6 +64,13 @@ export interface UserInputTransitionSink {
 export const RECENT_RESOLUTIONS_LIMIT = 100
 
 /**
+ * How long a claim holds a request when its holder never gives it back. A
+ * decision holds it across a container start and a container call; past
+ * this, the request is free for the next decision.
+ */
+export const CLAIM_LEASE_MS = 5 * 60 * 1000
+
+/**
  * Orders registrations and settlements across every agent's store: a
  * process-wide clock, not state — the router asks the stores which of them
  * registered an id first and which settled it last. Kept on `globalThis` in
@@ -116,7 +124,8 @@ export class AgentInputRequests {
    * before settling, a human is still waiting on it. All a claim does is make
    * the DECISION path single-entry.
    */
-  private claimed = new Set<string>()
+  /** Each claimed request's holder: the token it was handed and when its lease runs out (epoch ms). */
+  private claimed = new Map<string, { token: string; expiresAt: number }>()
 
   private mismatchCount = 0
 
@@ -282,20 +291,25 @@ export class AgentInputRequests {
    * no await inside, which on node's single thread makes it atomic — the
    * loser gets null and can report the decision as already handled.
    *
-   * The caller MUST `releaseClaim` on every path that does NOT settle the
-   * request, or it stays open and permanently undecidable. `resolve` drops the
-   * claim with the entry, so the success path needs no explicit release.
+   * The caller releases the claim with its token on every path that does NOT
+   * settle the request; `resolve` drops the claim with the entry, so the
+   * success path needs no explicit release. The claim is a lease: one whose
+   * release never came (a caller across a transport that lost it) lapses
+   * after `leaseMs`, so the request does not stay undecidable.
    */
-  claimRequest(id: string): PendingUserInputRequest | null {
+  claimRequest(id: string, leaseMs: number = CLAIM_LEASE_MS): { token: string; request: PendingUserInputRequest } | null {
     const request = this.requests.get(id)
-    if (!request || this.claimed.has(id)) return null
-    this.claimed.add(id)
-    return request
+    if (!request) return null
+    const held = this.claimed.get(id)
+    if (held && held.expiresAt > Date.now()) return null
+    const token = randomUUID()
+    this.claimed.set(id, { token, expiresAt: Date.now() + leaseMs })
+    return { token, request }
   }
 
-  /** Drop a claim. No-op for an id that already settled. */
-  releaseClaim(id: string): void {
-    this.claimed.delete(id)
+  /** Drop the claim this token holds. A no-op once it lapsed, another holder took it, or the request settled. */
+  releaseClaim(id: string, token: string): void {
+    if (this.claimed.get(id)?.token === token) this.claimed.delete(id)
   }
 
   /**

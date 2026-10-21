@@ -9,8 +9,6 @@ import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,
 } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
-import { isReauthDismissed } from './reauth-dismissal'
-import { getReplacementAccountId } from './account-replacement'
 
 const DETAILS = {
   agentSlug: 'agent-1',
@@ -69,7 +67,7 @@ describe('AccountReauthManager', () => {
     manager.completeAccount('account-1')
     expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(2)
     expect(syncAwaiting.get('agent-2')).not.toHaveBeenCalled()
-    return expect(promise).resolves.toBeUndefined()
+    return expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('resumes all proxy requests parked on the reconnected account', async () => {
@@ -78,11 +76,11 @@ describe('AccountReauthManager', () => {
     const unrelated = manager.requestReauth({ ...DETAILS, accountId: 'account-2' })
 
     expect(manager.completeAccount('account-1')).toBe(2)
-    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(1)
 
     manager.completeAccount('account-2')
-    await expect(unrelated).resolves.toBeUndefined()
+    await expect(unrelated).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('deduplicates concurrent waits for one account into a single agent card', async () => {
@@ -91,26 +89,26 @@ describe('AccountReauthManager', () => {
 
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
     expect(manager.completeAccount('account-1')).toBe(2)
-    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
   })
 
   it('keeps the shared card open when only one concurrent proxy request aborts', async () => {
     const controller = new AbortController()
     const aborted = manager.requestReauth(DETAILS, controller.signal)
     const remaining = manager.requestReauth(DETAILS)
-    const rejection = expect(aborted).rejects.toThrow('aborted')
+    const rejection = expect(aborted).resolves.toEqual({ outcome: 'withdrawn' })
 
     controller.abort()
 
     await rejection
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
     expect(manager.completeAccount('account-1')).toBe(1)
-    await expect(remaining).resolves.toBeUndefined()
+    await expect(remaining).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('rejects and settles the wait after the timeout', async () => {
     const promise = manager.requestReauth(DETAILS)
-    const rejection = expect(promise).rejects.toThrow('timed out')
+    const rejection = expect(promise).resolves.toEqual({ outcome: 'timeout' })
 
     await vi.advanceTimersByTimeAsync(ACCOUNT_REAUTH_TIMEOUT_MS)
 
@@ -122,7 +120,7 @@ describe('AccountReauthManager', () => {
   it('cancels the wait when the proxy request is aborted', async () => {
     const controller = new AbortController()
     const promise = manager.requestReauth(DETAILS, controller.signal)
-    const rejection = expect(promise).rejects.toThrow('aborted')
+    const rejection = expect(promise).resolves.toEqual({ outcome: 'withdrawn' })
 
     controller.abort()
 
@@ -134,19 +132,15 @@ describe('AccountReauthManager', () => {
     const first = manager.requestReauth(DETAILS)
     const second = manager.requestReauth(DETAILS)
     const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
-    const rejections = Promise.all([
-      first.catch((error: unknown) => error),
-      second.catch((error: unknown) => error),
-    ])
 
     expect(manager.dismiss(request.id, 'agent-1', 'nobody here owns it')).toBe(true)
 
-    // The reason reaches the agent through the parked call's failure, and the
-    // failure is flagged so the proxy can call it a dismissal, not a timeout.
-    for (const error of await rejections) {
-      expect(isReauthDismissed(error)).toBe(true)
-      expect((error as Error).message).toContain('nobody here owns it')
-    }
+    // The reason reaches the agent with the parked call's outcome, which the
+    // proxy can tell from a timeout.
+    expect(await Promise.all([first, second])).toEqual([
+      { outcome: 'dismissed', reason: 'nobody here owns it' },
+      { outcome: 'dismissed', reason: 'nobody here owns it' },
+    ])
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
   })
@@ -161,25 +155,28 @@ describe('AccountReauthManager', () => {
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
 
     manager.completeAccount('account-1')
-    await expect(promise).resolves.toBeUndefined()
+    await expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('releases all calls for a replacement while leaving other agents pending', async () => {
-    const first = manager.requestReauth(DETAILS).catch(getReplacementAccountId)
-    const second = manager.requestReauth(DETAILS).catch(getReplacementAccountId)
+    const first = manager.requestReauth(DETAILS)
+    const second = manager.requestReauth(DETAILS)
     const otherAgent = manager.requestReauth({ ...DETAILS, agentSlug: 'agent-2' })
     const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
 
     expect(manager.replaceAccount(request.id, 'agent-2', 'replacement')).toBe(false)
     expect(manager.replaceAccount(request.id, 'agent-1', 'replacement')).toBe(true)
-    expect(await Promise.all([first, second])).toEqual(['replacement', 'replacement'])
+    expect(await Promise.all([first, second])).toEqual([
+      { outcome: 'replaced', replacementId: 'replacement' },
+      { outcome: 'replaced', replacementId: 'replacement' },
+    ])
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
     expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
     expect(manager.replaceAccount(request.id, 'agent-1', 'another')).toBe(false)
 
     manager.completeAccount(DETAILS.accountId)
-    await expect(otherAgent).resolves.toBeUndefined()
+    await expect(otherAgent).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('reports an unknown request id as not dismissed', () => {

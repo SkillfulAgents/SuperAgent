@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
 import { requestBodyPreview } from './review-display'
+import { awaitReview } from './review-request'
 import {
   userInputRequestManager,
   type UserInputRequestTransition,
@@ -194,6 +195,41 @@ describe('ReviewManager', () => {
     const result = manager.submitDecision(reviewId, 'allow')
     expect(result).toBe(true)
     await promise
+  })
+
+  it('an id asked again replaces the call parked on it, whose timer then times out nothing', async () => {
+    const reviews = agents.get('agent-1').reviews
+    const details = { accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/path', matchedScopes: [], scopeDescriptions: {} }
+    const first = reviews.request(details, { id: 'r1' })
+    vi.advanceTimersByTime(3 * 60 * 1000)
+    const second = reviews.request(details, { id: 'r1' })
+    await expect(first).resolves.toBe('withdrawn')
+
+    // Past the first call's timeout: the second is still parked.
+    vi.advanceTimersByTime(2 * 60 * 1000 + 1)
+    expect(manager.submitDecision('r1', 'allow')).toBe(true)
+    await expect(second).resolves.toBe('allow')
+  })
+
+  it('rechecks again for an allow sweep that lands while it rechecks, instead of parking under the older policy', async () => {
+    const reviews = agents.get('agent-1').reviews
+    const details = { accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/path', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} }
+    let readPolicy!: (decision: 'review') => void
+    const reevaluate = vi.fn<() => Promise<'review' | 'allow' | 'deny'>>()
+      // The first recheck reads the policy before the second change lands ...
+      .mockImplementationOnce(() => new Promise((resolve) => { readPolicy = resolve }))
+      // ... the next one sees it.
+      .mockResolvedValueOnce('allow')
+    const decision = awaitReview(reviews, (options) => reviews.request(details, options), { reevaluate })
+    await vi.waitFor(() => expect(manager.getPendingReviewsForAgent('agent-1')).toHaveLength(1))
+
+    reviews.resolveMatching('gmail.readonly', 'allow')
+    await vi.waitFor(() => expect(reevaluate).toHaveBeenCalledOnce())
+    reviews.resolveMatching('gmail.readonly', 'allow')
+    readPolicy('review')
+
+    await expect(decision).resolves.toBe('allow')
+    expect(reevaluate).toHaveBeenCalledTimes(2)
   })
 
   it('timeout after 5 minutes rejects with Error("Review timeout")', async () => {

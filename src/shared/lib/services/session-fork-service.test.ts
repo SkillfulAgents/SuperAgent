@@ -34,7 +34,10 @@ const { copyDirectoryFiltered, streamJsonlFile } = vi.hoisted(() => ({
 vi.mock('@shared/lib/agent-actor/local-transcript-ops', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/agent-actor/local-transcript-ops')>()),
   copyDerivedSessionFiles: (...args: unknown[]) => copyDirectoryFiltered(...args),
-  streamRawEntries: () => streamJsonlFile(),
+}))
+vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/jsonl-files')>()),
+  streamJsonl: () => streamJsonlFile(),
 }))
 
 const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({

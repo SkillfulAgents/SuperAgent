@@ -1,6 +1,6 @@
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveConnectionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
-import { agentRegistry, ConfigDocError } from '@shared/lib/agent-actor'
+import { agentRegistry, ConfigDocError, updateConfigDoc } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   agentPreferencesSchema,
@@ -59,7 +59,7 @@ export async function updateAgentPreferences(
 ): Promise<AgentPreferences> {
   // Serialized read-modify-write: fresh STRICT read (a corrupt document aborts
   // the update, never synthesizes {} from a parse error), merge, atomic write.
-  const updated = await agentRegistry.get(agentSlug).config.update('preferences', (current) => {
+  const updated = await updateConfigDoc(agentRegistry.get(agentSlug).config, 'preferences', (current) => {
     const merged: Record<string, unknown> = { ...(current ?? {}) }
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === undefined) {

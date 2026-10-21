@@ -52,7 +52,6 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() })
 import accountReauth from './account-reauth'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }
 let app: Hono<TestEnv>
@@ -155,7 +154,7 @@ describe('account reauthentication replacement', () => {
     const response = await replace(request.id)
 
     expect(response.status).toBe(200)
-    expect(getReplacementAccountId(await request.settled)).toBe('mine')
+    expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mappedAccounts('shared-agent')).toEqual(['mine'])
     expect(mappedAccounts('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.connectedAccounts).where(eq(schema.connectedAccounts.id, 'old')).get()).toEqual(oldRecord)
@@ -229,7 +228,7 @@ describe('account reauthentication replacement', () => {
     const request = park()
     const response = await replace(request.id)
     expect(await response.json()).toEqual({ success: true, liveRefresh: false, sessionNotification: false })
-    expect(getReplacementAccountId(await request.settled)).toBe('mine')
+    expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mappedAccounts('shared-agent')).toEqual(['mine'])
   })
 

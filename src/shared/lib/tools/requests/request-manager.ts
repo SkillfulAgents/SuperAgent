@@ -172,13 +172,13 @@ export class UserInputRequestManager implements UserInputTransitionSink {
   }
 
   /** `AgentInputRequests.claimRequest` on the agent's store. */
-  claimRequest(id: string, agentSlug?: AgentSlug): PendingUserInputRequest | null {
+  claimRequest(id: string, agentSlug?: AgentSlug): { token: string; request: PendingUserInputRequest } | null {
     return this.storeFor(id, agentSlug)?.claimRequest(id) ?? null
   }
 
-  /** Drop a claim. No-op for an id that already settled. */
-  releaseClaim(id: string, agentSlug?: AgentSlug): void {
-    this.storeFor(id, agentSlug)?.releaseClaim(id)
+  /** Drop the claim this token holds. No-op for an id that already settled. */
+  releaseClaim(id: string, token: string, agentSlug?: AgentSlug): void {
+    this.storeFor(id, agentSlug)?.releaseClaim(id, token)
   }
 
   /**

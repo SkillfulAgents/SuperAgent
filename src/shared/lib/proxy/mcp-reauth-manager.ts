@@ -1,5 +1,6 @@
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import type { McpReauthDetails, McpReauthWaits } from './reauth-waits'
+import type { McpReauthDetails, McpReauthWaits, ReauthOutcome } from './reauth-waits'
+import { awaitReauth } from './reauth-request'
 
 export {
   MCP_REAUTH_TIMEOUT_MS,
@@ -24,8 +25,20 @@ export class McpReauthManager {
     this.agents.attach(directory)
   }
 
-  requestReauth(details: McpReauthDetails, signal?: AbortSignal): Promise<void> {
-    return this.agents.get(details.agentSlug).request(details, signal)
+  /** Park a request of the agent on its re-auth card and wait for how it ends (see `awaitReauth`). */
+  requestReauth(details: McpReauthDetails, signal?: AbortSignal): Promise<ReauthOutcome> {
+    const waits = this.agents.get(details.agentSlug)
+    return awaitReauth(waits, details, signal)
+  }
+
+  /** `AgentReauthWaits.request` on the agent's waits: the outcome as data. */
+  request(agentSlug: string, details: Omit<McpReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome> {
+    return this.agents.get(agentSlug).request(details, options)
+  }
+
+  /** `AgentReauthWaits.withdraw` on the agent's waits. */
+  withdraw(agentSlug: string, waitId: string): void {
+    this.agents.peek(agentSlug)?.withdraw(waitId)
   }
 
   /** `AgentReauthWaits.dismiss` on the agent's waits; false when it holds no such card. */
