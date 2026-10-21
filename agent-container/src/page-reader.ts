@@ -64,9 +64,10 @@ export function readerScript(): string {
     // typed values) and <time> (its machine date).
     'var SPECIAL="select,input,textarea,time[datetime],[aria-live],[role=status],[role=alert],svg[aria-label],[role=img][aria-label],img[alt],"+SRONLY;' +
     'var plain=function(el){return !cardAnc.has(el)&&!el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
-    // Cards: three or more sibling boxes of one tag and class (a results grid).
-    // Their text runs together once walked, so a line `---` goes between two
-    // that each hold more than one line — which price belongs to which product.
+    // Cards: three or more sibling boxes of one tag and class (a results grid)
+    // whose first holds more than one line. Their text runs together once
+    // walked, so a line `---` goes between two neighbouring ones — which price
+    // belongs to which product.
     // Found once up front: a container of cards is walked even when it has no
     // other structure (its innerText would run the cards together), and so is
     // every box that holds one.
@@ -107,7 +108,9 @@ export function readerScript(): string {
     'var block=BLOCK.test(tag);' +
     'if(plain(el)){var bt=block?blockText(el):ws(el.innerText);if(bt)push(block?"\\n\\n"+bt+"\\n\\n":" "+bt+" ");return}' +
     'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;var cc=cardSigs.get(el);var prev="";' +
-    'for(var k=el.firstChild;k;k=k.nextSibling){if(cc&&k.nodeType===1){var g2=sig(k);if(g2&&cc[g2]&&vis(k)){if(prev===g2)push("\\n\\n---\\n\\n");prev=g2}}walk(k,d2)}if(block)push("\\n\\n")};' +
+    // Only between neighbours: anything visible in between (a heading, a
+    // paragraph — GitHub's README code blocks share one class) ends the run.
+    'for(var k=el.firstChild;k;k=k.nextSibling){if(cc){if(k.nodeType===1&&vis(k)){var g2=sig(k);if(g2&&cc[g2]){if(prev===g2)push("\\n\\n---\\n\\n");prev=g2}else prev=""}else if(k.nodeType===3&&String(k.nodeValue||"").trim())prev=""}walk(k,d2)}if(block)push("\\n\\n")};' +
     'try{if(document.body)walk(document.body,-1)}catch(e){}' +
     'var md=out.join("").split("\\n").map(function(l){return /^\\s*- /.test(l)?l.replace(/\\s+$/,""):l.replace(/[ \\t]+/g," ").trim()}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
     // The frames the walk skipped, and how much of the viewport each covers
