@@ -52,10 +52,11 @@ describe('runRule', () => {
   })
 
   it('survives a rule that exhausts its memory, and keeps answering', async () => {
-    // One allocation over the sandbox's heap limit aborts the sandbox process,
-    // never the app.
+    // Filling the sandbox's heap aborts the sandbox process, never the app.
     // A long time limit, so the allocation (not the clock) is what stops it.
-    const outcome = await runRule('() => new Array(6e7).fill(0.5).length > 0', {}, { timeoutMs: 5_000 })
+    // Flat double arrays hit the limit in ~100 ms; one huge array (dictionary
+    // mode) spent seconds in GC first and outlasted the limit on a loaded runner.
+    const outcome = await runRule('() => { const chunks = []; for (;;) chunks.push(new Array(1e5).fill(0.5)) }', {}, { timeoutMs: 5_000 })
     expect(outcome).toEqual({ result: 'threw', detail: 'the rule crashed or ran out of memory' })
     expect((await run('() => true')).result).toBe('true')
   }, 20_000)

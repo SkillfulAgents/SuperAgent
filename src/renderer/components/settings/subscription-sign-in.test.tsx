@@ -6,8 +6,11 @@ const state = vi.hoisted(() => ({ fetch: vi.fn() }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: state.fetch }))
 afterEach(() => { cleanup(); vi.useRealTimers(); state.fetch.mockReset() })
 it('shows the login link and code, then reports account identity without receiving tokens', async () => {
+  // The poll answers only once the link is clicked: answered at once, it can
+  // sign in (and take the link away) before a loaded runner gets to the link.
+  let finishSignIn!: (response: Response) => void
   state.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ id: 'flow', url: 'https://accounts.x.ai/oauth2/device?user_code=TEST', code: 'TEST', interval: 0.01 })))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'connected', accountLabel: 'member@example.test' })))
+    .mockReturnValueOnce(new Promise<Response>((resolve) => { finishSignIn = resolve }))
   const connected = vi.fn()
   const observe = vi.fn()
   render(<SubscriptionSignIn userId={null} onConnected={connected} onSetupEvent={observe} />)
@@ -15,6 +18,7 @@ it('shows the login link and code, then reports account identity without receivi
   expect(await screen.findByText('TEST')).toBeTruthy()
   expect(screen.getByRole('link').getAttribute('href')).toContain('accounts.x.ai')
   fireEvent.click(screen.getByRole('link'))
+  finishSignIn(new Response(JSON.stringify({ status: 'connected', accountLabel: 'member@example.test' })))
   await waitFor(() => expect(connected).toHaveBeenCalledWith('flow', 'member@example.test'))
   expect(screen.queryByText('Waiting for you to finish signing in…')).toBeNull()
   expect(observe.mock.calls.map(([event]) => event)).toEqual([
