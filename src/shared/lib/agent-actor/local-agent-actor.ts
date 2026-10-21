@@ -20,7 +20,6 @@ import { runComputerUse, runScript } from './host-runs'
 import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
-import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
@@ -178,9 +177,11 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
         throw new Error(`Container for agent ${slug} is not running`)
       }
       const c = client()
-      return new WebSocket(`${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`, init?.protocols, {
-        headers: { ...init?.headers, ...c.getHostAuthHeaders() },
-      })
+      return c.openWebSocket(
+        `${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`,
+        { ...init?.headers, ...c.getHostAuthHeaders() },
+        init?.protocols,
+      )
     },
     hostBridgeIp: () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),

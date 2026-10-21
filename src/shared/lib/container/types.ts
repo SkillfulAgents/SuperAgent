@@ -261,6 +261,8 @@ export interface ContainerClient {
   // Make HTTP request to container (abstracts away host/port details)
   // Throws if container is not running
   fetch(path: string, init?: RequestInit): Promise<Response>
+  /** Opens a WebSocket to the container API (the session stream, the browser and dashboard proxies). */
+  openWebSocket(url: string, headers: Record<string, string>, protocols?: string | string[]): import('ws').WebSocket
 
   // Headers proving the caller is the host — required by the container API,
   // which is also reachable from the agent's own Bash. Callers that dial the

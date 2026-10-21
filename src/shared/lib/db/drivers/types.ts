@@ -8,6 +8,7 @@
  * once, where the database is opened.
  */
 import type { ExtractTablesWithRelations } from 'drizzle-orm'
+import type { MigrationMeta } from 'drizzle-orm/migrator'
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core'
 import type * as schema from '../schema'
 
@@ -39,6 +40,12 @@ export type SyncAppDatabase = BaseSQLiteDatabase<
 export interface OpenedDatabase {
   readonly db: AppDatabase
   close(): Promise<void> | void
+  /**
+   * Applies the bundled migrations the database has not seen, for a driver
+   * drizzle's migrator cannot run on (D1 rejects its BEGIN). Without it,
+   * `openDatabase()` runs `migrateFromBundle()`.
+   */
+  migrate?(migrations: readonly MigrationMeta[]): Promise<void>
 }
 
 /** Opens the database at one location on one driver package. */

@@ -90,7 +90,6 @@ import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/util
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
-  cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
@@ -7357,24 +7356,6 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
-
-// ============================================================================
-// Cleanup stale chunked uploads (older than 1 hour)
-// ============================================================================
-const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
-
-async function cleanupStaleUploads() {
-  try {
-    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
-  } catch (err) {
-    console.warn('[agents] stale upload cleanup failed:', err)
-    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
-  }
-}
-
-// Run cleanup on startup and every 30 minutes
-void cleanupStaleUploads()
-setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 // =============================================================================
 // Pending user-input requests (unified wire)

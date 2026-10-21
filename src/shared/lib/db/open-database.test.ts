@@ -16,6 +16,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 import { closeDatabase, getDb, isDatabaseOpen, MIGRATIONS_TABLE, openDatabase } from './open-database'
 import { betterSqlite3 } from './drivers/better-sqlite3'
+import { migrationBundle } from './migrations/bundle'
 import { runDataMigrations } from './data-migrations'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -106,6 +107,17 @@ describe('openDatabase', () => {
     const db = await openDatabase()
 
     expect(await migrationRows(db)).toEqual(fromFolder.map((m) => ({ hash: m.hash, created_at: m.folderMillis })))
+  })
+
+  it("runs the driver's own migrate with the bundle instead of drizzle's migrator", async () => {
+    const opened = await betterSqlite3(':memory:').open()
+    const migrate = vi.fn(async () => {})
+
+    const db = await openDatabase({ driver: { name: 'own-migrate', open: () => ({ ...opened, migrate }) } })
+
+    expect(migrate).toHaveBeenCalledWith(migrationBundle)
+    const tables = await db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE name = ${MIGRATIONS_TABLE}`)
+    expect(tables).toEqual([])
   })
 
   it('reports a failed open as fatal and rethrows, leaving the database closed', async () => {
