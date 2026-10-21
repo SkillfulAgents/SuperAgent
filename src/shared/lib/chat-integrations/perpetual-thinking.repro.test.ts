@@ -30,12 +30,20 @@ import {
 } from './chat-delivery'
 import { TelegramConnector } from './telegram-connector'
 import { MockChatAgentIntegration } from './mock-connector'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { agentRegistry, type SessionOps } from '@shared/lib/agent-actor'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import type { SessionActivity } from '@shared/lib/types/agent'
 
-/** Stand in for the agent's live session activity, which every tick reads through its actor. */
-const spyActivity = () => vi.spyOn(agentRegistry.get('repro-agent').sessions, 'activity')
+/**
+ * Stand in for the session's live activity, which every tick reads through its
+ * actor (`sessions.live`): set what it answers with `mockReturnValue`.
+ */
+const spyActivity = () => {
+  const activity = vi.fn<() => SessionActivity>()
+  vi.spyOn(agentRegistry.get('repro-agent').sessions, 'live').mockImplementation(async () =>
+    ({ activity: activity() }) as Awaited<ReturnType<SessionOps['live']>>)
+  return activity
+}
 
 function makeManaged(connector: ManagedConnector['connector'], chatId: string): ManagedConnector {
   return {
@@ -165,6 +173,37 @@ describe('per-session indicator tick (pull)', () => {
       spy.mockReturnValue('idle')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
       expect(connector.stoppedWorking).toEqual(['chat-t'])
+      stopIndicatorTick(managed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a read that an event\'s clear, or a newer read, overtook while it was out', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatAgentIntegration()
+      const managed = makeManaged(connector, 'chat-t')
+      // Each read answers when the test says, in any order.
+      const answers: Array<(activity: SessionActivity) => void> = []
+      vi.spyOn(agentRegistry.get('repro-agent').sessions, 'live').mockImplementation(() =>
+        new Promise((resolve) => answers.push((activity) => resolve({ activity } as Awaited<ReturnType<SessionOps['live']>>))))
+      startIndicatorTick(managed, 'sess-t')
+
+      // A read goes out; the session settles and an event clears; the read lands busy.
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)
+      clearIndicator(managed)
+      answers[0]('working')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(connector.workingActivities).toEqual([])
+
+      // Two reads out: the newer lands idle first, then the older lands busy.
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 2)
+      answers[2]('idle')
+      await vi.advanceTimersByTimeAsync(0)
+      answers[1]('working')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(connector.workingActivities).toEqual([])
       stopIndicatorTick(managed)
     } finally {
       vi.useRealTimers()

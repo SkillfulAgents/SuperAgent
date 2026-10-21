@@ -7,7 +7,7 @@ export {
   type StartErrorCode,
   type StartFailure,
 } from './delivery-errors'
-export { agentRegistry, completeMcpReauth } from './registry'
+export { agentRegistry } from './registry'
 export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './agent-catalog'
 export { identityFromInstructions } from './agent-directories'
@@ -37,6 +37,7 @@ export type {
   AgentActor,
   AgentCatalog,
   AgentIdentityChanges,
+  AgentLiveSummary,
   AgentPlacement,
   AgentRecord,
   AgentRegistry,
@@ -61,6 +62,7 @@ export type {
   OpenWebSocketInit,
   WebSocketTarget,
   ReviewOps,
+  SessionLiveState,
   SessionOps,
   StartSessionRequest,
   StopSessionOptions,

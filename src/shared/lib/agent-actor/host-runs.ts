@@ -64,7 +64,7 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
     const permissions = await host.call('computerUsePermissions', {})
     if (permissions) return { status: 'missing_permissions', permissions }
 
-    if (grantType) computerUse.grant(permissionLevel, grantType, appName)
+    if (grantType) await computerUse.grant(permissionLevel, grantType, appName)
 
     let output: string
     try {
@@ -74,7 +74,7 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
       // The agent sees the failure as its tool's error.
       await rejectInput(actor, toolUseId, `Error executing ${method}: ${message}`).catch(() => {})
       // The approval was spent on a system failure, not on a decision.
-      computerUse.clearPending(sessionId, toolUseId, 'invalidated')
+      await computerUse.clearPending(sessionId, toolUseId, 'invalidated')
       return { status: 'failed', error: message }
     }
 
@@ -82,23 +82,23 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
     if (method === 'grab' || method === 'launch') {
       const targetApp = appName || resolveTargetApp(method, params)
       if (targetApp) {
-        computerUse.setGrabbedApp(targetApp)
+        await computerUse.setGrabbedApp(targetApp)
         // The name now; the icon when the host has found it.
-        actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
-        host.call('computerUseAppIcon', { app: targetApp }).then((icon) => {
-          if (icon) actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
+        await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
+        host.call('computerUseAppIcon', { app: targetApp }).then(async (icon) => {
+          if (icon) await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
         }).catch(() => {})
       }
     } else if (method === 'ungrab' || method === 'quit') {
-      computerUse.clearGrabbedApp()
-      actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+      await computerUse.clearGrabbedApp()
+      await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
     }
 
-    if (grantType === 'once') computerUse.consumeOnce(permissionLevel, appName)
+    if (grantType === 'once') await computerUse.consumeOnce(permissionLevel, appName)
 
     const undelivered = await resolveInput(actor, toolUseId, output)
     if (undelivered !== null) return { status: 'undeliverable', detail: undelivered }
-    computerUse.clearPending(sessionId, toolUseId, 'answered')
+    await computerUse.clearPending(sessionId, toolUseId, 'answered')
     host.send('analytics', { event: 'computer_use_executed', properties: { method, permissionLevel, grantType } })
     return { status: 'resolved' }
   })
@@ -107,17 +107,17 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
 export async function runScript(actor: HostRunActor, host: HostPort, run: ScriptRun): Promise<HostRunOutcome> {
   const { sessionId, toolUseId, script, scriptType, grantType } = run
   return withClaim(actor, toolUseId, async (request) => {
-    if (grantType) actor.inputs.computerUse.grant('use_host_shell', grantType)
+    if (grantType) await actor.inputs.computerUse.grant('use_host_shell', grantType)
     const result = await host.call('hostScript', { script, scriptType })
-    if (grantType === 'once') actor.inputs.computerUse.consumeOnce('use_host_shell')
+    if (grantType === 'once') await actor.inputs.computerUse.consumeOnce('use_host_shell')
 
     const undelivered = await resolveInput(actor, toolUseId, formatScriptOutput(result))
     if (undelivered !== null) return { status: 'undeliverable', detail: undelivered }
     if (request.autoApproved) {
       // No tab ever showed this request, so none needs telling it settled.
-      actor.inputs.resolve(toolUseId, 'answered')
+      await actor.inputs.resolve(toolUseId, 'answered')
     } else {
-      actor.inputs.complete(sessionId, toolUseId, 'answered')
+      await actor.inputs.complete(sessionId, toolUseId, 'answered')
     }
     host.send('analytics', { event: 'script_executed', properties: { scriptType, exitCode: result.exitCode } })
     return { status: 'resolved' }
@@ -143,8 +143,8 @@ export async function runAutoApproved(actor: HostRunActor, host: HostPort, run: 
     await rejectInput(actor, toolUseId, reason).catch((error) => {
       console.error(`[HostRuns] Failed to reject ${toolUseId} after a failed auto-run:`, error)
     })
-    if (run.kind === 'computerUse') actor.inputs.computerUse.clearPending(sessionId, toolUseId, 'invalidated')
-    else actor.inputs.resolve(toolUseId, 'invalidated')
+    if (run.kind === 'computerUse') await actor.inputs.computerUse.clearPending(sessionId, toolUseId, 'invalidated')
+    else await actor.inputs.resolve(toolUseId, 'invalidated')
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined

@@ -43,7 +43,7 @@ export function defineHomeScenarios(profileName: ProfileName, budgets: HomeScena
     })
 
     it('GET /api/agents — cold summary cache', async () => {
-      perf.invalidateSummaryCaches()
+      await perf.invalidateSummaryCaches()
       const { result, measurement } = await measure(() => perf.request('/api/agents'))
       expect(result.status).toBe(200)
       const body = await result.json()
@@ -59,7 +59,7 @@ export function defineHomeScenarios(profileName: ProfileName, budgets: HomeScena
     })
 
     it('home expansion — cold summary cache', async () => {
-      perf.invalidateSummaryCaches()
+      await perf.invalidateSummaryCaches()
       const { result, measurement } = await measure(() => perf.request(HOME_URL))
       expect(result.status).toBe(200)
       const body = await result.json()

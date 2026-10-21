@@ -176,6 +176,9 @@ export function createSessionDelivery(
       }, mark)
       await storeSelection(sessionId, metadata, fields, options, mark.queued, sent)
       return { status: 'sent', queued: mark.queued }
+    }).then((result) => {
+      const provider = live.runtime(sessionId)?.provider
+      return provider ? { ...result, provider } : result
     })
   }
 

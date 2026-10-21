@@ -67,18 +67,18 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     inputs: {
       claim: async (id, options) => inputRequests.claimRequest(id, options?.leaseMs),
       releaseClaim: async (id, token) => inputRequests.releaseClaim(id, token),
-      resolve: (id, outcome) => inputRequests.resolve(id, outcome),
-      complete: (sessionId, id, outcome) => sessions?.completeRequest(sessionId, id, outcome),
+      resolve: async (id, outcome) => inputRequests.resolve(id, outcome),
+      complete: async (sessionId, id, outcome) => sessions?.completeRequest(sessionId, id, outcome),
       computerUse: {
-        grant: (...args) => computerUse.grant(...args),
-        consumeOnce: (...args) => computerUse.consumeOnce(...args),
-        setGrabbedApp: (appName) => computerUse.setGrabbed(appName),
-        clearGrabbedApp: () => computerUse.clearGrabbed(),
-        clearPending: (sessionId, id, outcome = 'answered') => sessions?.clearComputerUseRequest(sessionId, id, outcome),
+        grant: async (...args) => computerUse.grant(...args),
+        consumeOnce: async (...args) => computerUse.consumeOnce(...args),
+        setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
+        clearGrabbedApp: async () => computerUse.clearGrabbed(),
+        clearPending: async (sessionId, id, outcome = 'answered') => sessions?.clearComputerUseRequest(sessionId, id, outcome),
       },
     },
     container: { fetch: (path, init) => hooks.sessions.runtime.client().fetch(path, init) },
-    messages: { broadcastEvent: (sessionId, event) => sessions?.emit(sessionId, event as SessionEvent) },
+    messages: { broadcastEvent: async (sessionId, event) => sessions?.emit(sessionId, event as SessionEvent) },
   }
   sessions = new LiveSessions({ slug, requests: inputRequests, computerUse, runs: hostRuns, ...hooks.sessions })
   // A review or re-auth wait opening or closing changes whether the agent's sessions wait.

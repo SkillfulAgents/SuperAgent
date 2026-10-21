@@ -128,7 +128,7 @@ export async function deliverSessionWake(
       sessionId,
       agentSlug: task.agentSlug,
     })
-    actor.sessions.broadcastUpdate(sessionId)
+    await actor.sessions.broadcastUpdate(sessionId)
 
     return { outcome: 'delivered', sessionId }
   } finally {

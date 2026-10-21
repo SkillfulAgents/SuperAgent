@@ -17,17 +17,17 @@ export interface ConnectionReplacement {
  * new projection on their next normal message; replacement does not wake them. */
 export async function finishConnectionReplacement(
   change: ConnectionReplacement,
-  releaseRequests: () => void,
+  releaseRequests: () => Promise<unknown>,
 ): Promise<{ liveRefresh: boolean; sessionNotification: boolean }> {
   const actor = agentRegistry.get(change.agentSlug)
   let liveRefresh = false
   let sessionNotification = true
   const ready: string[] = []
   try {
-    const sessionIds = actor.sessions.activeIds()
+    const sessionIds = (await actor.live()).activeSessionIds
     liveRefresh = await actor.container.syncConnectionEnvironment(change.kind)
     if (!liveRefresh) return { liveRefresh: false, sessionNotification: false }
-    if (sessionIds.length === 0 || actor.container.status().status !== 'running') {
+    if (sessionIds.length === 0 || (await actor.container.status()).status !== 'running') {
       return { liveRefresh: true, sessionNotification: true }
     }
 
@@ -53,7 +53,7 @@ export async function finishConnectionReplacement(
   } finally {
     // The mapping has already changed. Never leave a parked call waiting for
     // the removed connection, even if runtime preparation fails unexpectedly.
-    releaseRequests()
+    await releaseRequests()
   }
 
   const deliveries = await Promise.allSettled(ready.map((sessionId) =>

@@ -23,10 +23,10 @@ import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
 import {
   findAgentsAssignedRemoteMcp,
+  resumeMcpReauthWaits,
   syncAgentsAssignedRemoteMcp,
   syncRemoteMcpAgents,
 } from '@shared/lib/services/connection-sync-service'
-import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -506,7 +506,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   // OAuth and tool discovery both succeeded, so every proxy request parked
   // on this MCP can safely reload its token and retry.
-  mcpReauthManager.completeMcp(result.mcpId)
+  await resumeMcpReauthWaits(result.mcpId)
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
   return c.html(mcpOAuthCallbackBody(
@@ -667,7 +667,7 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       .where(eq(remoteMcpServers.id, id))
 
     const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
-    mcpReauthManager.completeMcp(id)
+    await resumeMcpReauthWaits(id)
     return c.json({ tools, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Tool discovery failed'
@@ -749,7 +749,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       .where(eq(remoteMcpServers.id, id))
 
     const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
-    mcpReauthManager.completeMcp(id)
+    await resumeMcpReauthWaits(id)
     return c.json({ success: true, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Connection test failed'

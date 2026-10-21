@@ -20,10 +20,10 @@ import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 import {
   findAgentsAssignedConnectedAccount,
+  resumeAccountReauthWaits,
   syncAgentsAssignedConnectedAccount,
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
-import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
 import type { BaseAccountProvider } from '@shared/lib/account-providers/base-account-provider'
 
@@ -306,7 +306,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       // The account row now points at a provider connection that was verified
       // ACTIVE above. Resume every proxy request parked on this account before
       // the best-effort runtime refresh, which is unrelated to proxy tokens.
-      accountReauthManager.completeAccount(id)
+      await resumeAccountReauthWaits(id)
 
       // Clean up the old remote connection (fire-and-forget)
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
@@ -442,7 +442,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
         .where(eq(connectedAccounts.id, reconnectAccountId))
       id = reconnectAccountId
 
-      accountReauthManager.completeAccount(id)
+      await resumeAccountReauthWaits(id)
 
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
         accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)

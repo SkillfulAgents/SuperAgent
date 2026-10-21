@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 
 const mockBuildHomeCardHealth = vi.fn()
 const mockGetHomeAgentScope = vi.fn()
-const mockIsSessionActive = vi.fn()
+const mockActiveIds = vi.fn((_slug: string): string[] => [])
 
 vi.mock('@shared/lib/services/home-card-health-service', () => ({
   buildHomeCardHealth: (...args: unknown[]) => mockBuildHomeCardHealth(...args),
@@ -15,7 +15,7 @@ vi.mock('./home-agent-scope', () => ({
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
-    isActive: (slug, sessionId) => mockIsSessionActive(slug, sessionId),
+    activeIds: (slug) => mockActiveIds(slug),
   }),
 }))
 
@@ -49,6 +49,7 @@ describe('home card health API', () => {
   })
 
   it('passes the visible agent scope and normalized activity window to one batch build', async () => {
+    mockActiveIds.mockImplementation((slug) => (slug === 'agent-a' ? ['session-1'] : []))
     const response = await createApp().request(
       'http://localhost/api/home-card-health?days=999&tz=-540',
     )
@@ -64,9 +65,11 @@ describe('home card health API', () => {
     const { isSessionLive } = mockBuildHomeCardHealth.mock.calls[0][0] as {
       isSessionLive: (agentSlug: string, sessionId: string) => boolean
     }
-    mockIsSessionActive.mockReturnValue(true)
-    expect(isSessionLive('agent-one', 'session-1')).toBe(true)
-    expect(mockIsSessionActive).toHaveBeenCalledWith('agent-one', 'session-1')
+    // Each agent's active sessions, read once for the whole build.
+    expect(mockActiveIds).toHaveBeenCalledWith('agent-a')
+    expect(mockActiveIds).toHaveBeenCalledWith('agent-b')
+    expect(isSessionLive('agent-a', 'session-1')).toBe(true)
+    expect(isSessionLive('agent-b', 'session-1')).toBe(false)
   })
 
   it('returns a sanitized error when the batch build fails', async () => {

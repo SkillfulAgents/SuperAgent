@@ -170,6 +170,7 @@ function expectBoundedSyncWait(sessionId: string): void {
   expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
 }
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
+const mockActiveIds = vi.fn((_agentSlug: string): string[] => [])
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
 const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
@@ -188,6 +189,7 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
       return { queued, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
     isActive: (agentSlug, sessionId) => mockIsSessionActive(agentSlug, sessionId),
+    activeIds: (agentSlug) => mockActiveIds(agentSlug),
     isAwaitingInput: (agentSlug, sessionId) => mockIsSessionAwaitingInput(agentSlug, sessionId),
     waitForIdle: (...args) => mockWaitForIdle(...args),
     subscribe: (...args) => mockSubscribeToSession(...args),
@@ -229,6 +231,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
       callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
     ),
     withdraw: vi.fn(),
+    getPendingReviewsForAgent: () => [],
   },
 }))
 
@@ -1812,7 +1815,7 @@ describe('/get-sessions', () => {
       { id: 'sess-1', name: 'S1', createdAt: new Date(), lastActivityAt: new Date() },
       { id: 'sess-2', name: 'S2', createdAt: new Date(), lastActivityAt: new Date() },
     ])
-    mockIsSessionActive.mockImplementation((_agentSlug?: string, id?: string) => id === 'sess-1')
+    mockActiveIds.mockReturnValueOnce(['sess-1'])
     const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
     const body = await res.json()
     expect(body.sessions).toHaveLength(2)

@@ -66,9 +66,10 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const actor = agentRegistry.get(task!.agentSlug)
     const sessions = await actor.sessions.byScheduledTask(task!.id)
+    const active = new Set((await actor.live()).activeSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: actor.sessions.isActive(session.id),
+      isActive: active.has(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -96,7 +97,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,
       })
-      agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
+      await agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
     }
 
     return c.body(null, 204)

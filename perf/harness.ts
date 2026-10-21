@@ -38,7 +38,7 @@ export interface PerfApp {
   profile: SeedProfile
   request(url: string): Promise<Response>
   /** Drop the per-agent session summary caches so the next read is cold. */
-  invalidateSummaryCaches(): void
+  invalidateSummaryCaches(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -72,8 +72,8 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
 
   // The summary cache is the actor's: dropping the actor drops it, and the
   // next request builds a fresh handle (no I/O) and a cold cache.
-  const invalidateSummaryCaches = () => {
-    for (const slug of seeded.agentSlugs) agentRegistry.evict(slug)
+  const invalidateSummaryCaches = async () => {
+    await Promise.all(seeded.agentSlugs.map((slug) => agentRegistry.evict(slug)))
   }
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and
@@ -86,7 +86,7 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   if (warmup.status !== 200) {
     throw new Error(`perf harness: warm-up request failed with ${warmup.status}`)
   }
-  invalidateSummaryCaches()
+  await invalidateSummaryCaches()
 
   return {
     app,

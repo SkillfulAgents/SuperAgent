@@ -162,8 +162,8 @@ agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
   const containerRunner = getSettings().container?.containerRunner ?? 'unknown'
   // Only a host that still shows the turn as working on a socket it thinks is
   // open is stuck; anything else already settled or detached on purpose.
-  const { sessions } = agentRegistry.get(agentSlug)
-  const hostStuck = sessions.isActive(report.sessionId) && sessions.isStreamSubscribed(report.sessionId)
+  const live = await agentRegistry.get(agentSlug).sessions.live(report.sessionId)
+  const hostStuck = live.isActive && live.streamAttached
   console.warn(
     `[AgentBootstrap] Session ${report.sessionId} (${agentSlug}) ended a turn with no stream subscriber ` +
     `(runner=${containerRunner}, closeCode=${closeCode}, hostStuck=${hostStuck})`,

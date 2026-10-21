@@ -31,11 +31,20 @@ import {
   type ManagedConnector,
 } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { agentRegistry, type SessionOps } from '@shared/lib/agent-actor'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
-/** Stand in for the agent's live session activity, which every tick reads through its actor. */
-const spyActivity = () => vi.spyOn(agentRegistry.get('sleep-agent').sessions, 'activity')
+/**
+ * Stand in for the session's live activity, which every tick reads through its
+ * actor (`sessions.live`): set what it answers with `mockReturnValue`.
+ */
+const spyActivity = () => {
+  const activity = vi.fn<() => SessionActivity>()
+  vi.spyOn(agentRegistry.get('sleep-agent').sessions, 'live').mockImplementation(async () =>
+    ({ activity: activity() }) as Awaited<ReturnType<SessionOps['live']>>)
+  return activity
+}
 
 function makeManaged(connector: ManagedConnector['connector'], chatId: string): ManagedConnector {
   return {

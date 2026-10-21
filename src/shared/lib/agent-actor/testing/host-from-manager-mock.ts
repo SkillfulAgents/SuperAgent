@@ -20,7 +20,8 @@
  * exactly as it was on the partial manager mock — except the runtime's
  * activity clock (`keepAlive`, `noteSessionActivity`, `lastActivityAt`,
  * `idleSince`), which every runtime has and which the actor marks on every
- * session write.
+ * session write, and its cached status (stopped), staleness and (no) health
+ * warnings, which every `actor.live()` reads.
  */
 
 import { ActivityClock } from '@shared/lib/container/activity-clock'
@@ -102,6 +103,8 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
       isStarting: () => false,
       isStale: () => stale,
       markStale: () => { stale = true },
+      getHealthWarnings: () => [],
+      getCachedInfo: () => ({ status: 'stopped', port: null }),
       keepAlive: () => activity.keepAlive(),
       noteSessionActivity: (at?: number) => activity.sessionActivity(at),
       lastActivityAt: () => activity.lastActivityAt(),

@@ -81,6 +81,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 
 const mockLiveSessions = vi.hoisted(() => ({
   isActive: vi.fn(),
+  activeIds: vi.fn((_agentSlug: string): string[] => []),
   subscribe: vi.fn(async (..._args: unknown[]) => {}),
   markActive: vi.fn(),
   markIdle: vi.fn(),
@@ -214,6 +215,7 @@ describe('scheduled-tasks route', () => {
       { id: 'session-idle', name: 'Idle session' },
     ])
     mockLiveSessions.isActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
+    mockLiveSessions.activeIds.mockReturnValue(['session-active'])
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])

@@ -130,7 +130,7 @@ async function proxyGet(accountId: string, host: string, pathAndQuery: string, o
     const [review] = userInputRequestManager.getAgentScopedRequests(AGENT)
     if (review) {
       reviewed = true
-      agentRegistry.get(AGENT).inputs.reviews.submit(review.id, onReview)
+      await agentRegistry.get(AGENT).inputs.reviews.submit(review.id, onReview)
     }
     await new Promise((resolve) => setTimeout(resolve, 10))
   }

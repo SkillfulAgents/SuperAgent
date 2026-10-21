@@ -42,7 +42,6 @@ describe('AccountReauthManager', () => {
   })
 
   afterEach(() => {
-    manager.rejectAll()
     agents.reset()
     vi.useRealTimers()
   })
@@ -64,7 +63,7 @@ describe('AccountReauthManager', () => {
     expect((request.payload as Record<string, unknown>).proxyRequestId).toBe(request.id)
     expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(1)
 
-    manager.completeAccount('account-1')
+    manager.completeAccount('agent-1', 'account-1')
     expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(2)
     expect(syncAwaiting.get('agent-2')).not.toHaveBeenCalled()
     return expect(promise).resolves.toEqual({ outcome: 'resumed' })
@@ -75,11 +74,13 @@ describe('AccountReauthManager', () => {
     const second = manager.requestReauth({ ...DETAILS, agentSlug: 'agent-2' })
     const unrelated = manager.requestReauth({ ...DETAILS, accountId: 'account-2' })
 
-    expect(manager.completeAccount('account-1')).toBe(2)
+    // Agent by agent: each agent's own calls on it go on.
+    expect(manager.completeAccount('agent-1', 'account-1')).toBe(1)
+    expect(manager.completeAccount('agent-2', 'account-1')).toBe(1)
     await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(1)
 
-    manager.completeAccount('account-2')
+    manager.completeAccount('agent-1', 'account-2')
     await expect(unrelated).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -88,7 +89,7 @@ describe('AccountReauthManager', () => {
     const second = manager.requestReauth(DETAILS)
 
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
-    expect(manager.completeAccount('account-1')).toBe(2)
+    expect(manager.completeAccount('agent-1', 'account-1')).toBe(2)
     await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
   })
 
@@ -102,7 +103,7 @@ describe('AccountReauthManager', () => {
 
     await rejection
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
-    expect(manager.completeAccount('account-1')).toBe(1)
+    expect(manager.completeAccount('agent-1', 'account-1')).toBe(1)
     await expect(remaining).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -154,7 +155,7 @@ describe('AccountReauthManager', () => {
     expect(manager.dismiss(request.id, 'agent-2')).toBe(false)
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
 
-    manager.completeAccount('account-1')
+    manager.completeAccount('agent-1', 'account-1')
     await expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -175,7 +176,7 @@ describe('AccountReauthManager', () => {
     expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
     expect(manager.replaceAccount(request.id, 'agent-1', 'another')).toBe(false)
 
-    manager.completeAccount(DETAILS.accountId)
+    manager.completeAccount('agent-2', DETAILS.accountId)
     await expect(otherAgent).resolves.toEqual({ outcome: 'resumed' })
   })
 

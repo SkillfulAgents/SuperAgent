@@ -549,7 +549,7 @@ export class ChromeProvider implements HostBrowserProvider {
     let proxyPort: number | null = null
     let proxyServer: net.Server | null = null
     let proxyHost: string | null = null
-    const bridgeIp = this.getHostBridgeIp(instanceId)
+    const bridgeIp = await this.getHostBridgeIp(instanceId)
     if (bridgeIp) {
       try {
         proxyPort = await this.findFreePort()
@@ -908,10 +908,10 @@ export class ChromeProvider implements HostBrowserProvider {
     }
   }
 
-  private getHostBridgeIp(instanceId: string): string | null {
+  private async getHostBridgeIp(instanceId: string): Promise<string | null> {
     let ip: string | null = null
     try {
-      ip = agentRegistry.get(instanceId).container.hostBridgeIp()
+      ip = await agentRegistry.get(instanceId).container.hostBridgeIp()
     } catch (error) {
       console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
       return null

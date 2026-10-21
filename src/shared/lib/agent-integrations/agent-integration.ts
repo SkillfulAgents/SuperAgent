@@ -46,6 +46,12 @@ export abstract class AgentIntegration {
   async consumeInput(_event: IntegrationInputEvent, _context: IntegrationInputContext, _input: PreparedIntegrationInput): Promise<boolean> { return false }
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] { return [] }
   shouldUpdateDisplayName(current: string | null | undefined): boolean { return !current }
+  /**
+   * Whether `observeSession` reads `context.activity`. Only then is the
+   * session's activity read for an observation (one actor read per session
+   * event); otherwise the context carries `'unknown'`.
+   */
+  readonly observesActivity: boolean = false
   observeSession(_context: IntegrationSessionContext): void {}
   releaseSession(_context: IntegrationSessionContext): void {}
   async onCreated(_integration: AgentIntegrationRecord): Promise<void> {}

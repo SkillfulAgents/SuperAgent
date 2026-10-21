@@ -29,6 +29,7 @@ import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permission
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { isAgentIntegrationSession, isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { z } from 'zod'
 import { sessionFilePath, type SessionStore } from '../session-store'
 import type { HostPort } from '../host-port'
@@ -66,6 +67,15 @@ export interface LiveSessionsDeps {
 // Body of the container's POST /sessions/:id/interrupt.
 const interruptResponseSchema = z.object({ processKept: z.boolean().optional() })
 
+/** The model runtime a session's turns run on: the non-secret facts its errors and usage are read with. */
+export interface SessionModelRuntime {
+  provider: LlmProviderId
+  modelContextWindows: Record<string, number>
+}
+
+/** How many sessions' runtimes an agent keeps (see `LiveSessions.recordRuntime`). */
+const RUNTIMES_KEPT = 200
+
 /** A send's active mark (see `LiveSessions.markSending`). */
 export interface SendingMark {
   /** The message joins a running turn. */
@@ -101,6 +111,8 @@ export class LiveSessions {
    * proceed there with no request, so no card may be shown for them.
    */
   private readonly capabilityGrants = new Map<string, Set<Capability>>()
+  /** The model runtime each session's turns run on, newest last (see `recordRuntime`). */
+  private readonly runtimes = new Map<string, SessionModelRuntime>()
   private readonly workflows = new Map<string, WorkflowTailers>()
   /** Each session's completion notifications, in turn order; let go once a queue has sent everything. */
   private readonly completions = new Map<string, OrderedSends>()
@@ -184,6 +196,27 @@ export class LiveSessions {
 
   hasAwaitingInput(): boolean {
     return [...this.states.values()].some((state) => state.isAwaitingInput)
+  }
+
+  /** The agent's sessions waiting on the user. */
+  awaitingIds(): string[] {
+    return [...this.states].filter(([, state]) => state.isAwaitingInput).map(([sessionId]) => sessionId)
+  }
+
+  /** What `recordRuntime` last recorded for the session. */
+  runtime(sessionId: string): SessionModelRuntime | undefined {
+    return this.runtimes.get(sessionId)
+  }
+
+  /**
+   * The runtime the session's turns now run on, as the container's runtime
+   * callback resolved it. Kept past the stream (a reattached session reads it
+   * before its next callback), for the agent's latest sessions only.
+   */
+  recordRuntime(sessionId: string, runtime: SessionModelRuntime): void {
+    this.runtimes.delete(sessionId)
+    this.runtimes.set(sessionId, runtime)
+    if (this.runtimes.size > RUNTIMES_KEPT) this.runtimes.delete(this.runtimes.keys().next().value!)
   }
 
   /** Open computer-use approvals the user must answer (an auto-approved one is already running). */
@@ -647,6 +680,29 @@ export class LiveSessions {
     this.states.get(sessionId)?.recoverAwaitingInput(unresolved)
   }
 
+  /**
+   * The transcript's open tool calls against the session's requests: the
+   * outcome of each one already decided and, while the session runs, the
+   * undecided asks parked again. One step: a decision cannot land between
+   * the outcomes read and the asks parked, to be parked again as a stub.
+   */
+  reconcileTranscript(
+    sessionId: string,
+    toolCalls: Array<{ toolUseId: string; toolName: string; awaitsInput: boolean }>,
+  ): { settled: Record<string, UserInputRequestOutcome> } {
+    const decided = this.settledRequests(sessionId)
+    const settled: Record<string, UserInputRequestOutcome> = {}
+    for (const { toolUseId } of toolCalls) {
+      const outcome = decided.get(toolUseId)
+      if (outcome !== undefined) settled[toolUseId] = outcome
+    }
+    if (this.isActive(sessionId)) {
+      const undecided = toolCalls.filter((call) => call.awaitsInput && settled[call.toolUseId] === undefined)
+      if (undecided.length > 0) this.recoverAwaitingInput(sessionId, undecided.map(({ toolUseId, toolName }) => ({ toolUseId, toolName })))
+    }
+    return { settled }
+  }
+
   /** "Allow for this session": later launches of the capability get no card. */
   grantCapability(sessionId: string, capability: Capability): void {
     const grants = this.capabilityGrants.get(sessionId) ?? new Set()
@@ -885,6 +941,7 @@ export class LiveSessions {
       capture: capture ?? null,
       emit: (event) => this.emit(sessionId, event),
       isCurrent: () => this.states.get(sessionId) === state,
+      modelRuntime: () => this.runtimes.get(sessionId),
       transport: () => this.clients.get(sessionId),
       releaseTransportIfIdle: () => this.releaseIfIdle(sessionId),
       detachTransport: () => this.detach(sessionId),

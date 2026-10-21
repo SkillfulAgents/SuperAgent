@@ -196,6 +196,7 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 // Import after every mock is registered.
 import agents from './agents'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
 import { drain, drained } from '@shared/lib/agent-actor/testing/drain'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import { registerSession, sessionExists } from '@shared/lib/services/session-service'
@@ -269,7 +270,7 @@ beforeEach(async () => {
   // The victim's session is LIVE: subscribed and streaming.
   await agentRegistry.get(VICTIM).sessions.attach(victimSession)
   await agentRegistry.get(ATTACKER).sessions.attach(attackerSession)
-  agentRegistry.get(VICTIM).sessions.markActive(victimSession)
+  await agentRegistry.get(VICTIM).sessions.markActive(victimSession)
 
   victimEvents = []
   attackerEvents = []
@@ -280,8 +281,8 @@ beforeEach(async () => {
 afterEach(() => {
   cleanupVictimSse?.()
   cleanupAttackerSse?.()
-  agentRegistry.get(VICTIM).sessions.unsubscribeStream(victimSession)
-  agentRegistry.get(ATTACKER).sessions.unsubscribeStream(attackerSession)
+  ;(agentRegistry.get(VICTIM) as LocalAgentActor).state.sessions.unsubscribe(victimSession)
+  ;(agentRegistry.get(ATTACKER) as LocalAgentActor).state.sessions.unsubscribe(attackerSession)
   realFs.rmSync(tmpDir, { recursive: true, force: true })
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
@@ -293,8 +294,9 @@ afterEach(() => {
  */
 async function expectVictimUntouched(): Promise<void> {
   await drained()
-  expect(agentRegistry.get(VICTIM).sessions.isActive(victimSession)).toBe(true)
-  expect(agentRegistry.get(VICTIM).sessions.isStreamSubscribed(victimSession)).toBe(true)
+  const victim = await agentRegistry.get(VICTIM).sessions.live(victimSession)
+  expect(victim.isActive).toBe(true)
+  expect(victim.streamAttached).toBe(true)
   expect(victimEvents).toEqual([])
 }
 
@@ -510,7 +512,7 @@ describe('the session stream on the wire', () => {
     agentRegistry.get(ATTACKER).messages.broadcastEvent(attackerSession, event)
 
   it('opens with the connected snapshot and numbers every frame after it', async () => {
-    agentRegistry.get(ATTACKER).sessions.markActive(attackerSession)
+    await agentRegistry.get(ATTACKER).sessions.markActive(attackerSession)
     const viewer = await openStream(url(ATTACKER, attackerSession, '/stream'))
 
     const connected = await viewer.next()

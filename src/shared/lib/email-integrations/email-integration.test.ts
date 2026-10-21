@@ -240,24 +240,26 @@ describe('email lifecycle and delivery', () => {
   })
   it('uses email only for a single nonprivileged question and never approves or cancels', async () => {
     const responses = vi.fn(); connector.onEvent(responses)
-    const actor = { sessions: { isAwaitingInput: () => true }, inputs: { open: () => [{ id: 'q1', kind: 'question', payload: { questions: [{ question: 'Which day?' }] } }] } }
+    let openRequests = [{ id: 'q1', kind: 'question', payload: { questions: [{ question: 'Which day?' }] } }]
+    const actor = { sessions: { live: async () => ({ isAwaitingInput: true, openRequests }) } }
     const context = { integration: record, externalId: 'thread-1', sessionId: 'session-1', actor } as never
     expect(await connector.consumeInput(event(message({ text: 'Tuesday' })), context)).toBe(true)
     expect(responses).toHaveBeenCalledWith(expect.objectContaining({ type: 'response', requestKind: 'input', value: { answers: { 'Which day?': 'Tuesday' } } }))
-    actor.inputs.open = () => [{ id: 'approval', kind: 'approval', payload: { questions: [] } }]
+    openRequests = [{ id: 'approval', kind: 'approval', payload: { questions: [] } }]
     expect(await connector.consumeInput(event(message({ text: 'Approved' })), context)).toBe(true)
     expect(responses).toHaveBeenCalledOnce()
   })
   it('lets only agent users answer by email; anyone else’s mail waits as a message', async () => {
     await updateAgentIntegration(record.id, { config: { accessLevel: 'anyone' } })
     const responses = vi.fn(); connector.onEvent(responses)
-    const actor = { sessions: { isAwaitingInput: () => true }, inputs: { open: () => [question] } }
+    let openRequests = [question]
+    const actor = { sessions: { live: async () => ({ isAwaitingInput: true, openRequests }) } }
     const context = { integration: record, externalId: 'thread-1', sessionId: 'session-1', actor } as never
     expect(await connector.consumeInput(event(message({ from: 'external@example.net', text: '1' })), context)).toBe(false)
-    actor.inputs.open = () => [approval]
+    openRequests = [approval]
     expect(await connector.consumeInput(event(message({ from: 'external@example.net', text: 'Approved' })), context)).toBe(false)
     expect(responses).not.toHaveBeenCalled()
-    actor.inputs.open = () => [question]
+    openRequests = [question]
     expect(await connector.consumeInput(event(message({ text: '1\n\nOn Tue, Agent wrote:\n> Allow <both> mailboxes?' })), context)).toBe(true)
     expect(responses).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'q1', value: { answers: { 'Allow <both> mailboxes?': 'Allow both' } } }))
   })

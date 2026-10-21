@@ -25,10 +25,10 @@ const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn
   // Sends to the session's last event stream.
   emit: (_event: unknown) => {} }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
-  container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
+  container: { start: runtime.start }, inputs: { cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
-    isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
+    live: async (id: string) => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: runtime.subscribed(id), openRequests: [], runtime: null }) },
   messages: { findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
     subscribe: runtime.subscribe,
     // The actor's delivery: the echo with its queued flag, then the message.

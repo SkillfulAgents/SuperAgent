@@ -105,13 +105,12 @@ export function createAgentRegistry(
 
   return {
     get: (slug): AgentActor => get(slug),
-    peek: (slug) => handles.get(slug),
-    running: () => deps.containerHost.getRunningAgentIds().map(get),
-    evict,
-    evictAll: () => {
-      // Release every handle first, while the runtimes still exist, then let
-      // the host forget the runtimes its own way: one whose container is
-      // starting is kept, so the start still lands somewhere the host knows.
+    evict: async (slug) => evict(slug),
+    evictAll: async () => {
+      // Release every handle, then let the host forget the runtimes its own
+      // way: one whose container is starting is kept, so the start still
+      // lands somewhere the host knows. At shutdown the containers are
+      // stopped (and their runtimes cleared) first: see startup.ts.
       for (const actor of handles.values()) actor.dispose()
       handles.clear()
       states.clear()
@@ -192,8 +191,3 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
     return localHostPort
   },
 }, { states: agentActorStates })
-
-/** A refreshed shared MCP credential resumes waiters in every owning actor. */
-export function completeMcpReauth(mcpId: string): number {
-  return mcpReauthManager.completeMcp(mcpId)
-}

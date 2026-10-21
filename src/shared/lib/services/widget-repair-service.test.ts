@@ -36,7 +36,7 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
-    hasActive: () => mocks.hasActiveSessions,
+    activeIds: () => (mocks.hasActiveSessions ? ['busy-session'] : []),
     subscribe: (...args) => mocks.subscribe(...args),
     markActive: (...args) => mocks.markActive(...args),
   }),

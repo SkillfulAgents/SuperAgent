@@ -28,9 +28,11 @@ import { createAgentState, releaseAgentState, type AgentState } from './agent-st
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import { sessionEvents, sessionFrames } from './session-streams'
+import type { UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
 import type {
   AccountReauthOps,
   AgentActor,
+  AgentLiveSummary,
   AgentSlug,
   ComputerUseOps,
   ConfigOps,
@@ -94,6 +96,7 @@ const subagentCapture = SubagentCapture.fromEnv()
  * (`const { send } = actor.messages`).
  */
 export class LocalAgentActor implements AgentActor {
+  readonly live: () => Promise<AgentLiveSummary>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -138,9 +141,10 @@ export class LocalAgentActor implements AgentActor {
     this.files = this.store.files
     this.memories = createMemoryOps(this.store.files)
     this.config = this.store.config
+    this.live = async () => liveSummary(slug, this.state, deps)
     this.container = createContainerOps(slug, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
-    this.sessions = createSessionOps(slug, this.store, this.state.sessions, delivery, deps)
+    this.sessions = createSessionOps(slug, this.store, this.state, delivery, deps)
     this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
@@ -152,6 +156,24 @@ export class LocalAgentActor implements AgentActor {
   }
 }
 
+function liveSummary(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): AgentLiveSummary {
+  const runtime = deps.containerHost.runtime(slug)
+  return {
+    container: {
+      ...runtime.getCachedInfo(),
+      healthWarnings: runtime.getHealthWarnings(),
+      stale: runtime.isStale(),
+      idleSince: runtime.idleSince(),
+    },
+    activeSessionIds: state.sessions.activeIds(),
+    awaitingSessionIds: state.sessions.awaitingIds(),
+    openRequests: state.inputRequests.getOpenRequests().map(({ id, kind, blocking, autoApproved, scope }) => ({
+      id, kind, blocking, autoApproved, ...(scope.sessionId !== undefined ? { sessionId: scope.sessionId } : {}),
+    })),
+    pendingReviews: deps.reviewManager.getPendingReviewsForAgent(slug).map(({ id, displayText }) => ({ id, displayText })),
+  }
+}
+
 function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps {
   const runtime = () => deps.containerHost.runtime(slug)
   const client = () => runtime().getClient()
@@ -160,17 +182,17 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       await runtime().ensureRunning()
     },
     stop: (...args) => runtime().stopContainer(...args),
-    restart: async () => {
+    keepAlive: async () => runtime().keepAlive(),
+    status: async () => runtime().getCachedInfo(),
+    invalidate: async (options) => {
+      if (runtime().getCachedInfo().status !== 'running') return 'not-running'
+      if (!options?.restart) {
+        runtime().markStale()
+        return 'marked-stale'
+      }
       await runtime().restartContainer()
+      return 'restarted'
     },
-    keepAlive: () => runtime().keepAlive(),
-    status: () => runtime().getCachedInfo(),
-    syncStatus: () => runtime().syncAgentStatus(),
-    health: () => runtime().getHealthWarnings(),
-    stale: () => runtime().isStale(),
-    markStale: () => runtime().markStale(),
-    idleSince: () => runtime().idleSince(),
-    stats: () => client().getStats(),
     info: () => client().getInfo(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
@@ -186,7 +208,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
         headers: { ...init?.headers, ...c.getHostAuthHeaders() },
       }
     },
-    hostBridgeIp: () => client().getHostBridgeIp(),
+    hostBridgeIp: async () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
   }
 }
@@ -194,11 +216,12 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
 function createSessionOps(
   slug: AgentSlug,
   store: SessionStore,
-  live: LiveSessions,
+  state: AgentState,
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
+  const live = state.sessions
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
     listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
@@ -210,14 +233,20 @@ function createSessionOps(
     isRegistered: (sessionId) => deps.sessionService.isSessionRegistered(store, sessionId),
     register: (...args) => deps.sessionService.registerSession(store, ...args),
     rename: (sessionId, name) => deps.sessionService.updateSessionName(store, sessionId, name),
-    delete: (sessionId) => deps.sessionService.deleteSession(store, sessionId),
-    deleteMany: (sessionIds) => deps.sessionService.deleteSessionsBatch(store, sessionIds),
+    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
+    delete: (sessionId) => {
+      live.unsubscribe(sessionId)
+      return deps.sessionService.deleteSession(store, sessionId)
+    },
+    // Decided and let go of in one step, before the delete, as `delete` does.
+    deleteMany: async (sessionIds) => {
+      const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
+      for (const sessionId of idle) live.unsubscribe(sessionId)
+      return deps.sessionService.deleteSessionsBatch(store, idle)
+    },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
     updateMetadata: (sessionId, updates) => deps.sessionService.updateSessionMetadata(store, sessionId, updates),
-    finalizeAutomationStatus: (sessionId, status) =>
-      deps.sessionService.finalizeAutomationStatus(store, sessionId, status),
-    ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(store),
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(store, sessionId),
     usage: (sessionId) =>
       deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId) }),
@@ -225,7 +254,8 @@ function createSessionOps(
     byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(store, triggerId),
     forScheduledExecution: (taskId, executionAt) =>
       deps.sessionService.getSessionForScheduledExecution(store, taskId, executionAt),
-    recordActivity: (...args) => deps.recordSessionActivity(store, ...args),
+    recordActivity: async (...args) => deps.recordSessionActivity(store, ...args),
+    recordRuntime: async (sessionId, runtime) => live.recordRuntime(sessionId, runtime),
 
     subagents: (sessionId, options) => deps.transcripts.listSubagents(store, sessionId, options),
     subagentTranscript: (sessionId, subagentId) => deps.transcripts.readSubagentTranscript(store, sessionId, subagentId),
@@ -234,7 +264,6 @@ function createSessionOps(
       deps.transcripts.readWorkflowAgentTranscript(store, sessionId, runId, workflowAgentId),
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
-    getLive: (sessionId) => client().getSession(sessionId),
     // Creating a session delivers its first message: a refusal reads as a delivery's does.
     create: (options) =>
       client().createSession(options).catch((error: unknown) => {
@@ -245,36 +274,28 @@ function createSessionOps(
     deleteLive: (sessionId) => client().deleteSession(sessionId),
     warm: (sessionId) => client().warmSession(sessionId),
 
-    activity: (sessionId) => live.activity(sessionId),
-    isActive: (sessionId) => live.isActive(sessionId),
-    isAwaitingInput: (sessionId) => live.isAwaitingInput(sessionId),
-    markActive: (sessionId) => live.markActive(sessionId),
-    markIdle: (sessionId) => {
+    live: async (sessionId) => ({
+      activity: live.activity(sessionId),
+      isActive: live.isActive(sessionId),
+      isAwaitingInput: live.isAwaitingInput(sessionId),
+      streamAttached: live.isSubscribed(sessionId),
+      openRequests: state.inputRequests.getOpenRequestsForSession(sessionId),
+      runtime: live.runtime(sessionId) ?? null,
+    }),
+    markActive: async (sessionId) => live.markActive(sessionId),
+    markIdle: async (sessionId) => {
       // Going idle is the last moment the session was busy.
       deps.containerHost.runtime(slug).noteSessionActivity()
       live.markIdle(sessionId)
     },
-    turnOutcome: (sessionId) => live.turnOutcome(sessionId),
-    isWaitingBackground: (sessionId) => live.isWaitingBackground(sessionId),
     stopTask: (sessionId, taskId) => client().stopTask(sessionId, taskId),
     waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
-    activeIds: () => live.activeIds(),
-    hasActive: () => live.hasActive(),
-    hasAwaitingInput: () => live.hasAwaitingInput(),
-    markAllInactive: (options) => live.markAllInactive(options),
-    syncAwaiting: () => live.syncAwaiting(),
-    broadcastUpdate: (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
-    recoverAwaitingInput: (sessionId, unresolved) => live.recoverAwaitingInput(sessionId, unresolved),
+    broadcastUpdate: async (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
+    reconcileTranscript: async (sessionId, toolCalls) => live.reconcileTranscript(sessionId, toolCalls),
     promoteAutomated: (sessionId, metadata) => live.promoteAutomated(sessionId, metadata),
-    grantCapability: (sessionId, capability) => live.grantCapability(sessionId, capability),
-    slashCommands: (sessionId) => live.slashCommands(sessionId),
-    setSlashCommands: (sessionId, commands) => live.setSlashCommands(sessionId, commands),
-    backgroundTasks: (sessionId) => live.backgroundTasks(sessionId),
-    activeSubagents: (sessionId) => live.activeSubagents(sessionId),
+    grantCapability: async (sessionId, capability) => live.grantCapability(sessionId, capability),
 
     attach: (sessionId, options) => delivery.attach(sessionId, options),
-    unsubscribeStream: (sessionId) => live.unsubscribe(sessionId),
-    isStreamSubscribed: (sessionId) => live.isSubscribed(sessionId),
   }
 }
 
@@ -292,7 +313,6 @@ function createMessageOps(
     cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
     stop: (sessionId, options) => delivery.stop(sessionId, options),
 
-    list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
     delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
@@ -300,7 +320,6 @@ function createMessageOps(
       deps.sessionService.findLastSessionEntry(store, sessionId, matchesTranscriptQuery(query), options),
     remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(store, sessionId, messageUuid),
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
-    appendInformational: (sessionId, entry) => deps.appendInformationalEntry(store, sessionId, entry),
     appendAssistant: (sessionId, text) => deps.appendAssistantEntry(store, sessionId, text),
     forkedUserUuids: (sessionId) => deps.transcripts.forkedUserUuids(store, sessionId),
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
@@ -308,34 +327,75 @@ function createMessageOps(
 
     subscribe: async (sessionId) => sessionEvents(live, sessionId),
     follow: (sessionId, { after }) => sessionFrames(live, sessionId, after),
-    broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
+    broadcastEvent: async (sessionId, data) => live.emit(sessionId, data as SessionEvent),
   }
 }
 
 function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): InputOps {
   const requests = state.inputRequests
+  // A settled request may have been what a session waited on.
+  const resolve = (id: string, outcome: UserInputRequestOutcome) => {
+    const resolved = requests.resolve(id, outcome)
+    state.sessions.syncAwaiting()
+    return resolved
+  }
   return {
-    register: (input) => requests.register(input),
-    open: (sessionId) => requests.getOpenRequestsForSession(sessionId),
-    openForAgent: () => requests.getOpenRequests(),
-    get: (id) => requests.getOpenRequest(id),
+    register: async (input, options) =>
+      options?.unlessRecentlyResolved && input.id && requests.getRecentResolution(input.id) ? null : requests.register(input),
+    get: async (id) => requests.getOpenRequest(id),
     claim: async (id, options) => requests.claimRequest(id, options?.leaseMs),
     releaseClaim: async (id, token) => requests.releaseClaim(id, token),
-    resolve: (id, outcome) => requests.resolve(id, outcome),
-    recentResolution: (id) => requests.getRecentResolution(id),
-    snapshot: (sessionId) => requests.getSnapshotForScope(sessionId),
-    enrich: (id, kind, enrichment) => requests.enrichOpenRequestPayload(id, kind, enrichment),
+    answer: (id, value) => answerRequest(slug, state, deps, id, value),
+    resolve: async (id, outcome) => resolve(id, outcome),
+    recentResolution: async (id) => requests.getRecentResolution(id),
+    snapshot: async (sessionId) => requests.getSnapshotForScope(sessionId),
+    enrich: async (id, kind, enrichment) => requests.enrichOpenRequestPayload(id, kind, enrichment),
 
-    complete: (sessionId, toolUseId, outcome) => state.sessions.completeRequest(sessionId, toolUseId, outcome),
-    completeCapabilityReview: (sessionId, toolUseId, outcome) =>
+    complete: async (sessionId, toolUseId, outcome) => state.sessions.completeRequest(sessionId, toolUseId, outcome),
+    completeCapabilityReview: async (sessionId, toolUseId, outcome) =>
       state.sessions.completeCapabilityReview(sessionId, toolUseId, outcome),
     cancelAwaiting: (sessionId) => state.sessions.cancelAwaitingInput(sessionId),
-    settled: (sessionId) => state.sessions.settledRequests(sessionId),
 
     reviews: createReviewOps(slug, deps),
     computerUse: createComputerUseOps(state, deps),
-    mcpReauth: createMcpReauthOps(slug, deps),
-    accountReauth: createAccountReauthOps(slug, deps),
+    mcpReauth: createMcpReauthOps(slug, deps, resolve),
+    accountReauth: createAccountReauthOps(slug, deps, resolve),
+  }
+}
+
+/** `inputs.answer`: one decision's whole run, holding the request's claim (see `InputOps.answer`). */
+async function answerRequest(
+  slug: AgentSlug,
+  state: AgentState,
+  deps: LocalActorDeps,
+  id: string,
+  value: unknown,
+): ReturnType<InputOps['answer']> {
+  const requests = state.inputRequests
+  if (!requests.getOpenRequest(id)) return 'not-open'
+  const claim = requests.claimRequest(id)
+  if (!claim) return 'claimed'
+  try {
+    const runtime = deps.containerHost.runtime(slug)
+    await runtime.ensureRunning()
+    // A decision on another surface settles the request without the claim.
+    // Settled while the container started, the container has nothing parked:
+    // answering now would buffer a result nothing ever collects.
+    if (!requests.getOpenRequest(id)) return 'not-open'
+    const response = await runtime.getClient().fetch(`/inputs/${encodeURIComponent(id)}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    })
+    if (!response.ok) {
+      console.error(`[LocalAgentActor] The container would not take the answer to ${id}: ${response.status} ${await response.text().catch(() => '')}`)
+      return 'undeliverable'
+    }
+    state.sessions.completeRequest(undefined, id, 'answered')
+    return 'answered'
+  } finally {
+    // Settling dropped the claim with the request; this matters only to a run that did not settle it.
+    requests.releaseClaim(id, claim.token)
   }
 }
 
@@ -348,13 +408,12 @@ function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps
 
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
-    pending: () => deps.reviewManager.getPendingReviewsForAgent(slug),
-    submit: (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
-    denyAll: () => deps.reviewManager.denyAllForAgent(slug),
-    resolveMatching: (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
-    resolveMatchingByLabel: (label, decision) =>
+    get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
+    submit: async (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
+    resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
+    resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
-    resolveMatchingXAgent: (operation, decision) =>
+    resolveMatchingXAgent: async (operation, decision) =>
       deps.reviewManager.resolveMatchingXAgentByOperation(slug, operation, decision),
     request: (details, options) => deps.reviewManager.request(slug, details, options),
     requestXAgent: (request, options) => deps.reviewManager.requestXAgent(slug, request, options),
@@ -367,13 +426,18 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
 function createComputerUseOps(state: AgentState, deps: LocalActorDeps): ComputerUseOps {
   const computerUse = state.computerUse
   return {
-    grabbedApp: () => computerUse.grabbed(),
-    setGrabbedApp: (appName) => computerUse.setGrabbed(appName),
-    clearGrabbedApp: () => computerUse.clearGrabbed(),
-    grant: (...args) => computerUse.grant(...args),
-    consumeOnce: (...args) => computerUse.consumeOnce(...args),
-    revokeGrant: (...args) => computerUse.revoke(...args),
-    clearPending: (...args) => state.sessions.clearComputerUseRequest(...args),
+    releaseGrab: async (sessionId) => {
+      const appName = computerUse.grabbed()
+      computerUse.clearGrabbed()
+      if (appName) computerUse.revoke('use_application', appName)
+      state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
+      return { appName }
+    },
+    setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
+    clearGrabbedApp: async () => computerUse.clearGrabbed(),
+    grant: async (...args) => computerUse.grant(...args),
+    consumeOnce: async (...args) => computerUse.consumeOnce(...args),
+    clearPending: async (...args) => state.sessions.clearComputerUseRequest(...args),
     run: (run) => runComputerUse(state.hostRuns, deps.host, run),
     runScript: (run) => runScript(state.hostRuns, deps.host, run),
   }
@@ -401,21 +465,32 @@ function createUsageOps(store: SessionStore, deps: LocalActorDeps): UsageOps {
   }
 }
 
-function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps {
+type ResolveRequest = (id: string, outcome: UserInputRequestOutcome) => unknown
+
+function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps, resolve: ResolveRequest): McpReauthOps {
   return {
     request: (details, options) => deps.mcpReauthManager.request(slug, details, options),
     withdraw: async (waitId) => deps.mcpReauthManager.withdraw(slug, waitId),
-    dismiss: (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
-    replace: (entryId, replacementMcpId) => deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId),
+    dismiss: async (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
+    settleReplaced: async (entryId, replacementMcpId) => {
+      if (deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId)) return 'released'
+      resolve(entryId, 'answered')
+      return 'resolved'
+    },
+    completeConnection: async (mcpId) => deps.mcpReauthManager.completeMcp(slug, mcpId),
   }
 }
 
-function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps): AccountReauthOps {
+function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps, resolve: ResolveRequest): AccountReauthOps {
   return {
     request: (details, options) => deps.accountReauthManager.request(slug, details, options),
     withdraw: async (waitId) => deps.accountReauthManager.withdraw(slug, waitId),
-    dismiss: (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
-    replace: (entryId, replacementAccountId) =>
-      deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId),
+    dismiss: async (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
+    settleReplaced: async (entryId, replacementAccountId) => {
+      if (deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId)) return 'released'
+      resolve(entryId, 'answered')
+      return 'resolved'
+    },
+    completeAccount: async (accountId) => deps.accountReauthManager.completeAccount(slug, accountId),
   }
 }

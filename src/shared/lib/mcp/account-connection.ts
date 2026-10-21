@@ -1,7 +1,8 @@
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db'
 import { agentRemoteMcps, remoteMcpServers, type RemoteMcpServer } from '../db/schema'
-import { agentRegistry, completeMcpReauth } from '../agent-actor'
+import { agentRegistry } from '../agent-actor'
+import { resumeMcpReauthWaits } from '../services/connection-sync-service'
 import { resolveMcpPolicy } from '../proxy/policy-resolver'
 import { awaitReauth } from '../proxy/reauth-request'
 import { mcpSafeFetch } from './mcp-safe-fetch'
@@ -196,7 +197,7 @@ async function tryRefreshToken(mcp: {
       })
       .where(eq(remoteMcpServers.id, mcp.id))
 
-    completeMcpReauth(mcp.id)
+    await resumeMcpReauthWaits(mcp.id)
 
     return data.access_token
   } catch {

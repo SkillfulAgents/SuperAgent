@@ -444,7 +444,7 @@ async function notifySessionOfOutboundMessage(
     await actor.messages.appendAssistant(sessionId, notificationText)
     // The direct append emits no stream frame the agent's live sessions
     // watch, so the warm summary must be told directly.
-    actor.sessions.recordActivity(sessionId)
+    await actor.sessions.recordActivity(sessionId)
   }
 }
 

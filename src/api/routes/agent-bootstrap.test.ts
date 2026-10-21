@@ -12,8 +12,7 @@ const isActive = vi.fn((_sessionId: string) => false)
 const isStreamSubscribed = vi.fn((_sessionId: string) => false)
 const getActor = vi.fn((_slug: string) => ({
   sessions: {
-    isActive: (sessionId: string) => isActive(sessionId),
-    isStreamSubscribed: (sessionId: string) => isStreamSubscribed(sessionId),
+    live: async (sessionId: string) => ({ isActive: isActive(sessionId), streamAttached: isStreamSubscribed(sessionId) }),
   },
 }))
 vi.mock('@shared/lib/agent-actor', () => ({

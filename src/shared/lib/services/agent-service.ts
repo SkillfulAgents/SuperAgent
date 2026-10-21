@@ -32,6 +32,7 @@ import {
   agentRegistry,
   identityFromInstructions,
   type AgentIdentityChanges,
+  type AgentLiveSummary,
   type AgentRecord,
 } from '@shared/lib/agent-actor'
 
@@ -45,18 +46,16 @@ import {
  */
 function toApiAgent(
   record: AgentRecord,
-  status: 'running' | 'stopped',
-  containerPort: number | null,
+  container: Pick<AgentLiveSummary['container'], 'status' | 'port' | 'healthWarnings' | 'stale'>,
   instructions?: string,
 ): ApiAgent {
-  const container = agentRegistry.get(record.slug).container
-  const healthWarnings = container.health()
+  const { status, port, healthWarnings, stale } = container
   return {
     ...newAgentResponse(record, instructions),
     status,
-    containerPort,
+    containerPort: port,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
-    ...(container.stale() ? { stale: true } : {}),
+    ...(stale ? { stale: true } : {}),
   }
 }
 
@@ -203,38 +202,23 @@ export async function getAgentWithStatus(
   }
 
   const actor = agentRegistry.get(slug)
-  // Use cached status to avoid spawning docker processes
-  const info = actor.container.status()
+  // The cached container status: no docker process is spawned.
+  const live = await actor.live()
   const record = (await agentCatalog.get(slug))!
-  const base = toApiAgent(record, info.status, info.port, agent.instructions)
+  const base = toApiAgent(record, live.container, agent.instructions)
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
   // O(session-count) stat scan; standalone callers keep the enriched default.
   if (options.includeSummary === false) return base
 
-  // Compute session activity flags (same logic as the list endpoint)
+  // The same session flags as the list endpoint: pending proxy reviews need
+  // the user whether or not a session waits on them.
   const sessionSummary = await actor.sessions.summary()
-  let hasActiveSessions = false
-  let hasSessionsAwaitingInput = false
-  for (const sessionId of sessionSummary.sessionIds) {
-    if (actor.sessions.isActive(sessionId)) hasActiveSessions = true
-    if (actor.sessions.isAwaitingInput(sessionId)) hasSessionsAwaitingInput = true
-  }
-  if (!hasActiveSessions) {
-    hasActiveSessions = actor.sessions.hasActive()
-  }
-  if (!hasSessionsAwaitingInput) {
-    hasSessionsAwaitingInput = actor.sessions.hasAwaitingInput()
-  }
-  if (actor.inputs.reviews.pending().length > 0) {
-    hasSessionsAwaitingInput = true
-  }
-
   return {
     ...base,
-    hasActiveSessions,
-    hasSessionsAwaitingInput,
+    hasActiveSessions: live.activeSessionIds.length > 0,
+    hasSessionsAwaitingInput: live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0,
     sessionCount: sessionSummary.sessionCount,
     lastActivityAt: sessionSummary.lastActivityAt,
   }
@@ -253,11 +237,8 @@ export async function listAgents(): Promise<AgentRecord[]> {
 export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
   const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
-  // Use cached status to avoid spawning docker processes
-  return records.map((record) => {
-    const info = agentRegistry.get(record.slug).container.status()
-    return toApiAgent(record, info.status, info.port)
-  })
+  // The cached container statuses: no docker process is spawned.
+  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container)))
 }
 
 // ============================================================================
@@ -335,10 +316,10 @@ export async function updateAgent(
     const updated = await commitIdentity(record, changes, document, body)
     if (!updated) return null
 
-    // Get container status
-    const info = await agentRegistry.get(slug).container.info()
-
-    return toApiAgent(updated, info.status, info.port, body)
+    // The runtime's own status, with the cached health beside it.
+    const actor = agentRegistry.get(slug)
+    const [info, live] = await Promise.all([actor.container.info(), actor.live()])
+    return toApiAgent(updated, { ...live.container, status: info.status, port: info.port }, body)
   })
 }
 
@@ -471,7 +452,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // Remove the agent only after the container has been confirmed stopped, then
   // forget the handle and runtime the stop above created for it.
   await agentCatalog.remove(slug)
-  agentRegistry.evict(slug)
+  await agentRegistry.evict(slug)
 
   return true
 }

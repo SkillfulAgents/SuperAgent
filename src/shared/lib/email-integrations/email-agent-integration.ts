@@ -71,13 +71,15 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     return true
   }
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<boolean> {
-    if (!context.sessionId || !context.actor.sessions.isAwaitingInput(context.sessionId)) return false
+    if (!context.sessionId) return false
+    const live = await context.actor.sessions.live(context.sessionId)
+    if (!live.isAwaitingInput) return false
     const message = emailMessageSchema.parse(event.payload)
     // Only agent users are emailed requests (see deliver), so anyone else's mail is
     // about something else: it waits behind the request as an ordinary message.
     const sender = emailAddress(message.from)
     if (!sender || !(await agentUserEmails(context.integration.agentSlug)).has(sender)) return false
-    const question = context.actor.inputs.open(context.sessionId).find(request => request.kind === 'question')
+    const question = live.openRequests.find(request => request.kind === 'question')
     const questions = question && requestQuestions(question)
     if (question && questions?.length === 1 && message.text) {
       await this.emitEvent({ type: 'response', externalId: context.externalId, requestId: question.id, requestKind: 'input', value: { answers: { [questions[0].question]: emailAnswer(questions[0], message.text) } } })

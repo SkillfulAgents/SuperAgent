@@ -1,4 +1,4 @@
-import { assertConnectionSelectionAccess, connectionNeedsAttachment, sessionRuntime, sessionCredentialSource } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
@@ -523,12 +523,12 @@ function attentionSessionCountsOutsideLatest(
   return !isHiddenAutomatedSession(sessionMetadata[sessionId])
 }
 
-function getAttentionOutsideLatest(
+async function getAttentionOutsideLatest(
   agentSlug: string,
   visibleSessions: SessionInfo[],
   unreadSessionIds: Set<string>,
   sessionMetadata: SessionMetadataMap,
-): NonNullable<ApiAgent['attentionOutsideLatest']> {
+): Promise<NonNullable<ApiAgent['attentionOutsideLatest']>> {
   const latestSessionId = visibleSessions[0]?.id
   const visibleSessionIds = new Set(visibleSessions.map((session) => session.id))
   const countsOutside = (sessionId: string) => attentionSessionCountsOutsideLatest(
@@ -540,49 +540,16 @@ function getAttentionOutsideLatest(
 
   const hasUnreadNotification = [...unreadSessionIds].some(countsOutside)
 
-  let hasPendingInput = false
-  let observedPendingInput = false
-
+  const live = await agentRegistry.get(agentSlug).live()
   // The registry is authoritative for open requests and exposes explicit
   // session attribution when it exists. Agent-scoped requests have no unique
-  // session, so they must conservatively count as outside latest.
-  for (const request of agentRegistry.get(agentSlug).inputs.openForAgent()) {
-    if (!request.blocking || request.autoApproved) continue
-    observedPendingInput = true
-    const sessionId = request.scope.sessionId
-    if (sessionId === undefined || countsOutside(sessionId)) {
-      hasPendingInput = true
-      break
-    }
-  }
-
-  // Also sample the live sessions' projection. It covers recovered/racing state and
-  // lets us classify hidden active sessions without ever returning their IDs.
-  if (!hasPendingInput) {
-    const candidateIds = new Set([
-      ...visibleSessionIds,
-      ...agentRegistry.get(agentSlug).sessions.activeIds(),
-    ])
-    for (const sessionId of candidateIds) {
-      if (!agentRegistry.get(agentSlug).sessions.isAwaitingInput(sessionId)) continue
-      observedPendingInput = true
-      if (countsOutside(sessionId)) {
-        hasPendingInput = true
-        break
-      }
-    }
-  }
-
-  // A positive aggregate with no attributable request/session is unresolved.
-  // Never collapse that uncertainty to false: iOS uses false/false to open the
-  // latest session directly.
-  if (
-    !hasPendingInput &&
-    !observedPendingInput &&
-    agentRegistry.get(agentSlug).sessions.hasAwaitingInput()
-  ) {
-    hasPendingInput = true
-  }
+  // session, so they must conservatively count as outside latest. The live
+  // sessions' own projection covers recovered/racing state, and lets hidden
+  // sessions be classified without ever returning their IDs.
+  const hasPendingInput =
+    live.openRequests.some((request) =>
+      request.blocking && !request.autoApproved && (request.sessionId === undefined || countsOutside(request.sessionId))) ||
+    live.awaitingSessionIds.some(countsOutside)
 
   return { hasUnreadNotification, hasPendingInput }
 }
@@ -637,12 +604,13 @@ async function getLatestVisibleSessionTail(
   // recovered awaiting-input state is reflected in them.
   await annotateAndRecoverMessages(messageTail.messages, agentSlug, session.id)
   signal?.throwIfAborted()
+  const live = await actor.sessions.live(session.id)
 
   return {
     session: {
       ...session,
-      isActive: agentRegistry.get(agentSlug).sessions.isActive(session.id),
-      isAwaitingInput: agentRegistry.get(agentSlug).sessions.isAwaitingInput(session.id),
+      isActive: live.isActive,
+      isAwaitingInput: live.isAwaitingInput,
       hasUnreadNotifications: unreadSessionIds.has(session.id),
     },
     messageTail,
@@ -688,7 +656,7 @@ async function getVisibleSessionExpansion(
 
   let attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
   try {
-    attentionOutsideLatest = getAttentionOutsideLatest(
+    attentionOutsideLatest = await getAttentionOutsideLatest(
       agentSlug,
       visibleSessions,
       unreadSessionIds,
@@ -786,39 +754,22 @@ async function enrichAgentsWithSummary(
       // an unread indicator with nothing visible behind it — and no way to ever
       // clear it. (Legacy rows exist from before creation-time suppression;
       // session_waiting now promotes the session first, but old rows remain.)
-      let hasActiveSessions = false
-      let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
       // An unread notification that tags the viewer: drawn as an @, not a dot.
       let hasUnreadMention = false
-      const hasAgentLevelReviews = agentRegistry.get(agent.slug).inputs.reviews.pending().length > 0
       for (const sessionId of sessionSummary.sessionIds) {
-        const isActive = agentRegistry.get(agent.slug).sessions.isActive(sessionId)
-        if (isActive) {
-          hasActiveSessions = true
-        }
-        if (agentRegistry.get(agent.slug).sessions.isAwaitingInput(sessionId)) {
-          hasSessionsAwaitingInput = true
-        }
         if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
           hasUnreadNotifications = true
           if (mentionedIds.has(sessionId)) hasUnreadMention = true
         }
       }
-
-      // Fallback: check in-memory streaming state for sessions not yet on the filesystem
-      // (e.g. newly created sessions whose .jsonl hasn't been written yet)
-      if (!hasActiveSessions) {
-        hasActiveSessions = agentRegistry.get(agent.slug).sessions.hasActive()
-      }
-      if (!hasSessionsAwaitingInput) {
-        hasSessionsAwaitingInput = agentRegistry.get(agent.slug).sessions.hasAwaitingInput()
-      }
-      // Pending proxy reviews raise the flag regardless of session state — dashboard-triggered
-      // reviews have no associated session but still need user attention.
-      if (hasAgentLevelReviews) {
-        hasSessionsAwaitingInput = true
-      }
+      // Live state covers sessions not yet on the filesystem too (a new
+      // session whose .jsonl is not written yet). Pending proxy reviews raise
+      // the flag regardless of session state: dashboard-triggered reviews have
+      // no session but still need the user.
+      const live = await agentRegistry.get(agent.slug).live()
+      const hasActiveSessions = live.activeSessionIds.length > 0
+      const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
       return {
         ...agent,
@@ -846,26 +797,40 @@ async function enrichAgentsWithSummary(
   )
 }
 
-// Unresolved blocking user-input tool calls in the current (trailing) turn —
-// the recovery input for sessions.recoverAwaitingInput when the
-// one-shot request stream event was missed.
-function getUnresolvedBlockingInputRequests(
-  items: TransformedItem[],
-): Array<{ toolUseId: string; toolName: string }> {
-  const unresolved: Array<{ toolUseId: string; toolName: string }> = []
+/**
+ * Square the transcript's open tool calls with the session's requests.
+ *
+ * Parallel tool calls hold every sibling's transcript result until the LAST
+ * one resolves, so a request the user already decided still looks
+ * unresolved here: its outcome is stamped on, so every history consumer (the
+ * client's refresh fallback, the transcript card) sees a completed call
+ * instead of resurrecting a decided one. And while the session runs, the
+ * blocking asks of its trailing turn nobody decided are parked again: if the
+ * request's own stream event was missed, the persisted messages are the
+ * fallback source of truth. A stale transcript can briefly re-assert awaiting
+ * input, but the next stream result/idle event clears it.
+ */
+async function reconcileOpenToolCalls(items: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
+  const open: Array<{ toolCall: { id: string; name: string; result?: unknown }; awaitsInput: boolean }> = []
+  let trailingTurn = true
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.type === 'user' && !item.queued) break
+    if (item.type === 'user' && !item.queued) trailingTurn = false
     if (item.type !== 'assistant') continue
-
     for (const toolCall of item.toolCalls) {
-      if (toolCall.result === undefined && isBlockingUserInputToolName(toolCall.name)) {
-        unresolved.push({ toolUseId: toolCall.id, toolName: toolCall.name })
-      }
+      if (toolCall.result !== undefined) continue
+      open.push({ toolCall, awaitsInput: trailingTurn && isBlockingUserInputToolName(toolCall.name) })
     }
   }
-
-  return unresolved
+  if (open.length === 0) return
+  const { settled } = await agentRegistry.get(agentSlug).sessions.reconcileTranscript(
+    sessionId,
+    open.map(({ toolCall, awaitsInput }) => ({ toolUseId: toolCall.id, toolName: toolCall.name, awaitsInput })),
+  )
+  for (const { toolCall } of open) {
+    const outcome = settled[toolCall.id]
+    if (outcome !== undefined) toolCall.result = outcome === 'answered' ? 'User provided input' : 'User declined the request'
+  }
 }
 
 /**
@@ -1349,7 +1314,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
-      agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
+      await agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -1829,7 +1794,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     }
 
     // Use cached status to avoid spawning docker process
-    const info = agentRegistry.get(slug).container.status()
+    const info = await agentRegistry.get(slug).container.status()
 
     if (info.status === 'stopped') {
       return c.json({
@@ -1864,7 +1829,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
 // POST /api/agents/:id/keep-alive - Prevent auto-sleep (e.g. dashboard is open)
 agents.post('/:id/keep-alive', AgentRead(), async (c) => {
   const slug = getAgentId(c)
-  agentRegistry.get(slug).container.keepAlive()
+  await agentRegistry.get(slug).container.keepAlive()
   return c.json({ ok: true })
 })
 
@@ -1940,19 +1905,21 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
         isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
       ])
-      const activeIds = agentRegistry.get(slug).sessions.activeIds()
+      const live = await actor.live()
+      const active = new Set(live.activeSessionIds)
+      const awaiting = new Set(live.awaitingSessionIds)
       const infos = await actor.sessions.listByIds(
-        [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
+        [...new Set([...live.activeSessionIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
       const enriched = infos.map((session) => {
-        const isActive = agentRegistry.get(slug).sessions.isActive(session.id)
+        const isActive = active.has(session.id)
         return {
           ...session,
           isActive,
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
-          isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
+          isAwaitingInput: awaiting.has(session.id),
           hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
           hasUnreadMention: mentionedIds.has(session.id),
         }
@@ -1986,15 +1953,18 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
+    const live = await actor.live()
+    const active = new Set(live.activeSessionIds)
+    const awaiting = new Set(live.awaitingSessionIds)
     const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = agentRegistry.get(slug).sessions.isActive(session.id)
+      const isActive = active.has(session.id)
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
         isActive,
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
-        isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
+        isAwaitingInput: awaiting.has(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
@@ -2202,7 +2172,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
-        credentialSource: sessionCredentialSource(slug, sessionId),
+        credentialSource: credentialSource((await actor.sessions.live(sessionId)).runtime?.provider),
       },
       201
     )
@@ -2238,7 +2208,7 @@ const messagesListQuerySchema = z
 // changes and provider switches apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
   if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
-  const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
+  const runtimeProvider = (await agentRegistry.get(agentSlug).sessions.live(sessionId)).runtime?.provider
   let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
   if (!provider) {
     const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
@@ -2280,28 +2250,7 @@ async function annotateAndRecoverMessages(
 ): Promise<void> {
   await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-
-  const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
-  if (settledRequests.size > 0) {
-    for (const item of transformed) {
-      if (item.type !== 'assistant') continue
-      for (const toolCall of item.toolCalls) {
-        if (toolCall.result !== undefined) continue
-        const outcome = settledRequests.get(toolCall.id)
-        if (outcome !== undefined) {
-          toolCall.result =
-            outcome === 'answered' ? 'User provided input' : 'User declined the request'
-        }
-      }
-    }
-  }
-
-  if (agentRegistry.get(agentSlug).sessions.isActive(sessionId)) {
-    const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
-    if (unresolvedRequests.length > 0) {
-      agentRegistry.get(agentSlug).sessions.recoverAwaitingInput(sessionId, unresolvedRequests)
-    }
-  }
+  await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
 
   await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
 
@@ -2377,10 +2326,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // transcript, not a missing one — answer the empty page so the client
       // keeps showing the running turn and picks the lines up as they land.
       // (sessionIsKnown keeps the containment guarantee for the id.)
-      if (
-        agentRegistry.get(agentSlug).sessions.isActive(sessionId) &&
-        (await actor.sessions.isKnown(sessionId))
-      ) {
+      if ((await actor.sessions.live(sessionId)).isActive && (await actor.sessions.isKnown(sessionId))) {
         return paginated ? c.json({ messages: [], nextCursor: null }) : c.json([])
       }
       // No JSONL transcript on disk — e.g. it was deleted by the CLI's
@@ -2459,37 +2405,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-
-    // Parallel tool calls hold every sibling's transcript result until the
-    // LAST one resolves, so a request the user already decided still looks
-    // unresolved here. Stamp the settled outcome onto the transcript so every
-    // history consumer — the client's refresh fallback, the transcript card,
-    // and the recovery scan below — sees a completed call instead of
-    // resurrecting a decided one.
-    const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
-    if (settledRequests.size > 0) {
-      for (const item of transformed) {
-        if (item.type !== 'assistant') continue
-        for (const toolCall of item.toolCalls) {
-          if (toolCall.result !== undefined) continue
-          const outcome = settledRequests.get(toolCall.id)
-          if (outcome !== undefined) {
-            toolCall.result =
-              outcome === 'answered' ? 'User provided input' : 'User declined the request'
-          }
-        }
-      }
-    }
-
-    if (agentRegistry.get(agentSlug).sessions.isActive(sessionId)) {
-      const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
-      if (unresolvedRequests.length > 0) {
-        // If the request-specific stream event was missed, persisted messages are
-        // the fallback source of truth. A stale transcript can briefly re-assert
-        // awaiting input, but the next stream result/idle event clears it.
-        agentRegistry.get(agentSlug).sessions.recoverAwaitingInput(sessionId, unresolvedRequests)
-      }
-    }
+    await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
 
     await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
 
@@ -2848,7 +2764,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       const sessionName = (await actor.sessions.metadata(sessionId))?.name
       await notifySessionMentions(c, mentions, { agentSlug, agentName: agent.name, sessionId, sessionName, messageUuid })
     }
-    return c.json({ success: true, uuid: messageUuid, queued, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
+    return c.json({ success: true, uuid: messageUuid, queued, credentialSource: credentialSource(delivery.provider) }, 201)
   } catch (error) {
     if (deliveryFailure(error)?.code === 'provider-not-attached') return new LlmProviderNotFoundError().toHttpResponse()
     const runtimeError = findAgentRuntimeError(error)
@@ -2901,7 +2817,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  agentRegistry.get(getAgentId(c)).messages.broadcastEvent(sessionId, {
+  await agentRegistry.get(getAgentId(c)).messages.broadcastEvent(sessionId, {
     type: 'user_typing',
     sender: toUserSender(c.get('user' as never) as UserSenderSource),
   })
@@ -2927,7 +2843,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
+    const live = await actor.sessions.live(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
     if (getSettings().llmDefault) {
       try {
@@ -2949,12 +2865,12 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       name: session.name,
       createdAt: session.createdAt,
       lastActivityAt: session.lastActivityAt,
-      isActive,
+      isActive: live.isActive,
       // Carried so single-session consumers can gate on the same live/idle
       // condition the session lists use (the breadcrumb context menu hides
       // "Mark as Unread" while a session is working or awaiting input, since
       // no list renders an unread dot in that state).
-      isAwaitingInput: agentRegistry.get(agentSlug).sessions.isAwaitingInput(sessionId),
+      isAwaitingInput: live.isAwaitingInput,
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -3100,9 +3016,9 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const actor = agentRegistry.get(agentSlug)
 
-    // Ownership first: unsubscribeFromSession below is keyed by session id
-    // alone, so on a foreign id it would tear down another agent's live message
-    // subscription on the way to a 404. This costs no deletability — it accepts
+    // Ownership first: the delete lets go of the session's stream, keyed by
+    // session id alone, so on a foreign id it would tear down another agent's
+    // live message subscription on the way to a 404. This costs no deletability — it accepts
     // exactly the "transcript OR metadata entry exists" condition that
     // deleteSession itself reports success for.
     if (
@@ -3111,10 +3027,6 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     ) {
       return c.json({ error: 'Session not found' }, 404)
     }
-
-    // Before the delete, so an in-flight append can't recreate the transcript
-    // just after it is unlinked.
-    agentRegistry.get(agentSlug).sessions.unsubscribeStream(sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
     // transcript and/or a lingering metadata entry and returns false only when
@@ -3261,7 +3173,7 @@ agents.post('/:id/sessions/:sessionId/tasks/:taskId/stop', AgentUser(), async (c
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  const info = actor.container.status()
+  const info = await actor.container.status()
   if (info.status !== 'running') {
     return c.json({ error: 'Agent is not running' }, 409)
   }
@@ -3312,11 +3224,11 @@ function requestMatchesRoute(
  *
  * Returns a Response to send instead of proceeding, or null to proceed.
  */
-function gateRequestDecision(
+async function gateRequestDecision(
   c: Context,
   toolUseId: string,
   kind: UserInputRequestKind,
-): Response | null {
+): Promise<Response | null> {
   const agentSlug = getAgentId(c)
   // Every gated route is mounted under /sessions/:sessionId, so the param is
   // always present; '' is an unmatchable placeholder, not a wildcard.
@@ -3324,7 +3236,7 @@ function gateRequestDecision(
   // The actor only ever hands back this agent's requests: another agent's
   // parked ask, or one with no agent in its scope, reads as unknown here and
   // falls through to the settled shape below with nothing disclosed.
-  const open = agentRegistry.get(agentSlug).inputs.get(toolUseId)
+  const open = await agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (open) {
     if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
       // A caller-supplied id must not settle a wait parked for another kind or
@@ -3337,7 +3249,7 @@ function gateRequestDecision(
   // still route-bound: report its outcome only to the route that could have
   // decided it, so settling a request can never widen who may read it. A record
   // that fails the match is as good as absent — same 404 an open mismatch gets.
-  const settled = agentRegistry.get(agentSlug).inputs.recentResolution(toolUseId)
+  const settled = await agentRegistry.get(agentSlug).inputs.recentResolution(toolUseId)
   if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
     return c.json({ error: 'Request not found' }, 404)
   }
@@ -3353,12 +3265,12 @@ function gateRequestDecision(
 }
 
 /** Read/mutate an open request without settling it. */
-function gateOpenRequestAccess(
+async function gateOpenRequestAccess(
   c: Context,
   toolUseId: string,
   kind: UserInputRequestKind,
-): Response | null {
-  const open = agentRegistry.get(getAgentId(c)).inputs.get(toolUseId)
+): Promise<Response | null> {
+  const open = await agentRegistry.get(getAgentId(c)).inputs.get(toolUseId)
   if (!open || !requestMatchesRoute(
     open,
     kind,
@@ -3381,7 +3293,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'secret')
+    const gated = await gateRequestDecision(c, toolUseId, 'secret')
     if (gated) return gated
 
     if (!secretName) {
@@ -3409,7 +3321,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
-      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
+      await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3474,7 +3386,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'Secret saved but failed to notify agent' }, 500)
     }
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, saved: true })
   } catch (error) {
@@ -3494,7 +3406,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'connected_account')
+    const gated = await gateRequestDecision(c, toolUseId, 'connected_account')
     if (gated) return gated
 
     if (!toolkit) {
@@ -3522,7 +3434,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
-      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
+      await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3629,7 +3541,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Request ${toolUseId} resolved successfully`
     )
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({
       success: true,
@@ -3656,7 +3568,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'question')
+    const gated = await gateRequestDecision(c, toolUseId, 'question')
     if (gated) return gated
 
 
@@ -3680,7 +3592,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
-      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
+      await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3712,7 +3624,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'Failed to submit answers' }, 500)
     }
     console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true })
   } catch (error) {
@@ -3740,7 +3652,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
       return c.json({ error: 'capability must be subagents or workflows' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'capability_review')
+    const gated = await gateRequestDecision(c, toolUseId, 'capability_review')
     if (gated) return gated
 
     const actor = agentRegistry.get(agentSlug)
@@ -3763,7 +3675,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
         return c.json({ error: 'Failed to reject capability launch' }, 500)
       }
 
-      agentRegistry.get(agentSlug).inputs.completeCapabilityReview(sessionId, toolUseId, 'declined')
+      await agentRegistry.get(agentSlug).inputs.completeCapabilityReview(sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'capability_review', capability, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3792,9 +3704,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     // Mirror the container's grant so later launches in this session don't
     // produce review cards nothing is waiting on.
     if (scope === 'session') {
-      agentRegistry.get(agentSlug).sessions.grantCapability(sessionId, capability)
+      await agentRegistry.get(agentSlug).sessions.grantCapability(sessionId, capability)
     }
-    agentRegistry.get(agentSlug).inputs.completeCapabilityReview(sessionId, toolUseId, 'answered')
+    await agentRegistry.get(agentSlug).inputs.completeCapabilityReview(sessionId, toolUseId, 'answered')
 
     trackServerEvent('capability_launch_approved', { capability, scope })
     return c.json({ success: true })
@@ -3872,8 +3784,8 @@ const browserCredentialAutofillBodySchema = z.object({
   credentialId: z.string().min(1),
 }).strict()
 
-function capturedBrowserInputUrl(agentSlug: string, toolUseId: string, now = Date.now()): string | null {
-  const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
+async function capturedBrowserInputUrl(agentSlug: string, toolUseId: string, now = Date.now()): Promise<string | null> {
+  const request = await agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (!request || request.kind !== 'browser_input') return null
   const parsed = browserInputContextSchema.safeParse(request.payload.browserContext)
   if (!parsed.success) return null
@@ -3887,7 +3799,7 @@ async function refreshBrowserInputUrl(
   toolUseId: string,
 ): Promise<string> {
   const url = await readCredentialBrowserUrl(agentSlug, sessionId)
-  agentRegistry.get(agentSlug).inputs.enrich(toolUseId, 'browser_input', {
+  await agentRegistry.get(agentSlug).inputs.enrich(toolUseId, 'browser_input', {
     browserContext: { url, capturedAt: Date.now() },
   })
   return url
@@ -3897,7 +3809,7 @@ async function refreshBrowserInputUrl(
 agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) => {
   const toolUseId = c.req.query('toolUseId')
   if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
-  const gated = gateOpenRequestAccess(c, toolUseId, 'browser_input')
+  const gated = await gateOpenRequestAccess(c, toolUseId, 'browser_input')
   if (gated) return gated
 
   const agentSlug = getAgentId(c)
@@ -3906,7 +3818,7 @@ agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) 
     // New requests carry a harness-probed URL. Explicit refreshes and stale or
     // recovered requests re-probe the live browser and replace that context.
     const forceRefresh = c.req.query('refresh') === 'true'
-    const url = (!forceRefresh && capturedBrowserInputUrl(agentSlug, toolUseId)) ||
+    const url = (!forceRefresh && await capturedBrowserInputUrl(agentSlug, toolUseId)) ||
       await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
@@ -3927,7 +3839,7 @@ agents.post(
   async (c) => {
   try {
     const body = c.req.valid('json')
-    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
     if (gated) return gated
     if (!passwordManagerIsConfigured(body.provider)) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
@@ -3960,7 +3872,7 @@ agents.post(
   async (c) => {
   try {
     const body = c.req.valid('json')
-    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
     if (gated) return gated
     if (!passwordManagerIsConfigured(body.provider)) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
@@ -3982,7 +3894,7 @@ agents.post(
   let claimed: { id: string; token: string } | null = null
   try {
     const body = c.req.valid('json')
-    const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
+    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
     if (gated) return gated
     const claim = await agentRegistry.get(getAgentId(c)).inputs.claim(body.toolUseId)
     if (!claim) {
@@ -4055,7 +3967,7 @@ agents.post(
     )
     const requestSettled = resolveResponse.ok
     if (requestSettled) {
-      agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
+      await agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
     } else {
       console.error('[autofill-browser-credential] Credentials filled but browser input could not be resolved')
     }
@@ -4086,7 +3998,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'browser_input')
+    const gated = await gateRequestDecision(c, toolUseId, 'browser_input')
     if (gated) return gated
     const claim = await agentRegistry.get(agentSlug).inputs.claim(toolUseId)
     if (!claim) {
@@ -4121,7 +4033,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       }
 
       const sessionId = c.req.param('sessionId')
-      agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
+      await agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
 
       // Stop the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
@@ -4153,7 +4065,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -4194,7 +4106,7 @@ async function declineHostRun(
   c: Context,
   toolUseId: string,
   reason: string,
-  settle: () => void,
+  settle: () => Promise<void>,
   what: 'script run' | 'computer use',
 ): Promise<Response> {
   const actor = agentRegistry.get(getAgentId(c))
@@ -4208,7 +4120,7 @@ async function declineHostRun(
       console.error(`[${what}] Failed to reject: ${rejectResponse.status} ${await rejectResponse.text().catch(() => '')}`)
       return c.json({ error: `Failed to reject ${what} request` }, 500)
     }
-    settle()
+    await settle()
     return c.json({ success: true, declined: true })
   } finally {
     await actor.inputs.releaseClaim(toolUseId, claim.token)
@@ -4227,14 +4139,14 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'script_run')
+    const gated = await gateRequestDecision(c, toolUseId, 'script_run')
     if (gated) return gated
 
     const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
-      return await declineHostRun(c, toolUseId, declineReason || 'User denied script execution', () => {
-        actor.inputs.complete(sessionId, toolUseId, 'declined')
+      return await declineHostRun(c, toolUseId, declineReason || 'User denied script execution', async () => {
+        await actor.inputs.complete(sessionId, toolUseId, 'declined')
         trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
       }, 'script run')
     }
@@ -4274,7 +4186,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'computer_use')
+    const gated = await gateRequestDecision(c, toolUseId, 'computer_use')
     if (gated) return gated
 
     const actor = agentRegistry.get(agentSlug)
@@ -4283,8 +4195,8 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     }
 
     if (decline) {
-      return await declineHostRun(c, toolUseId, declineReason || 'User denied computer use request', () => {
-        actor.inputs.computerUse.clearPending(sessionId, toolUseId, 'declined')
+      return await declineHostRun(c, toolUseId, declineReason || 'User denied computer use request', async () => {
+        await actor.inputs.computerUse.clearPending(sessionId, toolUseId, 'declined')
         trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
       }, 'computer use')
     }
@@ -4319,21 +4231,11 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const appName = agentRegistry.get(agentSlug).inputs.computerUse.grabbedApp()
-
-    // Ungrab via AC
+    // Forgets the grab, revokes use_application for the app and tells the
+    // session's viewers. Before the ungrab: the app revoked is the one the
+    // user saw, not one grabbed while the ungrab ran.
+    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseGrab(sessionId)
     await ungrabAC()
-
-    // Clear grab state
-    agentRegistry.get(agentSlug).inputs.computerUse.clearGrabbedApp()
-
-    // Revoke use_application permission for this app
-    if (appName) {
-      agentRegistry.get(agentSlug).inputs.computerUse.revokeGrant('use_application', appName)
-    }
-
-    // Broadcast to UI
-    agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
@@ -4379,6 +4281,9 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
     const actor = agentRegistry.get(slug)
     const tasks = await listCompletedOneTimeTasks(slug)
     const metadata = await actor.sessions.readMetadata()
+    const live = await actor.live()
+    const active = new Set(live.activeSessionIds)
+    const awaiting = new Set(live.awaitingSessionIds)
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4388,15 +4293,14 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
         // is still in flight only while its session is live; after an app
         // restart, or during the tiny idle-event/metadata-write race, the same
         // inactive run is settled. This mirrors activity-stats semantics.
-        return metadata[sessionId]?.automationStatus !== 'running'
-          || !agentRegistry.get(slug).sessions.isActive(sessionId)
+        return metadata[sessionId]?.automationStatus !== 'running' || !active.has(sessionId)
       })
 
     const sessions = await actor.sessions.listByIds(completedSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: agentRegistry.get(slug).sessions.isActive(session.id),
-      isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
+      isActive: active.has(session.id),
+      isAwaitingInput: awaiting.has(session.id),
     }))
     sessionsWithStatus.sort(
       (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
@@ -4991,7 +4895,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
     }
 
-    const gated = gateRequestDecision(c, body.toolUseId, 'remote_mcp')
+    const gated = await gateRequestDecision(c, body.toolUseId, 'remote_mcp')
     if (gated) return gated
 
     // In auth mode, only allow providing remote MCPs the caller owns before
@@ -5027,7 +4931,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
-      agentRegistry.get(getAgentId(c)).inputs.complete(c.req.param('sessionId'), body.toolUseId, 'declined')
+      await agentRegistry.get(getAgentId(c)).inputs.complete(c.req.param('sessionId'), body.toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
@@ -5100,7 +5004,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'Failed to resolve the request in container' }, 502)
     }
 
-    agentRegistry.get(getAgentId(c)).inputs.complete(c.req.param('sessionId'), body.toolUseId, 'answered')
+    await agentRegistry.get(getAgentId(c)).inputs.complete(c.req.param('sessionId'), body.toolUseId, 'answered')
     return c.json({ success: true, status: 'provided' })
   } catch (error) {
     console.error('Failed to provide remote MCP:', error)
@@ -6016,10 +5920,7 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 
 // A running container keeps the drives it started with until it restarts.
 async function afterMountChange(agentSlug: string, restart?: boolean) {
-  const container = agentRegistry.get(agentSlug).container
-  if (container.status().status !== 'running') return
-  if (restart) await container.restart()
-  else container.markStale()
+  await agentRegistry.get(agentSlug).container.invalidate({ restart })
 }
 
 // POST /api/agents/:id/mounts - Add a mount
@@ -6423,7 +6324,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    const gated = gateRequestDecision(c, toolUseId, 'file')
+    const gated = await gateRequestDecision(c, toolUseId, 'file')
     if (gated) return gated
 
 
@@ -6447,7 +6348,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
-      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
+      await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -6479,7 +6380,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
     }
     console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
-    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, filePath })
   } catch (error) {
@@ -6505,7 +6406,7 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     try {
       const actor = agentRegistry.get(slug)
       // Use cached status to avoid spawning docker process
-      const info = agentRegistry.get(slug).container.status()
+      const info = await agentRegistry.get(slug).container.status()
 
       if (info.status === 'running') {
         const response = await actor.container.fetch('/artifacts')
@@ -6549,7 +6450,7 @@ agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
     // Stop the dashboard process in the container (if running), then delete files
     try {
       const actor = agentRegistry.get(agentSlug)
-      const info = agentRegistry.get(agentSlug).container.status()
+      const info = await agentRegistry.get(agentSlug).container.status()
       if (info.status === 'running') {
         await actor.container.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
       }
@@ -6947,7 +6848,7 @@ async function proxyArtifactRequest(c: any) {
 
   const actor = agentRegistry.get(agentSlug)
   // Use cached status to avoid spawning docker process
-  const info = agentRegistry.get(agentSlug).container.status()
+  const info = await agentRegistry.get(agentSlug).container.status()
 
   if (info.status !== 'running') {
     return c.json({ error: 'Agent is not running. Start the agent to view this dashboard.' }, 503)
@@ -7072,7 +6973,7 @@ agents.get('/:id/browser/status', AgentRead(), async (c) => {
 
     const actor = agentRegistry.get(slug)
     // Use cached status to avoid spawning docker process
-    const info = agentRegistry.get(slug).container.status()
+    const info = await agentRegistry.get(slug).container.status()
 
     if (info.status !== 'running') {
       return c.json({ active: false, sessionId: null })
@@ -7095,7 +6996,7 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
 
     const actor = agentRegistry.get(slug)
     // Use cached status to avoid spawning docker process
-    const info = agentRegistry.get(slug).container.status()
+    const info = await agentRegistry.get(slug).container.status()
 
     if (info.status !== 'running') {
       return c.json({ error: 'Agent container is not running' }, 400)
@@ -7146,10 +7047,10 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 // arrive as user_request_created / user_request_resolved on the session and
 // global SSE streams; clients treat those as invalidation triggers and read
 // the resulting state from here.
-agents.get('/:id/pending-requests', AgentRead(), (c) => {
+agents.get('/:id/pending-requests', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
-  return c.json({ requests: agentRegistry.get(agentSlug).inputs.snapshot(sessionId) })
+  return c.json({ requests: await agentRegistry.get(agentSlug).inputs.snapshot(sessionId) })
 })
 
 // =============================================================================
@@ -7184,7 +7085,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
     ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
     : undefined
 
-  const open = agentRegistry.get(slug).inputs.get(requestId)
+  const open = await agentRegistry.get(slug).inputs.get(requestId)
   if (open) {
     // A caller-supplied id points into a global, cross-agent registry, so both
     // the kind and the agent are re-checked against the URL before we settle
@@ -7197,18 +7098,15 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
     }
 
     const dismissed = open.kind === 'account_reauth_required'
-      ? agentRegistry.get(slug).inputs.accountReauth.dismiss(requestId, reason)
-      : agentRegistry.get(slug).inputs.mcpReauth.dismiss(requestId, reason)
+      ? await agentRegistry.get(slug).inputs.accountReauth.dismiss(requestId, reason)
+      : await agentRegistry.get(slug).inputs.mcpReauth.dismiss(requestId, reason)
 
     // An open envelope whose parked group is already gone (every waiter
     // aborted, but the entry outlived them) would otherwise leave the card —
     // and the awaiting-input state behind it — on screen forever. Clearing it
     // is the whole point of this route, so do it rather than report success
     // and change nothing.
-    if (!dismissed) {
-      agentRegistry.get(slug).inputs.resolve(requestId, 'cancelled')
-      agentRegistry.get(slug).sessions.syncAwaiting()
-    }
+    if (!dismissed) await agentRegistry.get(slug).inputs.resolve(requestId, 'cancelled')
 
     // Short form, matching the `type` its sibling decline routes emit
     // ('secret', 'connected_account') rather than the raw registry kind.
@@ -7219,7 +7117,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 
   // Settled or unknown. Report on it only through the route that could have
   // decided it, so settling a request never widens who may read its outcome.
-  const settled = agentRegistry.get(slug).inputs.recentResolution(requestId)
+  const settled = await agentRegistry.get(slug).inputs.recentResolution(requestId)
   if (settled && (
     settled.scope.agentSlug !== slug ||
     (settled.kind !== 'account_reauth_required' && settled.kind !== 'mcp_reauth_required')
@@ -7251,8 +7149,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
 
   // Approving an agent's proxy rule persists access on the account or MCP
   // server, so (like "always allow") only its owner may approve it.
-  const proposal = agentRegistry.get(slug).inputs.reviews.pending()
-    .find((review) => review.id === reviewId)?.ruleProposal
+  const proposal = (await agentRegistry.get(slug).inputs.reviews.get(reviewId))?.ruleProposal
   if (proposal && body.decision === 'allow' && isAuthMode()) {
     const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
     if (!context || context.userId !== getCurrentUserId(c)) {
@@ -7263,7 +7160,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -7291,7 +7188,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision' }, 400)
   }
 
-  const pendingReview = agentRegistry.get(slug).inputs.reviews.pending().find((review) => review.id === reviewId)
+  const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
     return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
   }
@@ -7430,15 +7327,15 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   // Submit decision for this review (and any others matching the same scope).
   // Pass slug so submitDecision rejects cross-agent attempts (see B1).
-  agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
-  agentRegistry.get(slug).inputs.reviews.resolveMatching(body.scope, body.decision)
+  await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  await agentRegistry.get(slug).inputs.reviews.resolveMatching(body.scope, body.decision)
 
   // "Allow all <label>" saves a label sentinel ('*read'/'*write'/'*destructive'),
   // which the exact-scope sweep above can't match. Sweep sibling pending API
   // reviews whose matched scopes carry the same risk label so they resolve now
   // instead of timing out.
   if (isLabelDefaultKey(body.scope)) {
-    agentRegistry.get(slug).inputs.reviews.resolveMatchingByLabel(body.scope.slice(1) as ScopeLabel, body.decision)
+    await agentRegistry.get(slug).inputs.reviews.resolveMatchingByLabel(body.scope.slice(1) as ScopeLabel, body.decision)
   }
 
   // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
@@ -7447,7 +7344,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // (e.g. an in-flight read:bob when the user just allowed read:* globally)
   // also resolve immediately instead of timing out.
   if (body.reviewType === 'xagent' && body.xAgent && body.xAgent.targetSlug === null) {
-    agentRegistry.get(slug).inputs.reviews.resolveMatchingXAgent(body.xAgent.operation, body.decision)
+    await agentRegistry.get(slug).inputs.reviews.resolveMatchingXAgent(body.xAgent.operation, body.decision)
   }
 
   return c.json({ ok: true })
