@@ -118,7 +118,8 @@ export function createSessionDelivery(
       } catch (error) {
         throw notSent('unavailable', error)
       }
-      if (request.requireStoredProvider && options.llmProviderId !== metadata?.llmProviderId) {
+      // An append keeps the running turn's runtime: its connection is never used.
+      if (request.requireStoredProvider && !append && options.llmProviderId !== metadata?.llmProviderId) {
         throw new DeliveryError('provider-not-attached', 'The session no longer holds the selected provider connection')
       }
 

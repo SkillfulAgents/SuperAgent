@@ -2792,8 +2792,9 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     // Checked before the session's binding is known: a connection the caller
     // cannot bind outright is one it may only continue, and the delivery
-    // refuses it unless the session still holds it.
-    const requireStoredProvider = await connectionNeedsAttachment(runtimeOptions.llmProviderId)
+    // refuses it unless the session still holds it. An append starts no turn
+    // and keeps the session's runtime, so its connection is not looked at.
+    const requireStoredProvider = runtimeOptions.shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
 
     const metadataUpdates: Partial<SessionMetadata> = {}
     if (isAuthMode()) {

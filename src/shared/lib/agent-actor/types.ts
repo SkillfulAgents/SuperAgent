@@ -534,7 +534,8 @@ export interface DeliverRequest {
   /**
    * The caller may bind `options.llmProviderId` only because the session
    * holds it (another member's connection): refused with
-   * `provider-not-attached` once the session holds another.
+   * `provider-not-attached` once the session holds another. An append
+   * (`shouldQuery: false`) never uses it.
    */
   requireStoredProvider?: boolean
   /** Cancel what the session waits on first, so the message starts a fresh turn. */

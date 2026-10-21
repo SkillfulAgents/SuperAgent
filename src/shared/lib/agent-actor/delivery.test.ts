@@ -164,6 +164,12 @@ describe('deliver', () => {
     expect(send()).toHaveBeenCalledOnce()
   })
 
+  it('appends to the transcript whatever connection the caller names: an append uses none', async () => {
+    await delivery().deliver({ sessionId: SESSION, content: 'note', options: { llmProviderId: 'conn-b', shouldQuery: false }, requireStoredProvider: true })
+
+    expect(send()).toHaveBeenCalledExactlyOnceWith(SESSION, 'note', undefined, { shouldQuery: false, preserveRuntime: true })
+  })
+
   it('rolls back its own mark when the container refuses the message, with the container\'s status', async () => {
     send().mockRejectedValueOnce(Object.assign(new MessageNotAcceptedError('rejected', 'Session is busy'), { status: 409 }))
 
