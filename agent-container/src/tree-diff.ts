@@ -102,12 +102,24 @@ export interface TreeDiff {
    * closed. Reported as a count: the agent already has their lines.
    */
   returned: RefLine[]
+  /**
+   * An element that left the tree paired with one that arrived with exactly
+   * the same line but a new ref — the site re-rendered it (a framework
+   * replacing the DOM after a modal closes, a list re-drawn). Its old ref no
+   * longer works, which is the one thing about it worth saying.
+   */
+  rerendered: Array<{ from: RefLine; to: RefLine }>
   changed: ChangedRef[]
   removed: RefLine[]
 }
 
 export function treeDiffIsEmpty(d: TreeDiff): boolean {
-  return d.added.length === 0 && d.returned.length === 0 && d.changed.length === 0 && d.removed.length === 0
+  return d.added.length === 0 && d.returned.length === 0 && d.rerendered.length === 0 && d.changed.length === 0 && d.removed.length === 0
+}
+
+/** A line without its ref: what an element "is", independent of the ref it was given. */
+export function lineWithoutRef(text: string): string {
+  return text.replace(/\[ref=e\d+\]\s?/, '').replace(/,? ?\bref=e\d+/, '').replace(/\[\]/, '').replace(/\s+/g, ' ').trim()
 }
 
 /** What `before` was, in the terms that differ from `after`. */
@@ -190,13 +202,30 @@ export function diffTrees(before: TreeRefs, after: TreeRefs, opts: DiffOptions =
   for (const [ref, line] of before.lines) {
     if (!excluded(ref) && !after.lines.has(ref)) removed.push(line)
   }
-  return { added, returned, changed, removed }
+  // Pair what left with what arrived looking exactly the same, in tree order:
+  // one element re-rendered under a new ref, not one removed and one added.
+  const arrivals = new Map<string, RefLine[]>()
+  for (const l of added) {
+    const k = lineWithoutRef(l.text)
+    arrivals.set(k, [...(arrivals.get(k) ?? []), l])
+  }
+  const rerendered: Array<{ from: RefLine; to: RefLine }> = []
+  const paired = new Set<RefLine>()
+  const stillRemoved: RefLine[] = []
+  for (const l of removed) {
+    const queue = arrivals.get(lineWithoutRef(l.text))
+    const to = queue?.shift()
+    if (to) { rerendered.push({ from: l, to }); paired.add(to) } else stillRemoved.push(l)
+  }
+  return { added: added.filter(l => !paired.has(l)), returned, rerendered, changed, removed: stillRemoved }
 }
 
 /** Lines shown before the rest is summarised as a count. */
 export const TREE_DIFF_MAX_LINES = 25
 /** Removed elements are the least actionable: a few lines, then a count. */
 export const TREE_DIFF_MAX_REMOVED_LINES = 6
+/** Re-rendered elements: enough old → new pairs to keep acting, then a count. */
+export const TREE_DIFF_MAX_RERENDER_LINES = 6
 const LINE_CHARS = 200
 
 function ageText(ms: number): string {
@@ -231,6 +260,7 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   const max = opts.maxLines ?? TREE_DIFF_MAX_LINES
   const since = opts.baselineSource === 'snapshot' ? `your snapshot ${ageText(opts.baselineAgeMs)}` : `the previous action's tree ${ageText(opts.baselineAgeMs)}`
   const counts = [
+    d.rerendered.length > 0 ? `${d.rerendered.length} re-rendered with new refs` : '',
     d.added.length > 0 ? `${d.added.length} added` : '',
     d.returned.length > 0 ? `${d.returned.length} back` : '',
     d.changed.length > 0 ? `${d.changed.length} changed` : '',
@@ -241,8 +271,17 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
     ...d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (was ${c.was})` : ''}`),
   ]
   const removedShown = opts.dialogOpened ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)
-  const mainShown = main.slice(0, Math.max(0, max - removedShown))
-  const lines = [...mainShown]
+  // First: refs that stopped working. Acting on one of them is the failure
+  // this prevents (✗ Unknown ref after a site re-drew the page).
+  const lines: string[] = []
+  if (d.rerendered.length > 0) {
+    lines.push(`⟳ ${d.rerendered.length} element${d.rerendered.length === 1 ? '' : 's'} re-rendered — same line, new ref; the old ref${d.rerendered.length === 1 ? '' : 's'} no longer work${d.rerendered.length === 1 ? 's' : ''}:`)
+    const shown = d.rerendered.slice(0, TREE_DIFF_MAX_RERENDER_LINES)
+    lines.push(...shown.map(r => `  ${clip(lineWithoutRef(r.to.text), 120)}: ${r.from.ref} → ${r.to.ref}`))
+    if (d.rerendered.length > shown.length) lines.push(`  … ${d.rerendered.length - shown.length} more re-rendered`)
+  }
+  const mainShown = main.slice(0, Math.max(0, max - removedShown - lines.length))
+  lines.push(...mainShown)
   if (main.length > mainShown.length) lines.push(`… ${main.length - mainShown.length} more added/changed not shown`)
   if (d.returned.length > 0) {
     lines.push(`+ ${d.returned.length} element${d.returned.length === 1 ? '' : 's'} back in the tree exactly as you last saw ${d.returned.length === 1 ? 'it' : 'them'}, same refs`)
@@ -255,6 +294,26 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
       : `− ${removedHidden} more no longer in the tree`)
   }
   return `\nTree changes since ${since} (${counts}):\n${lines.join('\n')}`
+}
+
+/**
+ * What to add to the CLI's `✗ Unknown ref: eN`: what eN was when the agent
+ * last saw it, and which refs in the current tree carry exactly that line —
+ * so a ref lost to a re-render can be replaced without a snapshot. Only facts:
+ * an element that no longer has the ref may have been removed, re-rendered or
+ * hidden behind a dialog, and the note does not say which.
+ */
+export function formatUnknownRef(ref: string, wasText: string, current: TreeRefs): string {
+  const id = ref.replace(/^@/, '')
+  const was = lineWithoutRef(wasText)
+  const same = [...current.lines.values()].filter(l => lineWithoutRef(l.text) === was)
+  const head = `\n${id} was ${clip(was, 160)} when last read; no element in the current tree has that ref.`
+  if (same.length === 1) return `${head} The element with that same role, name and state now has ref @${same[0].ref}.`
+  if (same.length > 1) {
+    const listed = same.slice(0, 8).map(l => `@${l.ref}`).join(', ')
+    return `${head} ${same.length} elements now have that same role, name and state: ${listed}${same.length > 8 ? ', …' : ''}.`
+  }
+  return `${head} No element in the current tree has that role, name and state.`
 }
 
 /**

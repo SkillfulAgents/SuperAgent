@@ -803,7 +803,7 @@ import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THI
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, effectWantsTree, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
-import { acknowledgeTreeValue, diffTrees, getTreeBaseline, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
+import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
 import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead } from './page-reader';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, useHumanInput } from './challenge-input';
@@ -997,6 +997,28 @@ async function runWithEffect(
     ? await readTreeDiff(digest.url, opts.excludeRefs ?? [])
     : null;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff };
+}
+
+/**
+ * The CLI's `✗ Unknown ref: eN`, plus what eN was when the agent last saw it
+ * and which current refs carry exactly that line (tree-diff.ts
+ * formatUnknownRef). Refs persist since 0.38, so this error now means the
+ * element left the tree — most often a site re-rendering it under a new ref.
+ * Costs one tree read, only on this error; the read becomes the baseline.
+ */
+async function explainUnknownRef(stdout: string): Promise<string> {
+  const m = /Unknown ref: @?(e\d+)/.exec(stdout);
+  if (!m) return stdout;
+  const cdp = browserState.cdpUrl || undefined;
+  const urlRead = await execBrowser(['get', 'url'], cdp);
+  if (urlRead.exitCode !== 0 || !urlRead.stdout.trim()) return stdout;
+  const url = await addressBarUrl(urlRead.stdout.trim());
+  const was = getTreeBaseline(url)?.seen.get(m[1]);
+  if (!was) return stdout;
+  const fresh = await execBrowser(['snapshot', '-i', '-c'], cdp, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+  if (fresh.exitCode !== 0) return stdout;
+  setTreeBaseline(url, fresh.stdout, 'action');
+  return stdout + formatUnknownRef(m[1], was, parseTreeRefs(fresh.stdout));
 }
 
 /** The daemon's active tab, as a key for per-tab state: its CDP target id when the daemon reports one. */
@@ -1695,7 +1717,7 @@ app.post('/browser/click', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
     }
 
     const tabInfo = await tabManager.detectNewTab();
@@ -1736,7 +1758,7 @@ app.post('/browser/fill', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
     }
 
     // Read the value back after the settle: the CLI reports success regardless
@@ -2142,7 +2164,7 @@ app.post('/browser/select', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
     }
 
     const after = await readValue();
@@ -2201,7 +2223,7 @@ app.post('/browser/hover', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
     }
 
     notifyBrowserAction();
@@ -2305,7 +2327,7 @@ app.post('/browser/type', async (c) => {
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout), success: false }, 500);
     }
 
     // When we know the target, read the value back (keyboard type APPENDS to

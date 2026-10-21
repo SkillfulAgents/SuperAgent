@@ -97,8 +97,9 @@ or closed, live-region announcements (toasts, validation errors), typed field
 values, and focus. When the page's controls changed, the lines under it list
 the elements added (`+`), changed (`~`, with what they were) and removed
 (`−`) since your last snapshot, each with its ref: a menu, a dialog, a
-suggestion list or new results can be used straight from the result.
-`Effect: none observed within Nms (…)` states only that nothing in that scope
+suggestion list or new results can be used straight from the result. `⟳`
+lines are elements the site re-rendered under a new ref (`e422 → e526`): use
+the new ref; the old one no longer works. `Effect: none observed within Nms (…)` states only that nothing in that scope
 changed — not that the click failed: a highlight, a change inside an iframe
 or canvas, or a slow server all look like this. Snapshot or screenshot if you
 need to know; do not click again on that basis, which would undo a toggle.

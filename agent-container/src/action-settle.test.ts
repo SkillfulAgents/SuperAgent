@@ -232,7 +232,7 @@ describe('effectWantsTree', () => {
 })
 
 describe('formatActionEffect with a tree diff', () => {
-  const diff = (over: Partial<TreeDiff> = {}): TreeDiff => ({ added: [], returned: [], changed: [], removed: [], ...over })
+  const diff = (over: Partial<TreeDiff> = {}): TreeDiff => ({ added: [], returned: [], rerendered: [], changed: [], removed: [], ...over })
   const tree = (d: TreeDiff) => ({ diff: d, baselineAgeMs: 2000, baselineSource: 'snapshot' as const })
   const opened = parseTreeRefs('- link "Menu A" [ref=e18]\n- link "Menu B" [ref=e19]')
 

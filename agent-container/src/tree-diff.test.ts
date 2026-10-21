@@ -1,6 +1,8 @@
 import { afterEach, describe, it, expect } from 'vitest'
 import {
   acknowledgeTreeValue,
+  formatUnknownRef,
+  lineWithoutRef,
   diffTrees,
   formatTreeDiff,
   getTreeBaseline,
@@ -163,6 +165,59 @@ describe('formatTreeDiff', () => {
       '+ 19 elements back in the tree exactly as you last saw them, same refs\n' +
       '− button "Close cart" [ref=e48]',
     )
+  })
+})
+
+describe('re-rendered elements', () => {
+  // makingcosmetics.com (bench, SUP-1265): closing a modal re-drew the page —
+  // every element came back under a new ref, and the agent then clicked an
+  // old one (✗ Unknown ref).
+  const before = '- combobox "Enter Keyword or Item No." [expanded=false, ref=e422]\n- button "Submit search keywords" [ref=e423]\n- button "disclaimer *" [ref=e724]\n- button "disclaimer *" [ref=e725]\n- button "Close" [ref=e311]'
+  const after = '- combobox "Enter Keyword or Item No." [expanded=false, ref=e526]\n- button "Submit search keywords" [ref=e527]\n- button "disclaimer *" [ref=e1185]\n- button "disclaimer *" [ref=e1186]\n- link "New arrival" [ref=e600]'
+
+  it('pairs a removed element with an arrival of exactly the same line, in order', () => {
+    const d = diffTrees(parseTreeRefs(before), parseTreeRefs(after))
+    expect(d.rerendered.map(r => [r.from.ref, r.to.ref])).toEqual([['e422', 'e526'], ['e423', 'e527'], ['e724', 'e1185'], ['e725', 'e1186']])
+    expect(d.added.map(l => l.ref)).toEqual(['e600'])
+    expect(d.removed.map(l => l.ref)).toEqual(['e311'])
+  })
+
+  it('leads with the old → new refs, then what is genuinely new or gone', () => {
+    expect(formatTreeDiff(diffTrees(parseTreeRefs(before), parseTreeRefs(after)), { baselineAgeMs: 2000, baselineSource: 'snapshot' })).toBe(
+      '\nTree changes since your snapshot 2s ago (4 re-rendered with new refs, 1 added, 1 removed):\n' +
+      '⟳ 4 elements re-rendered — same line, new ref; the old refs no longer work:\n' +
+      '  combobox "Enter Keyword or Item No." [expanded=false]: e422 → e526\n' +
+      '  button "Submit search keywords": e423 → e527\n' +
+      '  button "disclaimer *": e724 → e1185\n' +
+      '  button "disclaimer *": e725 → e1186\n' +
+      '+ link "New arrival" [ref=e600]\n' +
+      '− button "Close" [ref=e311]',
+    )
+  })
+
+  it('caps the pairs and counts the rest', () => {
+    const many = (base: number) => Array.from({ length: 12 }, (_, i) => `- link "Item ${i}" [ref=e${base + i}]`).join('\n')
+    const text = formatTreeDiff(diffTrees(parseTreeRefs(many(100)), parseTreeRefs(many(200))), { baselineAgeMs: 0, baselineSource: 'action' })
+    expect(text.split('\n').filter(l => / → e2\d\d$/.test(l))).toHaveLength(6)
+    expect(text).toContain('  … 6 more re-rendered')
+  })
+
+  it('names a line without its ref', () => {
+    expect(lineWithoutRef('button "Close" [ref=e311]')).toBe('button "Close"')
+    expect(lineWithoutRef('combobox "State" [expanded=false, ref=e10]: Pick')).toBe('combobox "State" [expanded=false]: Pick')
+    expect(lineWithoutRef('generic [ref=e2] clickable [cursor:pointer, onclick]')).toBe('generic clickable [cursor:pointer, onclick]')
+  })
+})
+
+describe('formatUnknownRef', () => {
+  const current = parseTreeRefs('- button "Select" [ref=e1233]\n- button "disclaimer *" [ref=e1185]\n- button "disclaimer *" [ref=e1186]')
+  it('says what the ref was and which current refs carry exactly that line', () => {
+    expect(formatUnknownRef('e691', 'button "Select" [ref=e691]', current))
+      .toBe('\ne691 was button "Select" when last read; no element in the current tree has that ref. The element with that same role, name and state now has ref @e1233.')
+    expect(formatUnknownRef('@e724', 'button "disclaimer *" [ref=e724]', current))
+      .toContain('2 elements now have that same role, name and state: @e1185, @e1186.')
+    expect(formatUnknownRef('e9', 'link "Gone" [ref=e9]', current))
+      .toContain('No element in the current tree has that role, name and state.')
   })
 })
 

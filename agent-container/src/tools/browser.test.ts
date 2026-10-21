@@ -512,6 +512,7 @@ describe('SUP-1265 tools', () => {
         diff: {
           added: [{ ref: 'e18', text: 'link "Menu A" [ref=e18]', name: 'Menu A', attrs: [], value: '', parent: null }],
           returned: [],
+          rerendered: [],
           changed: [{ line: { ref: 'e7', text: 'button "Menu" [expanded=true, ref=e7]', name: 'Menu', attrs: ['expanded=true'], value: '', parent: null }, was: 'expanded=false' }],
           removed: [],
         },
