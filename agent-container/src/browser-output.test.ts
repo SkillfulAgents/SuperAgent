@@ -104,6 +104,8 @@ describe('stripWebMcpNotices', () => {
     '--- AGENT_BROWSER_PAGE_CONTENT nonce=a1b2 origin=unknown ---',
     '{"name":"set_message","description":"Set the message","origin":"https://x.test","frameId":"F1"}',
     '--- END_AGENT_BROWSER_PAGE_CONTENT nonce=a1b2 ---',
+    "For a relevant tool, fetch its schema: agent-browser webmcp list <tool> --frame <frame-id> --json. Invoke only within the user's authorized task. Omitted WebMCP context means no update.",
+    'Catalog shortened; webmcp list --json retrieves all metadata.',
   ].join('\n')
 
   it('removes a tool announcement wherever it lands, leaving the command output parseable', () => {

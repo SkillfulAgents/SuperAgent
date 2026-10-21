@@ -114,10 +114,11 @@ export function navigationNetError(stdout: string): string | null {
  * parses eval output as JSON. The container sets AGENT_BROWSER_NO_WEBMCP=1,
  * which turns the feature off; this strip is the backstop for a browser or
  * CLI that announces anyway. The block has fixed delimiters: a summary line,
- * then the tools between nonce-tagged AGENT_BROWSER_PAGE_CONTENT markers.
+ * the tools between nonce-tagged AGENT_BROWSER_PAGE_CONTENT markers, then a
+ * usage hint and, for a long catalog, a "shortened" line (0.39.1 output.rs).
  */
 const WEBMCP_CHANGED_BLOCK =
-  /(^|\n)WebMCP tools changed: \d+\.[^\n]*\n--- AGENT_BROWSER_PAGE_CONTENT nonce=(\S+) [^\n]*---\n[\s\S]*?\n--- END_AGENT_BROWSER_PAGE_CONTENT nonce=\2 ---(?=\n|$)/g
+  /(^|\n)WebMCP tools changed: \d+\.[^\n]*\n--- AGENT_BROWSER_PAGE_CONTENT nonce=(\S+) [^\n]*---\n[\s\S]*?\n--- END_AGENT_BROWSER_PAGE_CONTENT nonce=\2 ---(?:\nFor a relevant tool, fetch its schema: [^\n]*)?(?:\nCatalog shortened; webmcp list --json retrieves all metadata\.)?(?=\n|$)/g
 const WEBMCP_STATUS_LINE =
   /(^|\n)WebMCP (?:tools cleared; no page tools are currently available\.|state unavailable; do not reuse tools from an earlier response\.)(?=\n|$)/g
 
