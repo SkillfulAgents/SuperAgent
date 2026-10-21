@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, MAX_BROWSER_ERROR_CHARS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS } from './browser-output'
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, UNKNOWN_REF_HINT, MAX_BROWSER_ERROR_CHARS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS } from './browser-output'
 import { SNAPSHOT_SOFT_CAP_CHARS } from './snapshot-format'
 
 describe('capBrowserOutput', () => {
@@ -69,8 +69,12 @@ describe('describeExecFailure', () => {
   it('passes the CLI diagnostics through when they exist', () => {
     expect(describeExecFailure({ code: 1, stdout: '✗ Wait timed out after 25000ms', stderr: '' }, 'wait', 25_070))
       .toBe('✗ Wait timed out after 25000ms')
+  })
+
+  it('tells the agent where valid refs come from on an unknown ref', () => {
     expect(describeExecFailure({ code: 1, stdout: '', stderr: '✗ Unknown ref: e31' }, 'click', 40))
-      .toBe('✗ Unknown ref: e31')
+      .toBe(`✗ Unknown ref: e31\n${UNKNOWN_REF_HINT}`)
+    expect(UNKNOWN_REF_HINT).toContain('latest browser_snapshot')
   })
 
   it('reports the exit code, not the command line, when nothing was written', () => {
