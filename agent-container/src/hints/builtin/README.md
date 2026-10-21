@@ -32,6 +32,7 @@ A hint arrives mid-task with no context beyond the call that matched it, so it h
 4. **General, not shaped to one case.** Keep examples that match the specific bug you saw out of the text; they make a test pass without showing the hint helps elsewhere.
 5. **Mind the timing.** A `PreToolUse` hint does not stop the call it is attached to; the `sleep` still runs. It can only change the next step. If the call itself must not run, use a blocking hook instead.
 6. **Narrow trigger.** If the advice only applies to long waits, match long waits. A hint that fires where it doesn't apply teaches the agent to ignore it.
+7. **Detail matches the trigger.** A narrow trigger can carry a specific fact (`query` contains ` OR ` → "Sentry has no OR"); a broad one gets general advice (every `execute_sql` → "don't guess columns"). A specific fact on a broad trigger is wrong for most of the calls it fires on, so it is noise there; keep it only if it is true for almost every one of them.
 
 ## Testing a hint
 
