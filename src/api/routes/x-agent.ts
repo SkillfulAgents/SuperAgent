@@ -491,10 +491,10 @@ async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
  * budget (deadline is stamped at handler entry). Returns 'timeout' when the
  * budget is exhausted, before or during the wait.
  *
- * requireActiveFirst is off: every sync caller marks the session active before
- * the prompt is delivered (invoke) or checks isSessionActive just before
- * waiting (get-transcript), so an inactive session here means the turn already
- * finished — resolving immediately is correct, not a startup race.
+ * Every sync caller marks the session active before the prompt is delivered
+ * (invoke) or checks isSessionActive just before waiting (get-transcript), so
+ * an inactive session here means the turn already finished: the wait
+ * resolving at once is correct, not a startup race.
  */
 async function waitForTurnWithinBudget(
   targetSlug: string,
@@ -508,10 +508,7 @@ async function waitForTurnWithinBudget(
     // finished turn 'running' and make the caller poll for a result it has.
     return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
   }
-  const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
-    timeoutMs: remainingMs,
-    requireActiveFirst: false,
-  })
+  const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, { timeoutMs: remainingMs })
   return outcome === 'idle' ? 'completed' : 'timeout'
 }
 

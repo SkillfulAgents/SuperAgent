@@ -287,11 +287,9 @@ function createMessageOps(
 ): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
-    send: (...args) => client().sendMessage(...args),
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.
     cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
-    interrupt: (...args) => client().interruptSession(...args),
     stop: (sessionId, options) => delivery.stop(sessionId, options),
 
     list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),

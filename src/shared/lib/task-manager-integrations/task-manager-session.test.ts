@@ -22,7 +22,7 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   sessions: { create: runtime.create, register: async () => {}, updateMetadata: async () => {}, markActive: () => {},
     attach: async () => {}, isStreamSubscribed: () => true, activity: () => 'working' },
   messages: {
-    send: runtime.send, subscribe: async () => new ReadableStream(),
+    subscribe: async () => new ReadableStream(),
     deliver: async (request: { sessionId: string; content: string; uuid?: string }) => {
       await runtime.send(request.sessionId, request.content, request.uuid)
       return { status: 'sent', queued: true }

@@ -616,7 +616,7 @@ export class AgentIntegrationManager {
           if (!(await this.isAllowed(integration.id, event.externalId))) return
           await this.deliveries.cancel(integration.id, event.externalId)
           const session = await getIntegrationSession(integration.id, event.externalId)
-          if (session && (await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)).interrupted) event.onInterrupted?.()
+          if (session && (await agentRegistry.get(integration.agentSlug).messages.stop(session.sessionId, { scope: 'turn' })).interrupted) event.onInterrupted?.()
         }
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
         else if ((await this.isAllowed(integration.id, event.externalId))) this.preWarmContainer(integration.agentSlug)

@@ -89,6 +89,8 @@ export class LiveSessions {
   private readonly subscriptions = new Map<string, () => void>()
   /** Subscribes in flight: concurrent subscribes share one. */
   private readonly connecting = new Map<string, Promise<void>>()
+  /** What ends with the agent: the streams handed out over its sessions. */
+  private readonly disposers = new Set<() => void>()
   /** Sends in flight. A send can outlive a turn's idle or a reattach, so it holds the stream on its own. */
   private readonly sendsInFlight = new Map<string, number>()
   /** Delivery attempts run one at a time: a failed one is rolled back before the next looks at the state. */
@@ -212,6 +214,12 @@ export class LiveSessions {
   /** Listen to a session's events; returns the unsubscribe. */
   listen(sessionId: string, listener: SessionListener): () => void {
     return this.channels.listen(sessionId, listener)
+  }
+
+  /** `close` runs once, when the agent is let go of (`dispose`); returns the unregister. */
+  onDispose(close: () => void): () => void {
+    this.disposers.add(close)
+    return () => this.disposers.delete(close)
   }
 
   /**
@@ -842,6 +850,9 @@ export class LiveSessions {
     this.workflows.clear()
     this.clients.clear()
     this.channels.dispose()
+    const disposers = [...this.disposers]
+    this.disposers.clear()
+    for (const close of disposers) close()
   }
 
   // ===========================================================================

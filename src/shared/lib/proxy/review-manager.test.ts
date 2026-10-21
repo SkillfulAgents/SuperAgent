@@ -196,6 +196,20 @@ describe('ReviewManager', () => {
     await promise
   })
 
+  it('an id asked again replaces the call parked on it, whose timer then times out nothing', async () => {
+    const reviews = agents.get('agent-1').reviews
+    const details = { accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/path', matchedScopes: [], scopeDescriptions: {} }
+    const first = reviews.request(details, { id: 'r1' })
+    vi.advanceTimersByTime(3 * 60 * 1000)
+    const second = reviews.request(details, { id: 'r1' })
+    await expect(first).resolves.toBe('withdrawn')
+
+    // Past the first call's timeout: the second is still parked.
+    vi.advanceTimersByTime(2 * 60 * 1000 + 1)
+    expect(manager.submitDecision('r1', 'allow')).toBe(true)
+    await expect(second).resolves.toBe('allow')
+  })
+
   it('timeout after 5 minutes rejects with Error("Review timeout")', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-1',

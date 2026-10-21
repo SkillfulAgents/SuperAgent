@@ -1361,40 +1361,11 @@ describe('waitForIdle', () => {
     sessions().unsubscribe(WAIT_SESSION)
   })
 
-  it('rejects with "session never became active" when state never appears (requireActiveFirst default)', async () => {
-    await expect(
-      sessions().waitForIdle(WAIT_SESSION, { observeMs: 100 }),
-    ).rejects.toThrow(/never became active/)
-  })
-
-  it('resolves immediately for missing state when requireActiveFirst=false', async () => {
-    await expect(
-      sessions().waitForIdle(WAIT_SESSION, { requireActiveFirst: false }),
-    ).resolves.toBe('idle')
-  })
-
-  it('rejects with "aborted" when the abort signal fires mid-wait', async () => {
-    // Caller cancellation (e.g. HTTP client disconnect) must propagate through
-    // waitForIdle so we don't keep polling after no one's listening.
-    sessions().markActive(WAIT_SESSION)
-    const ctrl = new AbortController()
-    const promise = sessions().waitForIdle(WAIT_SESSION, { signal: ctrl.signal })
-    setTimeout(() => ctrl.abort(), 30)
-    await expect(promise).rejects.toThrow(/aborted/)
-  })
-
-  it('rejects synchronously when signal is already aborted', async () => {
-    sessions().markActive(WAIT_SESSION)
-    const ctrl = new AbortController()
-    ctrl.abort()
-    await expect(
-      sessions().waitForIdle(WAIT_SESSION, { signal: ctrl.signal }),
-    ).rejects.toThrow(/aborted/)
+  it('resolves at once for a session with no state', async () => {
+    await expect(sessions().waitForIdle(WAIT_SESSION)).resolves.toBe('idle')
   })
 
   it('answers timeout when an active session never goes idle', async () => {
-    // Once the session is active, observeMs no longer applies — timeoutMs is
-    // the stop-gap. Verifies the timeout branch (not the never-active branch).
     // Data, not an error class: the x-agent routes promote a sync invoke to
     // async on it, and an error's class does not survive a transport.
     sessions().markActive(WAIT_SESSION)
@@ -1407,10 +1378,10 @@ describe('waitForIdle', () => {
     const client = createStreamClient()
     await sessions().subscribe(WAIT_SESSION, client, WAIT_SESSION)
     // Without preservation, isActive would have been wiped here and waitForIdle
-    // would reject "never became active" instead of waiting for the result event.
+    // would resolve at once instead of waiting for the result event.
     expect(sessions().isActive(WAIT_SESSION)).toBe(true)
 
-    const promise = sessions().waitForIdle(WAIT_SESSION, { observeMs: 1000 })
+    const promise = sessions().waitForIdle(WAIT_SESSION)
     setTimeout(() => client.emit({ type: 'result', subtype: 'success' }), 50)
     await expect(promise).resolves.toBe('idle')
   })

@@ -8,7 +8,7 @@
  *   const actor = createFakeAgentActor('a', {
  *     sessions: { exists: vi.fn().mockResolvedValue(true) },
  *   })
- *   expect(actor.messages.send).toHaveBeenCalledWith('s1', 'hi')
+ *   expect(actor.messages.deliver).toHaveBeenCalledWith({ sessionId: 's1', content: 'hi' })
  *
  * `createFakeRegistry(actors)` returns an `AgentRegistry` that hands those
  * out and fabricates a fake for any slug it has not seen. Mock the registry

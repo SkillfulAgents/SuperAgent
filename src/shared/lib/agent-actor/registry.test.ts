@@ -305,14 +305,6 @@ describe('createAgentRegistry', () => {
       expect(fake.runtimes.get('a')?.ensureRunning).toHaveBeenCalledTimes(1)
     })
 
-    it('messages.send goes to this agent\'s client', async () => {
-      const actor = createAgentRegistry(fake.deps).get('a')
-      await actor.messages.send('s1', 'hi', 'u1', { isAutomated: true })
-      expect(fake.containerHost.runtime).toHaveBeenCalledWith('a')
-      expect(fake.runtimes.get('a')?.getClient).toHaveBeenCalledTimes(1)
-      expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
-    })
-
     it('sessions.broadcastUpdate and syncAwaiting reach this agent\'s live sessions only', () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor

@@ -160,13 +160,10 @@ vi.mock('@shared/lib/container/container-host', async () => {
 // Live sessions
 // Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
 // entry minus pre-wait work), so the exact timeoutMs varies — assert the shape
-// and that it stays within (0, 120s]. requireActiveFirst is off because sync
-// callers mark/observe the session active before waiting, so "inactive" means
-// the turn already finished.
+// and that it stays within (0, 120s].
 function expectBoundedSyncWait(sessionId: string): void {
   expect(mockWaitForIdle).toHaveBeenCalledWith('target-agent', sessionId, {
     timeoutMs: expect.any(Number),
-    requireActiveFirst: false,
   })
   const opts = mockWaitForIdle.mock.calls.at(-1)?.[2] as { timeoutMs: number }
   expect(opts.timeoutMs).toBeGreaterThan(0)

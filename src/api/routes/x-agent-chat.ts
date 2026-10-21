@@ -433,20 +433,19 @@ async function notifySessionOfOutboundMessage(
     ? `${SYSTEM_MESSAGE_PREFIX}A message was sent to the user on your behalf via chat integration:\n[Internal context: ${context}]\n\n${message}`
     : `${SYSTEM_MESSAGE_PREFIX}A message was sent to the user on your behalf via chat integration:\n${message}`
 
-  // Try the SDK-aware path (appends to transcript without triggering a response).
-  // Falls back to a direct transcript append if the container isn't running or
-  // the session doesn't exist on the container yet (e.g. ensureSession just
-  // created a lightweight session).
+  // Try the SDK-aware path: an append, which starts no turn. Falls back to a
+  // direct transcript append if the container isn't running or the session
+  // doesn't exist on the container yet (e.g. ensureSession just created a
+  // lightweight session).
   const actor = agentRegistry.get(agentSlug)
   try {
-    await actor.container.start()
-    await actor.messages.send(sessionId, notificationText, undefined, { shouldQuery: false })
+    await actor.messages.deliver({ sessionId, content: notificationText, options: { shouldQuery: false } })
   } catch {
     await actor.messages.appendAssistant(sessionId, notificationText)
+    // The direct append emits no stream frame the agent's live sessions
+    // watch, so the warm summary must be told directly.
+    actor.sessions.recordActivity(sessionId)
   }
-  // Both paths advance the transcript without emitting the stream frames the
-  // agent's live sessions watch, so the warm summary must be told directly.
-  actor.sessions.recordActivity(sessionId)
 }
 
 export default xAgentChat

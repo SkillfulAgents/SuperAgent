@@ -23,12 +23,19 @@ export const FOLLOW_PING_MS = 30_000
  */
 export function sessionEvents(live: LiveSessions, sessionId: string): ReadableStream<SessionEvent> {
   let release: (() => void) | undefined
+  let unwatch: (() => void) | undefined
   return new ReadableStream<SessionEvent>({
     start(controller) {
       release = live.listen(sessionId, (event) => controller.enqueue(event))
+      // The agent let go of: no event will come.
+      unwatch = live.onDispose(() => {
+        release?.()
+        controller.close()
+      })
     },
     cancel() {
       release?.()
+      unwatch?.()
     },
   })
 }
@@ -53,7 +60,14 @@ export async function sessionFrames(
     ended = true
     clearInterval(ping)
     release?.()
+    unwatch()
   }
+  // The agent let go of: no frame will come.
+  const unwatch = live.onDispose(() => {
+    if (ended) return
+    end()
+    controller.close()
+  })
   const stream = new ReadableStream<WireFrame>(
     { start: (c) => { controller = c }, cancel: end },
     new CountQueuingStrategy({ highWaterMark: maxPendingFrames }),
@@ -73,11 +87,15 @@ export async function sessionFrames(
     release()
     return stream
   }
-  ping = setInterval(() => push(wireFrame({
-    type: 'ping',
-    isActive: live.isActive(sessionId),
-    turnOutcome: live.turnOutcome(sessionId),
-  })), pingMs)
+  ping = setInterval(() => {
+    try {
+      push(wireFrame({ type: 'ping', isActive: live.isActive(sessionId), turnOutcome: live.turnOutcome(sessionId) }))
+    } catch (error) {
+      // A ping that cannot be built ends the stream, not the process: it is thrown from a timer.
+      end()
+      controller.error(error)
+    }
+  }, pingMs)
   ping.unref?.()
   return stream
 }

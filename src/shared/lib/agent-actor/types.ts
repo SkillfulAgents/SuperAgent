@@ -30,10 +30,7 @@ import type {
   CreateSessionOptions,
   HealthCheckResult,
   HostPortProbeResult,
-  InterruptSessionOptions,
   InterruptSessionResult,
-  SendMessageOptions,
-  SendMessageResult,
   SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
@@ -381,13 +378,10 @@ export interface SessionOps {
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
   /**
-   * `LiveSessions.waitForIdle`: `'idle'` once the session is no longer
-   * active, `'timeout'` when it still is after `timeoutMs`.
+   * `LiveSessions.waitForIdle`: `'idle'` once the session is not active (at
+   * once when it is not running), `'timeout'` when it still is after `timeoutMs`.
    */
-  waitForIdle(
-    sessionId: string,
-    opts?: { timeoutMs?: number; requireActiveFirst?: boolean; observeMs?: number },
-  ): Promise<'idle' | 'timeout'>
+  waitForIdle(sessionId: string, opts?: { timeoutMs?: number }): Promise<'idle' | 'timeout'>
   /** `LiveSessions.activeIds` */
   activeIds(): string[]
   /** `LiveSessions.hasActive` */
@@ -449,12 +443,6 @@ export interface MessageOps {
   // Live — ContainerClient.
 
   /**
-   * `client.sendMessage` alone: no mark, no stream, no ordering with other
-   * sends. For a message that starts no turn (`shouldQuery: false`) into a
-   * session the caller knows is live; everything else goes through `deliver`.
-   */
-  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
-  /**
    * The one way a message reaches a session (see `DeliverRequest`). In one
    * turn of the actor, after the session's earlier deliveries: start the
    * container and attach the stream, cancel what the session waits on if
@@ -466,8 +454,6 @@ export interface MessageOps {
   deliver(request: DeliverRequest): Promise<DeliverResult>
   /** Cancel a queued (not yet picked up) message, the copy held while recovering included. False: too late. */
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
-  /** `client.interruptSession` alone: the session's state is not touched. Stopping a session is `stop`. */
-  interrupt(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
   /**
    * Stop the session's turn and mark it interrupted, in one turn of the
    * actor: the container is asked when it runs, and the session is marked

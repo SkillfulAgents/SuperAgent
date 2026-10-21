@@ -11,6 +11,7 @@ import { sessionEvents, sessionFrames } from './session-streams'
 function fakeLive({ catchUp = [] as WireFrame[] } = {}) {
   const listeners = new Set<(event: SessionEvent) => void>()
   const followers = new Set<(frame: WireFrame) => void>()
+  const disposers = new Set<() => void>()
   const released = vi.fn()
   const live = {
     listen: (_sessionId: string, listener: (event: SessionEvent) => void) => {
@@ -30,10 +31,16 @@ function fakeLive({ catchUp = [] as WireFrame[] } = {}) {
     },
     isActive: () => true,
     turnOutcome: () => null,
+    onDispose: (close: () => void) => {
+      disposers.add(close)
+      return () => disposers.delete(close)
+    },
   }
   return {
     live: live as unknown as LiveSessions,
     released,
+    dispose: () => [...disposers].forEach((close) => close()),
+    watching: () => disposers.size,
     emit: (event: SessionEvent) => listeners.forEach((listener) => listener(event)),
     send: (frame: WireFrame) => followers.forEach((follower) => follower(frame)),
   }
@@ -59,6 +66,15 @@ describe('sessionEvents', () => {
     expect((await reader.read()).value).toEqual({ type: 'stream_end' })
   })
 
+  it('ends once the agent is let go of', async () => {
+    const fake = fakeLive()
+    const stream = sessionEvents(fake.live, 's')
+    fake.dispose()
+
+    expect(await readAll(stream)).toEqual([])
+    expect(fake.released).toHaveBeenCalledOnce()
+  })
+
   it('stops listening once cancelled', async () => {
     const fake = fakeLive()
     const stream = sessionEvents(fake.live, 's')
@@ -66,6 +82,7 @@ describe('sessionEvents', () => {
 
     expect(fake.released).toHaveBeenCalledOnce()
     expect(() => fake.emit({ type: 'stream_start' })).not.toThrow()
+    expect(fake.watching()).toBe(0)
   })
 })
 
@@ -95,6 +112,30 @@ describe('sessionFrames', () => {
     expect((await reader.read()).value).toEqual({ data: JSON.stringify({ type: 'ping', isActive: true, turnOutcome: null }) })
   })
 
+  it('ends the stream through the same cleanup when a ping cannot be built', async () => {
+    const fake = fakeLive()
+    fake.live.isActive = () => {
+      throw new Error('session state gone')
+    }
+    const reader = (await sessionFrames(fake.live, 's', undefined, { pingMs: 1000 })).getReader()
+    vi.advanceTimersByTime(1000)
+
+    await expect(reader.read()).rejects.toThrow('session state gone')
+    expect(fake.released).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ends, after the frames it holds, once the agent is let go of', async () => {
+    const fake = fakeLive()
+    const stream = await sessionFrames(fake.live, 's', undefined, { pingMs: 1000 })
+    fake.send(frame(1))
+    fake.dispose()
+
+    expect(await readAll(stream)).toEqual([frame(1)])
+    expect(fake.released).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('lets go and stops pinging once cancelled', async () => {
     const fake = fakeLive()
     const stream = await sessionFrames(fake.live, 's', undefined, { pingMs: 1000 })
@@ -103,6 +144,7 @@ describe('sessionFrames', () => {
 
     expect(fake.released).toHaveBeenCalledOnce()
     expect(vi.getTimerCount()).toBe(0)
+    expect(fake.watching()).toBe(0)
   })
 
   it('ends the stream of a reader too far behind, after the frames it holds', async () => {

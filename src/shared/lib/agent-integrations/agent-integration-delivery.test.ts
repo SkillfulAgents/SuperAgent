@@ -21,7 +21,7 @@ import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
   // Sends to the session's last event stream.
   emit: (_event: unknown) => {} }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
@@ -29,7 +29,7 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
     isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
-  messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
+  messages: { findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
     subscribe: runtime.subscribe,
     // The actor's delivery: the echo with its queued flag, then the message.
     deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
@@ -121,7 +121,6 @@ beforeEach(async () => {
     runtime.emit = (event) => controller.enqueue(event)
   } }))
   runtime.send.mockResolvedValue({}); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
-  runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
 

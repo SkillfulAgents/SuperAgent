@@ -200,6 +200,13 @@ export class AgentReviews {
         this.handOver(id, settler, 'timeout')
       }
 
+      // An id asked again replaces the call parked on it, which is told it
+      // was withdrawn; its timer would otherwise time out the new one.
+      const earlier = this.settlers.get(id)
+      if (earlier) {
+        clearTimeout(earlier.timer)
+        earlier.waiter?.('withdrawn')
+      }
       const timer = setTimeout(settleTimedOut, REVIEW_TIMEOUT_MS)
       this.settlers.set(id, { waiter: resolve, timer, recheck: options.recheck === true })
 
