@@ -8,6 +8,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { MigrationMeta } from 'drizzle-orm/migrator'
+import { sql } from 'drizzle-orm'
 import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
 import { captureException } from '@shared/lib/error-reporting'
 import { betterSqlite3 } from './drivers/better-sqlite3'
@@ -47,6 +48,10 @@ export function isDatabaseOpen(): boolean {
  * Works for a synchronous or an asynchronous driver.
  */
 export async function migrateFromBundle(db: AppDatabase, migrations: readonly MigrationMeta[] = migrationBundle): Promise<void> {
+  // D1 rejects BEGIN/COMMIT, so a driver with batch() gets the pending
+  // migrations and their bookkeeping rows as one atomic batch instead.
+  const batchSession = (db as unknown as { session: { batch?: (queries: unknown[]) => Promise<unknown> } }).session
+  if (typeof batchSession.batch === 'function') return migrateInBatch(db, migrations, batchSession.batch.bind(batchSession))
   // `dialect` and `session` are what drizzle's own `migrate()` reaches for;
   // they are marked internal in its types, so the cast is the same reach.
   const internals = db as unknown as {
@@ -62,6 +67,25 @@ export async function migrateFromBundle(db: AppDatabase, migrations: readonly Mi
   await internals.dialect.migrate([...migrations], internals.session, {
     migrationsTable: MIGRATIONS_TABLE,
   })
+}
+
+async function migrateInBatch(
+  db: AppDatabase,
+  migrations: readonly MigrationMeta[],
+  runBatch: (queries: unknown[]) => Promise<unknown>,
+): Promise<void> {
+  const table = sql.identifier(MIGRATIONS_TABLE)
+  await db.run(sql`CREATE TABLE IF NOT EXISTS ${table} (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`)
+  const [last] = (await db.values(sql`SELECT id, hash, created_at FROM ${table} ORDER BY created_at DESC LIMIT 1`)) as unknown[][]
+  const queries: unknown[] = []
+  for (const migration of migrations) {
+    if (last && Number(last[2]) >= migration.folderMillis) continue
+    for (const statement of migration.sql) if (statement.trim()) queries.push(db.run(sql.raw(statement)))
+    // D1's batch can't bind parameters on raw statements; the hash is hex and the timestamp a number.
+    const hash = migration.hash.replace(/[^0-9a-f]/g, '')
+    queries.push(db.run(sql.raw(`INSERT INTO "${MIGRATIONS_TABLE}" ("hash", "created_at") VALUES ('${hash}', ${Number(migration.folderMillis)})`)))
+  }
+  if (queries.length > 0) await runBatch(queries)
 }
 
 /** The desktop app's and single-tenant web's database: better-sqlite3 at the configured path. */

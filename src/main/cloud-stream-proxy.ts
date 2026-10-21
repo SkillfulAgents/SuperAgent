@@ -24,8 +24,6 @@ import {
   type CloudProxyTarget,
 } from '@shared/lib/services/cloud-proxy-target'
 
-const cloudWss = new WebSocketServer({ noServer: true })
-
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
 
@@ -147,6 +145,8 @@ function bridge(client: WebSocket, upstream: WebSocket, path: string): void {
 }
 
 export function setupCloudStreamProxy(server: ServerType): void {
+  const cloudWss = new WebSocketServer({ noServer: true })
+
   // Same gate as the HTTP half: Electron main, never inside a deployment.
   if (!isCloudProxyEnabled()) return
 

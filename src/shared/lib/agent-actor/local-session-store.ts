@@ -8,6 +8,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import { createLocalConfigOps } from './local-config-ops'
 import { createLocalFileOps } from './local-file-ops'
+import { createContainerConfigOps, createContainerFileOps, type ContainerFetch } from './container-file-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from './session-store'
 import type { AgentSlug } from './types'
 
@@ -22,10 +23,13 @@ const defaultDeps: LocalSessionStoreDeps = { getAgentWorkspaceDir: (slug) => get
 export function createLocalSessionStore(
   slug: AgentSlug,
   deps: LocalSessionStoreDeps = defaultDeps,
-  hooks: Pick<SessionStore, 'onActivity'> = {},
+  hooks: Pick<SessionStore, 'onActivity'> & { containerFetch?: ContainerFetch } = {},
 ): SessionStore {
-  const files = createLocalFileOps(slug, deps)
-  const config = createLocalConfigOps({ files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
+  // A runtime with no shared disk (Cloudflare Containers) keeps the workspace inside the container.
+  const files = hooks.containerFetch ? createContainerFileOps(hooks.containerFetch) : createLocalFileOps(slug, deps)
+  const config = hooks.containerFetch
+    ? createContainerConfigOps(files)
+    : createLocalConfigOps({ files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
   return {
     slug,
     files,

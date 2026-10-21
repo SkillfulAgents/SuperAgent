@@ -9,6 +9,7 @@ import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm
 import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro, killWSL2PullProcesses } from './wsl2-container-client'
 import { PlatformK8sRuntimeClient } from './platform-k8s-runtime'
 import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
+import { CloudflareContainerRuntimeClient } from './cloudflare-container-runtime'
 import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
@@ -92,6 +93,7 @@ const ALL_RUNNERS: {
   { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro(), pullStallTimeoutMs: PULL_STALL_TIMEOUT_MS, killStalledPull: () => killWSL2PullProcesses() },
   { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => PlatformK8sRuntimeClient.isEligible(), isAvailable: () => PlatformK8sRuntimeClient.isAvailable(), isRunning: () => PlatformK8sRuntimeClient.isRunning() },
   { name: 'lambda-microvm', cliCommand: 'lambda-microvm', isEligible: () => LambdaMicroVmRuntimeClient.isEligible(), isAvailable: () => LambdaMicroVmRuntimeClient.isAvailable(), isRunning: () => LambdaMicroVmRuntimeClient.isRunning() },
+  { name: 'cloudflare-container', cliCommand: 'cloudflare-container', isEligible: () => CloudflareContainerRuntimeClient.isEligible(), isAvailable: () => CloudflareContainerRuntimeClient.isAvailable(), isRunning: () => CloudflareContainerRuntimeClient.isRunning() },
 ]
 
 /**
@@ -118,6 +120,7 @@ const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
   wsl2: 'Built-in Runtime',
   kubernetes: 'Kubernetes',
   'lambda-microvm': 'AWS Lambda MicroVM',
+  'cloudflare-container': 'Cloudflare Container',
 }
 
 export function getRunnerDisplayName(runner: ContainerRunner): string {
@@ -931,6 +934,8 @@ export function getContainerClientClass(runner: ContainerRunner): ConcreteContai
       return PlatformK8sRuntimeClient
     case 'lambda-microvm':
       return LambdaMicroVmRuntimeClient
+    case 'cloudflare-container':
+      return CloudflareContainerRuntimeClient
     default:
       console.warn(`Unknown container runner "${runner}", falling back to docker`)
       return DockerContainerClient

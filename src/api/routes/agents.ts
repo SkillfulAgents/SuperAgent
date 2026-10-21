@@ -90,7 +90,6 @@ import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/util
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
-  cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
@@ -207,7 +206,6 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
@@ -4564,7 +4562,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     const appName = agentRegistry.get(agentSlug).inputs.computerUse.grabbedApp()
 
     // Ungrab via AC
-    await ungrabAC()
+    await (await import('@shared/lib/computer-use/executor')).ungrabAC()
 
     // Clear grab state
     agentRegistry.get(agentSlug).inputs.computerUse.clearGrabbedApp()
@@ -7357,24 +7355,6 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
-
-// ============================================================================
-// Cleanup stale chunked uploads (older than 1 hour)
-// ============================================================================
-const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
-
-async function cleanupStaleUploads() {
-  try {
-    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
-  } catch (err) {
-    console.warn('[agents] stale upload cleanup failed:', err)
-    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
-  }
-}
-
-// Run cleanup on startup and every 30 minutes
-void cleanupStaleUploads()
-setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 // =============================================================================
 // Pending user-input requests (unified wire)
