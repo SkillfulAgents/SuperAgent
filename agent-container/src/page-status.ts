@@ -56,8 +56,9 @@ export function pageWarnings(obs: PageObservation, refCount: number | null, opts
     warns.push(`site unreachable${code} — this is Chrome's error page for the URL above, not the site.`)
   }
   if (obs.blocker && obs.blockerOverlay) {
-    // The site is still there under the frame (Target): its text is the site's, not the challenge's.
-    warns.push(`${obs.blocker} challenge frame covers most of the page — the site is challenging automated access; the page under it is the site.`)
+    // A frame over the page (Target): the page text is not the challenge's,
+    // so the full-page wording would be false; nothing more is said.
+    warns.push(`${obs.blocker} challenge frame covers most of the page — the site is challenging automated access.`)
   } else if (obs.blocker) {
     warns.push(`${obs.blocker} challenge page — the site is challenging automated access; what follows is the challenge, not the site.`)
   }
