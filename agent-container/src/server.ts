@@ -951,7 +951,7 @@ const TREE_READ_TIMEOUT_MS = 10_000;
  * the new baseline either way. Null when it could not run or there was no
  * baseline for this page to compare with.
  */
-async function readTreeDiff(url: string, excludeRefs: string[], docStart = 0): Promise<EffectTreeDiff | null> {
+async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[] }, docStart = 0): Promise<EffectTreeDiff | null> {
   const prior = getTreeBaseline(url, docStart);
   const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (r.exitCode !== 0) return null;
@@ -960,7 +960,7 @@ async function readTreeDiff(url: string, excludeRefs: string[], docStart = 0): P
   // carry over to the next one and would already include this read.
   const result = prior
     ? {
-      diff: diffTrees(prior.refs, parseTreeRefs(r.stdout), { excludeRefs, seen: prior.seen, acknowledged: prior.acknowledged }),
+      diff: diffTrees(prior.refs, parseTreeRefs(r.stdout), { excludeRefs: exclude.refs, excludeSubtrees: exclude.subtrees, seen: prior.seen, acknowledged: prior.acknowledged }),
       baselineAgeMs: now - prior.takenAt,
       baselineSource: prior.source,
     }
@@ -980,7 +980,7 @@ async function readTreeDiff(url: string, excludeRefs: string[], docStart = 0): P
 async function runWithEffect(
   action: (before: PageObservation | null) => Promise<{ exitCode: number; stdout: string }>,
   policy: ActionPolicy,
-  opts: { excludeRefs?: string[] } = {},
+  opts: { excludeRefs?: string[]; excludeSubtrees?: string[] } = {},
 ): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number; treeDiff: EffectTreeDiff | null; docStart: number }> {
   const settled = await observeAction({
     exec: action,
@@ -999,7 +999,7 @@ async function runWithEffect(
   const effect = digest?.navigated && !sameDoc ? null : settled.effect;
   const docStart = settled.after?.docStart ?? 0;
   const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
-    ? await readTreeDiff(digest.url, opts.excludeRefs ?? [], docStart)
+    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees }, docStart)
     : null;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff, docStart };
 }
@@ -2186,7 +2186,7 @@ app.post('/browser/select', async (c) => {
     const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
       () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
       { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
-      { excludeRefs: [body.ref] },
+      { excludeSubtrees: [body.ref] },
     );
 
     if (result.exitCode !== 0) {

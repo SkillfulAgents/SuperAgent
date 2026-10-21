@@ -96,7 +96,16 @@ describe('diffTrees', () => {
       .replace('"Pick" [selected, ref=e14]', '"Pick" [ref=e14]')
       .replace('"California" [ref=e15]', '"California" [selected, ref=e15]')
     expect(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(after)).changed).toHaveLength(3)
-    expect(treeDiffIsEmpty(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(after), { excludeRefs: ['@e10'] }))).toBe(true)
+    expect(treeDiffIsEmpty(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(after), { excludeSubtrees: ['@e10'] }))).toBe(true)
+  })
+
+  it('leaves out only a typed-into field\'s own line: an ARIA combobox owns its suggestions, and they are the effect', () => {
+    // W3C APG combobox: the listbox is the combobox's child in the tree.
+    const before = parseTreeRefs('- combobox "State" [expanded=true, ref=e197]\n  - listbox "States" [ref=e232]\n    - option "Alabama" [ref=e233]\n    - option "New York" [ref=e290]')
+    const after = parseTreeRefs('- combobox "State" [expanded=true, ref=e197]: New\n  - listbox "States" [ref=e232]\n    - option "New York" [ref=e290]')
+    const d = diffTrees(before, after, { excludeRefs: ['@e197'] })
+    expect(d.changed).toEqual([])
+    expect(d.removed.map(l => l.ref)).toEqual(['e233'])
   })
 
   it('does not report a value the agent was already told, but does report a different one', () => {

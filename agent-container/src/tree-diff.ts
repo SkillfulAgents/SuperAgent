@@ -154,11 +154,14 @@ const MASKED = /^•+$/
 
 export interface DiffOptions {
   /**
-   * Refs left out, with everything nested under them: the target of a fill
-   * or select, whose new value (and a select's options) the result already
-   * reports.
+   * Refs left out: the target of a fill or type, whose value the result
+   * already reports. Only the target's own line — an ARIA combobox owns its
+   * suggestion listbox in the tree, and those suggestions are the effect
+   * (W3C APG combobox: typing "New" hid the filtered list).
    */
   excludeRefs?: Iterable<string>
+  /** Refs left out with everything nested under them: a native select and its options. */
+  excludeSubtrees?: Iterable<string>
   /** Lines the agent has seen earlier on this page (see TreeBaseline.seen). */
   seen?: ReadonlyMap<string, string>
   /**
@@ -176,15 +179,20 @@ export interface DiffOptions {
  * cursor-interactive element's text for its name and the full view does not.
  */
 export function diffTrees(before: TreeRefs, after: TreeRefs, opts: DiffOptions = {}): TreeDiff {
-  const roots = new Set([...(opts.excludeRefs ?? [])].map(r => r.replace(/^@/, '')))
-  const excluded = (ref: string): boolean => roots.size > 0 && (within(after, ref, roots) || within(before, ref, roots))
+  const exact = new Set([...(opts.excludeRefs ?? [])].map(r => r.replace(/^@/, '')))
+  const roots = new Set([...(opts.excludeSubtrees ?? [])].map(r => r.replace(/^@/, '')))
+  const excluded = (ref: string): boolean =>
+    exact.has(ref) || (roots.size > 0 && (within(after, ref, roots) || within(before, ref, roots)))
   const ack = opts.acknowledged ?? new Map<string, string | null>()
-  const ackRoots = new Set(ack.keys())
+  // A read-back value covers the field's own line; a select (null) covers its options too.
+  const ackRoots = new Set([...ack].filter(([, v]) => v === null).map(([k]) => k))
   const acknowledgedChange = (line: RefLine): boolean => {
-    if (ack.size === 0 || !within(after, line.ref, ackRoots)) return false
-    if (!ack.has(line.ref)) return true // nested under an acknowledged control: a select's options
-    const v = ack.get(line.ref)
-    return v === null || v === undefined || line.value === v || MASKED.test(line.value)
+    if (ack.size === 0) return false
+    if (ack.has(line.ref)) {
+      const v = ack.get(line.ref)
+      return v === null || v === undefined || line.value === v || MASKED.test(line.value)
+    }
+    return ackRoots.size > 0 && within(after, line.ref, ackRoots)
   }
   const added: RefLine[] = []
   const returned: RefLine[] = []
