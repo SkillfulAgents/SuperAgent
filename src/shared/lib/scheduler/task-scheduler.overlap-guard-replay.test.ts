@@ -212,7 +212,7 @@ describe('overlap guard against a real background-bash capture', () => {
       sseTypes.push(data.type)
     })
     await actor.sessions.attach(sessionId)
-    actor.sessions.markActive(sessionId)
+    await actor.sessions.markActive(sessionId)
 
     // Replay up to the first turn-end idle that arrives while a background bash
     // is still running: the moment the session tells clients it is waiting on

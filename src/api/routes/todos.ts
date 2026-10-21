@@ -102,7 +102,7 @@ async function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: 
     starting: row.status === 'draft' && startClaimHeld(row),
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
-    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
+    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(await actor.inputs.snapshot(row.sessionId)) : null,
     // Only work that is idle can be sleeping until its wake.
     pendingWakeAt: column === 'has_updates' && row.agentSlug && row.sessionId
       ? wakes.get(wakeKey(row.agentSlug, row.sessionId)) ?? null

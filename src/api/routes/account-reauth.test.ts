@@ -133,8 +133,8 @@ beforeEach(() => {
   app.route('/api/agents', accountReauth)
 })
 
-afterEach(() => {
-  agentRegistry.evictAll()
+afterEach(async () => {
+  await agentRegistry.evictAll()
   userInputRequestManager.reset()
   sqlite.close()
 })

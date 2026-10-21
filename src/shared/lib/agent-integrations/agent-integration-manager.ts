@@ -872,7 +872,7 @@ export class AgentIntegrationManager {
         clearTimeout(session.recoveryTimer)
         session.recoveryTimer = undefined
         await this.observe(session)
-      })().catch(error => {
+      })().catch(async error => {
         if (!current()) return
         if (this.isSessionGoneError(error)) {
           session.recovered = true
@@ -880,7 +880,7 @@ export class AgentIntegrationManager {
           // completion for the missing session. The next input owns reattachment.
           session.sseUnsubscribe?.()
           session.sseUnsubscribe = null
-          actor.sessions.markIdle(row.sessionId)
+          await actor.sessions.markIdle(row.sessionId)
           this.enqueueSSEEvent(integrationId, externalId, { type: 'session_error', error: 'The runtime session is no longer available.' }, row.sessionId)
           return
         }
@@ -1336,7 +1336,7 @@ export class AgentIntegrationManager {
 
     // Creation already started the turn. If rebuilding has temporarily removed
     // the connector, the mapping and active mark let connect restore its stream.
-    actor.sessions.markActive(sessionId)
+    await actor.sessions.markActive(sessionId)
     await this.deliver(integration.id, chatId, { type: 'turn-started' }, sessionId)
     await checkSetup()
     const managed = this.getOrCreateChatSession(integration.id, chatId)
@@ -1597,13 +1597,13 @@ export class AgentIntegrationManager {
         const reviews = agentRegistry.get(integration.agentSlug).inputs.reviews
         // Read before submitting (the review is gone after), only to audit a
         // rule decision — never in the way of the decision itself.
-        let proposal: NonNullable<ReturnType<typeof reviews.get>>['ruleProposal']
+        let proposal: NonNullable<Awaited<ReturnType<typeof reviews.get>>>['ruleProposal']
         try {
-          proposal = reviews.get(reviewId)?.ruleProposal
+          proposal = (await reviews.get(reviewId))?.ruleProposal
         } catch {
           proposal = undefined
         }
-        const settled = reviews.submit(reviewId, decision as 'allow' | 'deny')
+        const settled = await reviews.submit(reviewId, decision as 'allow' | 'deny')
         if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
         else if (proposal) {
           await auditRuleDecision({
@@ -1653,7 +1653,7 @@ export class AgentIntegrationManager {
   private async recoverOpenQuestion(integration: AgentIntegrationRecord, chatId: string | undefined, toolUseId: string): Promise<boolean> {
     const actor = agentRegistry.get(integration.agentSlug)
     // A stopped container waits on nothing: its questions ended with it.
-    if (!chatId || actor.inputs.recentResolution(toolUseId) || actor.container.status().status !== 'running') return false
+    if (!chatId || await actor.inputs.recentResolution(toolUseId) || (await actor.container.status()).status !== 'running') return false
     const row = await getIntegrationSession(integration.id, chatId)
     if (!row) return false
     let parked: { inputType: string; sessionId?: string } | undefined
@@ -1670,10 +1670,11 @@ export class AgentIntegrationManager {
     if (!(await this.recoverSessionContext(integration.id, chatId, this.generationOf(integration.id), row.sessionId))) return false
     // Marked recovered, like transcript recovery's: the chat already has its
     // card. Not parked again if it settled on another surface while this looked.
-    return actor.inputs.register(
+    const registered = await actor.inputs.register(
       { id: toolUseId, kind: 'question', scope: { sessionId: row.sessionId }, blocking: true, payload: { recovered: true } },
       { unlessRecentlyResolved: true },
-    ) !== null
+    )
+    return registered !== null
   }
 
   /**

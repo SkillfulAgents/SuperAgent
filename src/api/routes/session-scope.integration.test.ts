@@ -270,7 +270,7 @@ beforeEach(async () => {
   // The victim's session is LIVE: subscribed and streaming.
   await agentRegistry.get(VICTIM).sessions.attach(victimSession)
   await agentRegistry.get(ATTACKER).sessions.attach(attackerSession)
-  agentRegistry.get(VICTIM).sessions.markActive(victimSession)
+  await agentRegistry.get(VICTIM).sessions.markActive(victimSession)
 
   victimEvents = []
   attackerEvents = []
@@ -512,7 +512,7 @@ describe('the session stream on the wire', () => {
     agentRegistry.get(ATTACKER).messages.broadcastEvent(attackerSession, event)
 
   it('opens with the connected snapshot and numbers every frame after it', async () => {
-    agentRegistry.get(ATTACKER).sessions.markActive(attackerSession)
+    await agentRegistry.get(ATTACKER).sessions.markActive(attackerSession)
     const viewer = await openStream(url(ATTACKER, attackerSession, '/stream'))
 
     const connected = await viewer.next()

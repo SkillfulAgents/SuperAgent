@@ -125,10 +125,10 @@ export function createFakeRegistry(seed: FakeAgentActor[] = []): FakeRegistry {
     actors,
     fake,
     get: (slug) => fake(slug) as unknown as AgentActor,
-    evict: (slug) => {
+    evict: async (slug) => {
       actors.delete(slug)
     },
-    evictAll: () => {
+    evictAll: async () => {
       actors.clear()
     },
   }

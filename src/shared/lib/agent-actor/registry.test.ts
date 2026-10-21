@@ -254,32 +254,32 @@ describe('createAgentRegistry', () => {
       expect(attached().peek('b')).toBe(b.state.sessions)
     })
 
-    it('an evicted agent has no live sessions to peek', () => {
+    it('an evicted agent has no live sessions to peek', async () => {
       const registry = createAgentRegistry(fake.deps)
       registry.get('a')
-      registry.evict('a')
+      await registry.evict('a')
       expect(attached().peek('a')).toBeUndefined()
     })
   })
 
-  it('evict drops the handle and forgets the runtime for that slug only', () => {
+  it('evict drops the handle and forgets the runtime for that slug only', async () => {
     const registry = createAgentRegistry(fake.deps)
     const a = registry.get('a')
     const b = registry.get('b')
 
-    registry.evict('a')
+    await registry.evict('a')
 
     expect(fake.containerHost.dropRuntime).toHaveBeenCalledWith('a')
     expect(registry.get('b')).toBe(b)
     expect(registry.get('a')).not.toBe(a)
   })
 
-  it('evictAll clears every handle and every runtime', () => {
+  it('evictAll clears every handle and every runtime', async () => {
     const registry = createAgentRegistry(fake.deps)
     const a = registry.get('a')
     const b = registry.get('b')
 
-    registry.evictAll()
+    await registry.evictAll()
 
     expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)
     expect(registry.get('a')).not.toBe(a)
@@ -294,7 +294,7 @@ describe('createAgentRegistry', () => {
       expect(fake.runtimes.get('a')?.ensureRunning).toHaveBeenCalledTimes(1)
     })
 
-    it('sessions.broadcastUpdate, and the awaiting re-sync after inputs.resolve, reach this agent\'s live sessions only', () => {
+    it('sessions.broadcastUpdate, and the awaiting re-sync after inputs.resolve, reach this agent\'s live sessions only', async () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor
       const other = (registry.get('b') as LocalAgentActor).state.sessions
@@ -302,8 +302,8 @@ describe('createAgentRegistry', () => {
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
       const otherEmit = vi.spyOn(other, 'emit')
       const otherSyncAwaiting = vi.spyOn(other, 'syncAwaiting')
-      actor.sessions.broadcastUpdate('s1')
-      actor.inputs.resolve('nothing-open', 'answered')
+      await actor.sessions.broadcastUpdate('s1')
+      await actor.inputs.resolve('nothing-open', 'answered')
       expect(emit).toHaveBeenCalledWith('s1', { type: 'session_updated' })
       expect(syncAwaiting).toHaveBeenCalledTimes(1)
       expect(otherEmit).not.toHaveBeenCalled()
@@ -388,10 +388,10 @@ describe('createAgentRegistry', () => {
       const [open] = actor.state.inputRequests.getOpenRequests()
       expect(open).toMatchObject({ kind: 'proxy_review', scope: { agentSlug: 'a' }, payload: { ...details, agentSlug: 'a' } })
       expect((await actor.live()).pendingReviews.map((r) => r.id)).toEqual([open.id])
-      expect(actor.inputs.reviews.get(open.id)).toMatchObject({ id: open.id, ...details })
+      expect(await actor.inputs.reviews.get(open.id)).toMatchObject({ id: open.id, ...details })
       // The transition reached the router, which is how the wire hears of it.
       expect(fake.inputManager.report).toHaveBeenCalledWith(expect.objectContaining({ type: 'created', request: open }))
-      expect(actor.inputs.reviews.submit(open.id, 'allow')).toBe(true)
+      expect(await actor.inputs.reviews.submit(open.id, 'allow')).toBe(true)
       await expect(decision).resolves.toBe('allow')
       // The review opening and closing changed whether the agent's sessions wait.
       expect(syncAwaiting).toHaveBeenCalled()
@@ -417,9 +417,9 @@ describe('createAgentRegistry', () => {
       const store = expect.objectContaining({ slug: 'a', files: actor.files })
       await actor.messages.appendAssistant('s1', 'delivered elsewhere')
       expect(fake.appendAssistantEntry).toHaveBeenCalledWith(store, 's1', 'delivered elsewhere')
-      actor.sessions.recordActivity('s1')
+      await actor.sessions.recordActivity('s1')
       expect(fake.recordSessionActivity).toHaveBeenCalledWith(store, 's1')
-      actor.sessions.recordActivity('s1', 1234)
+      await actor.sessions.recordActivity('s1', 1234)
       expect(fake.recordSessionActivity).toHaveBeenCalledWith(store, 's1', 1234)
     })
   })
@@ -443,10 +443,10 @@ describe('createAgentRegistry', () => {
       expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledTimes(1)
     })
 
-    it('sessions.markIdle marks the runtime before the session goes idle', () => {
+    it('sessions.markIdle marks the runtime before the session goes idle', async () => {
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       const markIdle = vi.spyOn(actor.state.sessions, 'markIdle')
-      actor.sessions.markIdle('s1')
+      await actor.sessions.markIdle('s1')
       const noteSessionActivity = fake.runtimes.get('a')!.noteSessionActivity
       expect(noteSessionActivity).toHaveBeenCalledTimes(1)
       expect(markIdle).toHaveBeenCalledWith('s1')
@@ -466,7 +466,7 @@ describe('createAgentRegistry', () => {
 
     it('register stamps this agent onto the scope, whatever the caller wrote, and reports the transition', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      const stored = actor.inputs.register({ ...request('r1', 'b'), blocking: true } as never)
+      const stored = await actor.inputs.register({ ...request('r1', 'b'), blocking: true } as never)
       expect(stored).toMatchObject({ id: 'r1', scope: { agentSlug: 'a', sessionId: 's' } })
       expect((await actor.sessions.live('s')).openRequests.map((r) => r.id)).toEqual(['r1'])
       expect(fake.inputManager.report).toHaveBeenCalledWith({ type: 'created', request: stored })
@@ -474,36 +474,36 @@ describe('createAgentRegistry', () => {
 
     it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', async () => {
       const registry = createAgentRegistry(fake.deps)
-      const stored = register(registry, 'b', 'rb')
+      const stored = await register(registry, 'b', 'rb')
       const a = registry.get('a').inputs
 
-      expect(a.get('rb')).toBeNull()
+      expect(await a.get('rb')).toBeNull()
       expect(await a.claim('rb')).toBeNull()
-      expect(a.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(false)
-      expect(a.resolve('rb', outcome)).toBeNull()
-      expect(a.snapshot()).toEqual([])
+      expect(await a.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(false)
+      expect(await a.resolve('rb', outcome)).toBeNull()
+      expect(await a.snapshot()).toEqual([])
 
-      expect(registry.get('b').inputs.get('rb')).toBe(stored)
+      expect(await registry.get('b').inputs.get('rb')).toBe(stored)
       expect(stored!.payload).toEqual({})
     })
 
     it('the owning agent can still see, claim, settle and read back its own request', async () => {
       const registry = createAgentRegistry(fake.deps)
-      register(registry, 'b', 'rb')
+      await register(registry, 'b', 'rb')
       const b = registry.get('b').inputs
 
-      expect(b.get('rb')?.id).toBe('rb')
+      expect((await b.get('rb'))?.id).toBe('rb')
       expect((await b.claim('rb'))?.request.id).toBe('rb')
-      expect(b.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(true)
-      expect(b.resolve('rb', outcome)?.id).toBe('rb')
-      expect(b.recentResolution('rb')?.id).toBe('rb')
+      expect(await b.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(true)
+      expect((await b.resolve('rb', outcome))?.id).toBe('rb')
+      expect((await b.recentResolution('rb'))?.id).toBe('rb')
       // The settled record is the owner's too: another agent cannot read it back.
-      expect(registry.get('a').inputs.recentResolution('rb')).toBeUndefined()
+      expect(await registry.get('a').inputs.recentResolution('rb')).toBeUndefined()
     })
 
     it('releaseClaim only drops a claim this agent could have taken', async () => {
       const registry = createAgentRegistry(fake.deps)
-      register(registry, 'b', 'rb')
+      await register(registry, 'b', 'rb')
       const claim = await registry.get('b').inputs.claim('rb')
       expect(claim?.request.id).toBe('rb')
 
@@ -516,7 +516,7 @@ describe('createAgentRegistry', () => {
   })
 
   describe('the registry attaches the routers to the handles\' stores', () => {
-    it('gives every router a directory that reads through the handles and creates none of its own', () => {
+    it('gives every router a directory that reads through the handles and creates none of its own', async () => {
       const registry = createAgentRegistry(fake.deps)
       for (const router of [
         fake.inputManager,
@@ -539,32 +539,32 @@ describe('createAgentRegistry', () => {
       expect(store).toBe((registry.get('a') as LocalAgentActor).state.inputRequests)
       expect(directory.peek('a')).toBe(store)
       expect(directory.all()).toEqual([store])
-      registry.evict('a')
+      await registry.evict('a')
       expect(directory.all()).toEqual([])
     })
   })
 
   describe('a registry built over an earlier registry\'s state (a dev-server reload)', () => {
-    it('wraps every surviving state in a fresh handle, visible to the routers at once', () => {
+    it('wraps every surviving state in a fresh handle, visible to the routers at once', async () => {
       const states = new Map<string, AgentState>()
       const before = createAgentRegistry(fake.deps, { states })
       const actor = before.get('a') as LocalAgentActor
-      actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
+      await actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
       expect(states.get('a')).toBe(actor.state)
 
       const after = createAgentRegistry(fake.deps, { states })
       const rebuilt = after.get('a') as LocalAgentActor
       expect(rebuilt).not.toBe(actor)
       expect(rebuilt.state).toBe(actor.state)
-      expect(rebuilt.inputs.get('q1')?.id).toBe('q1')
+      expect((await rebuilt.inputs.get('q1'))?.id).toBe('q1')
       // The new registry's directory sees the rebuilt handle without a `get`:
       // the last attach is the new registry's.
       const directory = fake.inputManager.attachAgents.mock.calls.at(-1)![0] as { all: () => unknown[] }
       expect(directory.all()).toEqual([rebuilt.state.inputRequests])
 
-      after.evict('a')
+      await after.evict('a')
       expect(states.has('a')).toBe(false)
-      expect(after.get('a').inputs.get('q1')).toBeNull()
+      expect(await after.get('a').inputs.get('q1')).toBeNull()
     })
   })
 
@@ -583,19 +583,19 @@ describe('createAgentRegistry', () => {
       const actor = registry.get('a') as LocalAgentActor
 
       // Plant state of every kind the actor owns.
-      actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
+      await actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
       const review = actor.inputs.reviews.request(reviewDetails, { id: 'review-1' })
       const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' }, { waitId: 'wait-1' })
       const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
-      actor.inputs.computerUse.grant('use_host_shell', 'once')
-      actor.inputs.computerUse.setGrabbedApp('Calculator')
+      await actor.inputs.computerUse.grant('use_host_shell', 'once')
+      await actor.inputs.computerUse.setGrabbedApp('Calculator')
       getSessionSummaryCacheSlot(actor.store).revision = 7
       expect((await actor.live()).openRequests).toHaveLength(4)
       fake.inputManager.report.mockClear()
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
       const dispose = vi.spyOn(actor.state.sessions, 'dispose')
 
-      registry.evict('a')
+      await registry.evict('a')
 
       await expect(review).resolves.toBe('timeout')
       await expect(account).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
@@ -622,7 +622,7 @@ describe('createAgentRegistry', () => {
       const freshLive = await fresh.live()
       expect(freshLive.openRequests).toEqual([])
       expect(freshLive.pendingReviews).toEqual([])
-      expect(fresh.inputs.recentResolution('q1')).toBeUndefined()
+      expect(await fresh.inputs.recentResolution('q1')).toBeUndefined()
       expect(fresh.state.computerUse.grabbed()).toBeUndefined()
       expect(fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
@@ -640,7 +640,7 @@ describe('createAgentRegistry', () => {
       const reviewA = a.inputs.reviews.request(reviewDetails, { id: 'review-a' })
       const reviewB = b.inputs.reviews.request(reviewDetails, { id: 'review-b' })
 
-      registry.evictAll()
+      await registry.evictAll()
 
       await expect(reviewA).resolves.toBe('timeout')
       await expect(reviewB).resolves.toBe('timeout')
@@ -658,7 +658,7 @@ describe('createAgentRegistry', () => {
       fake.containerHost.runtime('a').isStale.mockReturnValue(true)
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       actor.state.sessions.markActive('s-busy')
-      actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's-busy' }, blocking: true, payload: { secret: 1 } } as never)
+      await actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's-busy' }, blocking: true, payload: { secret: 1 } } as never)
       void actor.inputs.reviews.request(
         { accountId: 'acct', toolkit: 'gmail', method: 'GET', targetPath: '/m', matchedScopes: ['read'], scopeDescriptions: {} },
         { id: 'review-1' },
@@ -683,7 +683,7 @@ describe('createAgentRegistry', () => {
       })
 
       actor.state.sessions.markActive('s1')
-      actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's1' }, blocking: true, payload: { q: 1 } } as never)
+      await actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's1' }, blocking: true, payload: { q: 1 } } as never)
       await actor.sessions.recordRuntime('s1', { provider: 'anthropic', modelContextWindows: { m: 1 } })
 
       expect(await actor.sessions.live('s1')).toMatchObject({
@@ -709,15 +709,15 @@ describe('createAgentRegistry', () => {
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
     })
 
-    it('inputs.register unlessRecentlyResolved does not park again a request just decided', () => {
+    it('inputs.register unlessRecentlyResolved does not park again a request just decided', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       const input = { id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never
-      actor.inputs.register(input)
-      actor.inputs.resolve('q1', 'answered')
-      expect(actor.inputs.register(input, { unlessRecentlyResolved: true })).toBeNull()
-      expect(actor.inputs.get('q1')).toBeNull()
+      await actor.inputs.register(input)
+      await actor.inputs.resolve('q1', 'answered')
+      expect(await actor.inputs.register(input, { unlessRecentlyResolved: true })).toBeNull()
+      expect(await actor.inputs.get('q1')).toBeNull()
       // Without the option a decided id can be asked again.
-      expect(actor.inputs.register(input)?.id).toBe('q1')
+      expect((await actor.inputs.register(input))?.id).toBe('q1')
     })
 
     describe('inputs.answer', () => {
@@ -749,7 +749,7 @@ describe('createAgentRegistry', () => {
         const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
         ask(actor)
         fake.containerHost.runtime('a').ensureRunning.mockImplementationOnce(async () => {
-          actor.inputs.resolve('q1', 'answered')
+          await actor.inputs.resolve('q1', 'answered')
           return fake.client
         })
         expect(await actor.inputs.answer('q1', 'yes')).toBe('not-open')
@@ -762,15 +762,15 @@ describe('createAgentRegistry', () => {
         fake.client.fetch.mockResolvedValueOnce(new Response('gone', { status: 404 }))
         vi.spyOn(console, 'error').mockImplementationOnce(() => {})
         expect(await actor.inputs.answer('q1', 'yes')).toBe('undeliverable')
-        expect(actor.inputs.get('q1')?.id).toBe('q1')
+        expect((await actor.inputs.get('q1'))?.id).toBe('q1')
         expect(await actor.inputs.claim('q1')).not.toBeNull()
       })
     })
 
     it('computerUse.releaseGrab forgets the grab, revokes the app and tells the session\'s viewers', async () => {
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
-      actor.inputs.computerUse.grant('use_application', 'always', 'Calculator')
-      actor.inputs.computerUse.setGrabbedApp('Calculator')
+      await actor.inputs.computerUse.grant('use_application', 'always', 'Calculator')
+      await actor.inputs.computerUse.setGrabbedApp('Calculator')
       const emit = vi.spyOn(actor.state.sessions, 'emit')
       const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
 
@@ -790,9 +790,9 @@ describe('createAgentRegistry', () => {
       expect(await actor.inputs.mcpReauth.settleReplaced(card.id, 'm2')).toBe('released')
       await expect(parked).resolves.toEqual({ outcome: 'replaced', replacementId: 'm2' })
 
-      actor.inputs.register({ id: 'stale-card', kind: 'mcp_reauth_required', scope: {}, blocking: true, payload: {} } as never)
+      await actor.inputs.register({ id: 'stale-card', kind: 'mcp_reauth_required', scope: {}, blocking: true, payload: {} } as never)
       expect(await actor.inputs.mcpReauth.settleReplaced('stale-card', 'm2')).toBe('resolved')
-      expect(actor.inputs.recentResolution('stale-card')?.outcome).toBe('answered')
+      expect((await actor.inputs.recentResolution('stale-card'))?.outcome).toBe('answered')
     })
 
     it('a reconnected connection resumes only this agent\'s parked calls', async () => {

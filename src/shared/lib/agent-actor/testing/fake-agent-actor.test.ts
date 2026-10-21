@@ -41,14 +41,14 @@ describe('createFakeAgentActor', () => {
 })
 
 describe('createFakeRegistry', () => {
-  it('hands out one fake per slug, until it is evicted', () => {
+  it('hands out one fake per slug, until it is evicted', async () => {
     const registry = createFakeRegistry()
     const a = registry.get('a')
     expect(registry.get('a')).toBe(a)
     expect(registry.actors.has('c')).toBe(false)
     expect(registry.fake('a').sessions.list).toBe(registry.get('a').sessions.list)
 
-    registry.evict('a')
+    await registry.evict('a')
     expect(registry.actors.has('a')).toBe(false)
     expect(registry.get('a')).not.toBe(a)
   })

@@ -27,7 +27,7 @@ export async function finishConnectionReplacement(
     const sessionIds = (await actor.live()).activeSessionIds
     liveRefresh = await actor.container.syncConnectionEnvironment(change.kind)
     if (!liveRefresh) return { liveRefresh: false, sessionNotification: false }
-    if (sessionIds.length === 0 || actor.container.status().status !== 'running') {
+    if (sessionIds.length === 0 || (await actor.container.status()).status !== 'running') {
       return { liveRefresh: true, sessionNotification: true }
     }
 

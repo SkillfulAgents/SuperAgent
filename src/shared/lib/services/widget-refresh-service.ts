@@ -122,7 +122,7 @@ class WidgetRefreshService {
     widgetSlug: string,
     opts: { wake: boolean; reason: RefreshReason },
   ): Promise<RefreshOutcome> {
-    if (!opts.wake && agentRegistry.get(agentSlug).container.status().status !== 'running') {
+    if (!opts.wake && (await agentRegistry.get(agentSlug).container.status()).status !== 'running') {
       return { ok: false, error: 'Agent is not running', skipped: true }
     }
     globalFeed.publish({
@@ -222,7 +222,7 @@ class WidgetRefreshService {
   }
 
   async runPostRun(agentSlug: string): Promise<string[]> {
-    if (agentRegistry.get(agentSlug).container.status().status !== 'running') return []
+    if ((await agentRegistry.get(agentSlug).container.status()).status !== 'running') return []
     const widgets = await listWidgetsFromFilesystem(agentSlug)
     const now = Date.now()
     const picked = widgets.filter((w) => {

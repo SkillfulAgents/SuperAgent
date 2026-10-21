@@ -105,8 +105,8 @@ export function createAgentRegistry(
 
   return {
     get: (slug): AgentActor => get(slug),
-    evict,
-    evictAll: () => {
+    evict: async (slug) => evict(slug),
+    evictAll: async () => {
       // Release every handle first, while the runtimes still exist, then let
       // the host forget the runtimes its own way: one whose container is
       // starting is kept, so the start still lands somewhere the host knows.

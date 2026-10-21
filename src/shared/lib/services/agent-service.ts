@@ -452,7 +452,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // Remove the agent only after the container has been confirmed stopped, then
   // forget the handle and runtime the stop above created for it.
   await agentCatalog.remove(slug)
-  agentRegistry.evict(slug)
+  await agentRegistry.evict(slug)
 
   return true
 }

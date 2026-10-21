@@ -185,8 +185,8 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     restart: async () => {
       await runtime().restartContainer()
     },
-    keepAlive: () => runtime().keepAlive(),
-    status: () => runtime().getCachedInfo(),
+    keepAlive: async () => runtime().keepAlive(),
+    status: async () => runtime().getCachedInfo(),
     syncStatus: () => runtime().syncAgentStatus(),
     invalidate: async (options) => {
       if (runtime().getCachedInfo().status !== 'running') return 'not-running'
@@ -213,7 +213,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
         headers: { ...init?.headers, ...c.getHostAuthHeaders() },
       }
     },
-    hostBridgeIp: () => client().getHostBridgeIp(),
+    hostBridgeIp: async () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
   }
 }
@@ -261,7 +261,7 @@ function createSessionOps(
     byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(store, triggerId),
     forScheduledExecution: (taskId, executionAt) =>
       deps.sessionService.getSessionForScheduledExecution(store, taskId, executionAt),
-    recordActivity: (...args) => deps.recordSessionActivity(store, ...args),
+    recordActivity: async (...args) => deps.recordSessionActivity(store, ...args),
     recordRuntime: async (sessionId, runtime) => live.recordRuntime(sessionId, runtime),
 
     subagents: (sessionId, options) => deps.transcripts.listSubagents(store, sessionId, options),
@@ -290,18 +290,18 @@ function createSessionOps(
       openRequests: state.inputRequests.getOpenRequestsForSession(sessionId),
       runtime: live.runtime(sessionId) ?? null,
     }),
-    markActive: (sessionId) => live.markActive(sessionId),
-    markIdle: (sessionId) => {
+    markActive: async (sessionId) => live.markActive(sessionId),
+    markIdle: async (sessionId) => {
       // Going idle is the last moment the session was busy.
       deps.containerHost.runtime(slug).noteSessionActivity()
       live.markIdle(sessionId)
     },
     stopTask: (sessionId, taskId) => client().stopTask(sessionId, taskId),
     waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
-    broadcastUpdate: (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
+    broadcastUpdate: async (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
     reconcileTranscript: async (sessionId, toolCalls) => live.reconcileTranscript(sessionId, toolCalls),
     promoteAutomated: (sessionId, metadata) => live.promoteAutomated(sessionId, metadata),
-    grantCapability: (sessionId, capability) => live.grantCapability(sessionId, capability),
+    grantCapability: async (sessionId, capability) => live.grantCapability(sessionId, capability),
 
     attach: (sessionId, options) => delivery.attach(sessionId, options),
   }
@@ -337,7 +337,7 @@ function createMessageOps(
 
     subscribe: async (sessionId) => sessionEvents(live, sessionId),
     follow: (sessionId, { after }) => sessionFrames(live, sessionId, after),
-    broadcastEvent: (sessionId, data) => live.emit(sessionId, data as SessionEvent),
+    broadcastEvent: async (sessionId, data) => live.emit(sessionId, data as SessionEvent),
   }
 }
 
@@ -350,19 +350,19 @@ function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps
     return resolved
   }
   return {
-    register: (input, options) =>
+    register: async (input, options) =>
       options?.unlessRecentlyResolved && input.id && requests.getRecentResolution(input.id) ? null : requests.register(input),
-    get: (id) => requests.getOpenRequest(id),
+    get: async (id) => requests.getOpenRequest(id),
     claim: async (id, options) => requests.claimRequest(id, options?.leaseMs),
     releaseClaim: async (id, token) => requests.releaseClaim(id, token),
     answer: (id, value) => answerRequest(slug, state, deps, id, value),
-    resolve,
-    recentResolution: (id) => requests.getRecentResolution(id),
-    snapshot: (sessionId) => requests.getSnapshotForScope(sessionId),
-    enrich: (id, kind, enrichment) => requests.enrichOpenRequestPayload(id, kind, enrichment),
+    resolve: async (id, outcome) => resolve(id, outcome),
+    recentResolution: async (id) => requests.getRecentResolution(id),
+    snapshot: async (sessionId) => requests.getSnapshotForScope(sessionId),
+    enrich: async (id, kind, enrichment) => requests.enrichOpenRequestPayload(id, kind, enrichment),
 
-    complete: (sessionId, toolUseId, outcome) => state.sessions.completeRequest(sessionId, toolUseId, outcome),
-    completeCapabilityReview: (sessionId, toolUseId, outcome) =>
+    complete: async (sessionId, toolUseId, outcome) => state.sessions.completeRequest(sessionId, toolUseId, outcome),
+    completeCapabilityReview: async (sessionId, toolUseId, outcome) =>
       state.sessions.completeCapabilityReview(sessionId, toolUseId, outcome),
     cancelAwaiting: (sessionId) => state.sessions.cancelAwaitingInput(sessionId),
 
@@ -418,13 +418,13 @@ async function answerRequest(
 
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
-    get: (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
-    denyAll: () => deps.reviewManager.denyAllForAgent(slug),
-    resolveMatching: (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
-    resolveMatchingByLabel: (label, decision) =>
+    get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
+    submit: async (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
+    denyAll: async () => deps.reviewManager.denyAllForAgent(slug),
+    resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
+    resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
-    resolveMatchingXAgent: (operation, decision) =>
+    resolveMatchingXAgent: async (operation, decision) =>
       deps.reviewManager.resolveMatchingXAgentByOperation(slug, operation, decision),
     request: (details, options) => deps.reviewManager.request(slug, details, options),
     requestXAgent: (request, options) => deps.reviewManager.requestXAgent(slug, request, options),
@@ -444,11 +444,11 @@ function createComputerUseOps(state: AgentState, deps: LocalActorDeps): Computer
       state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
       return { appName }
     },
-    setGrabbedApp: (appName) => computerUse.setGrabbed(appName),
-    clearGrabbedApp: () => computerUse.clearGrabbed(),
-    grant: (...args) => computerUse.grant(...args),
-    consumeOnce: (...args) => computerUse.consumeOnce(...args),
-    clearPending: (...args) => state.sessions.clearComputerUseRequest(...args),
+    setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
+    clearGrabbedApp: async () => computerUse.clearGrabbed(),
+    grant: async (...args) => computerUse.grant(...args),
+    consumeOnce: async (...args) => computerUse.consumeOnce(...args),
+    clearPending: async (...args) => state.sessions.clearComputerUseRequest(...args),
     run: (run) => runComputerUse(state.hostRuns, deps.host, run),
     runScript: (run) => runScript(state.hostRuns, deps.host, run),
   }
@@ -482,7 +482,7 @@ function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps, resolve: Reso
   return {
     request: (details, options) => deps.mcpReauthManager.request(slug, details, options),
     withdraw: async (waitId) => deps.mcpReauthManager.withdraw(slug, waitId),
-    dismiss: (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
+    dismiss: async (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
     settleReplaced: async (entryId, replacementMcpId) => {
       if (deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId)) return 'released'
       resolve(entryId, 'answered')
@@ -496,7 +496,7 @@ function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps, resolve: 
   return {
     request: (details, options) => deps.accountReauthManager.request(slug, details, options),
     withdraw: async (waitId) => deps.accountReauthManager.withdraw(slug, waitId),
-    dismiss: (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
+    dismiss: async (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
     settleReplaced: async (entryId, replacementAccountId) => {
       if (deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId)) return 'released'
       resolve(entryId, 'answered')

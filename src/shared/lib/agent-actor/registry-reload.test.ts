@@ -54,7 +54,7 @@ async function reload() {
 afterEach(async () => {
   const managers = await load()
   for (const registry of registries.splice(0)) registry.evictAll()
-  managers.agentRegistry.evictAll()
+  await managers.agentRegistry.evictAll()
   managers.userInputRequestManager.reset()
 })
 
@@ -70,7 +70,7 @@ const reviewDetails = {
 describe('the actors\' state survives a backend module reload', () => {
   it('a pending input registered before the reload is still open after it', async () => {
     const original = await load()
-    original.agentRegistry.get('a').inputs.register({
+    await original.agentRegistry.get('a').inputs.register({
       id: 'reload-secret',
       kind: 'secret',
       scope: { sessionId: 's' },
@@ -84,7 +84,7 @@ describe('the actors\' state survives a backend module reload', () => {
     // wrapping the same state.
     expect(reloaded.userInputRequestManager).toBe(original.userInputRequestManager)
     expect(reloaded.agentRegistry).not.toBe(original.agentRegistry)
-    expect(reloaded.agentRegistry.get('a').inputs.get('reload-secret')).not.toBeNull()
+    expect(await reloaded.agentRegistry.get('a').inputs.get('reload-secret')).not.toBeNull()
     expect(reloaded.userInputRequestManager.getOpenRequest('reload-secret', 'a')?.id).toBe('reload-secret')
     // The router's id index was rebuilt from the surviving stores: a bare id
     // still finds its owner, and the owner is not announced a second time.
@@ -103,7 +103,7 @@ describe('the actors\' state survives a backend module reload', () => {
 
     expect((reloaded.agentRegistry.get('a') as LocalAgentActor).state.sessions).toBe(sessions)
     // A tab listening before the reload hears what the reloaded code emits.
-    reloaded.agentRegistry.get('a').sessions.broadcastUpdate('s')
+    await reloaded.agentRegistry.get('a').sessions.broadcastUpdate('s')
     await drained()
     expect(heard).toEqual([{ type: 'session_updated' }])
     // The reloaded registry attached the reloaded host to the same sessions.
@@ -116,14 +116,14 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     // a's handle exists first; b registers the shared id first.
     original.agentRegistry.get('a')
-    original.agentRegistry.get('b').inputs.register({
+    await original.agentRegistry.get('b').inputs.register({
       id: 'shared-id',
       kind: 'secret',
       scope: { sessionId: 's' },
       blocking: true,
       payload: {},
     })
-    original.agentRegistry.get('a').inputs.register({
+    await original.agentRegistry.get('a').inputs.register({
       id: 'shared-id',
       kind: 'secret',
       scope: { sessionId: 's' },
@@ -152,8 +152,8 @@ describe('the actors\' state survives a backend module reload', () => {
 
     const reloaded = await reload()
 
-    expect(reloaded.agentRegistry.get('a').inputs.reviews.get(entry.id)?.id).toBe(entry.id)
-    expect(reloaded.agentRegistry.get('a').inputs.reviews.submit(entry.id, 'allow')).toBe(true)
+    expect((await reloaded.agentRegistry.get('a').inputs.reviews.get(entry.id))?.id).toBe(entry.id)
+    expect(await reloaded.agentRegistry.get('a').inputs.reviews.submit(entry.id, 'allow')).toBe(true)
     await expect(decision).resolves.toBe('allow')
     // The id-only decision path finds the owner through the rebuilt index.
     expect(reloaded.reviewManager.submitDecision(bareEntry.id, 'allow')).toBe(true)
@@ -189,7 +189,7 @@ describe('the actors\' state survives a backend module reload', () => {
     // calling the registry of the module evaluation that created it.
     const stale = await load()
     const current = await reload()
-    current.agentRegistry.get('new-agent').inputs.register({
+    await current.agentRegistry.get('new-agent').inputs.register({
       id: 'after-reload',
       kind: 'secret',
       scope: { sessionId: 's' },
@@ -201,7 +201,7 @@ describe('the actors\' state survives a backend module reload', () => {
 
     expect(fromStale.state).toBe((current.agentRegistry.get('new-agent') as LocalAgentActor).state)
     const next = await reload()
-    expect(next.agentRegistry.get('new-agent').inputs.get('after-reload')).not.toBeNull()
+    expect(await next.agentRegistry.get('new-agent').inputs.get('after-reload')).not.toBeNull()
   })
 
   it('evicting after the reload releases the state the earlier registry built', async () => {
@@ -211,7 +211,7 @@ describe('the actors\' state survives a backend module reload', () => {
       .inputs.reviews.request(reviewDetails, { id: 'review-a' })
 
     const reloaded = await reload()
-    reloaded.agentRegistry.evict('a')
+    await reloaded.agentRegistry.evict('a')
 
     await expect(decision).resolves.toBe('timeout')
     expect(reloaded.reviewManager.getPendingReviewsForAgent('a')).toEqual([])

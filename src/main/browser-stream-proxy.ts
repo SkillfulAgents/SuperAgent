@@ -117,18 +117,18 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         upstream.on('error', (error) => {
           console.error(`[BrowserProxy] Upstream error for agent ${agentSlug}:`, error)
-          const containerStatus = actor.container.status().status
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close(1011, 'Upstream connection error')
+          }
+          // A reset from a container that is going away is expected; anything else is reported.
           const isConnectionReset = error instanceof Error && (error.message.includes('ECONNRESET') || error.message.includes('socket hang up'))
-          const isExpected = isConnectionReset && containerStatus !== 'running'
-          if (!isExpected) {
+          void actor.container.status().then(({ status: containerStatus }) => {
+            if (isConnectionReset && containerStatus !== 'running') return
             captureException(error, {
               tags: { component: 'browser-proxy', operation: 'upstream-ws', containerStatus },
               extra: { agentSlug },
             })
-          }
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.close(1011, 'Upstream connection error')
-          }
+          }, () => {})
         })
 
         ws.on('error', (error) => {

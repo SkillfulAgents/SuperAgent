@@ -18,26 +18,26 @@ function fakeActor(options: { containerOk?: boolean } = {}) {
   const answered = new Set<string>()
   const frames: Record<string, unknown>[] = []
   const grants = {
-    grant: vi.fn(),
-    consumeOnce: vi.fn(),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    grant: vi.fn(async () => {}),
+    consumeOnce: vi.fn(async () => {}),
+    setGrabbedApp: vi.fn(async () => {}),
+    clearGrabbedApp: vi.fn(async () => {}),
   }
   const actor: HostRunActor = {
     inputs: {
       claim: async (id) => requests.claimRequest(id),
       releaseClaim: async (id, token) => requests.releaseClaim(id, token),
-      resolve: (id, outcome) => {
+      resolve: async (id, outcome) => {
         settled.push({ id, how: 'resolve', outcome })
         return requests.resolve(id, outcome)
       },
-      complete: (_sessionId, id, outcome) => {
+      complete: async (_sessionId, id, outcome) => {
         settled.push({ id, how: 'complete', outcome })
         requests.resolve(id, outcome)
       },
       computerUse: {
         ...grants,
-        clearPending: (_sessionId, id, outcome = 'answered') => {
+        clearPending: async (_sessionId, id, outcome = 'answered') => {
           settled.push({ id, how: 'clearPending', outcome })
           requests.resolve(id, outcome)
         },
@@ -53,7 +53,7 @@ function fakeActor(options: { containerOk?: boolean } = {}) {
         return new Response('{"error":"gone"}', { status: ok ? 200 : 404 })
       },
     },
-    messages: { broadcastEvent: (_sessionId, event) => frames.push(event as Record<string, unknown>) },
+    messages: { broadcastEvent: async (_sessionId, event) => { frames.push(event as Record<string, unknown>) } },
   }
   const park = (id: string, kind: 'computer_use' | 'script_run', autoApproved = false) =>
     requests.register({ id, kind, scope: { agentSlug: 'agent-1', sessionId: SESSION }, blocking: true, autoApproved, payload: {} })

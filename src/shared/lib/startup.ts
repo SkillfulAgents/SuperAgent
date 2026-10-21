@@ -309,7 +309,7 @@ export async function shutdownServices() {
   await containerHost.stopAll()
   // After the containers, whose runtimes the host still needed: every agent
   // lets go of what it holds, its parked reviews and re-auth waits included.
-  agentRegistry.evictAll()
+  await agentRegistry.evictAll()
   await shutdownActiveRunner()
   await shutdownAC()
 }

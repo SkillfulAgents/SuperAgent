@@ -101,16 +101,16 @@ function rpcBody(init: RequestInit): { id?: number; method: string } {
 describe('MCP re-auth park → reconnect → resume integration', () => {
   let app: Hono
 
-  beforeEach(() => {
+  beforeEach(async () => {
     userInputRequestManager.reset()
-    agentRegistry.evictAll()
+    await agentRegistry.evictAll()
     mocks.safeFetch.mockReset()
     mocks.currentMcp = mcp('auth_required', 'stale-token')
     app = new Hono().route('/api/mcp-proxy', mcpProxy)
   })
 
-  afterEach(() => {
-    agentRegistry.evictAll()
+  afterEach(async () => {
+    await agentRegistry.evictAll()
     userInputRequestManager.reset()
   })
 

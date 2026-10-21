@@ -18,7 +18,7 @@ const replacementSchema = z.object({ remoteMcpIds: z.array(z.string().min(1)).le
 
 async function loadRequestedMcp(requestId: string, agentSlug: string) {
   // The actor only hands back this agent's requests; another agent's reads as absent.
-  const request = agentRegistry.get(agentSlug).inputs.get(requestId)
+  const request = await agentRegistry.get(agentSlug).inputs.get(requestId)
   if (request?.kind !== 'mcp_reauth_required' || !request.payload.mcpId) return null
   return (await db.select({ mapping: agentRemoteMcps, mcp: remoteMcpServers })
     .from(agentRemoteMcps).innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))

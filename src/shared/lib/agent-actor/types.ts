@@ -17,7 +17,10 @@
  * evicts it. The process-wide managers of those names are routers over the
  * actors' stores, for callers that hold an id or a slug but no handle.
  *
- * What the agent and one of its sessions are doing is read as one snapshot
+ * Every op returns a Promise and takes and returns data, so the same callers
+ * work whether the actor is an object in this process or one behind a
+ * transport; only `agentRegistry.get()` and `actor.slug` are synchronous. What
+ * the agent and one of its sessions are doing is read as one snapshot
  * (`live()`, `sessions.live()`): reads consumed together are taken together,
  * and a read → decide → write is one op, so no state changes between them.
  */
@@ -84,9 +87,9 @@ export interface AgentRegistry {
    * input requests are settled as invalidated, in-memory grants and the
    * summary cache are gone. Does not stop the container.
    */
-  evict(slug: AgentSlug): void
+  evict(slug: AgentSlug): Promise<void>
   /** `evict` for every handle, at shutdown: parked callers are let go. Does not stop containers. */
-  evictAll(): void
+  evictAll(): Promise<void>
 }
 
 export interface AgentActor {
@@ -178,9 +181,9 @@ export interface ContainerOps {
   /** `containerManager.restartContainer` */
   restart(): Promise<void>
   /** `containerManager.keepAlive` */
-  keepAlive(): void
-  /** `containerManager.getCachedInfo` — synchronous snapshot of the cached status. */
-  status(): ContainerInfo
+  keepAlive(): Promise<void>
+  /** `containerManager.getCachedInfo` — the cached status; no runtime is queried. */
+  status(): Promise<ContainerInfo>
   /** `containerManager.syncAgentStatus` — refresh the cache from the runtime. */
   syncStatus(): Promise<ContainerInfo>
   /**
@@ -222,7 +225,7 @@ export interface ContainerOps {
   // null / 'unknown', and callers gate on that.
 
   /** `client.getHostBridgeIp` — the address the container reaches this host on, if any. */
-  hostBridgeIp(): string | null
+  hostBridgeIp(): Promise<string | null>
   /** `client.probeHostPortFromRunner` — whether the container's network can reach a port on this host. */
   probeHostPort(host: string, port: number): Promise<HostPortProbeResult>
 }
@@ -290,7 +293,7 @@ export interface SessionOps {
   /** `getSessionForScheduledExecution` */
   forScheduledExecution(scheduledTaskId: string, scheduledExecutionAt: Date): Promise<SessionInfo | null>
   /** `recordSessionActivity` (session-summary-cache) — a transcript write happened that no stream frame will report. */
-  recordActivity(sessionId: string, activityAt?: Date | number): void
+  recordActivity(sessionId: string, activityAt?: Date | number): Promise<void>
   /** The model runtime the session's turns now run on (the llm-runtime callback resolved it), for its errors' presentation. */
   recordRuntime(sessionId: string, runtime: SessionModelRuntime): Promise<void>
 
@@ -343,9 +346,9 @@ export interface SessionOps {
   /** What the session is doing as of now. */
   live(sessionId: string): Promise<SessionLiveState>
   /** `LiveSessions.markActive` */
-  markActive(sessionId: string): void
+  markActive(sessionId: string): Promise<void>
   /** `LiveSessions.markIdle` */
-  markIdle(sessionId: string): void
+  markIdle(sessionId: string): Promise<void>
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
   /**
@@ -358,7 +361,7 @@ export interface SessionOps {
    * listeners that its metadata changed (a rename, a model or effort change)
    * so they refetch before their next send.
    */
-  broadcastUpdate(sessionId: string): void
+  broadcastUpdate(sessionId: string): Promise<void>
   /**
    * Square the transcript's open tool calls with the session's requests, in
    * one turn: the outcome of each the user already decided, and, while the
@@ -372,7 +375,7 @@ export interface SessionOps {
    */
   promoteAutomated(sessionId: string, metadata?: SessionMetadata | null): Promise<SessionMetadata | null>
   /** `LiveSessions.grantCapability` */
-  grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): void
+  grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): Promise<void>
 
   // Container stream attachment — the agent's `LiveSessions` follows the
   // container's stream for a session and persists what arrives.
@@ -516,7 +519,7 @@ export interface MessageOps {
    */
   follow(sessionId: string, options: { after?: string }): Promise<ReadableStream<WireFrame>>
   /** `LiveSessions.emit` */
-  broadcastEvent(sessionId: string, data: unknown): void
+  broadcastEvent(sessionId: string, data: unknown): Promise<void>
 }
 
 /** Which transcript entry `messages.findLastEntry` looks for. */
@@ -643,9 +646,9 @@ export interface InputOps {
    * `unlessRecentlyResolved`: null when the request settled lately, so one
    * recovered from the container is not parked again after its decision.
    */
-  register(input: PendingUserInputRequestInput, options?: { unlessRecentlyResolved?: boolean }): PendingUserInputRequest | null
+  register(input: PendingUserInputRequestInput, options?: { unlessRecentlyResolved?: boolean }): Promise<PendingUserInputRequest | null>
   /** `AgentInputRequests.getOpenRequest` */
-  get(id: string): PendingUserInputRequest | null
+  get(id: string): Promise<PendingUserInputRequest | null>
   /**
    * `AgentInputRequests.claimRequest`: reserve an open request for a
    * decision. The first caller gets the request and a token, every other one
@@ -664,20 +667,20 @@ export interface InputOps {
    */
   answer(id: string, value: unknown): Promise<'answered' | 'not-open' | 'claimed' | 'undeliverable'>
   /** `AgentInputRequests.resolve`; the sessions' awaiting state follows. */
-  resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null
+  resolve(id: string, outcome: UserInputRequestOutcome): Promise<PendingUserInputRequest | null>
   /** `AgentInputRequests.getRecentResolution` */
-  recentResolution(id: string): SettledUserInputRequest | undefined
+  recentResolution(id: string): Promise<SettledUserInputRequest | undefined>
   /** `AgentInputRequests.getSnapshotForScope` */
-  snapshot(sessionId?: string): PendingUserInputRequest[]
+  snapshot(sessionId?: string): Promise<PendingUserInputRequest[]>
   /** `AgentInputRequests.enrichOpenRequestPayload` */
-  enrich(id: string, kind: PendingUserInputRequest['kind'], enrichment: Record<string, unknown>): boolean
+  enrich(id: string, kind: PendingUserInputRequest['kind'], enrichment: Record<string, unknown>): Promise<boolean>
 
   // Settlement — the agent's `LiveSessions`.
 
   /** `LiveSessions.completeRequest`. `sessionId` undefined = take it from the request's scope. */
-  complete(sessionId: string | undefined, toolUseId: string, outcome: UserInputRequestOutcome): void
+  complete(sessionId: string | undefined, toolUseId: string, outcome: UserInputRequestOutcome): Promise<void>
   /** `LiveSessions.completeCapabilityReview` */
-  completeCapabilityReview(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
+  completeCapabilityReview(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
   /** `LiveSessions.cancelAwaitingInput` */
   cancelAwaiting(sessionId: string): Promise<void>
 
@@ -690,17 +693,17 @@ export interface InputOps {
 /** Proxy scope reviews — the agent's own `AgentReviews`, owned by the actor. */
 export interface ReviewOps {
   /** One review waiting on the user, or null when this agent holds none by that id. */
-  get(id: string): ({ id: string; displayText: string } & ReviewDetails) | null
+  get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny'): boolean
+  submit(id: string, decision: 'allow' | 'deny'): Promise<boolean>
   /** `AgentReviews.denyAll` */
-  denyAll(): void
+  denyAll(): Promise<void>
   /** `AgentReviews.resolveMatching` */
-  resolveMatching(scope: string, decision: 'allow' | 'deny'): void
+  resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
-  resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): void
+  resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingXAgent` */
-  resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
+  resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): Promise<void>
   /**
    * `AgentReviews.request`: park a call on a review card of this agent until
    * its outcome. The caller names the review (`options.id`) to withdraw it
@@ -735,15 +738,15 @@ export interface ComputerUseOps {
    */
   releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */
-  setGrabbedApp(appName: string): void
+  setGrabbedApp(appName: string): Promise<void>
   /** `AgentComputerUse.clearGrabbed` */
-  clearGrabbedApp(): void
+  clearGrabbedApp(): Promise<void>
   /** `AgentComputerUse.grant` */
-  grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): void
+  grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): Promise<void>
   /** `AgentComputerUse.consumeOnce` */
-  consumeOnce(level: ComputerUsePermissionLevel, appName?: string): void
+  consumeOnce(level: ComputerUsePermissionLevel, appName?: string): Promise<void>
   /** `LiveSessions.clearComputerUseRequest` */
-  clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
+  clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
   /**
    * Run an approved computer-use request: claim it, run the command on the
    * host, record the grab, deliver the result and settle it. See `host-runs`.
@@ -765,7 +768,7 @@ export interface McpReauthOps {
   /** `AgentReauthWaits.withdraw`: the caller is gone. */
   withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
-  dismiss(entryId: string, reason?: string): boolean
+  dismiss(entryId: string, reason?: string): Promise<boolean>
   /**
    * The card was answered with a different connection: its parked calls go on
    * with it (`released`), or, with none parked, the request is settled (`resolved`).
@@ -782,7 +785,7 @@ export interface AccountReauthOps {
   /** `AgentReauthWaits.withdraw`: the caller is gone. */
   withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
-  dismiss(entryId: string, reason?: string): boolean
+  dismiss(entryId: string, reason?: string): Promise<boolean>
   /** As `McpReauthOps.settleReplaced`; only this agent's calls go on, other agents still use the old account. */
   settleReplaced(entryId: string, replacementAccountId: string): Promise<'released' | 'resolved'>
   /** The account was reconnected: this agent's calls waiting on it go on. Resolves to how many. */

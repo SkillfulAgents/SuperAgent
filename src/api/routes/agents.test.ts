@@ -864,7 +864,7 @@ function createApp() {
 beforeEach(async () => {
   // Fresh actor handles: the file operations cache the workspace root's real
   // path per handle, and these tests script realpath answers per test.
-  agentRegistry.evictAll()
+  await agentRegistry.evictAll()
   vi.mocked(getUserSummaries).mockResolvedValue(new Map())
   vi.mocked(userExists).mockResolvedValue(true)
   mockAuthorizedAgentRole = 'owner'
@@ -10789,7 +10789,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
     expect(await res.json()).toEqual({ success: false, missingPermissions: permissions })
     expect(host).not.toHaveBeenCalledWith('computerUse', expect.anything())
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(agentRegistry.get('test-agent').inputs.get('cu-perm')).not.toBeNull()
+    expect(await agentRegistry.get('test-agent').inputs.get('cu-perm')).not.toBeNull()
   })
 
   it('computer-use: a failed command fails the agent\'s call, and the approval still answers 200', async () => {
@@ -10814,14 +10814,14 @@ describe('run-script and computer-use decisions run through the actor', () => {
   ])('$label while another decision holds the request answers 409 and touches nothing', async ({ url, kind, body }) => {
     const host = machine({})
     park('held', kind)
-    agentRegistry.get('test-agent').inputs.claim('held')
+    await agentRegistry.get('test-agent').inputs.claim('held')
 
     const res = await postJson(app, url, { toolUseId: 'held', ...body })
 
     expect(res.status).toBe(409)
     expect(host).not.toHaveBeenCalled()
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(agentRegistry.get('test-agent').inputs.get('held')).not.toBeNull()
+    expect(await agentRegistry.get('test-agent').inputs.get('held')).not.toBeNull()
   })
 
   it('run-script: a malformed approval records no grant', async () => {

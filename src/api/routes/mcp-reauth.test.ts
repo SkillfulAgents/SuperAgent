@@ -123,8 +123,8 @@ beforeEach(() => {
   })
   app.route('/api/agents', mcpReauth)
 })
-afterEach(() => {
-  agentRegistry.evictAll()
+afterEach(async () => {
+  await agentRegistry.evictAll()
   userInputRequestManager.reset()
   sqlite.close()
 })
