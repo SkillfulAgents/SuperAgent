@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WebSocket } from 'ws'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
 import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
@@ -9,6 +8,8 @@ import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
 import { createAgentRegistry } from './registry'
+import { registerWorkspaceStore } from './workspace-store'
+import { createInMemorySessionStore } from './testing/in-memory-session-store'
 import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 import type { SessionStore } from './session-store'
@@ -51,7 +52,6 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: vi.fn(),
 }))
 vi.mock('@shared/lib/services/usage-service', () => ({ loadDailyUsageData: vi.fn(), loadSessionUsageTotals: vi.fn() }))
-vi.mock('ws', () => ({ WebSocket: vi.fn() }))
 
 type FakeRequest = {
   id: string
@@ -95,6 +95,7 @@ function fakeDeps() {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
     getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
+    openWebSocket: vi.fn(),
   }
   // One fake runtime per slug, created the way the real host creates them: on first use.
   const fakeRuntime = (slug: string) => ({
@@ -184,7 +185,6 @@ describe('createAgentRegistry', () => {
     vi.restoreAllMocks()
     userInputRequestManager.reset()
     fake = fakeDeps()
-    vi.mocked(WebSocket).mockClear()
   })
 
   it('returns one stable handle per slug, created on first get', () => {
@@ -344,16 +344,18 @@ describe('createAgentRegistry', () => {
 
       expect(fake.runtimes.get('a')?.getCachedInfo).toHaveBeenCalledTimes(1)
       expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
-      expect(vi.mocked(WebSocket)).toHaveBeenCalledWith('ws://127.0.0.1:4321/browser/stream?since=1', ['p1'], {
-        headers: { 'x-forwarded': 'yes', 'x-host': '1' },
-      })
+      expect(fake.client.openWebSocket).toHaveBeenCalledWith(
+        'ws://127.0.0.1:4321/browser/stream?since=1',
+        { 'x-forwarded': 'yes', 'x-host': '1' },
+        ['p1'],
+      )
     })
 
     it('container.openWebSocket refuses while the container is not running', () => {
       fake.containerHost.runtime('a').getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(() => actor.container.openWebSocket('/browser/stream')).toThrow(/not running/)
-      expect(vi.mocked(WebSocket)).not.toHaveBeenCalled()
+      expect(fake.client.openWebSocket).not.toHaveBeenCalled()
     })
 
     it('container.syncConnectionEnvironment pushes one projection through this agent\'s runtime', async () => {
@@ -463,6 +465,26 @@ describe('createAgentRegistry', () => {
       ;(registry.get('b') as LocalAgentActor).store.onActivity?.(6_000)
       expect(fake.runtimes.get('b')?.noteSessionActivity).toHaveBeenCalledWith(6_000)
       expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('opens the session store through a registered workspace store, with the same activity hook', () => {
+      const opened: SessionStore[] = []
+      registerWorkspaceStore({
+        runtime: 'remote-disk',
+        open: (slug, hooks) => {
+          const store = { ...createInMemorySessionStore(slug), onActivity: hooks.onActivity }
+          opened.push(store)
+          return store
+        },
+      })
+      try {
+        const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+        expect(opened).toEqual([actor.store])
+        actor.store.onActivity?.(7_000)
+        expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledWith(7_000)
+      } finally {
+        registerWorkspaceStore(null)
+      }
     })
 
     it('sessions.markIdle marks the runtime before the session goes idle', () => {

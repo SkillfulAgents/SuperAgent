@@ -23,6 +23,7 @@ import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
+import { registeredWorkspaceStore } from './workspace-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
   AccountReauthOps,
@@ -117,14 +118,13 @@ export class LocalAgentActor implements AgentActor {
     // container's idle clock learns of session activity — the live sessions'
     // stream frames, the transcript appends and `sessions.recordActivity`
     // all record through it.
+    const storeHooks = { onActivity: (at: number) => deps.containerHost.runtime(slug).noteSessionActivity(at) }
     this.state =
       state ??
       createAgentState(slug, {
         transitions: deps.userInputRequestManager,
         sessions: {
-          store: createLocalSessionStore(slug, deps, {
-            onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
-          }),
+          store: registeredWorkspaceStore()?.open(slug, storeHooks) ?? createLocalSessionStore(slug, deps, storeHooks),
           host: deps.host,
           runtime: createSessionsRuntime(slug, deps),
           capture: subagentCapture,

@@ -24,6 +24,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { LOCAL_RUNTIME } from './agent-directories'
+import { registeredWorkspaceStore } from './workspace-store'
 import type { AgentCatalog, AgentIdentityChanges, AgentRecord, AgentSlug } from './types'
 
 // Built on first use rather than at import: suites that stub file-storage
@@ -112,7 +113,7 @@ export function createAgentCatalog(): AgentCatalog {
         avatarShape: avatar.shape,
         description: description ?? null,
         createdAt,
-        runtime: LOCAL_RUNTIME,
+        runtime: registeredWorkspaceStore()?.runtime ?? LOCAL_RUNTIME,
         workspaceHandle: null,
       }).run()
       return toRecord((await rowFor(slug))!)
