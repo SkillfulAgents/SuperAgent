@@ -42,8 +42,8 @@ export interface OpenedDatabase {
   close(): Promise<void> | void
   /**
    * Applies the bundled migrations the database has not seen, for a driver
-   * drizzle's migrator cannot run on (D1 rejects its BEGIN). Without it,
-   * `openDatabase()` runs `migrateFromBundle()`.
+   * with its own way to apply them. Without it, `openDatabase()` runs
+   * `migrateFromBundle()`.
    */
   migrate?(migrations: readonly MigrationMeta[]): Promise<void>
 }

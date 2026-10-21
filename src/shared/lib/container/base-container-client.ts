@@ -1230,7 +1230,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `ws://127.0.0.1:${port}`
   }
 
-  /** How requests reach the container API. Runtimes that cannot dial a local port override this. */
+  /** How requests reach the container API: the global fetch, or a runtime's own transport. */
   protected transportFetch(url: string, init?: RequestInit): Promise<Response> {
     return fetch(url, init)
   }
