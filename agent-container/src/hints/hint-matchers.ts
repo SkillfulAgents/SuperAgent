@@ -17,15 +17,37 @@ export function escapeRegExp(text: string): string {
 /**
  * `*` matches anything and spaces match any run of whitespace. A trailing ` *`
  * means "this word, then anything", so `ls *` matches `ls` and `ls -la` but not `lsof`.
+ * Matches the literal pieces in order with indexOf instead of a regex: a regex with
+ * several `.*` backtracks for seconds on a long command that almost matches.
  */
-export function globToRegExp(glob: string): RegExp {
+export function compileGlob(glob: string): (value: string) => boolean {
   const wordThenAnything = glob.endsWith(' *')
-  const body = (wordThenAnything ? glob.slice(0, -2) : glob).trim()
-  const source = body
-    .split('*')
-    .map((part) => part.split(/\s+/).map(escapeRegExp).join('\\s+'))
-    .join('.*')
-  return new RegExp(`^${source}${wordThenAnything ? '(?=$|[\\s;&|])' : '$'}`, 's')
+  const pieces = collapseWhitespace((wordThenAnything ? glob.slice(0, -2) : glob).trim()).split('*')
+  const first = pieces[0]
+  const last = pieces[pieces.length - 1]
+  const middle = pieces.slice(1, -1)
+  const endsAt = (value: string, end: number) => !wordThenAnything || end === value.length || /[\s;&|]/.test(value[end])
+  return (raw) => {
+    const value = collapseWhitespace(raw)
+    if (!value.startsWith(first)) return false
+    if (pieces.length === 1) return wordThenAnything ? endsAt(value, first.length) : value === first
+    let at = first.length
+    for (const piece of middle) {
+      const found = value.indexOf(piece, at)
+      if (found < 0) return false
+      at = found + piece.length
+    }
+    if (!wordThenAnything) return value.length - last.length >= at && value.endsWith(last)
+    if (last === '') return true
+    for (let found = value.indexOf(last, at); found >= 0; found = value.indexOf(last, found + 1)) {
+      if (endsAt(value, found + last.length)) return true
+    }
+    return false
+  }
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ')
 }
 
 /** A Bash command is checked part by part; every other field as one value. */
@@ -35,15 +57,15 @@ function candidates(toolName: string, field: string, value: string): string[] {
 }
 
 function compileToolTrigger(trigger: HintToolTrigger): HintMatcher {
-  const fields = Object.entries(trigger.input ?? {}).map(([field, glob]) => [field, globToRegExp(glob)] as const)
+  const fields = Object.entries(trigger.input ?? {}).map(([field, glob]) => [field, compileGlob(glob)] as const)
   return (input) => {
     if (!('toolName' in input) || input.toolName !== trigger.tool) return false
     const toolInput = (input.toolInput ?? {}) as Record<string, unknown>
-    return fields.every(([field, regex]) => {
+    return fields.every(([field, matches]) => {
       const raw = toolInput[field]
       // Booleans and numbers compare as text, so `input: { run_in_background: "true" }` works.
       const value = typeof raw === 'boolean' || typeof raw === 'number' ? String(raw) : raw
-      return typeof value === 'string' && candidates(trigger.tool, field, value).some((part) => regex.test(part))
+      return typeof value === 'string' && candidates(trigger.tool, field, value).some((part) => matches(part))
     })
   }
 }

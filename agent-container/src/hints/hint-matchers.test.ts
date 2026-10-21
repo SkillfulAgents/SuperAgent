@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { compileTrigger, globToRegExp } from './hint-matchers'
+import { compileGlob, compileTrigger } from './hint-matchers'
 
 const bash = (command: unknown) => ({ event: 'PreToolUse' as const, toolName: 'Bash', toolInput: { command } })
 
-describe('globToRegExp', () => {
+describe('compileGlob', () => {
   it.each([
     ['ls *', 'ls', true],
     ['ls *', 'ls -la', true],
@@ -14,8 +14,21 @@ describe('globToRegExp', () => {
     ['git push', 'git push origin main', false],
     ['git   push *', 'git push origin main', true],
     ['*--env-file*', 'uv run --env-file .env a.py', true],
+    ['git push', 'git  push', true],
+    ['git push', 'gitpush', false],
+    ['*.env', 'cat /workspace/.env', true],
+    ['*.env', 'cat /workspace/.env.bak', false],
+    ['cat *.env*', 'cat /workspace/.env.bak', true],
+    ['*a*b*', 'b a', false],
+    ['* -d *', 'curl -dx url -d body', true],
+    ['* -d *', 'curl -dx url', false],
+    ['*slides*batchUpdate*', 'url = "slides/v1"\nrequests.post(url + ":batchUpdate")', true],
   ])('%s against %s is %s', (glob, value, expected) => {
-    expect(globToRegExp(glob).test(value)).toBe(expected)
+    expect(compileGlob(glob)(value)).toBe(expected)
+  })
+
+  it('stays fast on a long command that almost matches', () => {
+    expect(compileGlob('*a*b*c*d*zzz*')('a b c d '.repeat(2000))).toBe(false)
   })
 })
 
