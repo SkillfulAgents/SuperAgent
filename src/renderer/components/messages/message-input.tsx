@@ -242,6 +242,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       track('message_sent', {
         origin: 'user', input_mode: inputMode,
         session_id: sessionId, credential_source: credentialSource ?? 'unknown',
+        notify_only: silent,
       })
     }, [createFirstTurn, onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,

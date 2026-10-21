@@ -737,6 +737,7 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
     await waitFor(() => expect(mockTrack).toHaveBeenCalledWith('message_sent', {
       origin: 'user', input_mode: 'text', session_id: 's-1', credential_source: 'byo:codex-subscription',
+      notify_only: false,
     }))
   })
 
