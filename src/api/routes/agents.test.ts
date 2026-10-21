@@ -269,6 +269,10 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
 type LiveAnswer<K extends keyof LiveSessionsAnswers> = NonNullable<LiveSessionsAnswers[K]>
 const mockLiveSessions = vi.hoisted(() => {
   const isActive = vi.fn<LiveAnswer<'isActive'>>(() => false)
+  const isAwaitingInput = vi.fn<LiveAnswer<'isAwaitingInput'>>(() => false)
+  const activeIds = vi.fn<LiveAnswer<'activeIds'>>(() => [])
+  const settledRequests = vi.fn<LiveAnswer<'settledRequests'>>(() => new Map())
+  const recoverAwaitingInput = vi.fn<LiveAnswer<'recoverAwaitingInput'>>()
   const markActive = vi.fn<LiveAnswer<'markActive'>>()
   const rollbackSend = vi.fn<(slug: string, sessionId: string) => void>()
   // A session's deliveries run one at a time, as the live sessions run them.
@@ -282,9 +286,25 @@ const mockLiveSessions = vi.hoisted(() => {
   return {
   emit: vi.fn<LiveAnswer<'emit'>>(),
   isActive,
-  isAwaitingInput: vi.fn<LiveAnswer<'isAwaitingInput'>>(() => false),
-  recoverAwaitingInput: vi.fn<LiveAnswer<'recoverAwaitingInput'>>(),
-  activeIds: vi.fn<LiveAnswer<'activeIds'>>(() => []),
+  isAwaitingInput,
+  recoverAwaitingInput,
+  // The live sessions' own step (LiveSessions.reconcileTranscript), over this
+  // double's answers: the routes' recovery is what these tests drive.
+  reconcileTranscript: vi.fn<LiveAnswer<'reconcileTranscript'>>((slug, sessionId, toolCalls) => {
+    const decided = settledRequests(slug, sessionId)
+    const settled = Object.fromEntries(toolCalls.flatMap(({ toolUseId }) => {
+      const outcome = decided.get(toolUseId)
+      return outcome === undefined ? [] : [[toolUseId, outcome]]
+    }))
+    const undecided = toolCalls.filter((call) => call.awaitsInput && settled[call.toolUseId] === undefined)
+    if (isActive(slug, sessionId) && undecided.length > 0) {
+      recoverAwaitingInput(slug, sessionId, undecided.map(({ toolUseId, toolName }) => ({ toolUseId, toolName })))
+    }
+    return { settled }
+  }),
+  activeIds,
+  // The active sessions this double calls awaiting, unless a test says which.
+  awaitingIds: vi.fn<LiveAnswer<'awaitingIds'>>((slug) => activeIds(slug).filter((id) => isAwaitingInput(slug, id))),
   hasActive: vi.fn<LiveAnswer<'hasActive'>>(() => false),
   hasAwaitingInput: vi.fn<LiveAnswer<'hasAwaitingInput'>>(() => false),
   // Every session's stream is already attached unless a test says otherwise.
@@ -310,7 +330,7 @@ const mockLiveSessions = vi.hoisted(() => {
   completeCapabilityReview: vi.fn<LiveAnswer<'completeCapabilityReview'>>(),
   clearComputerUseRequest: vi.fn<LiveAnswer<'clearComputerUseRequest'>>(),
   grantCapability: vi.fn<LiveAnswer<'grantCapability'>>(),
-  settledRequests: vi.fn<LiveAnswer<'settledRequests'>>(() => new Map()),
+  settledRequests,
   }
 })
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
@@ -7274,12 +7294,8 @@ describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
         lastActivityAt: new Date('2026-08-21T10:05:00.000Z'),
       },
     ])
-    mockLiveSessions.isActive.mockImplementation(
-      (_agentSlug: string, sessionId: string) => sessionId === 'running-session',
-    )
-    mockLiveSessions.isAwaitingInput.mockImplementation(
-      (_agentSlug: string, sessionId: string) => sessionId === 'legacy-session',
-    )
+    mockLiveSessions.activeIds.mockReturnValueOnce(['running-session'])
+    mockLiveSessions.awaitingIds.mockReturnValueOnce(['legacy-session'])
 
     const res = await getReq(createApp(), URL)
 
@@ -7692,10 +7708,12 @@ describe('GET /api/agents (enriched summary)', () => {
     })
   })
 
-  it('treats an unattributable positive pending-input aggregate as outside', async () => {
+  it('counts a waiting session the visible list does not know as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
-    mockLiveSessions.hasAwaitingInput.mockReturnValue(true)
+    // Not confirmed hidden, so not safe to ignore: iOS opens the latest session
+    // directly on false/false.
+    mockLiveSessions.awaitingIds.mockReturnValueOnce(['unlisted-session'])
 
     const res = await getReq(
       app,
@@ -8009,13 +8027,13 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    mockLiveSessions.isActive.mockReturnValue(true)
+    mockLiveSessions.activeIds.mockReturnValue(['sess-active'])
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
     expect(body[0].hasActiveSessions).toBe(true)
-    expect(mockLiveSessions.isActive).toHaveBeenCalledWith('agent-1', 'sess-active')
+    expect(mockLiveSessions.activeIds).toHaveBeenCalledWith('agent-1')
   })
 
   it('detects sessions awaiting input', async () => {
@@ -8025,7 +8043,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    mockLiveSessions.isAwaitingInput.mockReturnValue(true)
+    mockLiveSessions.awaitingIds.mockReturnValueOnce(['sess-waiting'])
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -8157,7 +8175,7 @@ describe('GET /api/agents (enriched summary)', () => {
       lastActivityAt: new Date(),
     })
     // Session is active but its live sessions don't know about the proxy review
-    mockLiveSessions.isActive.mockReturnValue(true)
+    mockLiveSessions.activeIds.mockReturnValue(['sess-active'])
     mockLiveSessions.isAwaitingInput.mockReturnValue(false)
     // Agent has pending proxy reviews
     mockGetPendingReviewsForAgent.mockReturnValue([
@@ -10090,7 +10108,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
       sessionInfo('s-idle-newest', '2026-01-02T12:00:00Z'),
       sessionInfo('s-live-older', '2026-01-02T09:00:00Z'),
     ])
-    mockLiveSessions.isActive.mockImplementation((_agentSlug: string, id: string) => id === 's-live-older')
+    mockLiveSessions.activeIds.mockReturnValue(['s-live-older'])
 
     const res = await getReq(app, `${NOTABLE_URL}&limit=1`)
     const body = await res.json()
@@ -10156,7 +10174,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
       sessionInfo('s-live', '2026-01-02T10:00:00Z'),
       sessionInfo('s-idle', '2026-01-02T11:00:00Z'),
     ])
-    mockLiveSessions.isActive.mockImplementation((_agentSlug: string, id: string) => id === 's-live')
+    mockLiveSessions.activeIds.mockReturnValue(['s-live'])
     // Agent-level reviews are already folded into the live sessions' derived
     // awaiting projection (they flag every active session of the agent) —
     // the route adds no special-case of its own anymore.
@@ -11254,25 +11272,25 @@ describe('drive changes on a running agent', () => {
   it.each(changes)('%s marks a running agent stale', async (name, change) => {
     const slug = `drives-running-${name}`
     expect((await change(createApp(), slug)).ok).toBe(true)
-    expect(agentRegistry.get(slug).container.stale()).toBe(true)
+    expect((await agentRegistry.get(slug).live()).container.stale).toBe(true)
   })
 
   it.each(changes)('%s leaves a stopped agent unmarked', async (name, change) => {
     mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: 0 })
     const slug = `drives-stopped-${name}`
     expect((await change(createApp(), slug)).ok).toBe(true)
-    expect(agentRegistry.get(slug).container.stale()).toBe(false)
+    expect((await agentRegistry.get(slug).live()).container.stale).toBe(false)
   })
 
   it('restarts instead of marking when the change asks for a restart', async () => {
     expect((await changes[0][1](createApp(), 'drives-restart', true)).ok).toBe(true)
     expect(mockRestartContainer).toHaveBeenCalledOnce()
-    expect(agentRegistry.get('drives-restart').container.stale()).toBe(false)
+    expect((await agentRegistry.get('drives-restart').live()).container.stale).toBe(false)
   })
 
   it('answers 404 to removing a drive the agent has no own copy of, and leaves it unmarked', async () => {
     vi.mocked(removeMount).mockResolvedValueOnce(false)
     expect((await changes[2][1](createApp(), 'drives-global')).status).toBe(404)
-    expect(agentRegistry.get('drives-global').container.stale()).toBe(false)
+    expect((await agentRegistry.get('drives-global').live()).container.stale).toBe(false)
   })
 })

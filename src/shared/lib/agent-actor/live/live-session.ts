@@ -28,7 +28,7 @@ import { inferOomSigkillFatal } from '@shared/lib/container/runtime-death'
 import { parseBackgroundTasksChanged } from '@shared/lib/container/background-tasks-changed'
 import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
-import { sessionCredentialSource, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -46,6 +46,7 @@ import { transcriptPath, type SessionStore } from '../session-store'
 import type { HostPort } from '../host-port'
 import type { HostRunActor } from '../host-runs'
 import { computeActivity } from './activity'
+import type { SessionModelRuntime } from './live-sessions'
 import { BackgroundTasks, isTerminalTaskStatus, type ActiveBackgroundTaskSnapshot } from './background-tasks'
 import { MainStream } from './main-stream'
 import type { SessionEvent } from './session-channel'
@@ -83,6 +84,8 @@ export interface LiveSessionContext {
   emit(event: SessionEvent): void
   /** Still the live state for its session (not replaced by a reattach, not torn down). */
   isCurrent(): boolean
+  /** The model runtime the session's turns run on, when the container's callback has resolved it. */
+  modelRuntime(): SessionModelRuntime | undefined
   /** The client the stream is attached through, when it is. */
   transport(): ContainerClient | undefined
   /** The session may be done with its stream: release it if nothing still needs it. */
@@ -1315,7 +1318,7 @@ export class LiveSession {
       properties: {
         agentSlug: this.ctx.agentSlug,
         session_id: this.ctx.sessionId,
-        credential_source: sessionCredentialSource(this.ctx.agentSlug, this.ctx.sessionId),
+        credential_source: credentialSource(this.ctx.modelRuntime()?.provider),
         ...properties,
       },
     })
@@ -1327,7 +1330,7 @@ export class LiveSession {
     const { terminalReason, apiErrorStatus } = classification
     // The provider owns the copy for its own upstream errors (severity, icon,
     // message, link), so the UI never re-derives provider-specific copy.
-    const runtimeProvider = sessionRuntime(this.ctx.agentSlug, this.ctx.sessionId)?.provider
+    const runtimeProvider = this.ctx.modelRuntime()?.provider
     const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()
     turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
     const errorPresentation = turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
@@ -1358,7 +1361,7 @@ export class LiveSession {
         const [modelId] = Object.keys(modelUsage)
         const reported = (modelUsage as Record<string, { contextWindow?: number } | undefined>)[modelId]
         const catalogWindow = modelId
-          ? sessionRuntime(this.ctx.agentSlug, this.ctx.sessionId)?.modelContextWindows[modelId] ??
+          ? this.ctx.modelRuntime()?.modelContextWindows[modelId] ??
             getModelContextWindow(modelId, getActiveLlmProvider().id)
           : undefined
         contextWindow = catalogWindow || reported?.contextWindow || undefined

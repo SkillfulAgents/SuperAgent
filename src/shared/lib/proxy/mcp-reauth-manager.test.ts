@@ -39,7 +39,6 @@ describe('McpReauthManager', () => {
   })
 
   afterEach(() => {
-    manager.rejectAll()
     agents.reset()
     vi.useRealTimers()
   })
@@ -61,22 +60,24 @@ describe('McpReauthManager', () => {
     expect((request.payload as Record<string, unknown>).proxyRequestId).toBe(request.id)
     expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(1)
 
-    manager.completeMcp('mcp-1')
+    manager.completeMcp('agent-1', 'mcp-1')
     expect(syncAwaiting.get('agent-1')).toHaveBeenCalledTimes(2)
     expect(syncAwaiting.get('agent-2')).not.toHaveBeenCalled()
     return expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 
-  it('resumes every proxy request parked on the reconnected MCP', async () => {
+  it('resumes each agent\'s proxy requests parked on the reconnected MCP', async () => {
     const first = manager.requestReauth(DETAILS)
     const second = manager.requestReauth({ ...DETAILS, agentSlug: 'agent-2' })
     const unrelated = manager.requestReauth({ ...DETAILS, mcpId: 'mcp-2' })
 
-    expect(manager.completeMcp('mcp-1')).toBe(2)
+    // Agent by agent: each agent's own calls on it go on.
+    expect(manager.completeMcp('agent-1', 'mcp-1')).toBe(1)
+    expect(manager.completeMcp('agent-2', 'mcp-1')).toBe(1)
     await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(1)
 
-    manager.completeMcp('mcp-2')
+    manager.completeMcp('agent-1', 'mcp-2')
     await expect(unrelated).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -85,7 +86,7 @@ describe('McpReauthManager', () => {
     const second = manager.requestReauth(DETAILS)
 
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
-    expect(manager.completeMcp('mcp-1')).toBe(2)
+    expect(manager.completeMcp('agent-1', 'mcp-1')).toBe(2)
     await expect(Promise.all([first, second])).resolves.toEqual([{ outcome: 'resumed' }, { outcome: 'resumed' }])
   })
 
@@ -99,7 +100,7 @@ describe('McpReauthManager', () => {
 
     await rejection
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
-    expect(manager.completeMcp('mcp-1')).toBe(1)
+    expect(manager.completeMcp('agent-1', 'mcp-1')).toBe(1)
     await expect(remaining).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -150,7 +151,7 @@ describe('McpReauthManager', () => {
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
     expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
-    manager.completeMcp('mcp-1')
+    manager.completeMcp('agent-2', 'mcp-1')
     await expect(other).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -161,7 +162,7 @@ describe('McpReauthManager', () => {
     expect(manager.dismiss(request.id, 'agent-2')).toBe(false)
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
 
-    manager.completeMcp('mcp-1')
+    manager.completeMcp('agent-1', 'mcp-1')
     await expect(promise).resolves.toEqual({ outcome: 'resumed' })
   })
 })

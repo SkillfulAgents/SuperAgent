@@ -13,9 +13,7 @@ export {
 /**
  * The router in front of every agent's account re-auth waits. The waits live
  * in each agent's actor (`AgentReauthWaits`, see `reauth-waits`); this
- * singleton dispatches the calls that arrive with a slug and runs the ones
- * that span agents — completing an account resumes every agent's requests
- * parked on it, and shutdown rejects them all.
+ * singleton dispatches the calls that arrive with a slug.
  */
 export class AccountReauthManager {
   private readonly agents = new AttachedStores<AccountReauthWaits>('account re-auth waits')
@@ -51,15 +49,9 @@ export class AccountReauthManager {
     return this.agents.peek(agentSlug)?.replace(entryId, replacementAccountId) ?? false
   }
 
-  /** Resume every parked proxy request, of every agent, that uses the reconnected account. */
-  completeAccount(accountId: string): number {
-    let completed = 0
-    for (const waits of this.agents.all()) completed += waits.complete(accountId)
-    return completed
-  }
-
-  rejectAll(): void {
-    for (const waits of this.agents.all()) waits.rejectAll()
+  /** Resume the agent's parked proxy requests that use the reconnected account. */
+  completeAccount(agentSlug: string, accountId: string): number {
+    return this.agents.peek(agentSlug)?.complete(accountId) ?? 0
   }
 }
 

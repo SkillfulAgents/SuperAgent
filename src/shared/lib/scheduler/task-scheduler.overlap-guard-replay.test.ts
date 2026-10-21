@@ -119,6 +119,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 }))
 
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
 import { drain } from '@shared/lib/agent-actor/testing/drain'
 import { taskScheduler } from './task-scheduler'
 
@@ -226,7 +227,8 @@ describe('overlap guard against a real background-bash capture', () => {
       }
     }
     expect(busyIdx).toBeGreaterThan(-1)
-    expect(actor.sessions.backgroundTasks(sessionId).length).toBeGreaterThan(0)
+    const sessions = (actor as LocalAgentActor).state.sessions
+    expect(sessions.backgroundTasks(sessionId).length).toBeGreaterThan(0)
 
     mockGetDueTasks.mockResolvedValue([dueRecurringTask(agentSlug, sessionId)])
     await taskScheduler.triggerExecution()
@@ -241,8 +243,8 @@ describe('overlap guard against a real background-bash capture', () => {
       client.emit(entries[i].message.content)
       await tick()
     }
-    expect(actor.sessions.isActive(sessionId)).toBe(false)
-    expect(actor.sessions.backgroundTasks(sessionId)).toHaveLength(0)
+    expect((await actor.sessions.live(sessionId)).isActive).toBe(false)
+    expect(sessions.backgroundTasks(sessionId)).toHaveLength(0)
 
     await taskScheduler.triggerExecution()
 

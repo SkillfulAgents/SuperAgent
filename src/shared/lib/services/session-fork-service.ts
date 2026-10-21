@@ -52,7 +52,7 @@ export async function forkSession(
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
-  if (actor.sessions.isActive(sourceId)) {
+  if ((await actor.sessions.live(sourceId)).isActive) {
     throw new SessionForkFailedError(409, 'Session is currently running')
   }
 

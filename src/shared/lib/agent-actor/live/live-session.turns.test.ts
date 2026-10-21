@@ -43,7 +43,6 @@ import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from
 import type { SessionNotification } from '../host-port'
 import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 const SESSION_ID = 'test-session-1'
 const AGENT_SLUG = 'test-agent'
@@ -148,7 +147,7 @@ describe('turn analytics', () => {
   const responses = () => live.host.sent('analytics').filter(e => e.event.startsWith('agent_response_'))
 
   it('records which credential served a completed turn', () => {
-    rememberSessionRuntime(AGENT_SLUG, SESSION_ID, { provider: 'claude-subscription' } as ConnectionRuntime)
+    sessions().recordRuntime(SESSION_ID, { provider: 'claude-subscription', modelContextWindows: {} })
     sessions().markActive(SESSION_ID)
     emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
     expect(responses()).toEqual([{
@@ -158,7 +157,7 @@ describe('turn analytics', () => {
   })
 
   it('records a failed Platform turn with its terminal reason, and nothing for a stop', () => {
-    rememberSessionRuntime(AGENT_SLUG, SESSION_ID, { provider: 'platform' } as ConnectionRuntime)
+    sessions().recordRuntime(SESSION_ID, { provider: 'platform', modelContextWindows: {} })
     sessions().markActive(SESSION_ID)
     emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', result: 'Payment required' })
     sessions().markActive(SESSION_ID)

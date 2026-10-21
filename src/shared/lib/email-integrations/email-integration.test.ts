@@ -240,11 +240,12 @@ describe('email lifecycle and delivery', () => {
   })
   it('uses email only for a single nonprivileged question and never approves or cancels', async () => {
     const responses = vi.fn(); connector.onEvent(responses)
-    const actor = { sessions: { isAwaitingInput: () => true }, inputs: { open: () => [{ id: 'q1', kind: 'question', payload: { questions: [{ question: 'Which day?' }] } }] } }
+    let openRequests = [{ id: 'q1', kind: 'question', payload: { questions: [{ question: 'Which day?' }] } }]
+    const actor = { sessions: { live: async () => ({ isAwaitingInput: true, openRequests }) } }
     const context = { integration: record, externalId: 'thread-1', sessionId: 'session-1', actor } as never
     expect(await connector.consumeInput(event(message({ text: 'Tuesday' })), context)).toBe(true)
     expect(responses).toHaveBeenCalledWith(expect.objectContaining({ type: 'response', requestKind: 'input', value: { answers: { 'Which day?': 'Tuesday' } } }))
-    actor.inputs.open = () => [{ id: 'approval', kind: 'approval', payload: { questions: [] } }]
+    openRequests = [{ id: 'approval', kind: 'approval', payload: { questions: [] } }]
     expect(await connector.consumeInput(event(message({ text: 'Approved' })), context)).toBe(true)
     expect(responses).toHaveBeenCalledOnce()
   })

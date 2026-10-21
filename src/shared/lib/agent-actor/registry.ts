@@ -105,8 +105,6 @@ export function createAgentRegistry(
 
   return {
     get: (slug): AgentActor => get(slug),
-    peek: (slug) => handles.get(slug),
-    running: () => deps.containerHost.getRunningAgentIds().map(get),
     evict,
     evictAll: () => {
       // Release every handle first, while the runtimes still exist, then let
@@ -192,8 +190,3 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
     return localHostPort
   },
 }, { states: agentActorStates })
-
-/** A refreshed shared MCP credential resumes waiters in every owning actor. */
-export function completeMcpReauth(mcpId: string): number {
-  return mcpReauthManager.completeMcp(mcpId)
-}

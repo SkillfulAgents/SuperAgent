@@ -54,8 +54,7 @@ async function reload() {
 afterEach(async () => {
   const managers = await load()
   for (const registry of registries.splice(0)) registry.evictAll()
-  managers.reviewManager.rejectAll()
-  managers.accountReauthManager.rejectAll()
+  managers.agentRegistry.evictAll()
   managers.userInputRequestManager.reset()
 })
 
@@ -148,12 +147,12 @@ describe('the actors\' state survives a backend module reload', () => {
     const bare = original.agentRegistry
       .get('b')
       .inputs.reviews.request(reviewDetails, { id: 'review-b' })
-    const [entry] = original.agentRegistry.get('a').inputs.reviews.pending()
-    const [bareEntry] = original.agentRegistry.get('b').inputs.reviews.pending()
+    const [entry] = original.reviewManager.getPendingReviewsForAgent('a')
+    const [bareEntry] = original.reviewManager.getPendingReviewsForAgent('b')
 
     const reloaded = await reload()
 
-    expect(reloaded.agentRegistry.get('a').inputs.reviews.pending().map((r) => r.id)).toEqual([entry.id])
+    expect(reloaded.agentRegistry.get('a').inputs.reviews.get(entry.id)?.id).toBe(entry.id)
     expect(reloaded.agentRegistry.get('a').inputs.reviews.submit(entry.id, 'allow')).toBe(true)
     await expect(decision).resolves.toBe('allow')
     // The id-only decision path finds the owner through the rebuilt index.
@@ -168,7 +167,7 @@ describe('the actors\' state survives a backend module reload', () => {
 
     const reloaded = await reload()
 
-    expect(reloaded.accountReauthManager.completeAccount('acct')).toBe(1)
+    expect(await reloaded.agentRegistry.get('a').inputs.accountReauth.completeAccount('acct')).toBe(1)
     await expect(parked).resolves.toEqual({ outcome: 'resumed' })
   })
 
@@ -215,7 +214,7 @@ describe('the actors\' state survives a backend module reload', () => {
     reloaded.agentRegistry.evict('a')
 
     await expect(decision).resolves.toBe('timeout')
-    expect(reloaded.agentRegistry.get('a').inputs.reviews.pending()).toEqual([])
+    expect(reloaded.reviewManager.getPendingReviewsForAgent('a')).toEqual([])
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a')).toEqual([])
   })
 })

@@ -27,9 +27,13 @@ vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
     attachAgentWorkspaces: () => {},
     attachAgentSessions: () => {},
+    clearRuntimes: () => {},
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),
+      getHealthWarnings: () => [],
+      isStale: () => false,
+      idleSince: () => null,
       ensureRunning: async () => {},
       getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
     }),
@@ -51,6 +55,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() })
 
 import accountReauth from './account-reauth'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }
@@ -129,7 +134,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  accountReauthManager.rejectAll()
+  agentRegistry.evictAll()
   userInputRequestManager.reset()
   sqlite.close()
 })

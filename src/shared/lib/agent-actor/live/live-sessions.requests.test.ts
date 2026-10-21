@@ -1184,6 +1184,28 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(sessions().settledRequests(SESSION_ID).size).toBe(0)
     })
 
+    it('reconcileTranscript answers the decided outcomes and parks again only the undecided asks of the running turn', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'par-decided-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      sessions().completeRequest(SESSION_ID, 'par-decided-1', 'declined')
+      const recover = vi.spyOn(sessions(), 'recoverAwaitingInput')
+
+      const { settled } = sessions().reconcileTranscript(SESSION_ID, [
+        { toolUseId: 'par-decided-1', toolName: 'mcp__user-input__request_secret', awaitsInput: true },
+        { toolUseId: 'par-open-1', toolName: 'AskUserQuestion', awaitsInput: true },
+        { toolUseId: 'par-earlier-1', toolName: 'AskUserQuestion', awaitsInput: false },
+      ])
+
+      expect(settled).toEqual({ 'par-decided-1': 'declined' })
+      expect(recover).toHaveBeenCalledExactlyOnceWith(SESSION_ID, [{ toolUseId: 'par-open-1', toolName: 'AskUserQuestion' }])
+      // A session that is not running parks nothing: its asks ended with its turn.
+      recover.mockClear()
+      expect(sessions().reconcileTranscript('idle-session', [{ toolUseId: 'q', toolName: 'AskUserQuestion', awaitsInput: true }])).toEqual({ settled: {} })
+      expect(recover).not.toHaveBeenCalled()
+    })
+
     it('settling the last parked ask clears awaiting, and callers without a sessionId derive it', () => {
       simulateToolUse('mcp__user-input__request_secret', 'par-solo-1', {
         secretName: 'API_KEY',

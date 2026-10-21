@@ -25,9 +25,13 @@ vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
     attachAgentWorkspaces: () => {},
     attachAgentSessions: () => {},
+    clearRuntimes: () => {},
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),
+      getHealthWarnings: () => [],
+      isStale: () => false,
+      idleSince: () => null,
       ensureRunning: async () => {},
       getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
     }),
@@ -49,6 +53,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() })
 
 import mcpReauth from './mcp-reauth'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }
@@ -119,7 +124,7 @@ beforeEach(() => {
   app.route('/api/agents', mcpReauth)
 })
 afterEach(() => {
-  mcpReauthManager.rejectAll()
+  agentRegistry.evictAll()
   userInputRequestManager.reset()
   sqlite.close()
 })

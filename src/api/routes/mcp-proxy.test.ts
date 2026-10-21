@@ -77,8 +77,13 @@ vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
   mcpReauthManager: {
     request: (agentSlug: string, details: object, options: unknown) => mockRequestMcpReauth({ ...details, agentSlug }, options),
     withdraw: vi.fn(),
-    completeMcp: vi.fn(),
   },
+}))
+// A refreshed token resumes the MCP's parked calls in every agent it is assigned to.
+const mockResumeMcpReauthWaits = vi.hoisted(() => vi.fn(async (_mcpId: string) => {}))
+vi.mock('@shared/lib/services/connection-sync-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/connection-sync-service')>()),
+  resumeMcpReauthWaits: (mcpId: string) => mockResumeMcpReauthWaits(mcpId),
 }))
 
 // Mock fetch for forwarded requests

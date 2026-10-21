@@ -356,13 +356,14 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
   const actor = agentRegistry.get(targetSlug)
   const allSessions = await actor.sessions.list()
   const page = allSessions.slice(offset, offset + limit)
+  const active = new Set((await actor.live()).activeSessionIds)
   return c.json({
     sessions: page.map((s) => ({
       id: s.id,
       name: s.name,
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
-      isRunning: actor.sessions.isActive(s.id),
+      isRunning: active.has(s.id),
     })),
     total: allSessions.length,
     offset,
@@ -506,7 +507,7 @@ async function waitForTurnWithinBudget(
     // Pre-wait work can eat the whole budget; if the turn already finished
     // during it, that's a completion — reporting 'timeout' here would label a
     // finished turn 'running' and make the caller poll for a result it has.
-    return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
+    return (await agentRegistry.get(targetSlug).sessions.live(sessionId)).isActive ? 'timeout' : 'completed'
   }
   const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, { timeoutMs: remainingMs })
   return outcome === 'idle' ? 'completed' : 'timeout'
@@ -588,7 +589,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  if (sync && actor.sessions.isActive(sessionId)) {
+  if (sync && (await actor.sessions.live(sessionId)).isActive) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
     const boundaryEntry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
@@ -612,7 +613,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // poll budget on sessions that are simply idle. A session that went idle
       // just before the isSessionActive check above keeps plain read-what's-
       // flushed semantics.
-      if (outcome === 'completed' || !actor.sessions.isActive(sessionId)) {
+      if (outcome === 'completed' || !(await actor.sessions.live(sessionId)).isActive) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -622,11 +623,10 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = actor.sessions.isAwaitingInput(sessionId)
-  const isActive = actor.sessions.isActive(sessionId)
-  const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
+  const live = await actor.sessions.live(sessionId)
+  const status: 'running' | 'idle' | 'awaiting_input' = live.isAwaitingInput
     ? 'awaiting_input'
-    : isActive
+    : live.isActive
       ? 'running'
       : 'idle'
 
@@ -823,7 +823,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           return c.json({ error: 'Session not found' }, 404)
         }
         const candidateKey = `${targetSlug}\0${existingSessionId}`
-        if (targetActor.sessions.isActive(existingSessionId) || invokingSessions.has(candidateKey)) {
+        // Nothing awaits between the check and the add: one invoke holds the session.
+        if ((await targetActor.sessions.live(existingSessionId)).isActive || invokingSessions.has(candidateKey)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
         invokingSessions.add(candidateKey)

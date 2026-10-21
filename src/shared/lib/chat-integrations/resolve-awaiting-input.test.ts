@@ -13,8 +13,7 @@ interface Recorder {
 function makeDeps(over: Partial<Recorder> = {}) {
   const rec: Recorder = { awaiting: false, pending: [], answerResult: false, calls: [], ...over }
   const session = {
-    isAwaitingInput: () => rec.awaiting,
-    openRequests: () => rec.pending,
+    live: async () => ({ isAwaitingInput: rec.awaiting, openRequests: rec.pending }),
     cancelAwaiting: async () => { rec.calls.push('cancel') },
   }
   const connector = {

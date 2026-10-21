@@ -99,11 +99,12 @@ class SessionAutoDeleteMonitor {
     // deleting it would silently destroy the very session its wake resumes.
     const pendingWakeSessionIds = await listSessionIdsWithPendingWakes(agentSlug)
 
+    const active = new Set((await actor.live()).activeSessionIds)
     const toDelete = sessions
       .filter((s) => {
         if (s.lastActivityAt.getTime() >= cutoff) return false
         if (metadata[s.id]?.starred) return false
-        if (actor.sessions.isActive(s.id)) return false
+        if (active.has(s.id)) return false
         if (pendingWakeSessionIds.has(s.id)) return false
         return true
       })
@@ -111,11 +112,8 @@ class SessionAutoDeleteMonitor {
 
     if (toDelete.length === 0) return
 
+    // Lets go of each deleted session's stream too.
     const deletedIds = await actor.sessions.deleteMany(toDelete)
-
-    for (const sessionId of deletedIds) {
-      actor.sessions.unsubscribeStream(sessionId)
-    }
 
     // People (auth mode) and integrations (every mode) author messages.
     if (deletedIds.length > 0) {

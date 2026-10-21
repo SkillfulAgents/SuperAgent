@@ -17,9 +17,9 @@
  * evicts it. The process-wide managers of those names are routers over the
  * actors' stores, for callers that hold an id or a slug but no handle.
  *
- * Two methods are synchronous snapshots of in-memory state —
- * `container.status()` and `sessions.activity()` — alongside the other
- * synchronous live-session reads. Everything that does I/O returns a Promise.
+ * What the agent and one of its sessions are doing is read as one snapshot
+ * (`live()`, `sessions.live()`): reads consumed together are taken together,
+ * and a read → decide → write is one op, so no state changes between them.
  */
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
@@ -31,12 +31,10 @@ import type {
   HealthCheckResult,
   HostPortProbeResult,
   InterruptSessionResult,
-  SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
 import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
-import type { ActiveBackgroundTaskSnapshot } from './live/background-tasks'
-import type { ActiveSubagentSnapshot } from './live/subagents'
+import type { SessionModelRuntime } from './live/live-sessions'
 import type { SessionEvent, WireFrame } from './live/session-channel'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
@@ -80,13 +78,6 @@ export type AgentSlug = string
 export interface AgentRegistry {
   /** Never fails and never does I/O; creates the handle on first use. */
   get(slug: AgentSlug): AgentActor
-  /** The handle if `get` has been called for this slug and it was not evicted. */
-  peek(slug: AgentSlug): AgentActor | undefined
-  /**
-   * Handles for the agents whose container is currently running. Not "every
-   * agent": a cross-agent read that wants all agents iterates the agent list.
-   */
-  running(): AgentActor[]
   /**
    * Drop the handle and forget its container runtime, releasing everything
    * the handle owns: parked reviews and re-auth waits are rejected, open
@@ -94,12 +85,14 @@ export interface AgentRegistry {
    * summary cache are gone. Does not stop the container.
    */
   evict(slug: AgentSlug): void
-  /** `evict` for every handle. Does not stop containers. */
+  /** `evict` for every handle, at shutdown: parked callers are let go. Does not stop containers. */
   evictAll(): void
 }
 
 export interface AgentActor {
   readonly slug: AgentSlug
+  /** What the agent is doing as of now: its container, busy sessions, open asks. */
+  live(): Promise<AgentLiveSummary>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -190,28 +183,12 @@ export interface ContainerOps {
   status(): ContainerInfo
   /** `containerManager.syncAgentStatus` — refresh the cache from the runtime. */
   syncStatus(): Promise<ContainerInfo>
-  /** `containerManager.getHealthWarnings` */
-  health(): HealthCheckResult[]
-  /** `ContainerRuntime.isStale` — running on a container env or drives that a change replaced. */
-  stale(): boolean
-  /** `ContainerRuntime.markStale` */
-  markStale(): void
   /**
-   * When this agent last stopped being busy, as epoch ms, or `null` while it
-   * is busy or its idleness is unknown. Busy is any session active or
-   * awaiting input. Otherwise it is the latest of the container start, the
-   * last `keepAlive()` and the last session activity (a message sent, a frame
-   * received, a transcript write), and `null` when none has been recorded
-   * since the container last stopped.
-   *
-   * The actor puts itself to sleep: each of those events re-arms its own
-   * alarm for the auto-sleep timeout, and the alarm sleeps the container
-   * once `idleSince() !== null && now - idleSince() > timeout`. A local actor
-   * uses a timer on the runtime; a remote one uses its host's alarm. This op
-   * is the clock the alarm reads, answered from memory, exposed so a status
-   * view or a fallback sweep can read it too.
+   * The container's environment or drives changed: a running container keeps
+   * the old ones until it restarts. `restart` restarts it now; otherwise it is
+   * marked stale (`AgentLiveSummary.container.stale`) for the user to restart.
    */
-  idleSince(): number | null
+  invalidate(options?: { restart?: boolean }): Promise<'not-running' | 'marked-stale' | 'restarted'>
   /** `client.getStats` */
   stats(): Promise<ContainerStats | null>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
@@ -314,6 +291,8 @@ export interface SessionOps {
   forScheduledExecution(scheduledTaskId: string, scheduledExecutionAt: Date): Promise<SessionInfo | null>
   /** `recordSessionActivity` (session-summary-cache) — a transcript write happened that no stream frame will report. */
   recordActivity(sessionId: string, activityAt?: Date | number): void
+  /** The model runtime the session's turns now run on (the llm-runtime callback resolved it), for its errors' presentation. */
+  recordRuntime(sessionId: string, runtime: SessionModelRuntime): Promise<void>
 
   // Files derived from a session's transcript: subagent and workflow
   // transcripts live beside it. Read by the routes that render them.
@@ -359,22 +338,14 @@ export interface SessionOps {
   /** `client.warmSession` — resume the session's CLI ahead of its next message. Best-effort; never throws. */
   warm(sessionId: string): Promise<boolean>
 
-  // Activity — the agent's `LiveSessions`. Synchronous reads of in-memory state.
+  // Activity — the agent's `LiveSessions`.
 
-  /** `LiveSessions.activity` — synchronous snapshot. */
-  activity(sessionId: string): SessionActivity
-  /** `LiveSessions.isActive` */
-  isActive(sessionId: string): boolean
-  /** `LiveSessions.isAwaitingInput` */
-  isAwaitingInput(sessionId: string): boolean
+  /** What the session is doing as of now. */
+  live(sessionId: string): Promise<SessionLiveState>
   /** `LiveSessions.markActive` */
   markActive(sessionId: string): void
   /** `LiveSessions.markIdle` */
   markIdle(sessionId: string): void
-  /** Last emitted backend outcome, replayed on renderer reconnect and heartbeat. */
-  turnOutcome(sessionId: string): import('../container/session-turn-outcome-schema').SessionTurnOutcome | null
-  /** `LiveSessions.isWaitingBackground` */
-  isWaitingBackground(sessionId: string): boolean
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
   /**
@@ -382,24 +353,19 @@ export interface SessionOps {
    * once when it is not running), `'timeout'` when it still is after `timeoutMs`.
    */
   waitForIdle(sessionId: string, opts?: { timeoutMs?: number }): Promise<'idle' | 'timeout'>
-  /** `LiveSessions.activeIds` */
-  activeIds(): string[]
-  /** `LiveSessions.hasActive` */
-  hasActive(): boolean
-  /** `LiveSessions.hasAwaitingInput` */
-  hasAwaitingInput(): boolean
-  /** `LiveSessions.markAllInactive` */
-  markAllInactive(options?: { settleRecovering?: boolean }): void
-  /** `LiveSessions.syncAwaiting` */
-  syncAwaiting(): void
   /**
    * Emit `session_updated`: tell the session's stream
    * listeners that its metadata changed (a rename, a model or effort change)
    * so they refetch before their next send.
    */
   broadcastUpdate(sessionId: string): void
-  /** `LiveSessions.recoverAwaitingInput` */
-  recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
+  /**
+   * Square the transcript's open tool calls with the session's requests, in
+   * one turn: the outcome of each the user already decided, and, while the
+   * session runs, the asks (`awaitsInput`) nobody decided are parked again
+   * (the stream event that opened them may have been missed).
+   */
+  reconcileTranscript(sessionId: string, toolCalls: TranscriptToolCall[]): Promise<{ settled: Record<string, UserInputRequestOutcome> }>
   /**
    * `LiveSessions.promoteAutomated`. `metadata` is the session's
    * entry as the caller just read it; resolves to the entry as it now stands.
@@ -407,14 +373,6 @@ export interface SessionOps {
   promoteAutomated(sessionId: string, metadata?: SessionMetadata | null): Promise<SessionMetadata | null>
   /** `LiveSessions.grantCapability` */
   grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): void
-  /** `LiveSessions.slashCommands` */
-  slashCommands(sessionId: string): SlashCommandInfo[]
-  /** `LiveSessions.setSlashCommands` */
-  setSlashCommands(sessionId: string, commands: SlashCommandInfo[]): void
-  /** `LiveSessions.backgroundTasks` */
-  backgroundTasks(sessionId: string): ActiveBackgroundTaskSnapshot[]
-  /** `LiveSessions.activeSubagents` — running and completed subagents for the current turn. */
-  activeSubagents(sessionId: string): ActiveSubagentSnapshot[]
 
   // Container stream attachment — the agent's `LiveSessions` follows the
   // container's stream for a session and persists what arrives.
@@ -433,10 +391,54 @@ export interface SessionOps {
    * Attached and busy, the live stream already carries what it needs.
    */
   attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
-  /** `LiveSessions.unsubscribe` */
-  unsubscribeStream(sessionId: string): void
-  /** `LiveSessions.isSubscribed` */
-  isStreamSubscribed(sessionId: string): boolean
+}
+
+/** The agent's live state as of one moment (`actor.live()`). */
+export interface AgentLiveSummary {
+  /** The container's cached status: no runtime is queried. */
+  container: ContainerInfo & {
+    healthWarnings: HealthCheckResult[]
+    /** Running on a container environment or drives that a change replaced (`invalidate`). */
+    stale: boolean
+    /**
+     * When the agent last stopped being busy, as epoch ms, or `null` while it
+     * is busy or its idleness is unknown. Busy is any session active or
+     * awaiting input. Otherwise it is the latest of the container start, the
+     * last `keepAlive()` and the last session activity, and `null` when none
+     * has been recorded since the container last stopped. The actor's own
+     * auto-sleep alarm reads the same clock.
+     */
+    idleSince: number | null
+  }
+  /** Sessions running a turn (or holding background work). */
+  activeSessionIds: string[]
+  /** Sessions waiting on the user. */
+  awaitingSessionIds: string[]
+  /** Every open request, session-scoped and agent-scoped, without payloads. */
+  openRequests: Array<Pick<PendingUserInputRequest, 'id' | 'kind' | 'blocking' | 'autoApproved'> & { sessionId?: string }>
+  /** Proxy reviews waiting on the user, sessions or not. */
+  pendingReviews: Array<{ id: string; displayText: string }>
+}
+
+/** One session's live state as of one moment (`sessions.live()`). */
+export interface SessionLiveState {
+  activity: SessionActivity
+  isActive: boolean
+  isAwaitingInput: boolean
+  /** The session's container stream is attached. */
+  streamAttached: boolean
+  /** Its open requests, payloads included. */
+  openRequests: PendingUserInputRequest[]
+  /** What `recordRuntime` last recorded for it. */
+  runtime: SessionModelRuntime | null
+}
+
+/** A tool call the transcript shows with no result (`sessions.reconcileTranscript`). */
+export interface TranscriptToolCall {
+  toolUseId: string
+  toolName: string
+  /** A blocking ask of the turn still running: parked again while nobody decided it. */
+  awaitsInput: boolean
 }
 
 export interface MessageOps {
@@ -565,12 +567,16 @@ export interface DeliverRequest {
   echo?: UserMessageEcho
 }
 
-export type DeliverResult =
+export type DeliverResult = (
   | { status: 'sent'; queued: boolean }
   /** Held for the recovery to send. */
   | { status: 'coalesced' }
   /** `ifIdle` and the session was running: nothing was sent. */
   | { status: 'busy' }
+) & {
+  /** The provider the session's turns run on, once the container resolved it (the credential that served it). */
+  provider?: string
+}
 
 /** What a `user_message` echo shows besides the delivery's uuid and queued flag. */
 export interface UserMessageEcho {
@@ -632,12 +638,12 @@ export interface InputOps {
   // agent holds: another agent's request is not found (null, false, or a
   // no-op) because it is not here, not because a filter hid it.
 
-  /** `AgentInputRequests.register` with `scope.agentSlug` set to this agent. */
-  register(input: PendingUserInputRequestInput): PendingUserInputRequest | null
-  /** `AgentInputRequests.getOpenRequestsForSession` */
-  open(sessionId: string): PendingUserInputRequest[]
-  /** `AgentInputRequests.getOpenRequests` — session-scoped and agent-scoped entries. */
-  openForAgent(): PendingUserInputRequest[]
+  /**
+   * `AgentInputRequests.register` with `scope.agentSlug` set to this agent.
+   * `unlessRecentlyResolved`: null when the request settled lately, so one
+   * recovered from the container is not parked again after its decision.
+   */
+  register(input: PendingUserInputRequestInput, options?: { unlessRecentlyResolved?: boolean }): PendingUserInputRequest | null
   /** `AgentInputRequests.getOpenRequest` */
   get(id: string): PendingUserInputRequest | null
   /**
@@ -649,7 +655,15 @@ export interface InputOps {
   claim(id: string, options?: { leaseMs?: number }): Promise<{ token: string; request: PendingUserInputRequest } | null>
   /** `AgentInputRequests.releaseClaim`: give back the claim this token holds. */
   releaseClaim(id: string, token: string): Promise<void>
-  /** `AgentInputRequests.resolve` */
+  /**
+   * Answer an open request with `value`, in one turn: claim it, start the
+   * container, check it is still open, hand the value to the container's
+   * pending input and settle it. `not-open`: nothing open by that id;
+   * `claimed`: another decision holds it; `undeliverable`: the container
+   * would not take it (the request stays open).
+   */
+  answer(id: string, value: unknown): Promise<'answered' | 'not-open' | 'claimed' | 'undeliverable'>
+  /** `AgentInputRequests.resolve`; the sessions' awaiting state follows. */
   resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null
   /** `AgentInputRequests.getRecentResolution` */
   recentResolution(id: string): SettledUserInputRequest | undefined
@@ -666,8 +680,6 @@ export interface InputOps {
   completeCapabilityReview(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
   /** `LiveSessions.cancelAwaitingInput` */
   cancelAwaiting(sessionId: string): Promise<void>
-  /** `LiveSessions.settledRequests` */
-  settled(sessionId: string): Map<string, UserInputRequestOutcome>
 
   readonly reviews: ReviewOps
   readonly computerUse: ComputerUseOps
@@ -677,8 +689,8 @@ export interface InputOps {
 
 /** Proxy scope reviews — the agent's own `AgentReviews`, owned by the actor. */
 export interface ReviewOps {
-  /** `AgentReviews.pending` */
-  pending(): Array<{ id: string; displayText: string } & ReviewDetails>
+  /** One review waiting on the user, or null when this agent holds none by that id. */
+  get(id: string): ({ id: string; displayText: string } & ReviewDetails) | null
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
   submit(id: string, decision: 'allow' | 'deny'): boolean
   /** `AgentReviews.denyAll` */
@@ -717,8 +729,11 @@ export interface ReviewOps {
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
-  /** `AgentComputerUse.grabbed` */
-  grabbedApp(): string | undefined
+  /**
+   * The user let go of the app the agent had grabbed: forget the grab, revoke
+   * the agent's grant for that app and tell the session's viewers, in one turn.
+   */
+  releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */
   setGrabbedApp(appName: string): void
   /** `AgentComputerUse.clearGrabbed` */
@@ -727,8 +742,6 @@ export interface ComputerUseOps {
   grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): void
   /** `AgentComputerUse.consumeOnce` */
   consumeOnce(level: ComputerUsePermissionLevel, appName?: string): void
-  /** `AgentComputerUse.revoke` */
-  revokeGrant(level: ComputerUsePermissionLevel, appName?: string): void
   /** `LiveSessions.clearComputerUseRequest` */
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
   /**
@@ -753,8 +766,13 @@ export interface McpReauthOps {
   withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
-  /** `AgentReauthWaits.replace` — settle the wait with a different connection. */
-  replace(entryId: string, replacementMcpId: string): boolean
+  /**
+   * The card was answered with a different connection: its parked calls go on
+   * with it (`released`), or, with none parked, the request is settled (`resolved`).
+   */
+  settleReplaced(entryId: string, replacementMcpId: string): Promise<'released' | 'resolved'>
+  /** The MCP was re-authorized: this agent's calls waiting on it go on. Resolves to how many. */
+  completeConnection(mcpId: string): Promise<number>
 }
 
 /** Connected-account re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
@@ -765,8 +783,10 @@ export interface AccountReauthOps {
   withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
-  /** `AgentReauthWaits.replace` — release only this agent's calls; other agents still use the old account. */
-  replace(entryId: string, replacementAccountId: string): boolean
+  /** As `McpReauthOps.settleReplaced`; only this agent's calls go on, other agents still use the old account. */
+  settleReplaced(entryId: string, replacementAccountId: string): Promise<'released' | 'resolved'>
+  /** The account was reconnected: this agent's calls waiting on it go on. Resolves to how many. */
+  completeAccount(accountId: string): Promise<number>
 }
 
 /** Model usage read from this agent's transcripts — usage-service. */

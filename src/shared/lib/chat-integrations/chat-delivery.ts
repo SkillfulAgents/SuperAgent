@@ -28,7 +28,7 @@ export interface ManagedConnector {
   indicatorShown?: boolean
   indicatorTickTimer?: ReturnType<typeof setInterval> | null
   // The session the tick samples; set when the tick is armed (subscribe / wake) so the
-  // sleep guard and the health-check backstop can re-read getSessionActivity(sessionId).
+  // sleep guard and the health-check backstop can re-read its activity.
   sessionId?: string
   // Pending idle-sleep debounce. Scheduled when the session settles non-busy; when it
   // fires it re-reads activity and stops the tick only if STILL non-busy (so a stale or
@@ -144,16 +144,25 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   managed.sessionId = sessionId
   cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) return false
-  managed.indicatorTickTimer = setInterval(() => {
-    const activity = agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId)
-    reconcileIndicator(managed, activity)
-    // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
-    // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
-    // so calling it every non-busy tick never pushes the deadline back.
-    if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
-    else scheduleIndicatorSleep(managed)
+  const tick = setInterval(() => {
+    void sessionActivity(managed, sessionId).then((activity) => {
+      // Stopped while it read: the read belongs to no tick.
+      if (managed.indicatorTickTimer !== tick) return
+      reconcileIndicator(managed, activity)
+      // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
+      // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
+      // so calling it every non-busy tick never pushes the deadline back.
+      if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
+      else scheduleIndicatorSleep(managed)
+    }, () => { /* a failed read changes nothing; the next tick reads again */ })
   }, INDICATOR_TICK_MS)
+  managed.indicatorTickTimer = tick
   return true
+}
+
+/** What the session is doing now, read through its agent's actor. */
+async function sessionActivity(managed: ManagedConnector, sessionId: string): Promise<SessionActivity> {
+  return (await agentRegistry.get(managed.integration.agentSlug).sessions.live(sessionId)).activity
 }
 
 /**
@@ -206,16 +215,23 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
   if (managed.sleepTimer) return
   const sessionId = managed.sessionId
   if (!sessionId) return
-  managed.sleepTimer = setTimeout(() => {
-    managed.sleepTimer = null
-    if (!BUSY_ACTIVITIES.has(agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId))) {
+  const sleep = setTimeout(() => {
+    void sessionActivity(managed, sessionId).then((activity) => {
+      // Cancelled while it read (a busy tick, a stop): the sleep is off.
+      if (managed.sleepTimer !== sleep) return
+      managed.sleepTimer = null
+      if (BUSY_ACTIVITIES.has(activity)) return
       // Clear before stopping: stopIndicatorTick only drops timers, so stopping a tick that
       // is somehow still showing a draft would strand it. Clearing first makes the guard
       // self-defending regardless of how the caller left indicatorShown.
       clearIndicator(managed)
       stopIndicatorTick(managed)
-    }
+    }, () => {
+      // Unread, the sleep is skipped: the tick arms it again on its next non-busy read.
+      if (managed.sleepTimer === sleep) managed.sleepTimer = null
+    })
   }, INDICATOR_SLEEP_MS)
+  managed.sleepTimer = sleep
 }
 
 // ── SSE event processing (exported for testing) ────────────────────────

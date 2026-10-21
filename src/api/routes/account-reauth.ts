@@ -85,13 +85,7 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
       name: getProvider(result.toolkit)?.displayName ?? result.toolkit,
       previousId: result.previousAccountId,
       replacementId: result.accountId,
-    }, () => {
-      const actor = agentRegistry.get(slug)
-      if (!actor.inputs.accountReauth.replace(requestId, result.accountId)) {
-        actor.inputs.resolve(requestId, 'answered')
-        actor.sessions.syncAwaiting()
-      }
-    })
+    }, () => agentRegistry.get(slug).inputs.accountReauth.settleReplaced(requestId, result.accountId))
     return c.json({ success: true, ...recovery })
   } catch (error) {
     console.error('Failed to replace account connection:', error)

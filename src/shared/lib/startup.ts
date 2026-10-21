@@ -1,10 +1,7 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { containerHost } from './agent-actor'
+import { agentRegistry, containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
-import { reviewManager } from './proxy/review-manager'
-import { accountReauthManager } from './proxy/account-reauth-manager'
-import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
@@ -293,9 +290,6 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   servicesShuttingDown = true
-  reviewManager.rejectAll()
-  accountReauthManager.rejectAll()
-  mcpReauthManager.rejectAll()
   stopBrowserProfileCleanup()
   agentIntegrationManager.stop()
   await credentialBroker.shutdown()
@@ -313,6 +307,9 @@ export async function shutdownServices() {
   containerHost.stopStatusSync()
   containerHost.stopHealthMonitor()
   await containerHost.stopAll()
+  // After the containers, whose runtimes the host still needed: every agent
+  // lets go of what it holds, its parked reviews and re-auth waits included.
+  agentRegistry.evictAll()
   await shutdownActiveRunner()
   await shutdownAC()
 }

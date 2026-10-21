@@ -9,8 +9,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
     get: (slug: string) => {
       mocks.order.push(`actor:${slug}`)
       return {
+        live: async () => ({ activeSessionIds: mocks.active() }),
         container: { syncConnectionEnvironment: mocks.sync, status: () => ({ status: mocks.status }) },
-        sessions: { activeIds: mocks.active },
         messages: { stop: mocks.stop, deliver: mocks.deliver },
       }
     },

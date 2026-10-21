@@ -36,6 +36,18 @@ export async function findAgentsAssignedConnectedAccount(accountId: string): Pro
   return mappings.map(({ agentSlug }) => agentSlug)
 }
 
+/** The MCP was re-authorized: the proxy calls parked on it go on, in every agent it is assigned to. */
+export async function resumeMcpReauthWaits(mcpId: string): Promise<void> {
+  const slugs = await findAgentsAssignedRemoteMcp(mcpId)
+  await Promise.all(slugs.map((slug) => agentRegistry.get(slug).inputs.mcpReauth.completeConnection(mcpId)))
+}
+
+/** The account was reconnected: the proxy calls parked on it go on, in every agent it is assigned to. */
+export async function resumeAccountReauthWaits(accountId: string): Promise<void> {
+  const slugs = await findAgentsAssignedConnectedAccount(accountId)
+  await Promise.all(slugs.map((slug) => agentRegistry.get(slug).inputs.accountReauth.completeAccount(accountId)))
+}
+
 export async function syncRemoteMcpAgents(agentSlugs: string[]): Promise<boolean> {
   return syncAgents(agentSlugs, 'remote-mcps')
 }

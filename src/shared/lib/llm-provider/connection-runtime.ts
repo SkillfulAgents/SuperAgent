@@ -128,25 +128,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
 }
 export type ConnectionRuntime = Awaited<ReturnType<typeof connectionRuntime>>
 
-const sessionRuntimes = new Map<string, ConnectionRuntime>()
-export function rememberSessionRuntime(
-  agentId: string,
-  sessionId: string,
-  runtime: ConnectionRuntime
-): void {
-  // Retain only non-secret execution facts for presentation/accounting.
-  sessionRuntimes.set(`${agentId}:${sessionId}`, { ...runtime, env: {}, proxy: undefined })
-  if (sessionRuntimes.size > 500) sessionRuntimes.delete(sessionRuntimes.keys().next().value!)
-}
-export function sessionRuntime(agentId: string, sessionId: string): ConnectionRuntime | undefined {
-  return sessionRuntimes.get(`${agentId}:${sessionId}`)
-}
-
 export function credentialSource(provider: string | undefined): string {
   if (!provider) return 'unknown'
   return provider === 'platform' ? 'platform' : `byo:${provider}`
-}
-
-export function sessionCredentialSource(agentId: string, sessionId: string): string {
-  return credentialSource(sessionRuntime(agentId, sessionId)?.provider)
 }

@@ -86,6 +86,17 @@ describe('deliver', () => {
     })
   })
 
+  it('reports the provider the session\'s turns run on, as the send resolved it', async () => {
+    send().mockImplementation(async () => {
+      // The container resolves the turn's runtime while it takes the message.
+      sessions().recordRuntime(SESSION, { provider: 'platform', modelContextWindows: {} })
+      return {}
+    })
+
+    expect(await delivery().deliver({ sessionId: SESSION, content: 'hi', uuid: 'm1' }))
+      .toEqual({ status: 'sent', queued: false, provider: 'platform' })
+  })
+
   it('joins a running turn without its runtime, and keeps the turn\'s', async () => {
     await delivery().attach(SESSION)
     sessions().markActive(SESSION)

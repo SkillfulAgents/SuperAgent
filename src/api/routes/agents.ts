@@ -1,4 +1,4 @@
-import { assertConnectionSelectionAccess, connectionNeedsAttachment, sessionRuntime, sessionCredentialSource } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
@@ -523,12 +523,12 @@ function attentionSessionCountsOutsideLatest(
   return !isHiddenAutomatedSession(sessionMetadata[sessionId])
 }
 
-function getAttentionOutsideLatest(
+async function getAttentionOutsideLatest(
   agentSlug: string,
   visibleSessions: SessionInfo[],
   unreadSessionIds: Set<string>,
   sessionMetadata: SessionMetadataMap,
-): NonNullable<ApiAgent['attentionOutsideLatest']> {
+): Promise<NonNullable<ApiAgent['attentionOutsideLatest']>> {
   const latestSessionId = visibleSessions[0]?.id
   const visibleSessionIds = new Set(visibleSessions.map((session) => session.id))
   const countsOutside = (sessionId: string) => attentionSessionCountsOutsideLatest(
@@ -540,49 +540,16 @@ function getAttentionOutsideLatest(
 
   const hasUnreadNotification = [...unreadSessionIds].some(countsOutside)
 
-  let hasPendingInput = false
-  let observedPendingInput = false
-
+  const live = await agentRegistry.get(agentSlug).live()
   // The registry is authoritative for open requests and exposes explicit
   // session attribution when it exists. Agent-scoped requests have no unique
-  // session, so they must conservatively count as outside latest.
-  for (const request of agentRegistry.get(agentSlug).inputs.openForAgent()) {
-    if (!request.blocking || request.autoApproved) continue
-    observedPendingInput = true
-    const sessionId = request.scope.sessionId
-    if (sessionId === undefined || countsOutside(sessionId)) {
-      hasPendingInput = true
-      break
-    }
-  }
-
-  // Also sample the live sessions' projection. It covers recovered/racing state and
-  // lets us classify hidden active sessions without ever returning their IDs.
-  if (!hasPendingInput) {
-    const candidateIds = new Set([
-      ...visibleSessionIds,
-      ...agentRegistry.get(agentSlug).sessions.activeIds(),
-    ])
-    for (const sessionId of candidateIds) {
-      if (!agentRegistry.get(agentSlug).sessions.isAwaitingInput(sessionId)) continue
-      observedPendingInput = true
-      if (countsOutside(sessionId)) {
-        hasPendingInput = true
-        break
-      }
-    }
-  }
-
-  // A positive aggregate with no attributable request/session is unresolved.
-  // Never collapse that uncertainty to false: iOS uses false/false to open the
-  // latest session directly.
-  if (
-    !hasPendingInput &&
-    !observedPendingInput &&
-    agentRegistry.get(agentSlug).sessions.hasAwaitingInput()
-  ) {
-    hasPendingInput = true
-  }
+  // session, so they must conservatively count as outside latest. The live
+  // sessions' own projection covers recovered/racing state, and lets hidden
+  // sessions be classified without ever returning their IDs.
+  const hasPendingInput =
+    live.openRequests.some((request) =>
+      request.blocking && !request.autoApproved && (request.sessionId === undefined || countsOutside(request.sessionId))) ||
+    live.awaitingSessionIds.some(countsOutside)
 
   return { hasUnreadNotification, hasPendingInput }
 }
@@ -637,12 +604,13 @@ async function getLatestVisibleSessionTail(
   // recovered awaiting-input state is reflected in them.
   await annotateAndRecoverMessages(messageTail.messages, agentSlug, session.id)
   signal?.throwIfAborted()
+  const live = await actor.sessions.live(session.id)
 
   return {
     session: {
       ...session,
-      isActive: agentRegistry.get(agentSlug).sessions.isActive(session.id),
-      isAwaitingInput: agentRegistry.get(agentSlug).sessions.isAwaitingInput(session.id),
+      isActive: live.isActive,
+      isAwaitingInput: live.isAwaitingInput,
       hasUnreadNotifications: unreadSessionIds.has(session.id),
     },
     messageTail,
@@ -688,7 +656,7 @@ async function getVisibleSessionExpansion(
 
   let attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
   try {
-    attentionOutsideLatest = getAttentionOutsideLatest(
+    attentionOutsideLatest = await getAttentionOutsideLatest(
       agentSlug,
       visibleSessions,
       unreadSessionIds,
@@ -786,39 +754,22 @@ async function enrichAgentsWithSummary(
       // an unread indicator with nothing visible behind it — and no way to ever
       // clear it. (Legacy rows exist from before creation-time suppression;
       // session_waiting now promotes the session first, but old rows remain.)
-      let hasActiveSessions = false
-      let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
       // An unread notification that tags the viewer: drawn as an @, not a dot.
       let hasUnreadMention = false
-      const hasAgentLevelReviews = agentRegistry.get(agent.slug).inputs.reviews.pending().length > 0
       for (const sessionId of sessionSummary.sessionIds) {
-        const isActive = agentRegistry.get(agent.slug).sessions.isActive(sessionId)
-        if (isActive) {
-          hasActiveSessions = true
-        }
-        if (agentRegistry.get(agent.slug).sessions.isAwaitingInput(sessionId)) {
-          hasSessionsAwaitingInput = true
-        }
         if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
           hasUnreadNotifications = true
           if (mentionedIds.has(sessionId)) hasUnreadMention = true
         }
       }
-
-      // Fallback: check in-memory streaming state for sessions not yet on the filesystem
-      // (e.g. newly created sessions whose .jsonl hasn't been written yet)
-      if (!hasActiveSessions) {
-        hasActiveSessions = agentRegistry.get(agent.slug).sessions.hasActive()
-      }
-      if (!hasSessionsAwaitingInput) {
-        hasSessionsAwaitingInput = agentRegistry.get(agent.slug).sessions.hasAwaitingInput()
-      }
-      // Pending proxy reviews raise the flag regardless of session state — dashboard-triggered
-      // reviews have no associated session but still need user attention.
-      if (hasAgentLevelReviews) {
-        hasSessionsAwaitingInput = true
-      }
+      // Live state covers sessions not yet on the filesystem too (a new
+      // session whose .jsonl is not written yet). Pending proxy reviews raise
+      // the flag regardless of session state: dashboard-triggered reviews have
+      // no session but still need the user.
+      const live = await agentRegistry.get(agent.slug).live()
+      const hasActiveSessions = live.activeSessionIds.length > 0
+      const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
       return {
         ...agent,
@@ -846,26 +797,40 @@ async function enrichAgentsWithSummary(
   )
 }
 
-// Unresolved blocking user-input tool calls in the current (trailing) turn —
-// the recovery input for sessions.recoverAwaitingInput when the
-// one-shot request stream event was missed.
-function getUnresolvedBlockingInputRequests(
-  items: TransformedItem[],
-): Array<{ toolUseId: string; toolName: string }> {
-  const unresolved: Array<{ toolUseId: string; toolName: string }> = []
+/**
+ * Square the transcript's open tool calls with the session's requests.
+ *
+ * Parallel tool calls hold every sibling's transcript result until the LAST
+ * one resolves, so a request the user already decided still looks
+ * unresolved here: its outcome is stamped on, so every history consumer (the
+ * client's refresh fallback, the transcript card) sees a completed call
+ * instead of resurrecting a decided one. And while the session runs, the
+ * blocking asks of its trailing turn nobody decided are parked again: if the
+ * request's own stream event was missed, the persisted messages are the
+ * fallback source of truth. A stale transcript can briefly re-assert awaiting
+ * input, but the next stream result/idle event clears it.
+ */
+async function reconcileOpenToolCalls(items: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
+  const open: Array<{ toolCall: { id: string; name: string; result?: unknown }; awaitsInput: boolean }> = []
+  let trailingTurn = true
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.type === 'user' && !item.queued) break
+    if (item.type === 'user' && !item.queued) trailingTurn = false
     if (item.type !== 'assistant') continue
-
     for (const toolCall of item.toolCalls) {
-      if (toolCall.result === undefined && isBlockingUserInputToolName(toolCall.name)) {
-        unresolved.push({ toolUseId: toolCall.id, toolName: toolCall.name })
-      }
+      if (toolCall.result !== undefined) continue
+      open.push({ toolCall, awaitsInput: trailingTurn && isBlockingUserInputToolName(toolCall.name) })
     }
   }
-
-  return unresolved
+  if (open.length === 0) return
+  const { settled } = await agentRegistry.get(agentSlug).sessions.reconcileTranscript(
+    sessionId,
+    open.map(({ toolCall, awaitsInput }) => ({ toolUseId: toolCall.id, toolName: toolCall.name, awaitsInput })),
+  )
+  for (const { toolCall } of open) {
+    const outcome = settled[toolCall.id]
+    if (outcome !== undefined) toolCall.result = outcome === 'answered' ? 'User provided input' : 'User declined the request'
+  }
 }
 
 /**
@@ -1940,19 +1905,21 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
         isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
       ])
-      const activeIds = agentRegistry.get(slug).sessions.activeIds()
+      const live = await actor.live()
+      const active = new Set(live.activeSessionIds)
+      const awaiting = new Set(live.awaitingSessionIds)
       const infos = await actor.sessions.listByIds(
-        [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
+        [...new Set([...live.activeSessionIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
       const enriched = infos.map((session) => {
-        const isActive = agentRegistry.get(slug).sessions.isActive(session.id)
+        const isActive = active.has(session.id)
         return {
           ...session,
           isActive,
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
-          isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
+          isAwaitingInput: awaiting.has(session.id),
           hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
           hasUnreadMention: mentionedIds.has(session.id),
         }
@@ -1986,15 +1953,18 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
+    const live = await actor.live()
+    const active = new Set(live.activeSessionIds)
+    const awaiting = new Set(live.awaitingSessionIds)
     const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = agentRegistry.get(slug).sessions.isActive(session.id)
+      const isActive = active.has(session.id)
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
         isActive,
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
-        isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
+        isAwaitingInput: awaiting.has(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
@@ -2202,7 +2172,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
-        credentialSource: sessionCredentialSource(slug, sessionId),
+        credentialSource: credentialSource((await actor.sessions.live(sessionId)).runtime?.provider),
       },
       201
     )
@@ -2238,7 +2208,7 @@ const messagesListQuerySchema = z
 // changes and provider switches apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
   if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
-  const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
+  const runtimeProvider = (await agentRegistry.get(agentSlug).sessions.live(sessionId)).runtime?.provider
   let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
   if (!provider) {
     const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
@@ -2280,28 +2250,7 @@ async function annotateAndRecoverMessages(
 ): Promise<void> {
   await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-
-  const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
-  if (settledRequests.size > 0) {
-    for (const item of transformed) {
-      if (item.type !== 'assistant') continue
-      for (const toolCall of item.toolCalls) {
-        if (toolCall.result !== undefined) continue
-        const outcome = settledRequests.get(toolCall.id)
-        if (outcome !== undefined) {
-          toolCall.result =
-            outcome === 'answered' ? 'User provided input' : 'User declined the request'
-        }
-      }
-    }
-  }
-
-  if (agentRegistry.get(agentSlug).sessions.isActive(sessionId)) {
-    const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
-    if (unresolvedRequests.length > 0) {
-      agentRegistry.get(agentSlug).sessions.recoverAwaitingInput(sessionId, unresolvedRequests)
-    }
-  }
+  await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
 
   await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
 
@@ -2377,10 +2326,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // transcript, not a missing one — answer the empty page so the client
       // keeps showing the running turn and picks the lines up as they land.
       // (sessionIsKnown keeps the containment guarantee for the id.)
-      if (
-        agentRegistry.get(agentSlug).sessions.isActive(sessionId) &&
-        (await actor.sessions.isKnown(sessionId))
-      ) {
+      if ((await actor.sessions.live(sessionId)).isActive && (await actor.sessions.isKnown(sessionId))) {
         return paginated ? c.json({ messages: [], nextCursor: null }) : c.json([])
       }
       // No JSONL transcript on disk — e.g. it was deleted by the CLI's
@@ -2459,37 +2405,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-
-    // Parallel tool calls hold every sibling's transcript result until the
-    // LAST one resolves, so a request the user already decided still looks
-    // unresolved here. Stamp the settled outcome onto the transcript so every
-    // history consumer — the client's refresh fallback, the transcript card,
-    // and the recovery scan below — sees a completed call instead of
-    // resurrecting a decided one.
-    const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
-    if (settledRequests.size > 0) {
-      for (const item of transformed) {
-        if (item.type !== 'assistant') continue
-        for (const toolCall of item.toolCalls) {
-          if (toolCall.result !== undefined) continue
-          const outcome = settledRequests.get(toolCall.id)
-          if (outcome !== undefined) {
-            toolCall.result =
-              outcome === 'answered' ? 'User provided input' : 'User declined the request'
-          }
-        }
-      }
-    }
-
-    if (agentRegistry.get(agentSlug).sessions.isActive(sessionId)) {
-      const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
-      if (unresolvedRequests.length > 0) {
-        // If the request-specific stream event was missed, persisted messages are
-        // the fallback source of truth. A stale transcript can briefly re-assert
-        // awaiting input, but the next stream result/idle event clears it.
-        agentRegistry.get(agentSlug).sessions.recoverAwaitingInput(sessionId, unresolvedRequests)
-      }
-    }
+    await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
 
     await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
 
@@ -2848,7 +2764,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       const sessionName = (await actor.sessions.metadata(sessionId))?.name
       await notifySessionMentions(c, mentions, { agentSlug, agentName: agent.name, sessionId, sessionName, messageUuid })
     }
-    return c.json({ success: true, uuid: messageUuid, queued, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
+    return c.json({ success: true, uuid: messageUuid, queued, credentialSource: credentialSource(delivery.provider) }, 201)
   } catch (error) {
     if (deliveryFailure(error)?.code === 'provider-not-attached') return new LlmProviderNotFoundError().toHttpResponse()
     const runtimeError = findAgentRuntimeError(error)
@@ -2927,7 +2843,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
+    const live = await actor.sessions.live(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
     if (getSettings().llmDefault) {
       try {
@@ -2949,12 +2865,12 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       name: session.name,
       createdAt: session.createdAt,
       lastActivityAt: session.lastActivityAt,
-      isActive,
+      isActive: live.isActive,
       // Carried so single-session consumers can gate on the same live/idle
       // condition the session lists use (the breadcrumb context menu hides
       // "Mark as Unread" while a session is working or awaiting input, since
       // no list renders an unread dot in that state).
-      isAwaitingInput: agentRegistry.get(agentSlug).sessions.isAwaitingInput(sessionId),
+      isAwaitingInput: live.isAwaitingInput,
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -3100,9 +3016,9 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const actor = agentRegistry.get(agentSlug)
 
-    // Ownership first: unsubscribeFromSession below is keyed by session id
-    // alone, so on a foreign id it would tear down another agent's live message
-    // subscription on the way to a 404. This costs no deletability — it accepts
+    // Ownership first: the delete lets go of the session's stream, keyed by
+    // session id alone, so on a foreign id it would tear down another agent's
+    // live message subscription on the way to a 404. This costs no deletability — it accepts
     // exactly the "transcript OR metadata entry exists" condition that
     // deleteSession itself reports success for.
     if (
@@ -3111,10 +3027,6 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     ) {
       return c.json({ error: 'Session not found' }, 404)
     }
-
-    // Before the delete, so an in-flight append can't recreate the transcript
-    // just after it is unlinked.
-    agentRegistry.get(agentSlug).sessions.unsubscribeStream(sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
     // transcript and/or a lingering metadata entry and returns false only when
@@ -4319,21 +4231,9 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const appName = agentRegistry.get(agentSlug).inputs.computerUse.grabbedApp()
-
-    // Ungrab via AC
     await ungrabAC()
-
-    // Clear grab state
-    agentRegistry.get(agentSlug).inputs.computerUse.clearGrabbedApp()
-
-    // Revoke use_application permission for this app
-    if (appName) {
-      agentRegistry.get(agentSlug).inputs.computerUse.revokeGrant('use_application', appName)
-    }
-
-    // Broadcast to UI
-    agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+    // Forgets the grab, revokes use_application for the app and tells the session's viewers.
+    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseGrab(sessionId)
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
@@ -4379,6 +4279,9 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
     const actor = agentRegistry.get(slug)
     const tasks = await listCompletedOneTimeTasks(slug)
     const metadata = await actor.sessions.readMetadata()
+    const live = await actor.live()
+    const active = new Set(live.activeSessionIds)
+    const awaiting = new Set(live.awaitingSessionIds)
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4388,15 +4291,14 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
         // is still in flight only while its session is live; after an app
         // restart, or during the tiny idle-event/metadata-write race, the same
         // inactive run is settled. This mirrors activity-stats semantics.
-        return metadata[sessionId]?.automationStatus !== 'running'
-          || !agentRegistry.get(slug).sessions.isActive(sessionId)
+        return metadata[sessionId]?.automationStatus !== 'running' || !active.has(sessionId)
       })
 
     const sessions = await actor.sessions.listByIds(completedSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: agentRegistry.get(slug).sessions.isActive(session.id),
-      isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
+      isActive: active.has(session.id),
+      isAwaitingInput: awaiting.has(session.id),
     }))
     sessionsWithStatus.sort(
       (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
@@ -6016,10 +5918,7 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 
 // A running container keeps the drives it started with until it restarts.
 async function afterMountChange(agentSlug: string, restart?: boolean) {
-  const container = agentRegistry.get(agentSlug).container
-  if (container.status().status !== 'running') return
-  if (restart) await container.restart()
-  else container.markStale()
+  await agentRegistry.get(agentSlug).container.invalidate({ restart })
 }
 
 // POST /api/agents/:id/mounts - Add a mount
@@ -7205,10 +7104,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
     // and the awaiting-input state behind it — on screen forever. Clearing it
     // is the whole point of this route, so do it rather than report success
     // and change nothing.
-    if (!dismissed) {
-      agentRegistry.get(slug).inputs.resolve(requestId, 'cancelled')
-      agentRegistry.get(slug).sessions.syncAwaiting()
-    }
+    if (!dismissed) agentRegistry.get(slug).inputs.resolve(requestId, 'cancelled')
 
     // Short form, matching the `type` its sibling decline routes emit
     // ('secret', 'connected_account') rather than the raw registry kind.
@@ -7251,8 +7147,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
 
   // Approving an agent's proxy rule persists access on the account or MCP
   // server, so (like "always allow") only its owner may approve it.
-  const proposal = agentRegistry.get(slug).inputs.reviews.pending()
-    .find((review) => review.id === reviewId)?.ruleProposal
+  const proposal = agentRegistry.get(slug).inputs.reviews.get(reviewId)?.ruleProposal
   if (proposal && body.decision === 'allow' && isAuthMode()) {
     const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
     if (!context || context.userId !== getCurrentUserId(c)) {
@@ -7291,7 +7186,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision' }, 400)
   }
 
-  const pendingReview = agentRegistry.get(slug).inputs.reviews.pending().find((review) => review.id === reviewId)
+  const pendingReview = agentRegistry.get(slug).inputs.reviews.get(reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
     return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
   }

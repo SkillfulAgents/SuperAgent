@@ -118,7 +118,8 @@ export async function openWidgetRepairSession(
 ): Promise<RepairOutcome> {
   // The agent is mid-turn: it may be editing this widget right now, and its
   // own refresh_widget call already told it what broke.
-  if (agentRegistry.get(agentSlug).sessions.hasActive() || opening.has(agentSlug)) {
+  // Nothing awaits between the check and the add: one repair opens at a time.
+  if ((await agentRegistry.get(agentSlug).live()).activeSessionIds.length > 0 || opening.has(agentSlug)) {
     return { started: false, reason: 'agent-busy' }
   }
   opening.add(agentSlug)

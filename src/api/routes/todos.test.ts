@@ -57,8 +57,10 @@ vi.mock('@shared/lib/agent-actor', () => ({
     get: (slug: string) => ({
       sessions: {
         isKnown: async (id: string) => state.sessions.has(`${slug}/${id}`),
-        isActive: (id: string) => state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
-        isAwaitingInput: (id: string) => state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
+        live: async (id: string) => ({
+          isActive: state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
+          isAwaitingInput: state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
+        }),
       },
       inputs: { snapshot: (id: string) => state.requests.get(`${slug}/${id}`) ?? [] },
       files: {

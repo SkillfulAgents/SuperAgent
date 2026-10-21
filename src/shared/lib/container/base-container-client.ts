@@ -1,6 +1,6 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
-import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import type { ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
@@ -89,6 +89,20 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
 /**
  * Get the PATH environment variable with common binary locations added.
  */
+/**
+ * The session's turns run on this runtime now: its agent keeps the non-secret
+ * facts its errors and usage are read with. Best-effort, after the container
+ * took the session or the message: a failure here must not unsay that.
+ */
+async function recordSessionRuntime(agentId: string, sessionId: string, runtime: ConnectionRuntime): Promise<void> {
+  try {
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    await agentRegistry.get(agentId).sessions.recordRuntime(sessionId, { provider: runtime.provider, modelContextWindows: runtime.modelContextWindows })
+  } catch (error) {
+    console.error(`[ContainerClient] Could not record the runtime of session ${sessionId}:`, error)
+  }
+}
+
 export function getEnhancedPath(): string {
   const currentPath = process.env.PATH || ''
   const platformPaths = COMMON_BINARY_PATHS[process.platform] || []
@@ -1416,7 +1430,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       const session = await response.json()
-      rememberSessionRuntime(this.config.agentId, session.id, llmRuntime)
+      await recordSessionRuntime(this.config.agentId, session.id, llmRuntime)
       return session
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
@@ -1503,7 +1517,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           },
         )
         llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
-        rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
+        await recordSessionRuntime(this.config.agentId, sessionId, llmRuntime)
         result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
         // The container checks its credentials back through llm-runtime/resolve,
         // which serves the STORED binding and refuses another, so a changed

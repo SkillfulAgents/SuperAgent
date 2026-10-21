@@ -14,10 +14,11 @@
 
 /** The chat's session, through its agent's actor, narrowed to what this decision needs. */
 interface AwaitingSession {
-  /** Whether the session waits on the user: the source of truth for every surface. */
-  isAwaitingInput(): boolean
-  /** The session's open requests, from the registry the app answers from too. */
-  openRequests(): Array<{ id: string; kind: string; payload: unknown }>
+  /**
+   * Whether the session waits on the user (the source of truth for every
+   * surface), and its open requests, from the registry the app answers from too.
+   */
+  live(): Promise<{ isAwaitingInput: boolean; openRequests: Array<{ id: string; kind: string; payload: unknown }> }>
   /** Cancel what the session waits on (a no-op when it waits on nothing). */
   cancelAwaiting(): Promise<void>
 }
@@ -47,12 +48,12 @@ export async function consumeOrCancelAwaitingInput(opts: {
   // only on a confirmed live resolve; a non-text message, a multi-question card, or any other
   // awaiting type falls through to cancel.
   const isPlainText = !!messageText.trim() && !hasFiles
-  if (isPlainText && session.isAwaitingInput()) {
+  const live = isPlainText ? await session.live() : null
+  if (live?.isAwaitingInput) {
     // Recovered stubs are excluded the same way they are excluded from the
     // wire: they carry no renderable payload, so no card was ever posted and
     // there is nothing in this chat for the text to answer.
-    const pendingQuestion = session
-      .openRequests()
+    const pendingQuestion = live.openRequests
       .find((r) => r.kind === 'question' && (r.payload as { recovered?: unknown }).recovered !== true)
     if (pendingQuestion) {
       const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.id, answerText ?? messageText)
