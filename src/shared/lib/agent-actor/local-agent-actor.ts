@@ -188,7 +188,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       return 'restarted'
     },
     info: () => client().getInfo(),
-    syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind, runtime()),
+    syncConnectionEnvironment: (kind, options) => deps.syncAgentConnectionEnvironment(slug, kind, runtime(), options),
     fetch: (...args) => client().fetch(...args),
     webSocketTarget: async (path, init) => {
       const info = runtime().getCachedInfo()

@@ -3487,8 +3487,9 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Updating CONNECTED_ACCOUNTS metadata in container`
     )
-    // Logs the container's refusal itself.
-    if (!(await actor.container.syncConnectionEnvironment('connected-accounts'))) {
+    // A grant to a session that is waiting on it: the push must happen (a
+    // cached "stopped" can be stale) and succeed. Logs the container's refusal itself.
+    if (!(await actor.container.syncConnectionEnvironment('connected-accounts', { confirm: true }))) {
       console.error('[provide-connected-account] Failed to update metadata')
       return c.json(
         { error: 'Failed to update account metadata in container' },
@@ -4977,8 +4978,9 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     }
 
     // Update container env var
-    // Logs the container's refusal itself.
-    if (!(await actor.container.syncConnectionEnvironment('remote-mcps'))) {
+    // A grant to a session that is waiting on it: the push must happen (a
+    // cached "stopped" can be stale) and succeed. Logs the container's refusal itself.
+    if (!(await actor.container.syncConnectionEnvironment('remote-mcps', { confirm: true }))) {
       console.error('Failed to update REMOTE_MCPS env var')
       return c.json({ error: 'Failed to update container environment' }, 502)
     }

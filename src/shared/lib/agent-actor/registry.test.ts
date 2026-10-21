@@ -333,8 +333,8 @@ describe('createAgentRegistry', () => {
 
     it('container.syncConnectionEnvironment pushes one projection through this agent\'s runtime', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      await expect(actor.container.syncConnectionEnvironment('remote-mcps')).resolves.toBe(true)
-      expect(fake.syncAgentConnectionEnvironment).toHaveBeenCalledWith('a', 'remote-mcps', fake.runtimes.get('a'))
+      await expect(actor.container.syncConnectionEnvironment('remote-mcps', { confirm: true })).resolves.toBe(true)
+      expect(fake.syncAgentConnectionEnvironment).toHaveBeenCalledWith('a', 'remote-mcps', fake.runtimes.get('a'), { confirm: true })
     })
 
     it('usage.daily reads every transcript the CLI wrote for this agent', async () => {

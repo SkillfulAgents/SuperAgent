@@ -199,7 +199,7 @@ export interface ContainerOps {
    * projection to a running container. True when it was applied or when the
    * container is stopped (startup rebuilds it); false on a failed push.
    */
-  syncConnectionEnvironment(kind: ConnectionRuntimeKind): Promise<boolean>
+  syncConnectionEnvironment(kind: ConnectionRuntimeKind, options?: { confirm?: boolean }): Promise<boolean>
 
   // Transport to the container API. These are honest for any runtime: a
   // remote actor answers them over the network the same way.
