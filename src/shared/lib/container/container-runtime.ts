@@ -32,7 +32,6 @@ import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { NO_LIVE_SESSIONS, type AgentSessionsAccess, type RuntimeSessions } from './agent-sessions-access'
 import type { RuntimeFatalKind } from './runtime-death'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
@@ -433,7 +432,7 @@ export class ContainerRuntime {
         // If this agent had grabbed a window, ungrab it so the halo disappears
         if (computerUsePermissionManager.getGrabbedApp(slug)) {
           computerUsePermissionManager.clearGrabbedApp(slug)
-          ungrabAC().catch(() => {})  // Best-effort, non-blocking
+          import('@shared/lib/computer-use/executor').then((m) => m.ungrabAC()).catch(() => {})  // Best-effort, non-blocking
         }
 
         // Broadcast status change so UI updates

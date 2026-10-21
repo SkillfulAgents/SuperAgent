@@ -1181,7 +1181,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // stale-cache liveness check), and a container that died with its port
       // forward left half-open would accept the TCP connect but never respond,
       // hanging the fetch — and the caller — indefinitely without this.
-      return await fetch(`${this.getBaseUrl(port)}/health`, {
+      return await this.transportFetch(`${this.getBaseUrl(port)}/health`, {
         signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
         headers: this.getHostAuthHeaders(),
       })
@@ -1230,6 +1230,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `ws://127.0.0.1:${port}`
   }
 
+  /** How requests reach the container API. Runtimes that cannot dial a local port override this. */
+  protected transportFetch(url: string, init?: RequestInit): Promise<Response> {
+    return fetch(url, init)
+  }
+
+  /** Opens a WebSocket to the container API; same override point as transportFetch. */
+  public openWebSocket(url: string, headers: Record<string, string>, protocols?: string | string[]): WebSocket {
+    return new WebSocket(url, protocols, { headers })
+  }
+
   public getHostApiBaseUrl(): string | Promise<string> {
     return `http://${getContainerHostUrl()}:${getAppPort()}`
   }
@@ -1250,7 +1260,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const url = `${baseUrl}${path.startsWith('/') ? path : '/' + path}`
 
     try {
-      return await fetch(url, {
+      return await this.transportFetch(url, {
         ...init,
         headers: { ...this.getHostAuthHeaders(), ...(init?.headers as Record<string, string> | undefined) },
       })
@@ -1359,7 +1369,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         signal: controller.signal,
       }
       requestStarted = true
-      const response = await fetch(url, request)
+      const response = await this.transportFetch(url, request)
 
       clearTimeout(timeoutId)
 
@@ -1533,7 +1543,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-      const response = await fetch(
+      const response = await this.transportFetch(
         `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`,
         {
           method: 'POST',
@@ -1750,9 +1760,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         this.closeTrackedWebSocket(sessionId)
       }
 
-      const ws = new WebSocket(
+      const ws = this.openWebSocket(
         `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`,
-        { headers: this.getHostAuthHeaders() }
+        this.getHostAuthHeaders(),
       )
 
       socket = ws

@@ -32,13 +32,13 @@ import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
 import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
-import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
 import { configureUploadTimeouts } from './streaming-upload-timeout'
+import { cleanupStaleTempUploads } from './utils/chunked-upload'
 
 const STARTUP_IO_CONCURRENCY = 3
 const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
@@ -272,6 +272,23 @@ async function initializeServicesInner() {
 
   // Refreshes platform account + billing info when connected (no-op otherwise).
   platformService.start()
+
+  void cleanupStaleUploads()
+  staleUploadTimer = setInterval(cleanupStaleUploads, STALE_UPLOAD_SWEEP_MS)
+  staleUploadTimer.unref()
+}
+
+const STALE_UPLOAD_MS = 60 * 60 * 1000
+const STALE_UPLOAD_SWEEP_MS = 30 * 60 * 1000
+let staleUploadTimer: ReturnType<typeof setInterval> | null = null
+
+async function cleanupStaleUploads() {
+  try {
+    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
+  } catch (err) {
+    console.warn('[startup] stale upload cleanup failed:', err)
+    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
+  }
 }
 
 /** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
@@ -310,9 +327,11 @@ export async function shutdownServices() {
   apiLogAutoDeleteMonitor.stop()
   accountSyncService.stop()
   platformService.stop()
+  if (staleUploadTimer) clearInterval(staleUploadTimer)
+  staleUploadTimer = null
   containerHost.stopStatusSync()
   containerHost.stopHealthMonitor()
   await containerHost.stopAll()
   await shutdownActiveRunner()
-  await shutdownAC()
+  await (await import('./computer-use/executor')).shutdownAC()
 }

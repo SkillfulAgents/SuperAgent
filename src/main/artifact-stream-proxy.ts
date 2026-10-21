@@ -20,14 +20,6 @@ interface ProtocolAwareRequest extends IncomingMessage {
   _gamutDashboardProtocol?: string
 }
 
-const artifactWss = new WebSocketServer({
-  noServer: true,
-  handleProtocols(protocols, request) {
-    const selected = (request as ProtocolAwareRequest)._gamutDashboardProtocol
-    return selected && protocols.has(selected) ? selected : false
-  },
-})
-
 const SKIP_UPSTREAM_HEADERS = new Set([
   'connection',
   'host',
@@ -152,6 +144,14 @@ function bridge(client: WebSocket, upstream: WebSocket, route: ArtifactWebSocket
 }
 
 export function setupArtifactStreamProxy(server: ServerType): void {
+  const artifactWss = new WebSocketServer({
+    noServer: true,
+    handleProtocols(protocols, request) {
+      const selected = (request as ProtocolAwareRequest)._gamutDashboardProtocol
+      return selected && protocols.has(selected) ? selected : false
+    },
+  })
+
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- server request URLs always parse
     const url = new URL(request.url || '', `http://${request.headers.host}`)

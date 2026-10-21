@@ -16,9 +16,9 @@ import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
 import { BrowserFrameRelay } from './browser-frame-relay'
 
-const browserWss = new WebSocketServer({ noServer: true })
-
 export function setupBrowserStreamProxy(server: ServerType): void {
+  const browserWss = new WebSocketServer({ noServer: true })
+
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
     const url = new URL(request.url || '', `http://${request.headers.host}`)
