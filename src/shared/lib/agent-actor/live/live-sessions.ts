@@ -14,7 +14,7 @@
  * Every map here is keyed by session id alone: the actor is the agent, so a
  * session of another agent is simply not here.
  */
-import type { ContainerClient, SlashCommandInfo } from '@shared/lib/container/types'
+import type { ContainerClient, SlashCommandInfo, StreamMessage } from '@shared/lib/container/types'
 import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
@@ -308,12 +308,19 @@ export class LiveSessions {
    * attached the listener and replayed the last turn's terminal frames.
    * Concurrent calls share one attach. `metadata` is the session's entry as
    * the caller just read it (null: it has none), so working out the stream's
-   * lifecycle reads nothing.
+   * lifecycle reads nothing. `holdFramesUntil`: the stream listens at once,
+   * and its frames wait, in order, until that settles (see `SessionDelivery.start`).
    */
-  subscribe(sessionId: string, client: ContainerClient, containerSessionId: string, metadata?: SessionMetadata | null): Promise<void> {
+  subscribe(
+    sessionId: string,
+    client: ContainerClient,
+    containerSessionId: string,
+    metadata?: SessionMetadata | null,
+    options: { holdFramesUntil?: Promise<unknown> } = {},
+  ): Promise<void> {
     const inFlight = this.connecting.get(sessionId)
     if (inFlight) return inFlight
-    return this.trackConnecting(sessionId, this.attach(sessionId, client, containerSessionId, metadata))
+    return this.trackConnecting(sessionId, this.attach(sessionId, client, containerSessionId, metadata, options.holdFramesUntil))
   }
 
   /** Stop following the session and forget it: its parked requests die with it. */
@@ -351,7 +358,13 @@ export class LiveSessions {
     return promise
   }
 
-  private async attach(sessionId: string, client: ContainerClient, containerSessionId: string, metadata?: SessionMetadata | null): Promise<void> {
+  private async attach(
+    sessionId: string,
+    client: ContainerClient,
+    containerSessionId: string,
+    metadata?: SessionMetadata | null,
+    holdFramesUntil?: Promise<unknown>,
+  ): Promise<void> {
     // Only the transport goes: the session's requests and grants outlive a
     // reattach of its stream.
     this.subscriptions.get(sessionId)?.()
@@ -361,7 +374,19 @@ export class LiveSessions {
     const state = this.create(sessionId, prior)
     this.resolveStreamPolicy(sessionId, state, metadata)
     this.clients.set(sessionId, client)
-    const { unsubscribe, ready } = client.subscribeToStream(containerSessionId, (message) => this.states.get(sessionId)?.frame(message))
+    const frame = (message: StreamMessage) => this.states.get(sessionId)?.frame(message)
+    let held: StreamMessage[] | null = holdFramesUntil ? [] : null
+    if (holdFramesUntil) {
+      void holdFramesUntil.then(() => undefined, () => undefined).then(() => {
+        const waiting = held ?? []
+        held = null
+        for (const message of waiting) frame(message)
+      })
+    }
+    const { unsubscribe, ready } = client.subscribeToStream(containerSessionId, (message) => {
+      if (held) held.push(message)
+      else frame(message)
+    })
     this.subscriptions.set(sessionId, unsubscribe)
 
     const capture = this.deps.capture

@@ -30,7 +30,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 }))
 
 const mockGetSessionsByScheduledTask = vi.fn()
-const mockRegisterSession = vi.fn()
+const mockRegisterSession = vi.fn(async (..._args: unknown[]) => {})
 const mockUpdateSessionMetadata = vi.fn()
 const mockGetSessionMetadata = vi.fn((..._args: unknown[]) => Promise.resolve({ name: 'Sleeping session' }))
 
@@ -81,7 +81,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 
 const mockLiveSessions = vi.hoisted(() => ({
   isActive: vi.fn(),
-  subscribe: vi.fn(),
+  subscribe: vi.fn(async (..._args: unknown[]) => {}),
   markActive: vi.fn(),
   markIdle: vi.fn(),
   isSubscribed: vi.fn(() => false),
@@ -275,6 +275,8 @@ describe('scheduled-tasks route', () => {
       { createSession: mockCreateSession },
       'container-session-1',
       registered,
+      // Frames wait for the registration, so a run that settles at once finds its status.
+      { holdFramesUntil: expect.any(Promise) },
     )
     expect(mockLiveSessions.markActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')

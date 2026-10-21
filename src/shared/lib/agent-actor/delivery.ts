@@ -243,16 +243,22 @@ export function createSessionDelivery(
     // Create started the turn. Marked first, so a result replayed during the
     // attach lands on an active session instead of reading as settled.
     live.markActive(sessionId)
+    // The stream listens at once: what the running turn emits before it does
+    // (a question, a host action) is not replayed, only a settled turn's last
+    // frames are. Its frames wait for the registration, so an automation that
+    // settles at once finds its status to finalize.
+    const registering = deps.sessionService.registerSession(store, sessionId, request.name, metadata)
+    const attaching = live.subscribe(sessionId, client(), sessionId, metadata, { holdFramesUntil: registering })
+    // A failed registration revokes the session before the attach is awaited.
+    attaching.catch(() => {})
     try {
-      // Registered before the attach: an automation that settles at once
-      // finds its status to finalize.
-      await deps.sessionService.registerSession(store, sessionId, request.name, metadata)
+      await registering
     } catch (error) {
       await revoke(sessionId)
       throw new StartError('register-failed', true, errorMessage(error), { cause: error })
     }
     try {
-      await withTimeout(live.subscribe(sessionId, client(), sessionId, metadata), request.attachTimeoutMs)
+      await withTimeout(attaching, request.attachTimeoutMs)
     } catch (error) {
       // Nothing would persist the session's transcript: it would run unseen.
       await revoke(sessionId)

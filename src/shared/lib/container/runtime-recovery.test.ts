@@ -446,6 +446,23 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(order).toEqual(['turn sess-1', `in turn: ${TEST_RESUME_PROMPT}`, 'in turn: keep going', 'turn ends'])
   })
 
+  it('does not resume a session the user stopped while the recovery waited for its delivery turn', async () => {
+    let stopped = false
+    const deps = createDeps({
+      isSessionRecovering: () => !stopped,
+      inDeliveryTurn: async (_sessionId, work) => {
+        // A send ahead of the recovery holds the turn; the user stops the session meanwhile.
+        stopped = true
+        return work()
+      },
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('delivers a coalesced transcript-only append without starting a turn', async () => {
     const deps = createDeps({
       takeCoalescedUserMessages: () => [{ uuid: TEST_MESSAGE_UUID, text: '[SYSTEM] note', shouldQuery: false }],

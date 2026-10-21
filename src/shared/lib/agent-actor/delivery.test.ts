@@ -381,6 +381,36 @@ describe('start', () => {
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
+  it('listens at once, and holds the first turn\'s frames until the session is registered', async () => {
+    let registered!: () => void
+    const gate = new Promise<void>((resolve) => {
+      registered = resolve
+    })
+    vi.spyOn(service, 'registerSession').mockImplementation(async (...args) => {
+      await gate
+      return sessionService.registerSession(...args)
+    })
+    let emit!: (message: StreamMessage) => void
+    vi.mocked(client.subscribeToStream).mockImplementationOnce((_id: string, onMessage: (message: StreamMessage) => void) => {
+      emit = onMessage
+      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
+    })
+
+    const starting = delivery().start(request)
+    // The turn is running while the registration is written: the stream already listens.
+    await vi.waitFor(() => expect(client.subscribeToStream).toHaveBeenCalled())
+    // The turn ends before the registration is done.
+    for (const content of [{ type: 'result', subtype: 'success', is_error: false }, { type: 'system', subtype: 'session_state_changed', state: 'idle' }]) {
+      emit({ type: 'message', content, timestamp: new Date(), sessionId: 'new-session' })
+    }
+    // Held until registered, so an automation that settled at once finds its status to finalize.
+    expect(sessions().isActive('new-session')).toBe(true)
+
+    registered()
+    await starting
+    await vi.waitFor(() => expect(sessions().isActive('new-session')).toBe(false))
+  })
+
   it('revokes the session when its registration fails', async () => {
     vi.spyOn(service, 'registerSession').mockRejectedValueOnce(new Error('disk full'))
 
@@ -389,7 +419,8 @@ describe('start', () => {
     expect((error as Error).message).toBe('disk full')
     expect(client.deleteSession).toHaveBeenCalledWith('new-session')
     expect(sessions().isActive('new-session')).toBe(false)
-    expect(client.subscribeToStream).not.toHaveBeenCalled()
+    // The stream listened from the start, and was let go of with the session.
+    expect(sessions().isSubscribed('new-session')).toBe(false)
   })
 
   it('revokes the session when its stream does not attach in time', async () => {

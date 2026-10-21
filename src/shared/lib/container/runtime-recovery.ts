@@ -307,15 +307,23 @@ async function resumeSessions(
     try {
       // In the session's delivery turn: a message sent once the recovery
       // ends goes after the resume and the messages it held, not between.
-      await deps.inDeliveryTurn(sessionId, async () => {
+      // Decided again inside the turn, and after the attach: a stop, a settle
+      // or a shutdown while it waited ends the recovery, and must not be undone
+      // by the resume prompt.
+      const stillWanted = () => !deps.isStopping() && deps.isSessionRecovering(sessionId)
+      const resumed = await deps.inDeliveryTurn(sessionId, async () => {
+        if (!stillWanted()) return false
         if (!deps.isSubscribed(sessionId)) {
           await deps.subscribeToSession(sessionId, client, sessionId)
+          if (!stillWanted()) return false
         }
         await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
         const coalesced = deps.takeCoalescedUserMessages(sessionId)
         deps.markRecovered([sessionId])
         await deliverCoalescedMessages(deps, client, sessionId, coalesced)
+        return true
       })
+      if (!resumed && deps.isStopping() && deps.isSessionRecovering(sessionId)) failed.push(sessionId)
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.resume' },
