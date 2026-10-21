@@ -140,6 +140,7 @@ import { resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
+import { registerFindBarIpc } from './find-in-page'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -1110,6 +1111,8 @@ ipcMain.handle('set-native-theme', (_event, theme: string) => {
   // recolor via CSS. Calling setTitleBarOverlay here would throw
   // "Titlebar overlay is not enabled", so there is nothing native to recolor.
 })
+
+registerFindBarIpc()
 
 // IPC handler for popping up the full app menu at a position (Windows custom title bar)
 ipcMain.handle('popup-app-menu', (_event, x: number, y: number) => {
