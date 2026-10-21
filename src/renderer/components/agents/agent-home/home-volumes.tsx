@@ -226,7 +226,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             />
           ) : <>
             <span className="text-xs font-medium truncate">{mount.volumeName}</span>
-            <VolumeStatusBadge health={mount.health} />
+            <VolumeStatusBadge health={mount.health} attention={mount.attention} />
             {(mount.readOnly || mount.sourceReadOnly) && (
               <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
                 <Lock className="h-2.5 w-2.5" />

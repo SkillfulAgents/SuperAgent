@@ -145,7 +145,7 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
             displayTestId="volume-title"
             inputTestId="volume-title-input"
           />
-          <VolumeStatusBadge health={volume.health} />
+          <VolumeStatusBadge health={volume.health} attention={volume.attention} />
         </div>
         <p className="text-xs text-muted-foreground truncate">{volume.sourceLabel ?? volume.hostPath}</p>
         {volume.canManage && volume.attachmentCount > 0 && !volume.globalAccess && <p className="text-xs text-muted-foreground">Renaming this drive keeps existing agents’ folder paths.</p>}

@@ -58,7 +58,7 @@ export function VolumesTab() {
         <p className="text-sm text-muted-foreground">Save folders once, then add them to any of your agents from their Drives card.</p>
         <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Add drive</Button>
       </div>
-      {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
+      {((error && !deleting) || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading drives…</p> : definitions.length === 0 ? (
         <div className="rounded-lg border border-dashed p-8 text-center">
           <Folder className="mx-auto mb-3 h-7 w-7 text-muted-foreground" />
@@ -71,7 +71,7 @@ export function VolumesTab() {
             <IntegrationRow key={volume.id} data-testid="saved-volume-row"
               icon={<VolumeIcon type={volume.type} className="h-4 w-4 text-muted-foreground" />}
               name={volume.name}
-              nameBadge={<VolumeStatusBadge health={volume.health} />}
+              nameBadge={<VolumeStatusBadge health={volume.health} attention={volume.attention} />}
               subtitle={<>
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="min-w-0 truncate font-mono" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</span>}
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
@@ -100,7 +100,11 @@ export function VolumesTab() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete saved drive?</AlertDialogTitle>
-            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved drives. The source folder and its files will remain unchanged.</AlertDialogDescription>
+            <AlertDialogDescription>
+              Remove &quot;{deleting?.name}&quot; from saved drives. {deleting?.attention?.unsynced
+                ? `${deleting.attention.unsynced} ${deleting.attention.unsynced === 1 ? 'file that has' : 'files that have'} not synced will be lost.`
+                : 'The source folder and its files will remain unchanged.'}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>

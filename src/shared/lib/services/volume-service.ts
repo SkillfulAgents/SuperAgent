@@ -82,8 +82,9 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
     const stored = storedDefinition(volume)
     if (!stored) return null
     return {
-      ...volumeSummary(stored),
+      // The health check loads the drive's state first, so the summary's attention line reads it.
       health: volumeHealth(await volumeProblem(stored)),
+      ...volumeSummary(stored),
       userId: volume.userId,
       canManage: volume.userId === null ? viewer.admin : volume.userId === viewer.userId,
       attachmentCount,

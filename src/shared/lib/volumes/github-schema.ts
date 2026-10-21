@@ -40,3 +40,20 @@ export const githubSyncStateSchema = z.object({
   version: z.literal(1), base: githubOidSchema.nullable(), files: z.record(githubPathSchema, githubFileSchema),
 })
 export type SyncState = z.infer<typeof githubSyncStateSchema>
+export const githubCommitReplySchema = z.object({
+  data: z.object({ createCommitOnBranch: z.object({ commit: z.object({ oid: githubOidSchema }).nullable() }).nullable() }).nullable().optional(),
+  errors: z.array(z.object({ message: z.string() })).optional(),
+})
+
+/** Paths the agent changed and GitHub does not have yet, conflicts it must resolve, and why pushes stopped. */
+export const githubEditsSchema = z.object({
+  version: z.literal(1),
+  unpushed: z.record(z.string(), z.object({
+    agents: z.array(z.string()), n: z.number().int(), sha: githubOidSchema.nullable(), group: z.string().optional(),
+  })),
+  held: z.record(z.string(), z.object({ reason: z.string(), behind: githubOidSchema.nullable().optional() })),
+  stopped: z.string().nullable(),
+  ignores: z.array(z.object({ dir: z.string(), sha: githubOidSchema })),
+  links: z.array(z.string()).default([]),
+})
+export type GithubEdits = z.infer<typeof githubEditsSchema>

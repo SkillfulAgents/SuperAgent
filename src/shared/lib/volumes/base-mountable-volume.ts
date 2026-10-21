@@ -1,5 +1,5 @@
 import type { ByteRange, FileKind } from '@shared/lib/agent-actor/types'
-import type { VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
+import type { VolumeAttention, VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
 
 /** One entry of a volume, with what a WebDAV listing reports. `name` is '' for the volume root. */
 export interface VolumeEntry {
@@ -58,6 +58,11 @@ export abstract class BaseMountableVolume<C> {
 
   /** What the card shows for a remote source, or null for a source whose host path says it. */
   get sourceLabel(): string | null {
+    return null
+  }
+
+  /** Changes that have not reached the source, or null. */
+  get attention(): VolumeAttention | null {
     return null
   }
 

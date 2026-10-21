@@ -1,4 +1,5 @@
 import * as path from 'path'
+import { z } from 'zod'
 
 export interface FileHookReadResult {
   additionalContext?: string
@@ -37,10 +38,10 @@ export abstract class FileHook {
   abstract matches(filePath: string): boolean
 
   /**
-   * Called after a Read tool call for a matching file.
+   * Called after a Read tool call for a matching file, with what the Read returned.
    * Return additional context to append to the tool result.
    */
-  onRead(_filePath: string): FileHookReadResult {
+  onRead(_filePath: string, _response?: unknown): FileHookReadResult {
     return {}
   }
 
@@ -80,4 +81,14 @@ export function resolveToolFilePath(toolInput: Record<string, unknown>, workingD
   const filePath = toolInput.file_path as string | undefined
   if (!filePath) return null
   return path.resolve(workingDirectory, filePath)
+}
+
+const editResponseSchema = z.object({ originalFile: z.string(), oldString: z.string(), newString: z.string(), replaceAll: z.boolean().optional() })
+
+/** The file after an Edit, rebuilt from the tool's reply so hooks need not read it back. Null when the reply has no original. */
+export function editedContent(response: unknown): string | null {
+  const edit = editResponseSchema.safeParse(response)
+  if (!edit.success) return null
+  const { originalFile, oldString, newString, replaceAll } = edit.data
+  return replaceAll ? originalFile.split(oldString).join(newString) : originalFile.replace(oldString, () => newString)
 }
