@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result within 3 minutes.",
+  "reason": "Verified that the QA agent can successfully use browser tools to navigate to a URL, retrieve the page title, and report back with the correct information including \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application with the agent interface visible.",
-    "Found and clicked the \"QA-20261021-195618-58uv\" agent in the sidebar — Successfully clicked the agent button and navigated to the agent's configuration page (http://localhost:47891/agents/qa-20261021-195618-58uv-c95besvpxn).",
-    "Clicked on the message input box — Successfully activated the message input field.",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the input box.",
-    "Sent the message by clicking the send button — Message was sent and a new session was created at http://localhost:47891/agents/qa-20261021-195618-58uv-c95besvpxn/sessions/fafd6a84-ad7d-4c89-ba64-d5af07ec47e4.",
-    "Waited for agent to finish processing — Agent completed working after ~9 seconds (visible in the response metadata \"Worked for 9s · 3 tool calls · 155,204 tokens\").",
-    "Verified response mentions \"Example Domain\" — Response confirms: 'The page title is \"Example Domain\". https://example.com loaded normally, and I closed the browser afterward.'"
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut application with page title \"Gamut\"",
+    "Found and clicked the \"QA-20261021-212126-oksk\" agent in the left sidebar - Successfully opened the agent's chat interface",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field - Message was successfully entered in the contenteditable input field",
+    "Clicked the send button to send the message - Message was sent and a new session was created titled \"Check Example.com Page Title\"",
+    "Waited for the agent's response - Agent completed the task in 16 seconds (well under the 3-minute timeout) with 3 tool calls and 155,169 tokens",
+    "Verified the response mentions \"Example Domain\" - Agent's response clearly states: \"The page title of https://example.com is 'Example Domain'. The page loaded normally, and I've closed the browser.\""
   ],
   "bugs": [],
-  "durationMs": 144635,
-  "sessionId": "71e40648-4500-424d-a9b3-11138ecdf965",
+  "durationMs": 334847,
+  "sessionId": "f2796198-065d-4472-b913-5ffafecb099c",
   "cost": {
-    "inputTokens": 476,
-    "outputTokens": 14628,
-    "cacheCreationTokens": 68913,
-    "cacheReadTokens": 1421180,
+    "inputTokens": 596,
+    "outputTokens": 15178,
+    "cacheCreationTokens": 92801,
+    "cacheReadTokens": 1874975,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.301875
+    "totalCostUsd": 0.379985
   }
 }
