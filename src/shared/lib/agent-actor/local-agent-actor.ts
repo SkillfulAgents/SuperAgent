@@ -404,7 +404,8 @@ function createUsageOps(store: SessionStore, deps: LocalActorDeps): UsageOps {
 
 function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps {
   return {
-    request: (details, ...rest) => deps.mcpReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
+    request: (details, options) => deps.mcpReauthManager.request(slug, details, options),
+    withdraw: async (waitId) => deps.mcpReauthManager.withdraw(slug, waitId),
     dismiss: (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
     replace: (entryId, replacementMcpId) => deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId),
   }
@@ -412,8 +413,8 @@ function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps
 
 function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps): AccountReauthOps {
   return {
-    request: (details, ...rest) =>
-      deps.accountReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
+    request: (details, options) => deps.accountReauthManager.request(slug, details, options),
+    withdraw: async (waitId) => deps.accountReauthManager.withdraw(slug, waitId),
     dismiss: (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
     replace: (entryId, replacementAccountId) =>
       deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId),

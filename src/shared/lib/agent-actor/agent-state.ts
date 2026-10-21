@@ -105,7 +105,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
  * not to the process.
  */
 export function releaseAgentState(state: AgentState): void {
-  const gone = (what: string) => new Error(`${what} dropped: the agent is no longer held by this process`)
+  const gone = (what: string) => `${what} dropped: the agent is no longer held by this process`
   state.reviews.rejectAll()
   state.accountReauth.rejectAll(gone('Account re-authentication'))
   state.mcpReauth.rejectAll(gone('MCP re-authentication'))

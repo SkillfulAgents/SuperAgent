@@ -8,8 +8,8 @@ import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
 import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
-import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { awaitReauth } from '@shared/lib/proxy/reauth-request'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
@@ -157,22 +157,16 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
   const holdForReauth = async (status: 'expired' | 'revoked'): Promise<ReauthResult> => {
-    try {
-      await agentRegistry.get(agentSlug).inputs.accountReauth.request({
-        accountId,
-        toolkit: account!.toolkitSlug,
-        accountStatus: status,
-      }, c.req.raw.signal)
-    } catch (error) {
-      const replacementAccountId = getReplacementAccountId(error)
-      if (replacementAccountId) return { ok: false, reason: 'replaced', replacementAccountId }
-      // A person pressing Dismiss and a five-minute timer both land here; only
-      // the first should read as a decision the agent must respect.
-      if (isReauthDismissed(error)) {
-        return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
-      }
-      return { ok: false, reason: 'timeout' }
-    }
+    const wait = await awaitReauth(agentRegistry.get(agentSlug).inputs.accountReauth, {
+      accountId,
+      toolkit: account!.toolkitSlug,
+      accountStatus: status,
+    }, c.req.raw.signal)
+    if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementAccountId: wait.replacementId }
+    // A person pressing Dismiss is a decision the agent must respect; a
+    // five-minute timer, an abort or a lost card are not.
+    if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
+    if (wait.outcome !== 'resumed') return { ok: false, reason: 'timeout' }
 
     const refreshed = await loadMappedAccount()
     if (!refreshed) return { ok: false, reason: 'missing' }

@@ -3,8 +3,7 @@ import { db } from '../db'
 import { agentRemoteMcps, remoteMcpServers, type RemoteMcpServer } from '../db/schema'
 import { agentRegistry, completeMcpReauth } from '../agent-actor'
 import { resolveMcpPolicy } from '../proxy/policy-resolver'
-import { getReplacementMcpId } from '../proxy/mcp-replacement'
-import { isReauthDismissed, reauthDismissalReason } from '../proxy/reauth-dismissal'
+import { awaitReauth } from '../proxy/reauth-request'
 import { mcpSafeFetch } from './mcp-safe-fetch'
 import { mcpRefreshResponseSchema, parseCachedMcpTools } from './connection-schema'
 import type { McpToolInfo } from './types'
@@ -123,16 +122,12 @@ class AccountMcpConnection implements McpConnection {
   }
 
   async recoverAuthorization(signal: AbortSignal): Promise<McpRecoveryResult> {
-    try {
-      await agentRegistry.get(this.agentSlug).inputs.mcpReauth.request({
-        mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
-      }, signal)
-    } catch (error) {
-      const replacementMcpId = getReplacementMcpId(error)
-      if (replacementMcpId) return { ok: false, reason: 'replaced', replacementMcpId }
-      if (isReauthDismissed(error)) return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
-      return { ok: false, reason: 'timeout' }
-    }
+    const wait = await awaitReauth(agentRegistry.get(this.agentSlug).inputs.mcpReauth, {
+      mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
+    }, signal)
+    if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementMcpId: wait.replacementId }
+    if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
+    if (wait.outcome !== 'resumed') return { ok: false, reason: 'timeout' }
     const refreshed = await loadAssignedMcp(this.agentSlug, this.row.id)
     if (!refreshed) return { ok: false, reason: 'missing' }
     if (refreshed.status !== 'active') return { ok: false, reason: 'inactive' }

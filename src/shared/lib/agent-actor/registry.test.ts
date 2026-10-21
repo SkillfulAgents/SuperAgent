@@ -605,8 +605,8 @@ describe('createAgentRegistry', () => {
       // Plant state of every kind the actor owns.
       actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
       const review = actor.inputs.reviews.request(reviewDetails, { id: 'review-1' })
-      const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' })
-      const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' })
+      const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' }, { waitId: 'wait-1' })
+      const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
       actor.inputs.computerUse.grant('use_host_shell', 'once')
       actor.inputs.computerUse.setGrabbedApp('Calculator')
       getSessionSummaryCacheSlot(actor.store).revision = 7
@@ -618,8 +618,8 @@ describe('createAgentRegistry', () => {
       registry.evict('a')
 
       await expect(review).resolves.toBe('timeout')
-      await expect(account).rejects.toThrow(/no longer held by this process/)
-      await expect(mcp).rejects.toThrow(/no longer held by this process/)
+      await expect(account).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
+      await expect(mcp).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
       // Every settlement went out as a transition, so the wire and the index heard of it.
       const resolved = fake.inputManager.report.mock.calls
         .map(([transition]) => transition as { type: string; request: { id: string; kind: string }; outcome?: string })

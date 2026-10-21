@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { AccountReplacedError } from '@shared/lib/proxy/account-replacement'
 
 // Mock dependencies
 const mockValidateProxyToken = vi.fn()
@@ -104,9 +103,12 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+// The agent's account re-auth waits, as its router answers the actor's ops:
+// a request resolves to how the wait ended.
 vi.mock('@shared/lib/proxy/account-reauth-manager', () => ({
   accountReauthManager: {
-    requestReauth: (...args: unknown[]) => mockRequestReauth(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReauth({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
   },
 }))
 
@@ -151,7 +153,7 @@ describe('proxy route', () => {
       scopeDescriptions: {},
       resolvedFrom: 'global_default',
     })
-    mockRequestReauth.mockResolvedValue(undefined)
+    mockRequestReauth.mockResolvedValue({ outcome: 'resumed' })
   })
 
   async function makeRequest(
@@ -852,7 +854,7 @@ describe('proxy route', () => {
         accountId: 'acc-123',
         toolkit: 'gmail',
         accountStatus: 'expired',
-      }, expect.any(AbortSignal))
+      }, { waitId: expect.any(String) })
       expect(mockMakeApiCall).toHaveBeenCalledWith(expect.objectContaining({
         providerConnectionId: 'comp-reconnected',
       }))
@@ -873,7 +875,7 @@ describe('proxy route', () => {
         mockIsHostAllowed.mockReturnValue(true)
         if (failure === 'remote') mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
         if (failure === 'token') mockMakeApiCall.mockRejectedValueOnce(new Error('Failed to fetch token'))
-        mockRequestReauth.mockRejectedValueOnce(new AccountReplacedError('replacement'))
+        mockRequestReauth.mockResolvedValueOnce({ outcome: 'replaced', replacementId: 'replacement' })
 
         const response = await makeRequest('/api/proxy/my-agent/acc-123/slack.com/api/conversations.list', {
           headers: { Authorization: 'Bearer synth_valid' },
@@ -918,7 +920,7 @@ describe('proxy route', () => {
           },
         },
       ])
-      mockRequestReauth.mockRejectedValue(new Error('Account re-authentication timed out'))
+      mockRequestReauth.mockResolvedValue({ outcome: 'timeout' })
 
       const res = await makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
@@ -961,7 +963,7 @@ describe('proxy route', () => {
       mockIsHostAllowed.mockReturnValue(true)
       mockMakeApiCall.mockResolvedValue(new Response('{}', { status: 200 }))
       let resume!: () => void
-      mockRequestReauth.mockReturnValue(new Promise<void>((resolve) => { resume = resolve }))
+      mockRequestReauth.mockReturnValue(new Promise((resolve) => { resume = () => resolve({ outcome: 'resumed' }) }))
 
       const request = makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
@@ -988,7 +990,7 @@ describe('proxy route', () => {
       expect(res.status).toBe(200)
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
       expect(mockMakeApiCall).toHaveBeenCalledOnce()
     })
 
@@ -1031,7 +1033,7 @@ describe('proxy route', () => {
       expect(res.status).toBe(200)
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'revoked',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
     })
 
     it('proceeds with request when remote status check fails (network error)', async () => {
@@ -1084,7 +1086,7 @@ describe('proxy route', () => {
       expect(res.status).toBe(200)
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
       expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
       expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
         providerConnectionId: 'comp-new',

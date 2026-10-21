@@ -72,6 +72,7 @@ import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-i
 import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
+import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
 import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
@@ -750,8 +751,15 @@ export interface ComputerUseOps {
 
 /** Remote MCP re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface McpReauthOps {
-  /** `AgentReauthWaits.request` — the wait is this agent's. */
-  request(details: Omit<McpReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /**
+   * `AgentReauthWaits.request`: park a call on this agent's re-auth card
+   * until the MCP is re-authorized, replaced or dismissed (`ReauthOutcome`).
+   * The caller names the wait (`waitId`) to withdraw it; `awaitReauth`
+   * (proxy/reauth-request) is the host's way to wait for one.
+   */
+  request(details: Omit<McpReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome>
+  /** `AgentReauthWaits.withdraw`: the caller is gone. */
+  withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
   /** `AgentReauthWaits.replace` — settle the wait with a different connection. */
@@ -760,8 +768,10 @@ export interface McpReauthOps {
 
 /** Connected-account re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface AccountReauthOps {
-  /** `AgentReauthWaits.request` — the wait is this agent's. */
-  request(details: Omit<AccountReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /** `AgentReauthWaits.request`, as `McpReauthOps.request` for a connected account. */
+  request(details: Omit<AccountReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome>
+  /** `AgentReauthWaits.withdraw`: the caller is gone. */
+  withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
   /** `AgentReauthWaits.replace` — release only this agent's calls; other agents still use the old account. */

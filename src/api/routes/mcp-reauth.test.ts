@@ -50,7 +50,6 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() })
 import mcpReauth from './mcp-reauth'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import { getReplacementMcpId } from '@shared/lib/proxy/mcp-replacement'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }
 let app: Hono<TestEnv>
@@ -148,7 +147,7 @@ describe('MCP connection replacement', () => {
       return true
     })
     expect((await replace(request.id)).status).toBe(200)
-    expect(getReplacementMcpId(await request.settled)).toBe('mine')
+    expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mapped('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.remoteMcpServers).where(eq(schema.remoteMcpServers.id, 'old')).get()).toEqual(original)
     expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()

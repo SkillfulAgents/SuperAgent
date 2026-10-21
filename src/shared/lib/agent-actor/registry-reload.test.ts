@@ -163,12 +163,11 @@ describe('the actors\' state survives a backend module reload', () => {
     const original = await load()
     const parked = original.accountReauthManager
       .requestReauth({ agentSlug: 'a', accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' })
-      .catch(() => 'rejected')
 
     const reloaded = await reload()
 
     expect(reloaded.accountReauthManager.completeAccount('acct')).toBe(1)
-    await expect(parked).resolves.toBeUndefined()
+    await expect(parked).resolves.toEqual({ outcome: 'resumed' })
   })
 
   it('the reloaded handle reads the session store the live sessions write to', async () => {
