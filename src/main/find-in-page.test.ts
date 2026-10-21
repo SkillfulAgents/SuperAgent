@@ -98,7 +98,7 @@ describe('find bar', () => {
   it('closes and clears highlights when the page navigates', () => {
     const { window, bar } = open()
 
-    window.webContents.emit('did-navigate-in-page')
+    window.webContents.emit('did-navigate-in-page', {}, 'app://index.html#/agents/sales', true)
 
     expect(window.webContents.stopFindInPage).toHaveBeenCalledWith('clearSelection')
     expect(window.contentView.removeChildView).toHaveBeenCalledWith(bar)
@@ -106,6 +106,16 @@ describe('find bar', () => {
 
     window.webContents.emit('found-in-page', {}, { finalUpdate: true, activeMatchOrdinal: 1, matches: 1 })
     expect(bar.webContents.send).not.toHaveBeenCalled()
+  })
+
+  it('stays open when only an iframe navigates in page', () => {
+    const { window, bar } = open()
+
+    window.webContents.emit('did-navigate-in-page', {}, 'http://localhost:4100/#/revenue', false)
+
+    expect(window.contentView.removeChildView).not.toHaveBeenCalled()
+    window.webContents.emit('found-in-page', {}, { finalUpdate: true, activeMatchOrdinal: 1, matches: 4 })
+    expect(bar.webContents.send).toHaveBeenCalledWith('find-bar:result', { active: 1, total: 4 })
   })
 
   it('refocuses the open bar instead of stacking a second one', () => {

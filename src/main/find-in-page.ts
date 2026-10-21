@@ -50,13 +50,17 @@ export function openFindBar(window: BrowserWindow): void {
   }
   // The page under the bar is gone, so its matches are too.
   const onNavigate = () => closeFindBar(window)
+  // Fires for every frame; a dashboard iframe changing its hash leaves the app page in place.
+  const onNavigateInPage = (_event: Electron.Event, _url: string, isMainFrame: boolean) => {
+    if (isMainFrame) closeFindBar(window)
+  }
   const onClosed = () => closeFindBar(window)
 
   window.on('resize', applyBounds)
   window.on('closed', onClosed)
   target.on('found-in-page', onFound)
   target.on('did-navigate', onNavigate)
-  target.on('did-navigate-in-page', onNavigate)
+  target.on('did-navigate-in-page', onNavigateInPage)
 
   bars.set(window, {
     window,
@@ -67,7 +71,7 @@ export function openFindBar(window: BrowserWindow): void {
       if (!target.isDestroyed()) {
         target.off('found-in-page', onFound)
         target.off('did-navigate', onNavigate)
-        target.off('did-navigate-in-page', onNavigate)
+        target.off('did-navigate-in-page', onNavigateInPage)
       }
     },
   })
