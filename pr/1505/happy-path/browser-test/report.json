@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "All steps executed successfully - agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and returned the response within the 3-minute timeout.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result within 3 minutes.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut home interface with agent list",
-    "Clicked on \"QA-20261021-001951-ealp\" agent in sidebar — Agent page opened showing chat interface with message input field",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message entered in input field and Send button became enabled",
-    "Clicked Send button — Message sent successfully, agent status changed to \"working\", page navigated to session with title \"Browser Page Title Check\"",
-    "Waited for agent response (up to 3 minutes) — Agent completed within 12 seconds with response: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\"",
-    "Verified response contains \"Example Domain\" — Response screenshot shows the page title is correctly identified as \"Example Domain\""
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application with the agent interface visible.",
+    "Found and clicked the \"QA-20261021-195618-58uv\" agent in the sidebar — Successfully clicked the agent button and navigated to the agent's configuration page (http://localhost:47891/agents/qa-20261021-195618-58uv-c95besvpxn).",
+    "Clicked on the message input box — Successfully activated the message input field.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the input box.",
+    "Sent the message by clicking the send button — Message was sent and a new session was created at http://localhost:47891/agents/qa-20261021-195618-58uv-c95besvpxn/sessions/fafd6a84-ad7d-4c89-ba64-d5af07ec47e4.",
+    "Waited for agent to finish processing — Agent completed working after ~9 seconds (visible in the response metadata \"Worked for 9s · 3 tool calls · 155,204 tokens\").",
+    "Verified response mentions \"Example Domain\" — Response confirms: 'The page title is \"Example Domain\". https://example.com loaded normally, and I closed the browser afterward.'"
   ],
   "bugs": [],
-  "durationMs": 85302,
-  "sessionId": "c0ae4385-386f-475c-b91e-453b95c5fe4d",
+  "durationMs": 144635,
+  "sessionId": "71e40648-4500-424d-a9b3-11138ecdf965",
   "cost": {
-    "inputTokens": 508,
-    "outputTokens": 13445,
-    "cacheCreationTokens": 93055,
-    "cacheReadTokens": 1670099,
+    "inputTokens": 476,
+    "outputTokens": 14628,
+    "cacheCreationTokens": 68913,
+    "cacheReadTokens": 1421180,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.351062
+    "totalCostUsd": 0.301875
   }
 }
