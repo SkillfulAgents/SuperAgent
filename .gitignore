@@ -11,6 +11,7 @@ agent-container/dist/
 build/lima/
 build/wsl2/
 build/mediaremote-adapter/
+build/spotlight-bridge/
 
 # Test coverage
 coverage/

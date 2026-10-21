@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown }[],
+  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true }[],
   definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
   operationError: null as string | null,
@@ -200,6 +200,15 @@ describe('saved volume picker', () => {
     expect(screen.queryByRole('button', { name: /add drive/i })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
     expect(screen.queryByRole('button', { name: /remove from agent/i })).not.toBeInTheDocument()
+  })
+
+  it('labels a global drive and offers no removal or access change on it', async () => {
+    volumes.mounts = [{ ...MOUNT, global: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText('Global')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    expect(screen.queryByRole('button', { name: /remove from agent/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /read only/i })).not.toBeInTheDocument()
   })
 })
 

@@ -255,6 +255,24 @@ export async function saveConnection(
   })
 }
 
+export async function shareConnection(id: string, viewer: ConnectionViewer): Promise<void> {
+  await mutateConnections(async () => {
+    const row = await getConnection(id)
+    if (!row) throw new Error('Connection not found')
+    assertManageConnection(row, viewer)
+    if (row.userId === null) return
+    if (!viewer.admin) throw new Error('Only administrators can share connections with everyone')
+    // Ownership does not change credentials. Rotating their generation here
+    // would discard a concurrent OAuth refresh's newly issued token pair.
+    const updated = await db
+      .update(llmConnections)
+      .set({ userId: null, updatedAt: new Date() })
+      .where(and(eq(llmConnections.id, id), eq(llmConnections.userId, row.userId)))
+      .run()
+    if (!changesOf(updated)) throw new Error('Connection changed while saving. Please retry.')
+  })
+}
+
 export async function deleteConnection(id: string, viewer: ConnectionViewer): Promise<void> {
   await mutateConnections(async () => {
     const row = await getConnection(id)

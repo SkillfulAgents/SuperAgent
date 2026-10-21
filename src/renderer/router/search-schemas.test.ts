@@ -94,6 +94,12 @@ describe('settingsTabSchema', () => {
   })
 })
 
+describe('connectionsSearchSchema (from back-target)', () => {
+  it('rejects a protocol-relative //', () => {
+    expect(connectionsSearchSchema.safeParse({ detail: 'account-1', source: 'home', from: '//evil' }).success).toBe(false)
+  })
+})
+
 describe('settingsSearchSchema (from close-target)', () => {
   it('rejects an absolute URL', () => {
     expect(settingsSearchSchema.safeParse({ from: 'https://evil.com' }).success).toBe(false)

@@ -657,6 +657,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   // cold process restarts it itself, with the runtime the host resolved for
   // that send, so a pre-resume must never start a second restart beside it.
   private sendsInFlight = 0;
+  // A hooked file's content as each in-flight Write/Edit found it (null when
+  // absent), keyed by tool use, for the file hooks that act on the change.
+  private fileChangeSnapshots = new Map<string, string | null>();
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
   // Late-join replay state. A turn can complete before the host's WebSocket
@@ -1500,6 +1503,27 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (filePath) await this.snapshotForChangeHooks(toolUseId, filePath);
+                return {};
+              },
+            ],
+          },
+        ],
+        PostToolUseFailure: [
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) this.fileChangeSnapshots.delete(toolUseId);
+                return {};
+              },
+            ],
+          },
         ],
         PostToolUse: [
           ...this.hintHooks.PostToolUse,
@@ -1556,6 +1580,18 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (!filePath) return {};
+                const warnings = await this.runChangeHooks(toolUseId, filePath);
+                if (warnings.length === 0) return {};
+                return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: warnings.join('\n\n') } };
+              },
+            ],
+          },
         ],
       },
       // Object form with `snapshot: false`: SDK 0.3.267+ records a custom
@@ -1567,6 +1603,28 @@ export class ClaudeCodeProcess extends EventEmitter {
       // on every launch or those refreshes are silently ignored.
       systemPrompt: { type: 'custom', prompt: this.systemPrompt, snapshot: false },
     };
+  }
+
+  /** Before a Write/Edit: remember the file as it is, if a file hook acts on its changes. */
+  private async snapshotForChangeHooks(toolUseId: string | undefined, filePath: string): Promise<void> {
+    if (!toolUseId || !fileHooks.some((hook) => hook.onChange && hook.matches(filePath))) return;
+    this.fileChangeSnapshots.set(toolUseId, await fs.promises.readFile(filePath, 'utf-8').catch(() => null));
+  }
+
+  /** After a Write/Edit landed: run the change hooks against the snapshot, returning their warnings. */
+  private async runChangeHooks(toolUseId: string | undefined, filePath: string): Promise<string[]> {
+    if (!toolUseId || !this.fileChangeSnapshots.has(toolUseId)) return [];
+    const before = this.fileChangeSnapshots.get(toolUseId) ?? null;
+    this.fileChangeSnapshots.delete(toolUseId);
+    const after = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    if (after === null) return [];
+    const warnings: string[] = [];
+    for (const hook of fileHooks) {
+      if (!hook.onChange || !hook.matches(filePath)) continue;
+      const { warning } = hook.onChange(filePath, before, after);
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
   }
 
   /**

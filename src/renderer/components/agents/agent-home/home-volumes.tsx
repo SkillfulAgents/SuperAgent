@@ -66,7 +66,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               onSetReadOnly={(readOnly) => volumes.handleSetReadOnly(mount.id, readOnly)}
               isRemovingMount={volumes.isRemovingMount}
               isUpdatingMount={volumes.isUpdatingMount}
-              canRemove={volumes.canModifyMounts}
+              canRemove={volumes.canModifyMounts && !mount.global}
             />
           ))}
         </div>
@@ -111,7 +111,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 <DropdownMenuContent align="end" className="w-72">
                   <DropdownMenuLabel>Saved drives</DropdownMenuLabel>
                   {volumes.definitions.map(volume => {
-                    const attached = volumes.mounts.some(m => m.volumeId === volume.id)
+                    const attached = volumes.mounts.some(m => m.volumeId === volume.id && !m.global)
                     return (
                       <DropdownMenuItem key={volume.id} disabled={attached} onSelect={() => { void volumes.handleAttach(volume.id) }}>
                         <VolumeIcon type={volume.type} className="h-4 w-4 shrink-0" />
@@ -233,6 +233,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                 Read only
               </span>
             )}
+            {mount.global && <span className="inline-flex items-center text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">Global</span>}
           </>}
         </div>
         {subtitle && (

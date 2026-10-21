@@ -59,6 +59,14 @@ export async function notifyWidgetSnapshotReady(
 }
 
 /**
+ * The agent changed the name or description in its instructions file's
+ * frontmatter. A signal only: the host reads the file itself.
+ */
+export async function notifyAgentIdentityChanged(): Promise<boolean> {
+  return postHostEvent('agent-identity-changed', {})
+}
+
+/**
  * A turn ended after its stream subscriber dropped mid-turn, so the host never
  * saw it end. The host's socket may still read as open; only we can tell it.
  */

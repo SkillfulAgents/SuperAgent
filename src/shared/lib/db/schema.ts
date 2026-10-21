@@ -555,6 +555,8 @@ export const volumeDefinitions = sqliteTable('volume_definitions', {
   name: text('name').notNull(),
   type: text('type').notNull(),
   config: text('config').notNull(),
+  // Set on a public drive: every agent mounts it at this level, on top of its own drives.
+  globalAccess: text('global_access', { enum: ['read', 'write'] }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))

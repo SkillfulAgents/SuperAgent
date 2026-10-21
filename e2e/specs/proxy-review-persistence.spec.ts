@@ -15,15 +15,14 @@ import {
 /**
  * Proxy-review policy PERSISTENCE — the security contract behind every "always"
  * choice on a review card. proxy-review.spec already clicks Allow / Deny /
- * always-allow-scope / always-allow-label, but never checks whether any "always"
- * decision actually wrote a policy. An always-deny that silently fails to persist
- * means dangerous requests keep flowing with no visible sign anything is wrong,
+ * always-allow-label, but never checks whether any "always" decision actually
+ * wrote a policy. An always-allow that silently fails to persist means the user
+ * keeps getting asked with no visible sign anything is wrong,
  * so these tests drive each card affordance and then assert the row that landed
  * (or, for the one-time paths, that nothing landed) in /api/policies/scope.
  *
- * The three previously-undriven affordances are covered here: always-deny-scope
- * (Deny chevron menu), always-allow-all (account-wide '*'), and deny-with-reason
- * (the free-text one-time deny).
+ * The two previously-undriven affordances are covered here: always-allow-all
+ * (account-wide '*') and deny-with-reason (the free-text one-time deny).
  *
  * Each test drives its review against its OWN connected account via the
  * `account_id=<id>` scenario token (a harness addition in this batch):
@@ -89,35 +88,6 @@ test.describe('Proxy review policy persistence', () => {
     }, { timeout: 10000 }).toBe(true)
   }
 
-  test('always-allow for a scope persists an allow policy for that scope', async ({ page, request }, testInfo) => {
-    const { accountId, review } = await triggerReview(page, request, testInfo)
-
-    await sessionPage.alwaysAllowScope('chat:write', review.id)
-
-    await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
-    await expectPendingProxyReviewResolved(request, agent, review)
-    // The contract: the choice actually wrote the scope policy, not just resolved the card.
-    await expectPersistedPolicy(request, accountId, 'chat:write', 'allow')
-
-    await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
-  })
-
-  test('always-deny for a scope persists a block policy for that scope', async ({ page, request }, testInfo) => {
-    const { accountId, review } = await triggerReview(page, request, testInfo)
-
-    // Deny chevron menu > "Always deny chat:write" — previously undriven.
-    await sessionPage.alwaysDenyScope('chat:write', review.id)
-
-    await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
-    await expectPendingProxyReviewResolved(request, agent, review)
-    // A denied "always" decision persists as the 'block' decision.
-    await expectPersistedPolicy(request, accountId, 'chat:write', 'block')
-
-    await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('denied by user', 0, 15000)
-  })
-
   test('always-allow-all persists an account-wide allow default', async ({ page, request }, testInfo) => {
     const { accountId, review } = await triggerReview(page, request, testInfo)
 
@@ -158,7 +128,7 @@ test.describe('Proxy review policy persistence', () => {
     await sessionPage.waitForInputEnabled(15000)
     await sessionPage.expectAssistantMessage('denied by user', 0, 15000)
 
-    // A one-time deny is NOT an "always" decision: unlike always-deny above, it
+    // A one-time deny is NOT an "always" decision: unlike always-allow-all above, it
     // writes nothing to the scope-policy table.
     const policies = await getScopePolicies(request, accountId)
     expect(policies).toEqual([])
