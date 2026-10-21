@@ -341,12 +341,13 @@ describe('Chat integration E2E', () => {
       // The user's message was carried into the fresh session as its first message.
       expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Still there?')
 
-      // The dead row is archived; a fresh non-archived row now serves this chat.
-      const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
-      const dead = rows.find((r) => r.sessionId === deadSessionId)
-      const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
-      expect(dead?.archivedAt).toBeTruthy()
-      expect(fresh).toBeDefined()
+      // The dead row is archived; a fresh non-archived row now serves this chat,
+      // written once the new session is registered, after its create.
+      await vi.waitFor(async () => {
+        const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
+        expect(rows.find((r) => r.sessionId === deadSessionId)?.archivedAt).toBeTruthy()
+        expect(rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)).toBeDefined()
+      })
     })
 
     it('answers a reply to an agent-initiated message whose session the container never had', async () => {

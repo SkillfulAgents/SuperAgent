@@ -50,31 +50,35 @@ function normalizeSourcePath(rawPath: string): string {
   return path.posix.join(WORKSPACE_ROOT, relative)
 }
 
+/**
+ * The body, failed once it carries more or fewer bytes than its size said.
+ * `failure` is that failure, on this side: whoever reads the body (another
+ * agent's write) reports it in its own terms.
+ */
 function countedBody(
-  body: ReadableStream<Uint8Array> | null,
+  body: ReadableStream<Uint8Array>,
   expectedBytes: number,
   sourcePath: string,
-): ReadableStream<Uint8Array> {
-  if (!body) {
-    if (expectedBytes === 0) return new ReadableStream({ start: (controller) => controller.close() })
-    throw new XAgentAttachmentError(`Attachment response had no body: ${sourcePath}`, 502)
-  }
+): { body: ReadableStream<Uint8Array>; failure: () => XAgentAttachmentError | undefined } {
   let received = 0
-  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      received += chunk.byteLength
-      if (received > expectedBytes || received > MAX_X_AGENT_ATTACHMENT_BYTES) {
-        controller.error(new XAgentAttachmentError(`Attachment changed while being read: ${sourcePath}`, 409))
-        return
-      }
-      controller.enqueue(chunk)
-    },
-    flush() {
-      if (received !== expectedBytes) {
-        throw new XAgentAttachmentError(`Attachment changed while being read: ${sourcePath}`, 409)
-      }
-    },
-  }))
+  let failure: XAgentAttachmentError | undefined
+  const changed = () => (failure = new XAgentAttachmentError(`Attachment changed while being read: ${sourcePath}`, 409))
+  return {
+    body: body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        received += chunk.byteLength
+        if (received > expectedBytes || received > MAX_X_AGENT_ATTACHMENT_BYTES) {
+          controller.error(changed())
+          return
+        }
+        controller.enqueue(chunk)
+      },
+      flush() {
+        if (received !== expectedBytes) throw changed()
+      },
+    })),
+    failure: () => failure,
+  }
 }
 
 /** Preserve typed transfer errors even when a lower-level stream wraps its cause. */
@@ -89,7 +93,10 @@ export function transferError(error: unknown): unknown {
 }
 
 /** Read size and bounded bytes from the same confined open file. */
-export async function openXAgentFile(files: FileOps, filePath: string): Promise<{ sizeBytes: number; body: ReadableStream<Uint8Array> }> {
+export async function openXAgentFile(
+  files: FileOps,
+  filePath: string,
+): Promise<{ sizeBytes: number; body: ReadableStream<Uint8Array>; failure: () => XAgentAttachmentError | undefined }> {
   let opened: { size: number; stream: ReadableStream<Uint8Array> }
   try {
     opened = await files.readSized(filePath, { confined: true })
@@ -104,7 +111,8 @@ export async function openXAgentFile(files: FileOps, filePath: string): Promise<
     await stream.cancel().catch(() => {})
     throw error
   }
-  return { sizeBytes, body: sizeBytes === 0 ? stream : countedBody(stream, sizeBytes, filePath) }
+  if (sizeBytes === 0) return { sizeBytes, body: stream, failure: () => undefined }
+  return { sizeBytes, ...countedBody(stream, sizeBytes, filePath) }
 }
 
 /** The stream, failed once the signal aborts: the write it feeds then discards what it staged. */
@@ -136,7 +144,7 @@ export async function transferXAgentAttachments(input: {
   try {
     for (const [index, sourcePath] of sourcePaths.entries()) {
       input.signal?.throwIfAborted()
-      const { sizeBytes, body } = await openXAgentFile(input.sourceFiles, sourcePath)
+      const { sizeBytes, body, failure } = await openXAgentFile(input.sourceFiles, sourcePath)
       totalBytes += sizeBytes
       if (totalBytes > MAX_X_AGENT_ATTACHMENTS_TOTAL_BYTES) {
         await body.cancel()
@@ -149,7 +157,8 @@ export async function transferXAgentAttachments(input: {
       } catch (error) {
         // A refused destination may not have consumed the source yet.
         if (!body.locked) await body.cancel().catch(() => {})
-        throw error
+        // The source changed under the read: that is the failure, whatever the write made of it.
+        throw failure() ?? error
       }
       attachments.push({ sourcePath, targetPath, sizeBytes })
     }

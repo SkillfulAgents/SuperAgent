@@ -184,8 +184,8 @@ describe('widgetRefreshService', () => {
 
     const first = await widgetRefreshService.refreshStale(AGENT, { wake: true })
     expect(first.refreshing).toEqual(['stale-one'])
-    await flush()
-    expect(mocks.clientFetch).toHaveBeenCalledTimes(1)
+    // The refresh reads the agent through its actor first: across a transport, a few turns later.
+    await vi.waitFor(() => expect(mocks.clientFetch).toHaveBeenCalledTimes(1))
 
     // A second mount moments later reports what is in flight but starts nothing new.
     mocks.listWidgets.mockResolvedValue([widget({ slug: 'another', isStale: true })])
@@ -217,12 +217,12 @@ describe('widgetRefreshService', () => {
     mocks.globalListener!({ type: 'session_complete', agentSlug: AGENT })
     await vi.advanceTimersByTimeAsync(3_500)
 
-    const posted = mocks.clientFetch.mock.calls.map((c) => c[0]).sort()
-    expect(posted).toEqual([
+    // The sweep's reads are the actor's ops: across a transport they land after the clock moved.
+    await vi.waitFor(() => expect(mocks.clientFetch.mock.calls.map((c) => c[0]).sort()).toEqual([
       '/artifacts/every-turn/widget/refresh',
       '/artifacts/scripted-expired/widget/refresh',
       '/artifacts/static-rewritten/widget/refresh',
-    ])
+    ]))
     expect(mocks.ensureRunning).not.toHaveBeenCalled()
   })
 

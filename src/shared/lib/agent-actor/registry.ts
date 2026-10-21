@@ -9,14 +9,11 @@ import { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/serv
 import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import * as transcriptOps from './local-transcript-ops'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import {
-  syncAgentConnectionEnvironment,
-  updateConnectedAccountsEnvironment,
-  updateRemoteMcpEnvironment,
-} from '@shared/lib/container/connection-runtime-sync'
+import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
+import { serializingActor } from './serializing-actor'
 import type { AgentState } from './agent-state'
 import type { AgentStoreDirectory } from './store-directory'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
@@ -45,10 +42,27 @@ export function createAgentRegistry(
      * a fresh handle: the new code over the state the old one built.
      */
     states?: Map<AgentSlug, AgentState>
+    /**
+     * How callers reach a handle: what `get` hands out in its place (a test
+     * transport such as `serializingActor`). The container layer and the
+     * routers reach the actors' state directly, as before.
+     */
+    transport?: (actor: AgentActor) => AgentActor
   } = {},
 ): AgentRegistry {
   const states = options.states ?? new Map<AgentSlug, AgentState>()
   const handles = new Map<AgentSlug, LocalAgentActor>()
+  const transported = new WeakMap<LocalAgentActor, AgentActor>()
+  const outward = (actor: LocalAgentActor): AgentActor => {
+    const transport = options.transport
+    if (!transport) return actor
+    let reached = transported.get(actor)
+    if (!reached) {
+      reached = transport(actor)
+      transported.set(actor, reached)
+    }
+    return reached
+  }
 
   const wrap = (slug: AgentSlug, state?: AgentState): LocalAgentActor => {
     const actor = new LocalAgentActor(slug, deps, state)
@@ -104,7 +118,7 @@ export function createAgentRegistry(
   deps.computerUsePermissionManager.attachAgents?.(directory((state) => state.computerUse))
 
   return {
-    get: (slug): AgentActor => get(slug),
+    get: (slug): AgentActor => outward(get(slug)),
     evict: async (slug) => evict(slug),
     evictAll: async () => {
       // Release every handle, then let the host forget the runtimes its own
@@ -172,12 +186,6 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get getAgentWorkspaceDir() {
     return getAgentWorkspaceDir
   },
-  get updateConnectedAccountsEnvironment() {
-    return updateConnectedAccountsEnvironment
-  },
-  get updateRemoteMcpEnvironment() {
-    return updateRemoteMcpEnvironment
-  },
   get syncAgentConnectionEnvironment() {
     return syncAgentConnectionEnvironment
   },
@@ -190,4 +198,10 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get host() {
     return localHostPort
   },
-}, { states: agentActorStates })
+}, {
+  states: agentActorStates,
+  // Development and tests only: every actor reached through the serializing test transport.
+  ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
+    ? { transport: serializingActor }
+    : {}),
+})

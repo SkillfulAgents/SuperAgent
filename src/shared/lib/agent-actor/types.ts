@@ -90,6 +90,12 @@ export interface AgentRegistry {
   evictAll(): Promise<void>
 }
 
+/**
+ * The keys of `AgentActor` that hold op groups, for a transport that wraps
+ * them (`serializingActor`). The type test checks the list is complete.
+ */
+export const ACTOR_GROUPS = ['container', 'sessions', 'messages', 'inputs', 'usage', 'files', 'memories', 'config'] as const
+
 export interface AgentActor {
   readonly slug: AgentSlug
   /** What the agent is doing as of now: its container, busy sessions, open asks. */
@@ -188,16 +194,12 @@ export interface ContainerOps {
   invalidate(options?: { restart?: boolean }): Promise<'not-running' | 'marked-stale' | 'restarted'>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
   info(): Promise<ContainerInfo>
-  /** `updateConnectedAccountsEnvironment` (connection-runtime-sync) with this agent's client. */
-  updateConnectedAccountsEnvironment(): Promise<Response>
-  /** `updateRemoteMcpEnvironment` (connection-runtime-sync) with this agent's client. */
-  updateRemoteMcpEnvironment(): Promise<Response>
   /**
    * `syncAgentConnectionEnvironment` (connection-runtime-sync) — push one
    * projection to a running container. True when it was applied or when the
    * container is stopped (startup rebuilds it); false on a failed push.
    */
-  syncConnectionEnvironment(kind: ConnectionRuntimeKind): Promise<boolean>
+  syncConnectionEnvironment(kind: ConnectionRuntimeKind, options?: { confirm?: boolean }): Promise<boolean>
 
   // Transport to the container API. These are honest for any runtime: a
   // remote actor answers them over the network the same way.

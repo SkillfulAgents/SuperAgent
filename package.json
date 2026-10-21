@@ -59,7 +59,8 @@
     "icons:download": "tsx scripts/download-service-icons.ts",
     "icons:optimize": "tsx scripts/optimize-service-icons.ts",
     "test:perf": "vitest run --config vitest.perf.config.ts",
-    "test:libsql": "node scripts/run-libsql-tests.mjs"
+    "test:libsql": "node scripts/run-libsql-tests.mjs",
+    "test:actor-transport": "node scripts/run-actor-transport-tests.mjs"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.35.0",

@@ -47,9 +47,12 @@ vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
   listAgentIntegrationSessions: vi.fn(() => []),
   archiveAgentIntegrationSession: vi.fn(), updateAgentIntegrationSessionName: vi.fn(), touchAgentIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
 }))
-vi.mock('@shared/lib/agent-actor', () => ({
+vi.mock('@shared/lib/agent-actor', async () => {
+  // Through the serializing transport in the transport suite, as callers reach a real actor.
+  const { viaTestTransport } = await import('@shared/lib/agent-actor/testing/via-test-transport')
+  return {
   agentCatalog: { exists: async () => true },
-  agentRegistry: { get: () => ({
+  agentRegistry: { get: () => viaTestTransport({
     live: async () => ({ activeSessionIds: ['session-1'] }),
     container: { start: state.start },
     inputs: { answer: state.answer },
@@ -85,7 +88,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
       },
     },
   }) },
-}))
+  }
+})
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
@@ -376,7 +380,8 @@ describe('AgentIntegration host contract', () => {
     await vi.waitFor(() => expect(state.streams.size).toBe(2))
     expect(state.mappings.size).toBe(2)
     manager.stop()
-    expect(state.streams.size).toBe(0)
+    // A cancelled stream lets go of its source a moment later across a wire.
+    await vi.waitFor(() => expect(state.streams.size).toBe(0))
     expect(adapter.connected).toBe(false)
     expect(second.connected).toBe(false)
     expect(adapter.released).toHaveLength(1)
@@ -413,7 +418,7 @@ describe('AgentIntegration host contract', () => {
     await vi.dynamicImportSettled()
     state.notify.mockClear()
     const failure = new Error('Input answer failed')
-    state.answer.mockImplementationOnce(() => { throw failure })
+    state.answer.mockRejectedValueOnce(failure)
 
     await adapter.response()
     await vi.dynamicImportSettled()

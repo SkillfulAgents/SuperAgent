@@ -156,7 +156,7 @@ describe('MCP connection replacement', () => {
     expect(mapped('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.remoteMcpServers).where(eq(schema.remoteMcpServers.id, 'old')).get()).toEqual(original)
     expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
-    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'remote-mcps', expect.objectContaining({ slug: 'shared-agent' }))
+    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'remote-mcps', expect.objectContaining({ slug: 'shared-agent' }), undefined)
   })
 
   it('prefills with the member URL and never returns the original private URL', async () => {

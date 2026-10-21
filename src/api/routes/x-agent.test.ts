@@ -18,6 +18,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
 import type { FileOps, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
+import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as schema from '@shared/lib/db/schema'
@@ -385,9 +386,9 @@ beforeEach(async () => {
   } as never)
   mockSourceOpen.mockImplementation(async () => openBytes('source'))
   mockTargetOpen.mockImplementation(async () => openBytes('data'))
-  // The store's files: reads of either agent's go through their opens.
-  const sourceFiles = agentRegistry.get(CALLER_SLUG).files as StoreFileOps
-  const targetFiles = agentRegistry.get(TARGET_SLUG).files as StoreFileOps
+  // The store's files, inside each actor: reads of either agent's go through their opens.
+  const sourceFiles = (agentRegistry.get(CALLER_SLUG) as LocalAgentActor).store.files as StoreFileOps
+  const targetFiles = (agentRegistry.get(TARGET_SLUG) as LocalAgentActor).store.files as StoreFileOps
   mockTargetWrite.mockImplementation(targetFiles.write.bind(targetFiles))
   mockTargetDelete.mockImplementation(targetFiles.delete.bind(targetFiles))
   vi.spyOn(sourceFiles, 'open').mockImplementation(mockSourceOpen)
@@ -686,7 +687,8 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(200)
     expect(mockSourceOpen).toHaveBeenCalledWith('/workspace/results/report.bin', { confined: true })
-    expect(await agentRegistry.get(TARGET_SLUG).files.getDoc(mockTargetWrite.mock.calls[0][0])).toEqual(Buffer.from(sourceBytes))
+    // Bytes, whatever array type carried them.
+    expect(new Uint8Array((await agentRegistry.get(TARGET_SLUG).files.getDoc(mockTargetWrite.mock.calls[0][0]))!)).toEqual(sourceBytes)
     const initialMessage = (mockCreateSession.mock.calls[0][0] as { initialMessage: string }).initialMessage
     expect(initialMessage).toMatch(/^inspect this binary\n\n\[Attached files:\]\n- \/workspace\/uploads\/x-agent\/[\w-]+\/0\/report\.bin$/)
     expect(initialMessage).not.toContain('/workspace/results/report.bin')
