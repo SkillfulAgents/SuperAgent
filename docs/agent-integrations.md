@@ -154,6 +154,17 @@ implement this same contract. Agent-side creation uses the same preparation hook
 and requires explicit provider opt-in, preserving owner-only interactive setup.
 Initial authorization-required rows are inserted disconnected atomically.
 
+The agent's `add_agent_integration` tool posts to `/api/x-agent/chat/add`. A
+provider with `allowAgentCreation` is created there. For any other provider the
+route asks the owner instead (`owner-setup-request.ts`): it registers an
+`integration_setup` request under the call's tool-use id in the calling session
+and returns 202, and the container waits on that id. The card opens the
+provider's own setup form, seeded with the agent's suggestions (name, Email inbox
+name, GitHub organization; never credentials). The manager answers the call when
+an integration of that provider connects for the agent, whichever screen set it
+up; a reconnect of an existing one answers it too. Declining rejects the call
+with the reason (`POST /api/agents/:id/sessions/:sessionId/decline-integration-setup`).
+
 Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
 credential panel, fields, feedback and actions. Providers supply their content and
 connection flow. An optional read-only `setup.describe` hook supplies app-creation
