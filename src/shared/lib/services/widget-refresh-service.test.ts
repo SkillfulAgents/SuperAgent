@@ -184,8 +184,8 @@ describe('widgetRefreshService', () => {
 
     const first = await widgetRefreshService.refreshStale(AGENT, { wake: true })
     expect(first.refreshing).toEqual(['stale-one'])
-    await flush()
-    expect(mocks.clientFetch).toHaveBeenCalledTimes(1)
+    // The refresh reads the agent through its actor first: across a transport, a few turns later.
+    await vi.waitFor(() => expect(mocks.clientFetch).toHaveBeenCalledTimes(1))
 
     // A second mount moments later reports what is in flight but starts nothing new.
     mocks.listWidgets.mockResolvedValue([widget({ slug: 'another', isStale: true })])

@@ -90,6 +90,12 @@ export interface AgentRegistry {
   evictAll(): Promise<void>
 }
 
+/**
+ * The keys of `AgentActor` that hold op groups, for a transport that wraps
+ * them (`serializingActor`). The type test checks the list is complete.
+ */
+export const ACTOR_GROUPS = ['container', 'sessions', 'messages', 'inputs', 'usage', 'files', 'memories', 'config'] as const
+
 export interface AgentActor {
   readonly slug: AgentSlug
   /** What the agent is doing as of now: its container, busy sessions, open asks. */

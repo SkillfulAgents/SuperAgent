@@ -62,6 +62,10 @@ type Reviver = (fields: Record<string, unknown>, message: string, cause: unknown
 // The errors the actor throws that callers branch on, rebuilt with their own
 // constructors: their class fields (a status, a response schema) come back too.
 const REVIVERS: Record<string, Reviver> = {
+  // The built-in classes, which structured clone itself keeps.
+  TypeError: (_f, message, cause) => new TypeError(message, { cause }),
+  RangeError: (_f, message, cause) => new RangeError(message, { cause }),
+  SyntaxError: (_f, message, cause) => new SyntaxError(message, { cause }),
   WorkspaceFileError: (f, message) => new WorkspaceFileError(f.code as WorkspaceFileErrorCode, message),
   MemoryError: (f, message) => new MemoryError(message, f.status as MemoryError['status']),
   ConfigDocError: (f, message, cause) => new ConfigDocError(f.code as ConfigDocErrorCode, f.docId as ConfigDocId, message, { cause }),

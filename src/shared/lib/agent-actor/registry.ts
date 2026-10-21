@@ -201,5 +201,7 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
 }, {
   states: agentActorStates,
   // Development and tests only: every actor reached through the serializing test transport.
-  ...(process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing' ? { transport: serializingActor } : {}),
+  ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
+    ? { transport: serializingActor }
+    : {}),
 })

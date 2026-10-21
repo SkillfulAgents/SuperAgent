@@ -122,24 +122,67 @@ describe('serializingActor', () => {
     expect(error).toMatchObject({ code: 'not-a-file', status: 404 })
   })
 
-  it('passes streams, the container transport and the nested op groups through', async () => {
-    const stream = new ReadableStream<Uint8Array>()
+  it('passes the read\'s advisory signal and the container transport as they are, and reaches nested groups', async () => {
     const response = new Response('ok')
     const signal = new AbortController().signal
-    const media = vi.fn(async (_s: string, _ref: unknown, given: AbortSignal) => ({ mimeType: 'image/png', stream, signal: given }))
+    let given: AbortSignal | undefined
     const actor = serializingActor(actorOf({
-      messages: { media },
+      messages: { media: async (_s: string, _ref: unknown, received: AbortSignal) => { given = received; return undefined } },
       container: { fetch: async () => response },
       inputs: { reviews: { get: async (id: string) => ({ id }) } },
     }, async () => ({ activeSessionIds: ['s'] })))
 
-    const blob = await actor.messages.media('s', { kind: 'x' } as never, signal) as unknown as { stream: unknown; signal: unknown }
-    expect(blob.stream).toBe(stream)
-    expect(blob.signal).toBe(signal)
+    await actor.messages.media('s', { kind: 'x' } as never, signal)
+    expect(given).toBe(signal)
     expect(await actor.container.fetch('/health')).toBe(response)
     expect(await actor.inputs.reviews.get('r1')).toEqual({ id: 'r1' })
     expect(await actor.live()).toEqual({ activeSessionIds: ['s'] })
     expect(actor.slug).toBe('a')
+  })
+
+  it('refuses a signal to any op but the pure reads that take one', async () => {
+    const actor = serializingActor(actorOf({ sessions: { list: async () => [] } }))
+    await expect(actor.sessions.list({ signal: new AbortController().signal } as never)).rejects.toThrow(/sessions\.list argument\.signal cannot cross/)
+  })
+
+  it('carries a stream\'s chunks as copies, and fails a stream whose chunk is not data', async () => {
+    const sent = { type: 'stream_start' }
+    const actor = serializingActor(actorOf({
+      messages: {
+        subscribe: async () => new ReadableStream({ start: (c) => { c.enqueue(sent); c.enqueue({ type: 'odd', callback: () => 1 }); c.close() } }),
+      },
+    }))
+    const reader = (await actor.messages.subscribe('s')).getReader()
+
+    const first = await reader.read()
+    expect(first.value).toEqual(sent)
+    expect(first.value).not.toBe(sent)
+    await expect(reader.read()).rejects.toThrow(/messages\.subscribe result stream chunk cannot cross/)
+  })
+
+  it('lets the actor\'s side of a stream go when the caller cancels it', async () => {
+    const cancelled = vi.fn()
+    const actor = serializingActor(actorOf({
+      messages: { subscribe: async () => new ReadableStream({ cancel: cancelled }) },
+    }))
+    await (await actor.messages.subscribe('s')).cancel()
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalled())
+  })
+
+  it('hands out no instance of the actor\'s classes: a shortcut for a local one is not taken', async () => {
+    class LocalFiles {
+      async stat() { return { kind: 'file' } }
+    }
+    const actor = serializingActor(actorOf({ files: new LocalFiles() as unknown as Record<string, unknown> }))
+    expect(actor.files instanceof LocalFiles).toBe(false)
+    expect(await actor.files.stat('x')).toEqual({ kind: 'file' })
+  })
+
+  it('reports an op that throws instead of rejecting', async () => {
+    const actor = serializingActor(actorOf({ sessions: { exists: () => { throw new Error('not async') } } }))
+    const error = await actor.sessions.exists('s').catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error).toMatchObject({ message: 'sessions.exists threw instead of rejecting', cause: { message: 'not async' } })
   })
 
   it('looks each op up when it is called, so a replaced op is the one that runs', async () => {

@@ -24,7 +24,10 @@ vi.mock('../db', () => ({ get db() { return database } }))
 const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
   // Sends to the session's last event stream.
   emit: (_event: unknown) => {} }))
-vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
+// Through the serializing transport in the transport suite, as callers reach a real actor.
+vi.mock('../agent-actor', async () => {
+  const { viaTestTransport } = await import('../agent-actor/testing/via-test-transport')
+  return { agentRegistry: { get: () => viaTestTransport({
   container: { start: runtime.start }, inputs: { cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
@@ -37,7 +40,8 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
       await runtime.send(request.sessionId, request.content, request.uuid)
       return { status: 'sent', queued: true }
     } },
-}) } }))
+  }) } }
+})
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))

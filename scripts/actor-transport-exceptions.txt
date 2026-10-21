@@ -1,5 +1,7 @@
 # Test files `npm run test:actor-transport` leaves out, each with why it cannot
-# hold with the actor across a wire. This list only shrinks.
+# hold with the actor across a wire. This list only shrinks. (A single test of
+# what only an actor on this machine does, a host-path shortcut, skips itself
+# with `it.skipIf(underActorTransport)` from agent-actor/testing/via-test-transport.)
 
 # The chat indicator's tick and sleep, timed to the fake clock: each asserts
 # exactly what one tick paints the moment the clock moves, and arms the sleep

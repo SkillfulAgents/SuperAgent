@@ -20,6 +20,7 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
 
@@ -4250,7 +4251,9 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  it('moves the assembled chunked upload from the host temp file into the workspace', async () => {
+  // The rename is the shortcut of a workspace on this machine; across a wire the
+  // file streams in (copy-into-workspace.test.ts).
+  it.skipIf(underActorTransport)('moves the assembled chunked upload from the host temp file into the workspace', async () => {
     const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
     mockFsRename.mockResolvedValue(undefined)
@@ -4310,7 +4313,9 @@ describe('folder upload — POST /:id/upload-folder', () => {
     mockCreateReadStream.mockReset()
   })
 
-  it('copies folder to workspace uploads directory', async () => {
+  // The exclusive copy is the shortcut of a workspace on this machine; across a
+  // wire the files stream in (copy-into-workspace.test.ts).
+  it.skipIf(underActorTransport)('copies folder to workspace uploads directory', async () => {
     mockFsStat.mockResolvedValue({ isDirectory: () => true, isFile: () => false, size: 0 })
     mockFsReaddir
       .mockResolvedValueOnce([dirent('README.md', 'file'), dirent('src', 'directory'), dirent('linked', 'symlink')])
