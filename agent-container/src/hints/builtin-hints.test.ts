@@ -40,7 +40,7 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['read a normal file', read('/workspace/notes/plan.md'), []],
   ['category is not cat', bash('category=reports; ls $category'), []],
   ['read a slide deck', bash('curl -s "$PROXY_BASE_URL/acc-gslides/slides.googleapis.com/v1/presentations/abc123" -H "Authorization: Bearer $PROXY_TOKEN"'), ['shared-doc-revision']],
-  ['write a doc from a script', bash('python3 - <<\'EOF\'\nbase = f"{proxy}/acc-gdocs/docs.googleapis.com/v1/documents/{doc_id}"\nrequests.post(base + ":batchUpdate", json=body)\nEOF'), ['shared-doc-revision']],
+  ['write a doc from a script', bash('python3 - <<\'EOF\'\nbase = f"{proxy}/acc-gdocs/docs.googleapis.com/v1/documents/{doc_id}"\nrequests.post(base + ":batchUpdate", json=body)\nEOF'), ['python-stdlib-only', 'shared-doc-revision']],
   ['sheets batchUpdate', bash('curl -s -X POST "$PROXY_BASE_URL/acc-gsheets/sheets.googleapis.com/v4/spreadsheets/abc:batchUpdate"'), []],
   ['sleep', bash('sleep 30'), ['no-foreground-wait']],
   ['poll loop', bash('for i in $(seq 1 18); do curl -s "$URL/check-runs"; sleep 10; done'), ['no-foreground-wait']],
@@ -79,6 +79,12 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['proxy POST with --data-binary', bash('curl -s "$PROXY_BASE_URL/acc-drive/www.googleapis.com/upload/drive/v3/files" --data-binary @report.pdf'), ['proxy-json-body']],
   ['proxy GET', bash('curl -s "$PROXY_BASE_URL/acc-gmail/gmail.googleapis.com/gmail/v1/users/me/profile" -H "Authorization: Bearer $PROXY_TOKEN"'), []],
   ['curl -d without the proxy', bash('curl -s -d "q=1" https://api.example.com/search'), []],
+  ['python3 script', bash('python3 /workspace/scripts/report.py --days 7'), ['python-stdlib-only']],
+  ['python -c after cd', bash('cd /workspace && python -c "import json; print(1)"'), ['python-stdlib-only']],
+  ['python3 heredoc', bash("python3 - <<'EOF'\nprint('hi')\nEOF"), ['python-stdlib-only']],
+  ['python through uv run', bash('uv run --env-file .env --with requests python fetch.py'), ['uv-run-env-file']],
+  ['python3.12 binary', bash('python3.12 fetch.py'), []],
+  ['pip install', bash('pip install requests'), []],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
