@@ -1,10 +1,10 @@
 import path from 'node:path'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
-import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { githubBrowseSchema, type GithubVolumeConfig } from './github-schema'
 import { githubBranches, githubFolder, githubHead, githubRepo, githubRepos, requireGithubAccount } from './github-client'
 import { githubSync } from './github-sync'
 import { volumeFolderBrowser } from './volume-folder-browser'
+import { volumeUploads } from './volume-upload-guard'
 
 export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfig> {
   static readonly browseFolders = volumeFolderBrowser(githubBrowseSchema, async (query, viewer) => {
@@ -22,13 +22,17 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
 
   readonly type = 'github'
   readonly cacheMode = 'local'
-  readonly readOnly = true
+  override readonly readOnly: boolean
   readonly sync
 
-  constructor(id: string, name: string, config: GithubVolumeConfig, volumeId = id) {
+  constructor(id: string, name: string, config: GithubVolumeConfig, volumeId = id, private readonly agentSlug = '') {
     super(id, name, config)
     this.sync = githubSync({ id: volumeId, name, config })
+    this.readOnly = this.sync.stopped !== null
   }
+
+  override get attention(): string | null { return this.sync.attention }
+  override unsynced(): Promise<number | null> { return this.sync.unsynced() }
 
   override get sourceLabel(): string { return `GitHub · ${this.config.owner}/${this.config.repo}@${this.config.branch}${this.config.path ? `/${this.config.path}` : ''}` }
 
@@ -39,7 +43,7 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
   }
 
   override health(): Promise<VolumeEntry> {
-    if (!this.sync.isReady) this.sync.keepFresh()
+    if (!this.sync.isReady || this.sync.unpushed) this.sync.keepFresh()
     return this.stat('')
   }
 
@@ -50,18 +54,20 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
 
   async read(name: string): Promise<VolumeFile> {
     await this.sync.fresh()
-    await this.sync.ready()
-    return this.sync.local.read(name)
+    return this.sync.read(this.id, name)
   }
 
-  async write(_name: string, body: ReadableStream<Uint8Array>): Promise<void> {
-    await body.cancel().catch(() => {})
-    return refuseMutation()
+  async write(name: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
+    return volumeUploads.write(JSON.stringify([this.id, name]), body, signal, () => this.sync.write(this.id, this.agentSlug, name, body, signal))
   }
 
-  async delete(_name: string): Promise<void> { return refuseMutation() }
-  async mkdir(_name: string): Promise<void> { return refuseMutation() }
-  async move(_from: string, _to: string): Promise<void> { return refuseMutation() }
+  async delete(name: string): Promise<void> {
+    volumeUploads.beforeDelete(JSON.stringify([this.id, name]))
+    return this.sync.delete(this.id, this.agentSlug, name)
+  }
+
+  mkdir(name: string): Promise<void> { return this.sync.mkdir(name) }
+  move(from: string, to: string): Promise<void> { return this.sync.move(this.id, this.agentSlug, from, to) }
 }
 
 export async function prepareGithubVolume(config: GithubVolumeConfig, creator?: { userId: string | null }) {
@@ -71,8 +77,4 @@ export async function prepareGithubVolume(config: GithubVolumeConfig, creator?: 
   if (config.path) await githubFolder(config, head)
   const repo = await githubRepo(config)
   return { name: path.posix.basename(config.path) || repo.name, config: { ...config, owner: repo.owner.login, repo: repo.name } }
-}
-
-function refuseMutation(): never {
-  throw new WorkspaceFileError('not-accessible', 'GitHub drives are read-only')
 }

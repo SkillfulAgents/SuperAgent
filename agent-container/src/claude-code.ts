@@ -24,7 +24,7 @@ import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpS
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
-import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
+import { editedContent, fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
@@ -1539,7 +1539,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                 if (!filePath) return {};
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
-                  const result = hook.onRead(filePath);
+                  const result = hook.onRead(filePath, (input as any).tool_response);
                   if (result.additionalContext) {
                     return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
                   }
@@ -1555,10 +1555,11 @@ export class ClaudeCodeProcess extends EventEmitter {
                 const toolInput = (input as any).tool_input as Record<string, unknown>;
                 const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
                 if (!filePath) return {};
+                let content: string | undefined;
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
                   try {
-                    const content = await fs.promises.readFile(filePath, 'utf-8');
+                    content ??= editedContent((input as any).tool_response) ?? await fs.promises.readFile(filePath, 'utf-8');
                     const result = hook.onEdit(filePath, content);
                     if (result.error) {
                       return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };

@@ -3,7 +3,7 @@ import pLimit from 'p-limit'
 import { getAccountProviderByName } from '@shared/lib/account-providers/provider-factory'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import {
-  githubBlobSchema, githubBranchesSchema, githubErrorSchema, githubHeadSchema, githubOidSchema, githubPathSchema, githubRepoSchema, githubReposSchema, githubTreeSchema,
+  githubBlobSchema, githubBranchesSchema, githubCommitReplySchema, githubErrorSchema, githubHeadSchema, githubOidSchema, githubPathSchema, githubRepoSchema, githubReposSchema, githubTreeSchema,
   type GithubTreeEntry, type GithubVolumeConfig,
 } from './github-schema'
 import { requireAccount, withRemoteAttribution } from './remote-account'
@@ -34,14 +34,18 @@ async function responseError(response: Response): Promise<Error> {
   return new WorkspaceFileError('not-accessible', error.success ? error.data.message : response.statusText)
 }
 
-export async function githubRequest(accountId: string, path: string): Promise<Response> {
+/** A request with a body is a mutation, so the pacer never replays it. */
+export async function githubRequest(accountId: string, path: string, body?: unknown): Promise<Response> {
   const headers = new Headers({ Accept: 'application/vnd.github+json' })
-  return withRemoteAttribution(accountId, 'github', account => pacer.run(accountId, true, async () => {
+  if (body !== undefined) headers.set('Content-Type', 'application/json')
+  const bytes = body === undefined ? null : new TextEncoder().encode(JSON.stringify(body)).buffer
+  return withRemoteAttribution(accountId, 'github', account => pacer.run(accountId, body === undefined, async () => {
     let response: Response
     try {
       response = await getAccountProviderByName(account.providerName).makeApiCall({
         providerConnectionId: account.providerConnectionId, toolkitSlug: 'github',
-        targetUrl: `https://${HOST}/${path}`, method: 'GET', headers, body: null,
+        targetUrl: `https://${HOST}/${path}`, method: bytes ? 'POST' : 'GET', headers,
+        body: bytes,
       })
     } catch { throw unavailable(503) }
     if (!response.ok) throw await responseError(response)
@@ -130,4 +134,26 @@ export async function githubRepos(accountId: string) {
 
 export async function githubBranches(config: Pick<GithubVolumeConfig, 'accountId' | 'repoId'>) {
   return pages(config.accountId, `repositories/${config.repoId}/branches?per_page=100`, githubBranchesSchema)
+}
+
+/** Lands one commit on the branch only if its head is still `expectedHeadOid`. A refusal throws a
+ * WorkspaceFileError, and a lost or failed reply throws a VolumeError: the caller re-reads the head
+ * to tell a moved branch from a real refusal. */
+export async function githubCommit(config: GithubVolumeConfig, expectedHeadOid: string,
+  changes: { path: string; contents: Buffer | null }[], headline: string): Promise<string> {
+  const response = await githubRequest(config.accountId, 'graphql', {
+    query: 'mutation($i:CreateCommitOnBranchInput!){createCommitOnBranch(input:$i){commit{oid}}}',
+    variables: { i: {
+      branch: { repositoryNameWithOwner: `${config.owner}/${config.repo}`, branchName: config.branch },
+      message: { headline }, expectedHeadOid,
+      fileChanges: {
+        additions: changes.flatMap(change => change.contents ? [{ path: change.path, contents: change.contents.toString('base64') }] : []),
+        deletions: changes.flatMap(change => change.contents ? [] : [{ path: change.path }]),
+      },
+    } },
+  })
+  const reply = await json(response, githubCommitReplySchema)
+  const oid = reply.data?.createCommitOnBranch?.commit?.oid
+  if (oid) return oid
+  throw new WorkspaceFileError('not-accessible', `GitHub refused the push: ${reply.errors?.[0]?.message ?? 'no commit returned'}`)
 }

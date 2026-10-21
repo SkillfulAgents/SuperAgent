@@ -61,6 +61,16 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
+  /** One line for the drive's card when changes have not reached the source, or null. */
+  get attention(): string | null {
+    return null
+  }
+
+  /** Files a delete of this volume's definition would lose, or null when it cannot tell. */
+  unsynced(): Promise<number | null> {
+    return Promise.resolve(0)
+  }
+
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */

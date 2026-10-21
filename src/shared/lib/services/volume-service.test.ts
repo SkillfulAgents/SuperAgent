@@ -102,6 +102,18 @@ describe('volume ownership', () => {
     expect(fs.existsSync(copy)).toBe(false)
     await expect(deleteVolumeDefinition('github-volume', local)).rejects.toMatchObject({ status: 404 })
   })
+  it('refuses to delete a GitHub drive with edits not on GitHub unless the delete discards them', async () => {
+    const config = JSON.stringify({ accountId: 'account', repoId: 1, owner: 'team', repo: 'project', branch: 'main', path: '' })
+    await handle.db.insert(volumeDefinitions).values({ id: 'github-volume', name: 'Project', type: 'github', config, userId: null, createdAt: new Date(), updatedAt: new Date() }).run()
+    fs.mkdirSync(path.join(folder, 'volumes', 'github-volume'), { recursive: true })
+    fs.writeFileSync(path.join(folder, 'volumes', 'github-volume', 'edits.json'), JSON.stringify({
+      version: 1, unpushed: { 'notes.txt': { agents: ['agent'], n: 1, sha: null } }, held: {}, stopped: null, ignores: [], links: [],
+    }))
+    expect(await deleteVolumeDefinition('github-volume', local)).toBe(1)
+    expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
+    expect(await deleteVolumeDefinition('github-volume', local, true)).toBe(0)
+    expect(await handle.db.select().from(volumeDefinitions).all()).toEqual([])
+  })
   it('uses public definitions in single-user mode and rejects ownerless private definitions', async () => {
     const id = await createVolumeDefinition(input(), local)
     expect(await listVolumeDefinitions(local)).toMatchObject([{ id, userId: null, canManage: true }])
