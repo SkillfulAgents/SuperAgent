@@ -1,6 +1,6 @@
 ---
 name: linear-fields-and-ids
-description: Linear list_issues field names and issue identifiers
+description: Use Linear schema names and looked-up ids instead of guessing
 triggers:
   - event: PreToolUse
     tool: mcp__linear__list_issues
@@ -8,4 +8,4 @@ triggers:
     tool: mcp__linear__get_issue
 repeat: turn
 ---
-`list_issues` `fields` takes only the names in its schema. Issue ids are `<TEAM KEY>-<number>`: if one isn't found, check the team key with `list_teams` before trying other ids.
+Use only the names in the tool's schema, and look up ids (team keys, users, projects) with the list tools instead of guessing them.

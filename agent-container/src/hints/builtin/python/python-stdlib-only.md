@@ -1,6 +1,6 @@
 ---
 name: python-stdlib-only
-description: Plain python3 has only the standard library and is Python 3.11
+description: Plain python3 has only the standard library
 triggers:
   - event: PreToolUse
     tool: Bash
@@ -12,4 +12,4 @@ triggers:
       command: python *
 repeat: turn
 ---
-`python3` here is Python 3.11 with only the standard library. If the script imports a third-party package (requests, PIL, ...), run it with `uv run --with <package> python ...` instead. In 3.11 an f-string can't contain a backslash inside `{}`: build that part in a variable first.
+`python3` here has only the standard library. If the script imports a third-party package (requests, PIL, ...), run it with `uv run --with <package> python ...` instead.
