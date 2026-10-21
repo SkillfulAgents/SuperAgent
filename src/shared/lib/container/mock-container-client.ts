@@ -959,7 +959,11 @@ export interface UserInputTool {
 export class UserInputRequestScenario implements MockScenario {
   constructor(
     private tools: UserInputTool[],
-    private opts?: { holdResultsUntilAll?: boolean },
+    private opts?: {
+      holdResultsUntilAll?: boolean
+      /** After the calls are streamed: what the real container's tool would ask the host for. */
+      onEmitted?: (emitted: { agentSlug: string; sessionId: string; toolUseIds: string[]; inputs: Record<string, unknown>[] }) => void
+    },
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -1088,6 +1092,7 @@ export class UserInputRequestScenario implements MockScenario {
         type: 'assistant',
         content: { type: 'assistant', message: { content: assistantContent } },
       })
+      this.opts?.onEmitted?.({ agentSlug: client.getAgentId(), sessionId, toolUseIds: capturedToolIds, inputs: capturedTools.map((tool) => tool.input) })
     }, finalDelay)
   }
 }
@@ -2385,6 +2390,19 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ].join('\n'),
       'Here are the search results.'
     )],
+    // Owner setup request: the real container's add_agent_integration posts the
+    // call to /x-agent/chat/add, which parks it on the owner for Linear.
+    ['ask integration setup', new UserInputRequestScenario([
+      {
+        name: 'mcp__chat__add_agent_integration',
+        input: { provider: 'linear', name: 'Support Triage', reason: 'So the team can delegate support issues to me in Linear' },
+      },
+    ], {
+      onEmitted: ({ agentSlug, sessionId, toolUseIds: [toolUseId], inputs: [input] }) => {
+        void import('@shared/lib/agent-integrations/owner-setup-request').then(({ requestOwnerSetup, ownerSetupRequestInputSchema }) =>
+          requestOwnerSetup(agentSlug, ownerSetupRequestInputSchema.parse({ ...input, toolUseId, sessionId })))
+      },
+    })],
     // Connected account request scenario
     ['ask account', new UserInputRequestScenario([
       {

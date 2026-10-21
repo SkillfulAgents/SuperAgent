@@ -39,6 +39,7 @@ const KIND_TO_CARD_TYPE: Record<UserInputRequestKind, UserRequestEvent['type'] |
   script_run: 'script_run_request',
   capability_review: 'capability_review_request',
   computer_use: 'computer_use_request',
+  integration_setup: 'integration_setup_request',
   proxy_review: null,
   x_agent_review: null,
   account_reauth_required: null,

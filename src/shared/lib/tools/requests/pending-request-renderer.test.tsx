@@ -16,6 +16,7 @@ import { ProxyReviewRequestItem } from '../proxy-review/request'
 import { XAgentReviewRequestItem } from '../x-agent-review/request'
 import { AccountReauthRequestItem } from '../account-reauth/request'
 import { McpReauthRequestItem } from '../mcp-reauth/request'
+import { IntegrationSetupRequestItem } from '../add-agent-integration/request'
 
 const ctx: RenderContext = {
   sessionId: 'session-xyz',
@@ -218,6 +219,20 @@ const cases: Array<{
       mcpName: 'Cal.com',
       authType: 'oauth',
     },
+  },
+  {
+    name: 'integration_setup',
+    descriptor: {
+      kind: 'integration_setup',
+      key: 'k13',
+      toolUseId: 'tu-setup',
+      provider: 'linear',
+      reason: 'Triage the support queue',
+      prefill: { name: 'Support bot' },
+      onComplete: noop,
+    },
+    expectedComponent: IntegrationSetupRequestItem,
+    expectedProps: { toolUseId: 'tu-setup', provider: 'linear', reason: 'Triage the support queue', prefill: { name: 'Support bot' } },
   },
 ]
 

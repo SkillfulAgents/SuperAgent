@@ -34,10 +34,28 @@ const SLACK_MANIFEST = `{
   }
 }`
 
-const PROVIDERS_INFO = `Supported chat integration providers:
+const PROVIDERS_INFO = `Supported agent integration providers. Each gives this agent its own identity; set one up with add_agent_integration.
 
-**Email (Platform-connected deployments)**
-   An owner creates an inbox from the agent’s Email setup in the app. This is not Gmail/Outlook OAuth and cannot be created by add_chat_integration. For an existing inbox, call list_agent_integrations and follow its sending instructions; new emails need no existing conversation.
+## Set up by the agent's owner
+
+add_agent_integration asks the owner with a setup card in the app and returns once the integration is connected. Pass a reason. Do not collect credentials: the owner enters them in the app.
+
+**Email** (provider \`platform-email\`, Platform-connected deployments)
+   The agent's own inbox, with an address like assistant@company.ongamut.so. Not Gmail/Outlook OAuth.
+   Suggestions: \`name\` (sender name), \`config.localPart\` (the inbox name before the @).
+   For an existing inbox, call list_agent_integrations and follow its sending instructions; new emails need no existing conversation.
+
+**Linear** (provider \`linear\`)
+   The agent's own Linear app: people mention it or delegate issues to it, and it gets Linear tools under its own identity.
+   Suggestions: \`name\` (the app name).
+
+**GitHub** (provider \`github\`)
+   The agent's own GitHub App: mentioning it in an issue or pull request starts work, and it acts as its own bot.
+   Suggestions: \`name\` (the app name, up to 34 characters), \`config.organization\` (to use an organization's repositories).
+
+## Set up by the agent
+
+Collect the fields below from the user and pass them in config.
 
 1. **Telegram**
    Required: \`botToken\` — create a bot via @BotFather on Telegram and copy the token.
@@ -96,11 +114,11 @@ ${SLACK_MANIFEST}
    3. Provide your phone number and the code
    Note: Only one agent can be connected to iMessage at a time.`
 
-export const listAvailableChatProvidersTool = tool(
-  'list_available_chat_providers',
-  `List the supported chat integration providers and the configuration fields required to set each one up.
+export const listAvailableIntegrationProvidersTool = tool(
+  'list_available_integration_providers',
+  `List the supported agent integration providers (Email, Linear, GitHub, Telegram, Slack, iMessage), which ones the agent's owner sets up, and the configuration fields each needs.
 
-Use this to understand what information you need to collect from the user before calling add_chat_integration.
+Use this to understand what information you need to collect from the user before calling add_agent_integration.
 
 For Slack, the setup is complex — offer to do it for the user using browser tools (navigate to api.slack.com, create the app, generate tokens, etc.).`,
   {},

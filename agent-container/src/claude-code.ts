@@ -88,6 +88,8 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 // servers to finish their handshake. Comfortably inside the 5-minute interactive
 // idle eviction, and the same order as the interrupt() teardown the send path
 // already awaits.
+// The one tool outside the user-input server that can park on a pending input.
+const ADD_AGENT_INTEGRATION_TOOL = 'mcp__chat__add_agent_integration';
 const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
 const REMOTE_MCP_READY_POLL_MS = 250;
 
@@ -1371,7 +1373,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // not additive). This is acceptable because they write the same ID,
         // but if two user-input tools fire concurrently the first ID could
         // be overwritten before consumeCurrentToolUseId is called.
-        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
+        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__') || toolName === ADD_AGENT_INTEGRATION_TOOL) && options.toolUseID) {
           inputManager.setCurrentToolUseId(options.toolUseID, this.sessionId);
         }
 
@@ -1406,6 +1408,18 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
           {
             matcher: 'mcp__computer-use__.*',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) {
+                  inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
+                }
+                return {};
+              },
+            ],
+          },
+          {
+            // Parks on the owner for owner-managed providers.
+            matcher: ADD_AGENT_INTEGRATION_TOOL,
             hooks: [
               async (_input, toolUseId) => {
                 if (toolUseId) {

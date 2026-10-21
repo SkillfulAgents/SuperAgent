@@ -22,7 +22,8 @@ import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-in
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
-import { integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
+import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
+import { ownerSetupRequestInputSchema, requestOwnerSetup } from '@shared/lib/agent-integrations/owner-setup-request'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
@@ -88,14 +89,25 @@ xAgentChat.post('/list', async (c) => {
   }
 })
 
-// POST /add — create and connect a new integration
+// POST /add — create and connect a new integration, or ask the owner to set up one only they may
 xAgentChat.post('/add', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
     const body = await c.req.json()
     const { provider, config, name } = body
 
-    if (!provider || !config) {
+    if (!provider) {
+      return c.json({ error: 'Missing required field: provider' }, 400)
+    }
+    await assertIntegrationAvailable(provider)
+    if (!getIntegrationSetup(provider).allowAgentCreation) {
+      // The container waits on the same tool-use id until the owner connects one or declines.
+      if (!(await requestOwnerSetup(callerSlug, ownerSetupRequestInputSchema.parse(body)))) {
+        return c.json({ error: 'Could not ask the owner to set up this integration' }, 500)
+      }
+      return c.json({ status: 'owner_setup_requested', provider }, 202)
+    }
+    if (!config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 

@@ -3548,6 +3548,41 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/decline-integration-setup - Decline an agent's ask to set up an integration
+// Setting one up is the owner's (the setup routes check); declining, like any
+// other request, is open to anyone who can put work into the agent. The ask is
+// answered by the integration connecting, so there is no provide route.
+agents.post('/:id/sessions/:sessionId/decline-integration-setup', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const { toolUseId, declineReason } = await c.req.json()
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    const gated = await gateRequestDecision(c, toolUseId, 'integration_setup')
+    if (gated) return gated
+
+    const actor = agentRegistry.get(agentSlug)
+    const rejectResponse = await actor.container.fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: declineReason || 'The user declined the setup request' }),
+    })
+    if (!rejectResponse.ok) {
+      console.error('Failed to reject integration setup request:', await rejectResponse.text())
+      return c.json({ error: 'Failed to decline the request in container' }, 502)
+    }
+
+    await actor.inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
+    trackServerEvent('request_declined', { type: 'integration_setup', withReason: !!declineReason })
+    return c.json({ success: true, declined: true })
+  } catch (error) {
+    console.error('Failed to decline integration setup:', error)
+    return c.json({ error: 'Failed to decline integration setup' }, 500)
+  }
+})
+
 // POST /api/agents/:id/sessions/:sessionId/answer-question - Answer or decline a question request
 agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) => {
   try {

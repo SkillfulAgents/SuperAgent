@@ -132,6 +132,13 @@ export type UserRequestEvent =
       agentSlug?: string
     }
   | {
+      type: 'integration_setup_request'
+      toolUseId: string
+      provider: string
+      reason?: string
+      agentSlug?: string
+    }
+  | {
       type: 'tool_status'
       toolUseId: string
       toolName: string

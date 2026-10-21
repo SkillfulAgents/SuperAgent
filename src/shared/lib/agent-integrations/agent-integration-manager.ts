@@ -40,6 +40,7 @@ import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
+import { answerOwnerSetupRequests } from './owner-setup-request'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
 const COMPONENT = 'agent-integration'
@@ -675,6 +676,8 @@ export class AgentIntegrationManager {
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
+    // An agent may be waiting on its owner for exactly this account.
+    void answerOwnerSetupRequests(integration)
 
     // Restore SSE subscriptions for ACTIVE, allowed chat sessions only. Archived/
     // cleared/timed-out sessions must not be re-subscribed, or stale agent output
