@@ -2573,7 +2573,9 @@ app.post('/browser/run', async (c) => {
     const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
     const verb = commandArgs[0].toLowerCase();
     const joined = commandArgs.join(' ').toLowerCase();
-    const navigates = verb.startsWith('tab') || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb);
+    // A bare `tab` / `tab list` only lists: the page in front is the same.
+    const listsTabs = verb.startsWith('tab') && (commandArgs.length === 1 || commandArgs[1]?.toLowerCase() === 'list');
+    const navigates = (verb.startsWith('tab') && !listsTabs) || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb);
     // A navigation Chrome answered with its own error page still happened:
     // `tab new <dead url>` leaves a new tab in front. The error stands, and
     // the bookkeeping below runs as for a success, so the tab is reported now
