@@ -125,7 +125,7 @@ export function lineWithoutRef(text: string): string {
 /** What `before` was, in the terms that differ from `after`. */
 function describeWas(before: RefLine, after: RefLine): string {
   const parts: string[] = []
-  if (before.name !== after.name && before.name && after.name) parts.push(`name ${JSON.stringify(clip(before.name, 40))}`)
+  if (before.name !== after.name && before.name && after.name) parts.push(`name ${JSON.stringify(clipAround(before.name, after.name, 40))}`)
   const key = (a: string): string => a.split('=')[0]
   const afterKeys = new Map(after.attrs.map(a => [key(a), a]))
   const beforeKeys = new Map(before.attrs.map(a => [key(a), a]))
@@ -141,12 +141,27 @@ function describeWas(before: RefLine, after: RefLine): string {
     if (beforeKeys.has(k)) continue
     parts.push(a.includes('=') ? `${k}: unset → ${val(a)}` : `now ${a}`)
   }
-  if (before.value !== after.value) parts.push(`value ${before.value ? JSON.stringify(clip(before.value, 40)) : 'empty'} → ${after.value ? JSON.stringify(clip(after.value, 40)) : 'empty'}`)
+  if (before.value !== after.value) parts.push(`value ${before.value ? JSON.stringify(clipAround(before.value, after.value, 40)) : 'empty'} → ${after.value ? JSON.stringify(clipAround(after.value, before.value, 40)) : 'empty'}`)
   return parts.join(', ')
 }
 
 function clip(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
+}
+
+/**
+ * `s` in at most `n` characters, showing where it differs from `other`: two
+ * long names that share their first 40 characters ("Add to cart — Product A…"
+ * and "… B") would otherwise clip to the same text.
+ */
+function clipAround(s: string, other: string, n: number): string {
+  if (s.length <= n) return s
+  let i = 0
+  while (i < s.length && i < other.length && s[i] === other[i]) i++
+  if (i < n - 8) return clip(s, n)
+  const start = Math.max(0, i - 12)
+  const tail = s.length - start > n - 1
+  return `…${s.slice(start, start + n - (tail ? 2 : 1))}${tail ? '…' : ''}`
 }
 
 /** A masked password value as the tree prints it. */
@@ -216,17 +231,25 @@ export function diffTrees(before: TreeRefs, after: TreeRefs, opts: DiffOptions =
   }
   // Pair what left with what arrived looking exactly the same, in tree order:
   // one element re-rendered under a new ref, not one removed and one added.
+  // A line that names one element (a name, and once on each side) pairs on
+  // its own; generic lines (`listitem`, an unnamed button) pair only when
+  // most of what left arrived again identical — a region re-drawn as a whole,
+  // not three new rows that happen to look like three old ones.
+  const keyOf = (l: RefLine): string => lineWithoutRef(l.text)
   const arrivals = new Map<string, RefLine[]>()
-  for (const l of added) {
-    const k = lineWithoutRef(l.text)
-    arrivals.set(k, [...(arrivals.get(k) ?? []), l])
-  }
+  for (const l of added) arrivals.set(keyOf(l), [...(arrivals.get(keyOf(l)) ?? []), l])
+  const departures = new Map<string, number>()
+  for (const l of removed) departures.set(keyOf(l), (departures.get(keyOf(l)) ?? 0) + 1)
+  let matches = 0
+  for (const [k, n] of departures) matches += Math.min(n, arrivals.get(k)?.length ?? 0)
+  const redrawn = removed.length > 0 && matches * 2 >= removed.length
+  const pairable = (l: RefLine): boolean =>
+    redrawn || (l.name !== '' && departures.get(keyOf(l)) === 1 && arrivals.get(keyOf(l))?.length === 1)
   const rerendered: Array<{ from: RefLine; to: RefLine }> = []
   const paired = new Set<RefLine>()
   const stillRemoved: RefLine[] = []
   for (const l of removed) {
-    const queue = arrivals.get(lineWithoutRef(l.text))
-    const to = queue?.shift()
+    const to = pairable(l) ? arrivals.get(keyOf(l))?.shift() : undefined
     if (to) { rerendered.push({ from: l, to }); paired.add(to) } else stillRemoved.push(l)
   }
   return { added: added.filter(l => !paired.has(l)), returned, rerendered, changed, removed: stillRemoved }
@@ -238,6 +261,8 @@ export const TREE_DIFF_MAX_LINES = 25
 export const TREE_DIFF_MAX_REMOVED_LINES = 6
 /** Re-rendered elements: enough old → new pairs to keep acting, then a count. */
 export const TREE_DIFF_MAX_RERENDER_LINES = 6
+/** Changed lines listed ahead of the added ones; the rest follow them. */
+export const TREE_DIFF_LEADING_CHANGED_LINES = 8
 const LINE_CHARS = 200
 
 function ageText(ms: number): string {
@@ -262,8 +287,8 @@ export interface TreeDiffFormatOptions {
 }
 
 /**
- * The diff as lines under the Effect line: added first (new things to act
- * on), then changed, then removed — capped so a page swap cannot flood the
+ * The diff as lines under the Effect line: re-rendered refs, changed, added
+ * (new things to act on), then removed — capped so a page swap cannot flood the
  * result. Every line carries its ref, so the agent can act on it without
  * another snapshot.
  */
@@ -283,11 +308,21 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   const addedRefs = new Set(d.added.map(l => l.ref))
   const wrappers = new Set(d.added.filter(l => l.parent && addedRefs.has(l.parent) && l.name !== '' &&
     d.added.find(p => p.ref === l.parent)?.name === l.name).map(l => l.parent as string))
+  // Changed lines first: they are mostly the controls the agent just acted
+  // on, and a results list arriving with them must not push them out of the cap.
+  const changedLines = d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (${c.was})` : ''}`)
   const main: string[] = [
+    ...changedLines.slice(0, TREE_DIFF_LEADING_CHANGED_LINES),
     ...d.added.filter(l => !wrappers.has(l.ref)).map(l => `+ ${clip(l.text, LINE_CHARS)}`),
-    ...d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (${c.was})` : ''}`),
+    ...changedLines.slice(TREE_DIFF_LEADING_CHANGED_LINES),
   ]
-  const removedShown = opts.dialogOpened ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)
+  // A menu or listbox that arrived while many elements left: a modal menu
+  // (Radix and others) takes the page out of the tree like a dialog does.
+  // The interactive view lists a menu's items, not always the menu itself.
+  const popupLine = opts.dialogOpened ? undefined : d.added.find(l => /^(menu|menuitem|menuitemcheckbox|menuitemradio|listbox|option)\b/.test(l.text))
+  const popup = !popupLine ? '' : /^(listbox|option)\b/.test(popupLine.text) ? 'listbox' : 'menu'
+  const collapse = opts.dialogOpened || (popup !== '' && d.removed.length > TREE_DIFF_MAX_REMOVED_LINES)
+  const removedShown = collapse ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)
   // First: refs that stopped working. Acting on one of them is the failure
   // this prevents (✗ Unknown ref after a site re-drew the page).
   const lines: string[] = []
@@ -308,7 +343,9 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   if (removedHidden > 0) {
     lines.push(opts.dialogOpened
       ? `− ${removedHidden} other element${removedHidden === 1 ? ' is' : 's are'} not in the tree while the dialog is open`
-      : `− ${removedHidden} more no longer in the tree`)
+      : collapse
+        ? `− ${removedHidden} other element${removedHidden === 1 ? '' : 's'} left the tree as the ${popup} appeared`
+        : `− ${removedHidden} more no longer in the tree`)
   }
   return `\nTree changes since ${since} (${counts}):\n${lines.join('\n')}`
 }

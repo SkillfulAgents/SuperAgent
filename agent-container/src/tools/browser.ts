@@ -858,7 +858,7 @@ const browserCaptureTrafficTool = tool(
 1. action="start", then do the steps you want recorded in this tab (search, open a result, page through results — run each flow twice with different inputs so the varying parameters show).
 2. action="stop" saves /workspace/captures/<label>-<time>.har and lists the responses that look like data (JSON/XML/CSV, first-party first) with method, status, URL and size.
 
-The saved file is redacted: values of cookies, auth/token/session headers, token-like URL parameters and JSON fields, and JWTs are replaced with [REDACTED] (REDACTED inside URLs; names are kept, so you can see which ones a request needs). Response bodies are text only, capped per response. Requests in other tabs are not recorded.`,
+The recording has no Cookie or Set-Cookie headers and none of the headers the browser adds on the wire (Origin, sec-*, Accept-Encoding) — the recorder does not see them; the result lists the names of the cookies the browser holds for the site instead. Values that look like secrets (auth/token/session headers and parameters, JWTs) are replaced with [REDACTED] (REDACTED inside URLs); names are kept. Each data endpoint's response body is also saved as its own pretty-printed file, listed in the result. Requests in other tabs are not recorded.`,
   {
     action: z.enum(['start', 'stop']).describe('"start" begins recording; "stop" saves the HAR and summarises it'),
     label: z.string().optional().describe('Short name for the saved file on stop, e.g. "zillow-search" (default: "traffic")'),

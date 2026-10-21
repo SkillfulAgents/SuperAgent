@@ -112,11 +112,16 @@ export function formatIframePlaceholders(iframes: IframeInfo[], tree = ''): stri
  * a truncated head plus guidance to scope — far better than the hard error
  * the cap produces (which leaves the agent with nothing).
  */
-export function capSnapshot(text: string, scopeUsed: boolean): string {
+export function capSnapshot(text: string, scopeUsed: boolean, openDialog?: { kind: string; name: string }): string {
   if (text.length <= SNAPSHOT_SOFT_CAP_CHARS) return text
+  // An open dialog is what the agent is most likely after, and the one region
+  // whose selector is known: name it first.
+  const dialogHint = openDialog
+    ? `A ${openDialog.kind}${openDialog.name ? ` ${JSON.stringify(openDialog.name.slice(0, 60))}` : ''} is open: scope="[role=${openDialog.kind === 'alertdialog' ? 'alertdialog' : 'dialog'}]" or "dialog[open]" targets it (the first match in the page). `
+    : ''
   const scopeHint = scopeUsed
     ? 'Even scoped, this region is large — pass a tighter scope selector.'
-    : 'Pass scope="<css selector>" (e.g. "form", "#main", ".modal", a dialog selector) to target just the region you need.'
+    : `${dialogHint}Pass scope="<css selector>" (e.g. "form", "#main", ".modal", a dialog selector) to target just the region you need.`
   return (
     `${text.slice(0, SNAPSHOT_SOFT_CAP_CHARS)}\n` +
     `…[snapshot truncated — ${text.length} chars total, showing ${SNAPSHOT_SOFT_CAP_CHARS}. ${scopeHint}]`

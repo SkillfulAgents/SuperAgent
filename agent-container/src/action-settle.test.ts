@@ -223,6 +223,26 @@ describe('observeAction', () => {
     expect(out2.effect?.opened).toEqual([{ kind: 'dialog', name: 'Cart' }])
   })
 
+  it('rechecks a click whose only change is the control\'s own state: the results it filters land later (bench, toolshop)', async () => {
+    const h = harness([base, { ...base, stateHash: 8 }, { ...base, stateHash: 8, interactive: 56, contentChars: 900, contentHash: 2 }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(h.evals).toEqual([0, 300, 1200])
+    expect(out.effect?.interactiveDelta).toBe(16)
+  })
+
+  it('rechecks a fill that announced something and changed no more text than the announcement', async () => {
+    // Live: the content grew by 21 chars for a 20-char announcement.
+    const loading = { ...base, liveRegions: ['Loading suggestions…'], contentChars: 521, contentHash: 2 }
+    const h = harness([base, loading, { ...loading, interactive: 44, liveRegions: ['3 suggestions'] }])
+    const out = await h.run(ACTION_POLICIES.fill)
+    expect(h.evals).toEqual([0, 200, 1200])
+    expect(out.effect?.interactiveDelta).toBe(4)
+    // No announcement: a fill does not wait for more.
+    const quiet = harness([base, { ...base }])
+    await quiet.run(ACTION_POLICIES.fill)
+    expect(quiet.evals).toEqual([0, 200])
+  })
+
   it('never rechecks a hover', async () => {
     const h = harness([base, { ...base }])
     const out = await h.run(ACTION_POLICIES.hover)

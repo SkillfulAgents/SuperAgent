@@ -63,7 +63,18 @@ export function readerScript(): string {
     // "No results returned." above 30 results), form controls (checked state,
     // typed values) and <time> (its machine date).
     'var SPECIAL="select,input,textarea,time[datetime],[aria-live],[role=status],[role=alert],svg[aria-label],[role=img][aria-label],img[alt],"+SRONLY;' +
-    'var plain=function(el){return !el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
+    'var plain=function(el){return !cardAnc.has(el)&&!el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
+    // Cards: three or more sibling boxes of one tag and class (a results grid).
+    // Their text runs together once walked, so a line `---` goes between two
+    // that each hold more than one line — which price belongs to which product.
+    // Found once up front: a container of cards is walked even when it has no
+    // other structure (its innerText would run the cards together), and so is
+    // every box that holds one.
+    'var sig=function(c){var t=String(c.tagName).toUpperCase();var cl=c.getAttribute("class")||"";return /^(DIV|ARTICLE|SECTION|A)$/.test(t)&&(cl||t==="ARTICLE")?t+"."+cl:""};' +
+    'var multi=function(c){return String(c.innerText||"").trim().indexOf("\\n")>=0};' +
+    'var cardSigs=new Map();var cardAnc=new Set();' +
+    'try{var groups=new Map();[].slice.call(document.body.querySelectorAll("div[class],article,section[class],a[class]")).forEach(function(c){var p=c.parentElement;var g=sig(c);if(!p||!g)return;var m=groups.get(p);if(!m){m={};groups.set(p,m)}(m[g]=m[g]||[]).push(c)});' +
+    'groups.forEach(function(m,p){var ok={};var any=false;for(var g in m){if(m[g].length>=3&&multi(m[g][0])){ok[g]=1;any=true}}if(!any)return;cardSigs.set(p,ok);for(var a=p;a&&!cardAnc.has(a);a=a.parentElement)cardAnc.add(a)})}catch(e){}' +
     'var srOnly=function(el){try{if(el.matches(SRONLY))return true;var r=el.getBoundingClientRect();if(r.width<=1&&r.height<=1){var po=getComputedStyle(el).position;return po==="absolute"||po==="fixed"}}catch(e){}return false};' +
     'var walk=function(node,depth){if(full)return;' +
     'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);else if(t)push(" ");return}' +
@@ -95,7 +106,8 @@ export function readerScript(): string {
     'push(pre);for(var c=el.firstChild;c;c=c.nextSibling)walk(c,depth);return}' +
     'var block=BLOCK.test(tag);' +
     'if(plain(el)){var bt=block?blockText(el):ws(el.innerText);if(bt)push(block?"\\n\\n"+bt+"\\n\\n":" "+bt+" ");return}' +
-    'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;for(var k=el.firstChild;k;k=k.nextSibling)walk(k,d2);if(block)push("\\n\\n")};' +
+    'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;var cc=cardSigs.get(el);var prev="";' +
+    'for(var k=el.firstChild;k;k=k.nextSibling){if(cc&&k.nodeType===1){var g2=sig(k);if(g2&&cc[g2]&&vis(k)){if(prev===g2)push("\\n\\n---\\n\\n");prev=g2}}walk(k,d2)}if(block)push("\\n\\n")};' +
     'try{if(document.body)walk(document.body,-1)}catch(e){}' +
     'var md=out.join("").split("\\n").map(function(l){return /^\\s*- /.test(l)?l.replace(/\\s+$/,""):l.replace(/[ \\t]+/g," ").trim()}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
     // The frames the walk skipped, and how much of the viewport each covers
@@ -128,14 +140,31 @@ export function parseReadResult(stdout: string): ReadResult | null {
   }
 }
 
+const GLYPHS_ONLY = /^\s*[•·●○◦▪▫■□]+(\s+[•·●○◦▪▫■□]+)*\s*$/
+
 /**
  * Join a list marker left alone on its line (an item whose content starts
- * with a block — GitHub's nav menus) with the line it introduces.
+ * with a block — GitHub's nav menus) with the line it introduces. Code
+ * blocks are kept as they are.
  */
 export function tidyRead(text: string): string {
   const lines = text.split('\n')
   const out: string[] = []
+  let inFence = false
   for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === '```') {
+      // A closing fence followed (past blank lines) by an opening one: one
+      // code block, not many — a code viewer renders a <pre> per line.
+      if (inFence) {
+        let j = i + 1
+        while (j < lines.length && lines[j].trim() === '') j++
+        if (j < lines.length && lines[j] === '```') { i = j; continue }
+      }
+      inFence = !inFence
+      out.push(lines[i])
+      continue
+    }
+    if (inFence) { out.push(lines[i]); continue }
     const marker = /^(\s*)-\s*$/.exec(lines[i])
     if (marker) {
       let j = i + 1
@@ -147,13 +176,13 @@ export function tidyRead(text: string): string {
       }
       continue
     }
+    // Lines of nothing but bullet glyphs (carousel dots: 799 of 1,689 lines on
+    // a Craigslist results page) go.
+    if (GLYPHS_ONLY.test(lines[i])) continue
     out.push(lines[i])
   }
-  // Lines of nothing but bullet glyphs (carousel dots: 799 of 1,689 lines on a
-  // Craigslist results page) go; leading blank lines go; a first line's
-  // indentation is part of its list.
-  return out.filter(l => !/^\s*[•·●○◦▪▫■□]+(\s+[•·●○◦▪▫■□]+)*\s*$/.test(l)).join('\n')
-    .replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '').trimEnd()
+  // Leading blank lines go; a first line's indentation is part of its list.
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '').trimEnd()
 }
 
 /**
@@ -223,14 +252,18 @@ export function sectionOf(text: string, needle: string): string {
   const hs = headings(lines)
   const exact = hs.some(h => h.title.toLowerCase() === want)
   const matches = (title: string): boolean => exact ? title.toLowerCase() === want : title.toLowerCase().includes(want)
-  const parts: string[] = []
+  const parts: Array<{ text: string; parent: string }> = []
   let coveredTo = -1
   hs.forEach((h, i) => {
     if (h.line < coveredTo || !matches(h.title)) return
     const next = hs.slice(i + 1).find(o => o.level <= h.level)
     const end = next ? next.line : lines.length
     coveredTo = end
-    parts.push(lines.slice(h.line, end).join('\n').trim())
+    const parent = hs.slice(0, i).reverse().find(o => o.level < h.level)
+    parts.push({ text: lines.slice(h.line, end).join('\n').trim(), parent: parent?.title ?? '' })
   })
-  return parts.join('\n\n')
+  // Several matches ("Specifications" under each product): name the heading
+  // each one sits under, so they cannot be mixed up.
+  if (parts.length > 1) return parts.map(p => (p.parent ? `(under "${p.parent}")\n${p.text}` : p.text)).join('\n\n')
+  return parts.map(p => p.text).join('\n\n')
 }

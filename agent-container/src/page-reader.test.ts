@@ -46,6 +46,11 @@ describe('sectionOf', () => {
     expect(sectionOf(doc, 'after')).toBe('### Aftermath of World War I\n\nearlier\n\n## Aftermath\n\nlater')
   })
 
+  it('names the heading each of several matches sits under', () => {
+    const doc = '## Drill A\n\n### Specifications\n\n18V\n\n## Drill B\n\n### Specifications\n\n20V'
+    expect(sectionOf(doc, 'specifications')).toBe('(under "Drill A")\n### Specifications\n\n18V\n\n(under "Drill B")\n### Specifications\n\n20V')
+  })
+
   it('does not repeat a nested match inside a section already returned', () => {
     const doc = '## Shipping\n\ntext\n\n### Shipping rates\n\nrates\n\n## Returns'
     expect(sectionOf(doc, 'shipping')).toBe('## Shipping\n\ntext\n\n### Shipping rates\n\nrates')
@@ -68,6 +73,10 @@ describe('tidyRead', () => {
     expect(tidyRead('  -\n  Solutions')).toBe('  - Solutions')
     // Carousel dots and other glyph-only lines are dropped (Craigslist: 799 of 1,689 lines).
     expect(tidyRead('Bike\n•\n• •\n$120\n·')).toBe('Bike\n$120')
+  })
+
+  it('makes adjacent code blocks one block, and leaves code lines alone', () => {
+    expect(tidyRead('Code:\n\n```\nconst a = 1\n```\n\n```\n  -\n```\n\n```\n•\n```\n\nafter')).toBe('Code:\n\n```\nconst a = 1\n  -\n•\n```\n\nafter')
   })
 })
 

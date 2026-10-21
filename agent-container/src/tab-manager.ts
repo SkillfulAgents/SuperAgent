@@ -132,11 +132,11 @@ class TabManager {
     } catch { return false; }
   }
 
-  /** Find a tab whose URL matches the given URL */
+  /** Find a tab whose URL matches the given URL — one at exactly that URL (fragment included) first. */
   async findMatchingTab(url: string): Promise<TabInfo | null> {
     try {
       const tabs = await this.queryTabs();
-      return tabs.find(t => this.urlsMatch(t.url, url)) ?? null;
+      return tabs.find(t => t.url === url) ?? tabs.find(t => this.urlsMatch(t.url, url)) ?? null;
     } catch { return null; }
   }
 

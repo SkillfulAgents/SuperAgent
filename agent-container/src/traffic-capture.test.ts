@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   BODY_TEXT_CAP,
   REDACTED,
+  bodyFileName,
   captureFileName,
   formatCaptureSummary,
   harSchema,
@@ -11,6 +12,8 @@ import {
   redactEntry,
   redactHar,
   redactUrl,
+  readableBody,
+  shouldRedact,
   summarizeEndpoints,
   type HarEntry,
 } from './traffic-capture'
@@ -35,6 +38,48 @@ describe('isSensitiveName', () => {
       expect(isSensitiveName(n), n).toBe(true)
     for (const n of ['author', 'authority', ':authority', 'footprint', 'q', 'page', 'content-type', 'user-agent', 'keyword', 'zipcode'])
       expect(isSensitiveName(n), n).toBe(false)
+  })
+})
+
+describe('shouldRedact', () => {
+  it('keeps CORS headers and short data values under ambiguous names; redacts token-shaped ones', () => {
+    expect(shouldRedact('access-control-allow-credentials', 'true')).toBe(false)
+    expect(shouldRedact('code', 'A5')).toBe(false) // SFPL branch code
+    expect(shouldRedact('code', '4/0AX4XfWh2kLmNoPqRsTuVwXyZ123456')).toBe(true) // an OAuth code
+    expect(shouldRedact('sid', 'abcdef0123456789abcdef')).toBe(true)
+    expect(shouldRedact('Authorization', 'x')).toBe(true)
+    expect(shouldRedact('session', 'anything')).toBe(true)
+    expect(shouldRedact('q', 'shoes')).toBe(false)
+  })
+})
+
+describe('redactBody keeps untouched bodies as sent', () => {
+  it('returns the original text when nothing was redacted (no re-serialization: big ids keep their digits)', () => {
+    const body = '{"id": 12345678901234567890, "name": "x"}'
+    expect(redactBody(body, 'application/json')).toBe(body)
+    expect(redactBody('a=1&b=2', 'application/x-www-form-urlencoded')).toBe('a=1&b=2')
+  })
+})
+
+describe('body files', () => {
+  it('names a body file by position, host and path, and pretty-prints JSON', () => {
+    expect(bodyFileName(3, 'https://gateway.bibliocommons.com/v2/libraries/sfpl/bibs/S93/availability?locale=en', 'application/json'))
+      .toBe('03-gateway.bibliocommons.com-v2-libraries-sfpl-bibs-S93-availability.json')
+    expect(bodyFileName(1, 'not a url', 'text/csv')).toBe('01-not-a-url.txt')
+    expect(readableBody('{"a":[1,2]}')).toBe('{\n  "a": [\n    1,\n    2\n  ]\n}')
+    expect(readableBody('plain')).toBe('plain')
+  })
+
+  it('lists body paths and cookie names in the summary, and says what the recording lacks', () => {
+    const text = formatCaptureSummary({
+      path: '/w/c.har', requestCount: 2, durationMs: 1000, more: 0,
+      endpoints: [{ method: 'GET', url: 'https://a.com/api', status: 200, mimeType: 'application/json', bytes: 10, count: 1, firstParty: true }],
+      bodies: new Map([['GET https://a.com/api', '/w/c/01-a.com-api.json']]),
+      cookieNames: ['_gh_sess', 'logged_in'],
+    })
+    expect(text).toContain('· body: /w/c/01-a.com-api.json')
+    expect(text).toContain('Not in the recording: Cookie and Set-Cookie headers')
+    expect(text).toContain('Cookies the browser holds for this site (names only): _gh_sess, logged_in')
   })
 })
 

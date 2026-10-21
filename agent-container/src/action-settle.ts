@@ -69,8 +69,9 @@ export const ACTION_POLICIES: Record<ActionVerb, ActionPolicy> = {
   hover: { verb: 'hover', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: () => false },
   // The field's own value is read back separately; the settle is for what the
   // input set off — a suggestion list, a validation message, revealed fields.
-  fill: { verb: 'fill', settleMs: FILL_SETTLE_MS, recheckMs: RECHECK_MS, countFocus: false, recheck: () => false },
-  type: { verb: 'type', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: () => false },
+  // A field that announced "Loading…" is fetching suggestions: worth the late read.
+  fill: { verb: 'fill', settleMs: FILL_SETTLE_MS, recheckMs: RECHECK_MS, countFocus: false, recheck: e => e.announced.length > 0 },
+  type: { verb: 'type', settleMs: 300, recheckMs: RECHECK_MS, countFocus: false, recheck: e => e.announced.length > 0 },
 }
 
 /**
@@ -140,6 +141,21 @@ export function sameDocument(a: PageObservation | null, b: PageObservation | nul
   return Boolean(a && b && a.docStart > 0 && a.docStart === b.docStart)
 }
 
+/**
+ * The page's content moved: a dialog, the control census, labels, text or a
+ * challenge. A control's own state, focus or an announcement alone is not
+ * this — a filter checkbox ticks at once and its results arrive later
+ * (bench, toolshop: each grid landed in the NEXT action's diff).
+ */
+export function contentChanged(e: ActionEffect): boolean {
+  // A text change no larger than what was announced (plus a separator each)
+  // is the announcement itself ("Loading suggestions…" in a status region),
+  // not the result.
+  const announcedChars = e.announced.reduce((n, a) => n + a.length + 2, 0)
+  const textMoved = e.textChanged && !(announcedChars > 0 && Math.abs(e.textDelta) <= announcedChars)
+  return e.opened.length > 0 || e.closed.length > 0 || e.interactiveDelta !== 0 || e.labelsChanged || textMoved || e.blockerAppeared !== ''
+}
+
 /** True when the diff found anything the result will report. */
 export function effectHasChange(e: ActionEffect, opts: { countFocus?: boolean } = {}): boolean {
   const countFocus = opts.countFocus ?? true
@@ -205,7 +221,11 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   // An announcement alone ("Searching…") is a promise, not the result: it
   // does not stand in for the late read (bench, Placer: the results arrived
   // after "Searching…" and the result never showed them).
-  if (effect && !effectHasChange({ ...effect, announced: [] }, { countFocus: policy.countFocus }) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
+  // Recheck when the content has not moved yet. For a press (countFocus) a
+  // focus move or typed value is itself the result.
+  const settledYet = (e: ActionEffect): boolean =>
+    contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged))
+  if (effect && !settledYet(effect) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
     // Silence at the settle: a late effect is the other explanation.
     await sleep(Math.max(0, policy.recheckMs - elapsed()))
     const again = await read()

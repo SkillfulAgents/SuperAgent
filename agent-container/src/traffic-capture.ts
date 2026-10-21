@@ -30,6 +30,26 @@ export function isSensitiveName(name: string): boolean {
   return SENSITIVE_NAME.test(n) || SENSITIVE_WORD.test(n) || SENSITIVE_EXACT.test(n)
 }
 
+/** A value shaped like a token: long, one run of token characters, or a JWT. */
+const TOKEN_SHAPED = /^[A-Za-z0-9._~+/=-]{16,}$/
+
+/**
+ * Redact this name's value? CORS headers never (they describe the endpoint,
+ * not a secret: access-control-allow-credentials says it takes cookies).
+ * The short ambiguous names (code, key, pin, sid…) only when the value looks
+ * like a token — a branch code "A5" is data (bench, SFPL).
+ */
+export function shouldRedact(name: string, value: unknown): boolean {
+  const n = name.trim()
+  if (/^access-control-/i.test(n)) return false
+  if (SENSITIVE_NAME.test(n) || SENSITIVE_WORD.test(n)) return true
+  if (SENSITIVE_EXACT.test(n)) {
+    const v = typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : ''
+    return TOKEN_SHAPED.test(v) || /^eyJ/.test(v)
+  }
+  return false
+}
+
 /** Per-body cap in the redacted file; the CLI's own cap is 2 MB. */
 export const BODY_TEXT_CAP = 256 * 1024
 /** Whole-file cap for the redacted HAR. */
@@ -70,7 +90,7 @@ export type HarEntry = Har['log']['entries'][number]
 // --- Redaction -----------------------------------------------------------------
 
 function redactNameValues<T extends { name: string; value: string }>(items: T[], all = false): T[] {
-  return items.map(i => (all || isSensitiveName(i.name)) && i.value ? { ...i, value: REDACTED } : i)
+  return items.map(i => (all || shouldRedact(i.name, i.value)) && i.value ? { ...i, value: REDACTED } : i)
 }
 
 /** In URLs the placeholder is unbracketed so it survives percent-encoding readably. */
@@ -82,36 +102,49 @@ export function redactUrl(raw: string): string {
   try { u = new URL(raw) } catch { return raw.replace(JWT, URL_REDACTED) }
   let touched = false
   if (u.username || u.password) { u.username = ''; u.password = ''; touched = true }
-  for (const [k] of [...u.searchParams]) {
-    if (isSensitiveName(k)) { u.searchParams.set(k, URL_REDACTED); touched = true }
+  for (const [k, v] of [...u.searchParams]) {
+    if (shouldRedact(k, v)) { u.searchParams.set(k, URL_REDACTED); touched = true }
   }
   return (touched ? u.toString() : raw).replace(JWT, URL_REDACTED)
 }
 
-/** JSON values under sensitive keys replaced, recursively; strings scanned for JWTs. */
-export function redactJsonValue(v: unknown): unknown {
-  if (typeof v === 'string') return v.replace(JWT, REDACTED)
-  if (Array.isArray(v)) return v.map(redactJsonValue)
+/**
+ * JSON values under sensitive keys replaced, recursively; strings scanned for
+ * JWTs. `changed.n` counts replacements, so an untouched body can be kept as
+ * the page sent it (re-serializing loses big-integer ids and inflates sizes).
+ */
+export function redactJsonValue(v: unknown, changed: { n: number } = { n: 0 }): unknown {
+  if (typeof v === 'string') {
+    const r = v.replace(JWT, REDACTED)
+    if (r !== v) changed.n++
+    return r
+  }
+  if (Array.isArray(v)) return v.map(x => redactJsonValue(x, changed))
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v)) {
-      out[k] = isSensitiveName(k) && val !== null && typeof val !== 'object' ? REDACTED : redactJsonValue(val)
+      if (val !== null && typeof val !== 'object' && shouldRedact(k, val)) { out[k] = REDACTED; changed.n++ } else out[k] = redactJsonValue(val, changed)
     }
     return out
   }
   return v
 }
 
-/** A request or response body: JSON and form bodies field by field, other text for JWTs only. */
+/** A request or response body: JSON and form bodies field by field, other text for JWTs only. Unchanged text is returned as sent. */
 export function redactBody(text: string, mimeType = ''): string {
   const trimmed = text.trim()
   if (/json/i.test(mimeType) || /^[[{]/.test(trimmed)) {
-    try { return JSON.stringify(redactJsonValue(JSON.parse(trimmed))) } catch { /* not JSON after all */ }
+    try {
+      const changed = { n: 0 }
+      const redacted = redactJsonValue(JSON.parse(trimmed), changed)
+      return changed.n > 0 ? JSON.stringify(redacted) : text
+    } catch { /* not JSON after all */ }
   }
   if (/x-www-form-urlencoded/i.test(mimeType)) {
     const p = new URLSearchParams(trimmed)
-    for (const [k] of [...p]) if (isSensitiveName(k)) p.set(k, REDACTED)
-    return p.toString()
+    let n = 0
+    for (const [k, v] of [...p]) if (shouldRedact(k, v)) { p.set(k, REDACTED); n++ }
+    return n > 0 ? p.toString() : text
   }
   return text.replace(JWT, REDACTED)
 }
@@ -130,6 +163,8 @@ export function redactEntry(e: HarEntry): HarEntry {
     delete content.encoding
   } else if (typeof content.text === 'string') {
     content.text = capText(redactBody(content.text, content.mimeType))
+    // The CLI reports the encoded size, 0 for some responses; the body is here.
+    if (!(typeof content.size === 'number' && content.size > 0)) content.size = content.text.length
   }
   return {
     ...e,
@@ -255,6 +290,10 @@ export function formatCaptureSummary(opts: {
   endpoints: EndpointSummary[]
   more: number
   durationMs: number
+  /** Endpoint (method + url) → file its first response body was written to. */
+  bodies?: Map<string, string>
+  /** Names of the cookies the browser holds for the page's site, when read. */
+  cookieNames?: string[]
 }): string {
   const lines = [`Saved ${opts.requestCount} request${opts.requestCount === 1 ? '' : 's'} recorded over ${Math.round(opts.durationMs / 1000)}s to ${opts.path}.`]
   if (opts.endpoints.length === 0) {
@@ -263,11 +302,21 @@ export function formatCaptureSummary(opts: {
     lines.push('Responses that look like data (JSON/XML/CSV, first-party first; pages, assets and telemetry left out):')
     for (const e of opts.endpoints) {
       const url = e.url.length > 200 ? `${e.url.slice(0, 199)}…` : e.url
-      lines.push(`- ${e.method} ${e.status} ${url} · ${e.mimeType || 'unknown type'} · ${kb(e.bytes)}${e.count > 1 ? ` · ×${e.count}` : ''}${e.firstParty ? '' : ' · third-party'}`)
+      const body = opts.bodies?.get(`${e.method} ${e.url}`)
+      lines.push(`- ${e.method} ${e.status} ${url} · ${e.mimeType || 'unknown type'} · ${kb(e.bytes)}${e.count > 1 ? ` · ×${e.count}` : ''}${e.firstParty ? '' : ' · third-party'}${body ? ` · body: ${body}` : ''}`)
     }
     if (opts.more > 0) lines.push(`… ${opts.more} more in the file`)
   }
-  lines.push('Values of cookies, auth/token/session headers, token-like URL parameters and JSON fields, and JWTs are replaced with [REDACTED] (REDACTED inside URLs); names are kept.')
+  // What the file does not hold matters as much: agent-browser builds the HAR
+  // from Chrome's request/response events, which carry no Cookie headers and
+  // none of the headers the network stack adds (bench, SFPL: an agent read the
+  // missing Cookie header as "no cookies sent").
+  lines.push('Not in the recording: Cookie and Set-Cookie headers, and headers the browser adds on the wire (Origin, sec-*, Accept-Encoding). Values that look like secrets (auth/token/session headers and parameters, JWTs) are replaced with [REDACTED] (REDACTED inside URLs); names are kept.')
+  if (opts.cookieNames) {
+    lines.push(opts.cookieNames.length > 0
+      ? `Cookies the browser holds for this site (names only): ${opts.cookieNames.slice(0, 40).join(', ')}${opts.cookieNames.length > 40 ? ', …' : ''}`
+      : 'The browser holds no cookies for this site.')
+  }
   return lines.join('\n')
 }
 
@@ -287,6 +336,19 @@ export function getCapture(): CaptureState | null {
 
 export function setCapture(state: CaptureState | null): void {
   capture = state
+}
+
+/** File name for one endpoint's body: `<n>-<host><path>.json|txt`, filesystem-safe. */
+export function bodyFileName(n: number, url: string, mimeType: string): string {
+  let slug = url
+  try { const u = new URL(url); slug = `${u.host}${u.pathname}` } catch { /* keep the raw url */ }
+  slug = slug.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'body'
+  return `${String(n).padStart(2, '0')}-${slug}.${/json/i.test(mimeType) ? 'json' : 'txt'}`
+}
+
+/** A body for reading: JSON pretty-printed (one 50 KB line defeats Read), anything else as is. */
+export function readableBody(text: string): string {
+  try { return JSON.stringify(JSON.parse(text), null, 2) } catch { return text }
 }
 
 /** File name for a capture: the caller's label (sanitised) or a timestamp. */

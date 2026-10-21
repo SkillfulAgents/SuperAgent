@@ -172,7 +172,9 @@ const BLOCKER_MAX_CONTROLS = 3
  * "Human verification challenge" frame over the whole page.)
  */
 const BLOCKER_OVERLAY_FRAMES: Array<[string, string]> = [
-  ['PerimeterX', 'iframe[title="Human verification challenge"]'],
+  // Target serves the modal as iframe#px-captcha-modal (fixed, full viewport,
+  // max z-index) with an untitled challenge frame inside (verified live).
+  ['PerimeterX', 'iframe#px-captcha-modal,iframe[title="Human verification challenge"]'],
 ]
 const BLOCKER_OVERLAY_COVER = 0.5
 const BLOCKER_STATUSES = [403, 429, 503]

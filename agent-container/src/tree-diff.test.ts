@@ -133,12 +133,12 @@ describe('diffTrees', () => {
 describe('formatTreeDiff', () => {
   const opts = { baselineAgeMs: 4200, baselineSource: 'snapshot' as const }
 
-  it('lists added, then changed, then removed, each with its ref, under a header naming the baseline', () => {
+  it('lists changed, then added, then removed, each with its ref, under a header naming the baseline', () => {
     const after = INTERACTIVE.replace('[expanded=false, ref=e7]', '[expanded=true, ref=e7]\n- link "Menu A" [ref=e18]').replace('- button "Add to cart" [ref=e3]', '')
     expect(formatTreeDiff(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(after)), opts)).toBe(
       '\nTree changes since your snapshot 4s ago (1 added, 1 changed, 1 removed):\n' +
-      '+ link "Menu A" [ref=e18]\n' +
       '~ button "Open menu" [expanded=true, ref=e7] (expanded: false → true)\n' +
+      '+ link "Menu A" [ref=e18]\n' +
       '− button "Add to cart" [ref=e3]',
     )
     expect(formatTreeDiff(diffTrees(parseTreeRefs(INTERACTIVE), parseTreeRefs(INTERACTIVE)), opts)).toBe('')
@@ -160,6 +160,33 @@ describe('formatTreeDiff', () => {
     const fewGone = formatTreeDiff(diffTrees(parseTreeRefs(gone), parseTreeRefs('- link "x" [ref=e1]')), opts)
     expect(fewGone.split('\n').filter(l => l.startsWith('− button'))).toHaveLength(6)
     expect(fewGone).toContain('− 4 more no longer in the tree')
+  })
+
+  it('keeps the acted-on control\'s change in view when a results list arrives with it (bench, toolshop filter)', () => {
+    const before = '- checkbox "Hand tools" [checked=false, ref=e5]\n- link "Old" [ref=e6]'
+    const results = Array.from({ length: 40 }, (_, i) => `- link "Product ${i}" [ref=e${100 + i}]`).join('\n')
+    const text = formatTreeDiff(diffTrees(parseTreeRefs(before), parseTreeRefs(`- checkbox "Hand tools" [checked=true, ref=e5]\n${results}`)), opts)
+    expect(text.split('\n')[2]).toBe('~ checkbox "Hand tools" [checked=true, ref=e5] (checked: false → true)')
+  })
+
+  it('collapses many removals when a menu appears with them (a modal menu hides the page), not a few', () => {
+    const page = Array.from({ length: 12 }, (_, i) => `- button "B${i}" [ref=e${i + 1}]`).join('\n')
+    const text = formatTreeDiff(diffTrees(parseTreeRefs(page), parseTreeRefs('- menu "Account" [ref=e50]\n  - menuitem "Sign out" [ref=e51]')), opts)
+    expect(text).toContain('+ menuitem "Sign out" [ref=e51]')
+    expect(text).toContain('− 12 other elements left the tree as the menu appeared')
+    expect(text).not.toContain('− button')
+    // The interactive view may list only the items, not the menu.
+    const itemsOnly = formatTreeDiff(diffTrees(parseTreeRefs(page), parseTreeRefs('- menuitem "Profile" [ref=e51]')), opts)
+    expect(itemsOnly).toContain('− 12 other elements left the tree as the menu appeared')
+    const few = formatTreeDiff(diffTrees(parseTreeRefs('- button "B0" [ref=e1]\n- button "B1" [ref=e2]'), parseTreeRefs('- listbox [ref=e50]\n  - option "One" [ref=e51]')), opts)
+    expect(few).toContain('− button "B0" [ref=e1]')
+  })
+
+  it('shows where two long names differ', () => {
+    const long = 'Add to cart: Stainless steel combination wrench set, metric, 12 pieces'
+    const d = diffTrees(parseTreeRefs(`- button "${long}" [ref=e1]`), parseTreeRefs(`- button "${long.replace('12 pieces', '14 pieces')}" [ref=e1]`))
+    expect(d.changed[0].was).toContain('12 pieces')
+    expect(d.changed[0].was.startsWith('name "…')).toBe(true)
   })
 
   it('reports the page behind an opened dialog as one count, and its return as one line', () => {
@@ -215,6 +242,21 @@ describe('re-rendered elements', () => {
       '+ link "New arrival" [ref=e600]\n' +
       '− button "Close" [ref=e311]',
     )
+  })
+
+  it('does not pair generic look-alikes when most of what left did not come back', () => {
+    const rows = (base: number, n: number) => Array.from({ length: n }, (_, i) => `- listitem [ref=e${base + i}]`).join('\n')
+    const d = diffTrees(parseTreeRefs(rows(100, 10)), parseTreeRefs(rows(200, 3)))
+    expect(d.rerendered).toHaveLength(0)
+    expect(d.added).toHaveLength(3)
+    expect(d.removed).toHaveLength(10)
+    // A named line that is unique on both sides still pairs on its own.
+    const one = diffTrees(parseTreeRefs(`${rows(100, 10)}\n- button "Checkout" [ref=e9]`), parseTreeRefs(`${rows(200, 3)}\n- button "Checkout" [ref=e99]`))
+    expect(one.rerendered.map(r => [r.from.ref, r.to.ref])).toEqual([['e9', 'e99']])
+    // Two identical named lines on one side are not one element.
+    const twice = diffTrees(parseTreeRefs('- button "Add" [ref=e1]\n- button "Add" [ref=e2]\n- link "a" [ref=e3]\n- link "b" [ref=e4]\n- link "c" [ref=e5]'),
+      parseTreeRefs('- button "Add" [ref=e7]'))
+    expect(twice.rerendered).toHaveLength(0)
   })
 
   it('caps the pairs and counts the rest', () => {

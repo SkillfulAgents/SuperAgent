@@ -523,7 +523,7 @@ describe('SUP-1265 tools', () => {
     const text = (await toolNamed('browser_click').handler({ ref: '@e7' })).content[0].text
     expect(text).toBe(
       'Clicked @e7. (human-like mouse path: this site served a challenge page)\nURL unchanged (https://a.com/).\n' +
-      'Effect: focus: button "Menu"\nTree changes since your snapshot 3s ago (1 added, 1 changed):\n+ link "Menu A" [ref=e18]\n~ button "Menu" [expanded=true, ref=e7] (expanded: false → true)',
+      'Effect: focus: button "Menu"\nTree changes since your snapshot 3s ago (1 added, 1 changed):\n~ button "Menu" [expanded=true, ref=e7] (expanded: false → true)\n+ link "Menu A" [ref=e18]',
     )
   })
 

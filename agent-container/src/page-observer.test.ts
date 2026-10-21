@@ -230,7 +230,7 @@ describe('observerScript', () => {
         { getBoundingClientRect: () => ({ left: 0, top: 0, right, bottom }) },
       )
       const controls = Array.from({ length: 40 }, () => el({ tag: 'a' }))
-      const sel = (f: unknown) => ({ [INTERACTIVE]: controls, 'iframe[title="Human verification challenge"]': [f] })
+      const sel = (f: unknown) => ({ [INTERACTIVE]: controls, 'iframe#px-captcha-modal,iframe[title="Human verification challenge"]': [f] })
       expect(makePage({ body: 'Search results', sel: sel(frame(1280, 800)) }).run().blocker).toBe('PerimeterX')
       // A small frame (a widget, not the overlay) is not the wall.
       expect(makePage({ body: 'Search results', sel: sel(frame(300, 200)) }).run().blocker).toBe('')

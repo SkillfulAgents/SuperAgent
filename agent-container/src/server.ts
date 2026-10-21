@@ -806,11 +806,10 @@ import { observeAction, pressPolicy, effectWantsTree, sameDocument, ACTION_POLIC
 import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
 import { readerScript, parseReadResult, outlineOf, sectionOf, capSection, tidyRead, formatUnreadFrames } from './page-reader';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
-import { noteChallenge, useHumanInput } from './challenge-input';
-import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName } from './traffic-capture';
+import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
+import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName, bodyFileName, readableBody } from './traffic-capture';
 import {
   observeUrl, resetUrlTracking,
-  FILL_SETTLE_MS,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -991,7 +990,14 @@ async function runWithEffect(
   noteChallenge(settled.before);
   noteChallenge(settled.after);
   if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, treeDiff: null, docStart: 0 };
-  const observed = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
+  const recorded = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
+  // With both reads in hand, the action navigated when the URL differs
+  // between them — not when it differs from the last URL some earlier call
+  // recorded (a page that moved on its own before this action did not
+  // "navigate" on it).
+  const observed = recorded && settled.before?.url && settled.after?.url
+    ? { ...recorded, navigated: settled.before.url !== settled.after.url }
+    : recorded;
   // A URL change inside one document (an SPA route, a hash) is not a page
   // load: the effect and the refs carry over, and the result says so.
   const sameDoc = Boolean(observed?.navigated) && sameDocument(settled.before, settled.after);
@@ -1030,6 +1036,23 @@ async function explainUnknownRef(stdout: string, actionRef?: string): Promise<st
   return stdout + formatUnknownRef(m[1], was, parseTreeRefs(fresh.stdout));
 }
 
+/**
+ * Run a ref action; when the CLI answers `Unknown ref` for it, read the tree
+ * once and, if the ref is in it, run the action again. The CLI drops its whole
+ * ref table when a snapshot fails part-way or a tab command runs, and a read
+ * brings every ref back unchanged — so the agent's ref was right all along.
+ * When the ref is not back, the first answer stands (explainUnknownRef).
+ */
+async function withRefRestore(ref: string | undefined, run: () => Promise<{ exitCode: number; stdout: string }>): Promise<{ exitCode: number; stdout: string }> {
+  const r = await run();
+  const id = r.exitCode !== 0 && ref ? /Unknown ref: @?(e\d+)/.exec(r.stdout)?.[1] : undefined;
+  if (!id || id !== ref?.replace(/^@/, '')) return r;
+  const fresh = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+  if (fresh.exitCode !== 0 || !parseTreeRefs(fresh.stdout).lines.has(id)) return r;
+  console.log(`[Browser] ${id} was unknown to the CLI but is in a fresh read — running the action again`);
+  return run();
+}
+
 /** The daemon's active tab, as a key for per-tab state: its CDP target id when the daemon reports one. */
 async function activeTabKey(): Promise<string> {
   try {
@@ -1043,12 +1066,14 @@ async function activeTabKey(): Promise<string> {
 /**
  * Forget everything kept about the browser that just went away: the tree the
  * next action would be diffed against, the screenshots an "unchanged" answer
- * would name, and a traffic capture the daemon took with it.
+ * would name, a traffic capture the daemon took with it, and the sites that
+ * served a challenge to it.
  */
 function resetPerBrowserState(): void {
   resetTreeBaseline();
   forgetScreenshots();
   setCapture(null);
+  resetChallengedSites();
 }
 
 /**
@@ -1314,6 +1339,11 @@ app.get('/browser/status', (c) => {
 });
 
 
+/** A URL's #fragment, '' when it has none or does not parse. */
+function urlHash(url: string): string {
+  try { return new URL(url).hash; } catch { return ''; }
+}
+
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
   try {
@@ -1369,18 +1399,26 @@ app.post('/browser/open', async (c) => {
     if (browserState.active) {
       const matchingTab = await tabManager.findMatchingTab(body.url);
       if (matchingTab) {
-        await execBrowser(['tab', matchingTab.tabId], browserState.cdpUrl || undefined);
-        await tabManager.syncTabCount();
-        resetTreeBaseline();
+        if (!matchingTab.active) {
+          await execBrowser(['tab', matchingTab.tabId], browserState.cdpUrl || undefined);
+          await tabManager.syncTabCount();
+          // The tree baseline is the active tab's; the same tab keeps its own.
+          resetTreeBaseline();
+        }
         observeUrl(matchingTab.url); // seed URL baseline for post-action digests
-        notifyBrowserAction();
-        return c.json({
-          success: true,
-          switchedToExisting: true,
-          tabId: matchingTab.tabId,
-          url: matchingTab.url,
-          location,
-        });
+        // An anchor the tab is not at (#section-b on a tab at #section-a):
+        // the tab is now active, and the open below takes it there.
+        const wantHash = urlHash(body.url);
+        if (!wantHash || wantHash === urlHash(matchingTab.url)) {
+          notifyBrowserAction();
+          return c.json({
+            success: true,
+            switchedToExisting: true,
+            tabId: matchingTab.tabId,
+            url: matchingTab.url,
+            location,
+          });
+        }
       }
     }
 
@@ -1695,7 +1733,7 @@ app.post('/browser/snapshot', async (c) => {
     return c.json({
       snapshot:
         (header ? `${header}\n\n` : '') +
-        capSnapshot(tree, Boolean(body.scope)) +
+        capSnapshot(tree, Boolean(body.scope), probe.top.find(t => t.kind === 'dialog' || t.kind === 'alertdialog')) +
         formatTextFooter(probe, { fullText, scoped: Boolean(body.scope), previewChars }) +
         formatIframePlaceholders(iframes, tree),
       iframes,
@@ -1732,7 +1770,7 @@ app.post('/browser/click', async (c) => {
     const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
       (before) => {
         humanInput = useHumanInput(before);
-        return execBrowser(['click', body.ref, ...(humanInput ? ['--human'] : [])], browserState.cdpUrl || undefined);
+        return withRefRestore(body.ref, () => execBrowser(['click', body.ref, ...(humanInput ? ['--human'] : [])], browserState.cdpUrl || undefined));
       },
       ACTION_POLICIES.click,
     );
@@ -1773,7 +1811,7 @@ app.post('/browser/fill', async (c) => {
     // so. The field's own line is left out of the tree diff — the read-back
     // below reports it.
     const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
-      () => execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined),
+      () => withRefRestore(body.ref, () => execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined)),
       ACTION_POLICIES.fill,
       { excludeRefs: [body.ref] },
     );
@@ -1840,6 +1878,9 @@ app.post('/browser/scroll', async (c) => {
 });
 
 // POST /browser/wait - Wait for condition
+/** The longest sleep browser_wait takes; a longer one sleeps this long and says how long it waited. */
+const WAIT_MS_MAX = 120_000;
+
 app.post('/browser/wait', async (c) => {
   try {
     const body = await c.req.json<{ sessionId: string; for: string }>();
@@ -1863,7 +1904,10 @@ app.post('/browser/wait', async (c) => {
     }
 
     const started = Date.now();
-    const result = await execBrowser(target.args, browserState.cdpUrl || undefined);
+    // A sleep runs as long as it was asked to: the exec ceiling (30 s) cut a
+    // 45 s wait off as an error. Capped so one call cannot hold the browser.
+    const timeoutMs = target.kind === 'ms' ? Math.max(BROWSER_EXEC_TIMEOUT_MS, Math.min(target.ms, WAIT_MS_MAX) + 5_000) : undefined;
+    const result = await execBrowser(target.kind === 'ms' && target.ms > WAIT_MS_MAX ? ['wait', String(WAIT_MS_MAX)] : target.args, browserState.cdpUrl || undefined, timeoutMs ? { timeoutMs } : {});
     const elapsedMs = Date.now() - started;
 
     // Where the page is now, read through a short budget of its own: a wait
@@ -2136,14 +2180,42 @@ app.post('/browser/capture-traffic', async (c) => {
       const har = harSchema.parse(JSON.parse(await fs.promises.readFile(rawPath, 'utf-8')));
       const redacted = redactHar(har);
       await fs.promises.mkdir(WORKSPACE_CAPTURES_DIR, { recursive: true });
-      const outPath = path.join(WORKSPACE_CAPTURES_DIR, captureFileName(body.label));
+      const fileName = captureFileName(body.label);
+      const outPath = path.join(WORKSPACE_CAPTURES_DIR, fileName);
       await fs.promises.writeFile(outPath, JSON.stringify(redacted, null, 2));
       const { endpoints, more } = summarizeEndpoints(redacted, current.url);
+
+      // Each data endpoint's first response body as its own readable file:
+      // the web-browser agent has Read but no jq, and one 50 KB JSON line in
+      // the HAR is past what Read returns (bench, SFPL).
+      const bodies = new Map<string, string>();
+      const bodyDir = path.join(WORKSPACE_CAPTURES_DIR, fileName.replace(/\.har$/, ''));
+      let n = 0;
+      for (const e of endpoints) {
+        const entry = redacted.log.entries.find(x => x.request.method === e.method && x.request.url === e.url && typeof x.response.content.text === 'string');
+        if (!entry?.response.content.text) continue;
+        if (n === 0) await fs.promises.mkdir(bodyDir, { recursive: true });
+        const file = path.join(bodyDir, bodyFileName(++n, e.url, e.mimeType));
+        await fs.promises.writeFile(file, readableBody(entry.response.content.text));
+        bodies.set(`${e.method} ${e.url}`, file);
+      }
+
+      // The cookie names the browser holds for the page's site — never values.
+      let cookieNames: string[] | undefined;
+      try {
+        const site = new URL(current.url).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
+        const ck = await execBrowser(['cookies', '--json'], browserState.cdpUrl || undefined);
+        const parsed = z.object({ data: z.object({ cookies: z.array(z.object({ name: z.string(), domain: z.string() }).passthrough()) }) }).safeParse(JSON.parse(ck.stdout));
+        if (ck.exitCode === 0 && parsed.success) {
+          cookieNames = [...new Set(parsed.data.data.cookies.filter(k => k.domain.replace(/^\./, '').endsWith(site)).map(k => k.name))];
+        }
+      } catch { /* no page URL or unreadable output: leave the line out */ }
+
       return c.json({
         success: true,
         path: outPath,
         requestCount: redacted.log.entries.length,
-        summary: formatCaptureSummary({ path: outPath, requestCount: redacted.log.entries.length, endpoints, more, durationMs: Date.now() - current.startedAt }),
+        summary: formatCaptureSummary({ path: outPath, requestCount: redacted.log.entries.length, endpoints, more, durationMs: Date.now() - current.startedAt, bodies, cookieNames }),
       });
     } finally {
       // The raw file holds live credentials: never leave it behind.
@@ -2184,7 +2256,7 @@ app.post('/browser/select', async (c) => {
     const before = await readValue();
 
     const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
-      () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
+      () => withRefRestore(body.ref, () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined)),
       { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
       { excludeSubtrees: [body.ref] },
     );
@@ -2244,7 +2316,7 @@ app.post('/browser/hover', async (c) => {
     }
 
     const { result, effect, settleMs, treeDiff } = await runWithEffect(
-      () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
+      () => withRefRestore(body.ref, () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined)),
       ACTION_POLICIES.hover,
     );
 
@@ -2343,7 +2415,7 @@ app.post('/browser/type', async (c) => {
     const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
       async () => {
         if (body.ref) {
-          const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
+          const focusResult = await withRefRestore(body.ref, () => execBrowser(['focus', body.ref as string], browserState.cdpUrl || undefined));
           if (focusResult.exitCode !== 0) return focusResult;
         }
         return execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);

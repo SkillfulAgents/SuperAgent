@@ -41,9 +41,9 @@ Ignore telemetry and third parties (`/collect`, `/track`, `/beacon`, analytics, 
 
 ## 3. Extract
 
-- **Response schema**: read `.response.content.text` (text bodies are kept, capped at 256 KB each) and type the fields you need.
+- **Response schema**: each data endpoint's first response body is saved pretty-printed next to the HAR (paths in the stop result) — Read those; in the HAR it is `.response.content.text` (text bodies, capped at 256 KB each).
 - **Parameters**: compare the two recordings of each flow — query string, path segments, POST body.
-- **Auth**: the HAR is redacted. Values of cookies, `authorization`, token/session/CSRF headers, token-like URL parameters and JSON fields, and JWTs read `[REDACTED]` (`REDACTED` inside URLs); their **names are kept**, so you can see which ones a request sends. Never try to recover a redacted value and never write one into a script.
+- **Auth**: the recording has **no Cookie or Set-Cookie headers** and none of the headers the browser adds on the wire (Origin, `sec-*`, Accept-Encoding) — agent-browser does not see them. A missing Cookie header proves nothing; the stop result lists the names of the cookies the browser holds for the site. Other values that look like secrets (`authorization`, token/session/CSRF headers and parameters, JWTs) read `[REDACTED]` (`REDACTED` inside URLs); their names are kept. Never try to recover a redacted value and never write one into a script.
 - Test which headers matter by leaving them out (step 5). Many public read endpoints need none beyond a normal `user-agent` and `accept`.
 
 ## 4. Write
