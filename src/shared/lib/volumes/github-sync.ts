@@ -13,10 +13,11 @@ import { errnoCode } from '@shared/lib/agent-actor/local-file-ops'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { LocalMountableVolume } from './local-mountable-volume'
 import type { VolumeFile } from './base-mountable-volume'
+import type { VolumeAttention } from '@shared/lib/types/mount'
 import { VolumeError, VolumePreparingError } from './volume-error'
 import { serialize } from './remote-listing-cache'
 import { throwIfUploadAborted, uploadChunks } from './remote-transfer'
-import { githubBlob, githubCommit, githubHead, githubRepo, githubTarball, githubTree } from './github-client'
+import { githubBlob, githubCommit, githubHead, githubTarball, githubTree } from './github-client'
 import { githubEditsSchema, type GithubEdits, type GithubFile, type GithubVolumeConfig, type SyncState } from './github-schema'
 import { blobSha, emptySyncState, loadSyncState, loadTrees, saveSyncState, saveTrees, snapshotCollisions, fileBlobSha, volumeFolder } from './github-sync-state'
 import { GITHUB_PUSH_BYTES, mergePath, planPush, type PushChange } from './github-merge'
@@ -33,6 +34,7 @@ const BLOB_BYTES = 8_000_000
 const PUSH_DELAY = 15_000
 /** A drive written to without pause still pushes this long after its first unpushed write. */
 const PUSH_MAX_DELAY = 120_000
+const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too'])
 const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [] })
 /** A record's own entry: paths like `constructor` must not read through the prototype. */
 const own = <T>(record: Record<string, T>, key: string): T | undefined => Object.hasOwn(record, key) ? record[key] : undefined
@@ -80,27 +82,27 @@ export class GithubSync {
     return this.loading ??= this.load().catch(error => { this.loading = null; throw error })
   }
   get isReady(): boolean { return this.prepared }
-  get stopped(): string | null { return this.edits.stopped }
   get unpushed(): number { return Object.keys(this.edits.unpushed).length }
   private get pending(): boolean {
     return Object.keys(this.edits.unpushed).some(name => !own(this.edits.held, name) && !this.policyHeld.has(name))
   }
 
-  get attention(): string | null {
-    const held = new Map([...this.policyHeld, ...Object.entries(this.edits.held).map(([name, hold]) => [name, hold.reason] as const)])
-    const count = new Set([...Object.keys(this.edits.unpushed), ...held.keys()]).size
-    const parts = [
-      this.edits.stopped ? `Pushes stopped: ${this.edits.stopped}` : this.prepared && this.failure ? `Sync paused: ${this.failure}` : null,
-      count ? `${count} ${count === 1 ? 'file' : 'files'} not on GitHub yet` : null,
-      ...[...held].slice(0, 3).map(([name, reason]) => `${name} (${reason})`),
-      held.size > 3 ? `${held.size - 3} more held` : null,
-    ]
-    return parts.filter(Boolean).join(' · ') || null
-  }
-
-  async unsynced(): Promise<number | null> {
-    if (!await this.loaded.then(() => true, () => false)) return null
-    return new Set([...Object.keys(this.edits.unpushed), ...Object.keys(this.edits.held)]).size
+  get attention(): VolumeAttention | null {
+    const held = new Map([...[...this.policyHeld].filter(([name]) => own(this.edits.unpushed, name)),
+      ...Object.entries(this.edits.held).map(([name, hold]) => [name, hold.reason] as const)])
+    const conflicts = [...held.keys()].filter(name => CONFLICTS.has(held.get(name)!))
+    const notSynced = [...held.keys()].filter(name => !CONFLICTS.has(held.get(name)!))
+    const unsynced = new Set([...Object.keys(this.edits.unpushed), ...held.keys()]).size
+    const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+    const badge = this.edits.stopped ? { label: 'Sync stopped', tone: 'error' as const }
+      : this.prepared && this.failure ? { label: 'Sync paused', tone: 'warning' as const }
+      : conflicts.length ? { label: count(conflicts.length, 'conflict', 'conflicts'), tone: 'warning' as const }
+      : notSynced.length ? { label: `${notSynced.length} not synced`, tone: 'warning' as const }
+      : null
+    const reasons = [...conflicts, ...notSynced].map(name => `${name} (${held.get(name)})`)
+    const detail = [this.edits.stopped ?? (this.prepared ? this.failure : null), ...reasons].filter(Boolean).join('\n')
+    if (!badge && !unsynced) return null
+    return { ...(badge ? { badge } : {}), ...(detail ? { detail } : {}), unsynced }
   }
 
   private checkRemoved(): void {
@@ -173,7 +175,7 @@ export class GithubSync {
 
   private schedulePush(): void {
     this.forget()
-    if (this.removed || this.edits.stopped) return
+    if (this.removed) return
     if (this.timer) clearTimeout(this.timer)
     this.pendingSince ??= Date.now()
     const delay = Math.min(PUSH_DELAY, Math.max(0, this.pendingSince + PUSH_MAX_DELAY - Date.now()))
@@ -196,8 +198,9 @@ export class GithubSync {
         if (!this.prepared || this.state.base === null) await this.stage()
         else {
           const head = await this.checkBranch()
-          if (head === null) return
           await this.pull(head)
+          // A stopped push retries on the drive's next use.
+          this.pushWanted ||= this.edits.stopped !== null && this.unpushed > 0
           if (this.pushWanted) { this.pushWanted = false; await this.push() }
         }
         this.failure = null
@@ -213,19 +216,9 @@ export class GithubSync {
     await this.syncing
   }
 
-  private async checkBranch(): Promise<string | null> {
+  private async checkBranch(): Promise<string> {
     try {
-      if (this.edits.stopped) {
-        const repo = await githubRepo(this.volume.config)
-        if (repo.archived || repo.permissions?.push === false) return null
-      }
-      const head = await githubHead(this.volume.config)
-      if (this.edits.stopped) {
-        this.edits.stopped = null
-        await this.saveEdits()
-        this.pushWanted ||= this.unpushed > 0
-      }
-      return head
+      return await githubHead(this.volume.config)
     } catch (error) {
       if (error instanceof WorkspaceFileError && this.edits.stopped !== error.message) {
         this.edits.stopped = error.message
@@ -731,7 +724,7 @@ export class GithubSync {
     const names = new Map(await Promise.all(slugs.map(async slug => [slug, (await getAgentRecord(slug).catch(() => null))?.name ?? slug] as const)))
     for (let attempt = 0; attempt < 3; attempt++) {
       lost = null
-      if (this.edits.stopped || !this.state.base) return
+      if (!this.state.base) return
       await this.loadRules()
       const entries = await serialize([this.key], async () => Object.entries(this.edits.unpushed).map(([name, entry]) => ({ name, ...entry })))
       const heldGroups = new Set(Object.keys(this.edits.held).map(name => own(this.edits.unpushed, name)?.group).filter(Boolean))
@@ -789,6 +782,7 @@ export class GithubSync {
             if (own(this.edits.unpushed, name)?.n === counters.get(name) && !this.writing.has(name)) delete this.edits.unpushed[name]
           }
           await this.save({ ...this.state, base: oid, files })
+          this.edits.stopped = null
           await this.saveEdits()
         })
       }
