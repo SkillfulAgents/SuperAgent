@@ -63,7 +63,16 @@ function toRecord(row: AgentRow): AgentRecord {
   }
 }
 
-export function createAgentCatalog(): AgentCatalog {
+export interface AgentCatalogDeps {
+  /** The placement `runtime` recorded for a new agent. */
+  workspaceRuntime(): string
+}
+
+const defaultDeps: AgentCatalogDeps = {
+  workspaceRuntime: () => registeredWorkspaceStore()?.runtime ?? LOCAL_RUNTIME,
+}
+
+export function createAgentCatalog(deps: AgentCatalogDeps = defaultDeps): AgentCatalog {
   const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
     db.select().from(agents).where(eq(agents.slug, slug)).get()
 
@@ -113,7 +122,7 @@ export function createAgentCatalog(): AgentCatalog {
         avatarShape: avatar.shape,
         description: description ?? null,
         createdAt,
-        runtime: registeredWorkspaceStore()?.runtime ?? LOCAL_RUNTIME,
+        runtime: deps.workspaceRuntime(),
         workspaceHandle: null,
       }).run()
       return toRecord((await rowFor(slug))!)

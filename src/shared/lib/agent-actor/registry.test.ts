@@ -8,7 +8,6 @@ import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
 import { createAgentRegistry } from './registry'
-import { registerWorkspaceStore } from './workspace-store'
 import { createInMemorySessionStore } from './testing/in-memory-session-store'
 import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
@@ -467,24 +466,22 @@ describe('createAgentRegistry', () => {
       expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledTimes(1)
     })
 
-    it('opens the session store through a registered workspace store, with the same activity hook', () => {
+    it('opens the session store through the workspace store, with the same activity hook', () => {
       const opened: SessionStore[] = []
-      registerWorkspaceStore({
+      const workspaceStore = {
         runtime: 'remote-disk',
-        open: (slug, hooks) => {
+        open: (slug: string, hooks: Pick<SessionStore, 'onActivity'>) => {
           const store = { ...createInMemorySessionStore(slug), onActivity: hooks.onActivity }
           opened.push(store)
           return store
         },
-      })
-      try {
-        const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
-        expect(opened).toEqual([actor.store])
-        actor.store.onActivity?.(7_000)
-        expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledWith(7_000)
-      } finally {
-        registerWorkspaceStore(null)
       }
+
+      const actor = createAgentRegistry({ ...fake.deps, workspaceStore }).get('a') as LocalAgentActor
+
+      expect(opened).toEqual([actor.store])
+      actor.store.onActivity?.(7_000)
+      expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledWith(7_000)
     })
 
     it('sessions.markIdle marks the runtime before the session goes idle', () => {

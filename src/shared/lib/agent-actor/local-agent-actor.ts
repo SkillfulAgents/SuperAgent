@@ -23,7 +23,7 @@ import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
-import { registeredWorkspaceStore } from './workspace-store'
+import type { WorkspaceStore } from './workspace-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
   AccountReauthOps,
@@ -75,6 +75,8 @@ export interface LocalActorDeps {
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
+  /** Where the agent's workspace lives; null for a directory on this machine. */
+  readonly workspaceStore: WorkspaceStore | null
 }
 
 // Dev-only capture of the sessions' frames for fixture replays: one per
@@ -124,7 +126,7 @@ export class LocalAgentActor implements AgentActor {
       createAgentState(slug, {
         transitions: deps.userInputRequestManager,
         sessions: {
-          store: registeredWorkspaceStore()?.open(slug, storeHooks) ?? createLocalSessionStore(slug, deps, storeHooks),
+          store: deps.workspaceStore?.open(slug, storeHooks) ?? createLocalSessionStore(slug, deps, storeHooks),
           host: deps.host,
           runtime: createSessionsRuntime(slug, deps),
           capture: subagentCapture,

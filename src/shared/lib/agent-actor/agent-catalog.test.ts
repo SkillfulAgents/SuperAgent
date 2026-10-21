@@ -12,7 +12,6 @@ let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { createAgentCatalog } from './agent-catalog'
-import { registerWorkspaceStore } from './workspace-store'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import * as avatarAssignment from './agent-avatar'
 import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentInstructionsPath } from '@shared/lib/utils/file-storage'
@@ -139,13 +138,9 @@ describe('records', () => {
     expect(await catalog.exists('missing')).toBe(false)
   })
 
-  it("records a registered workspace store's runtime as the placement of new agents", async () => {
-    registerWorkspaceStore({ runtime: 'remote-disk', open: vi.fn() })
-    try {
-      await catalog.insert({ slug: 'remote', name: 'Remote', createdAt: new Date('2026-03-01T00:00:00Z') })
-    } finally {
-      registerWorkspaceStore(null)
-    }
+  it("records the workspace store's runtime as the placement of new agents, 'local' by default", async () => {
+    await createAgentCatalog({ workspaceRuntime: () => 'remote-disk' })
+      .insert({ slug: 'remote', name: 'Remote', createdAt: new Date('2026-03-01T00:00:00Z') })
     await catalog.insert({ slug: 'here', name: 'Here', createdAt: new Date('2026-03-02T00:00:00Z') })
 
     expect((await catalog.get('remote'))?.placement).toEqual({ runtime: 'remote-disk', workspaceHandle: null })

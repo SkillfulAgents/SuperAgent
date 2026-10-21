@@ -20,6 +20,7 @@ import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import type { AgentState } from './agent-state'
 import type { AgentStoreDirectory } from './store-directory'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
+import { registeredWorkspaceStore } from './workspace-store'
 
 /**
  * Build a registry whose handles delegate to `deps`. A handle is created on
@@ -190,6 +191,9 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
   get host() {
     return localHostPort
+  },
+  get workspaceStore() {
+    return registeredWorkspaceStore()
   },
 }, { states: agentActorStates })
 
