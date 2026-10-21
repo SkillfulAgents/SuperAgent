@@ -124,6 +124,30 @@ describe('SQLite mount attachments', () => {
   })
 })
 
+describe('global drives', () => {
+  it('mounts on every agent after its own drives, once, with its own access winning', async () => {
+    const team = await add(folder('team'))
+    const other = await addMount('agent-b', 'local', { path: folder('b/team') }, viewer)
+    await updateVolumeDefinition(team.volumeId, { global: 'read' }, viewer)
+    expect(await getMounts('test-agent')).toEqual([team])
+    const [own, global] = await getMounts('agent-b')
+    expect(own).toEqual(other)
+    expect(global).toMatchObject({ name: 'team-2', volumeId: team.volumeId, readOnly: true, global: true })
+    expect((await getMountsWithHealth('agent-b'))[1].global).toBe(true)
+    expect((await resolveVolume('agent-b', global.id))?.readOnly).toBe(true)
+    expect(await removeMount('agent-b', global.id)).toBe(false)
+    expect(await setMountReadOnly('agent-b', global.id, false)).toBe(false)
+    expect((await getMounts('agent-c'))[0].id).not.toBe(global.id)
+    expect(await resolveVolume('agent-c', global.id)).toBeNull()
+    await updateVolumeDefinition(team.volumeId, { global: 'write' }, viewer)
+    expect((await listVolumes('agent-b')).volumes[1]).toEqual({ volumeId: global.id, name: 'team-2', volumeName: 'team', cacheMode: 'local' })
+    await updateVolumeDefinition(team.volumeId, { global: null }, viewer)
+    expect(await resolveVolume('agent-b', global.id)).toBeNull()
+    expect(await getMounts('agent-b')).toEqual([other])
+    expect(await getMounts('test-agent')).toEqual([team])
+  })
+})
+
 describe('volume health and stored configuration', () => {
   it('keeps container startup and UI health in agreement', async () => {
     const notes = folder('notes')

@@ -1,3 +1,4 @@
+import { slideToConfirm } from '../helpers/slide-to-confirm'
 import { test, expect, type Locator } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
@@ -198,18 +199,19 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
       await page.locator('[data-testid="delete-agent-item"]').click()
 
       const alertDialog = page.getByRole('alertdialog')
-      const confirmButton = page.locator('[data-testid="confirm-delete-agent-button"]')
-      await expectContainedIn(confirmButton, alertDialog)
+      // The slide's track is the control's full width; its handle carries the testid.
+      await expectContainedIn(page.getByTestId('confirm-delete-agent-button-track'), alertDialog)
 
-      // Reachable controls are not enough: the name itself must wrap rather than paint
-      // out through the alert's edge, which `overflow: visible` on the dialog allows.
-      const descOverflow = await alertDialog
-        .locator('p')
+      // Reachable controls are not enough: the name itself (in the title) must wrap
+      // rather than paint out through the alert's edge, which `overflow: visible` on
+      // the dialog allows.
+      const titleOverflow = await alertDialog
+        .getByRole('heading')
         .first()
         .evaluate((el) => el.scrollWidth - el.clientWidth)
-      expect(descOverflow).toBeLessThanOrEqual(0)
+      expect(titleOverflow).toBeLessThanOrEqual(0)
 
-      await confirmButton.click()
+      await slideToConfirm(page, 'confirm-delete-agent-button')
     })
   })
 })

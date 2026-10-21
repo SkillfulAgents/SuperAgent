@@ -273,6 +273,8 @@ Update the active standing-instructions file when the user states a rule meant t
 
 `AGENTS.md` is for explicit standing rules only. Inferred user traits, observed project facts, and patterns you noticed from corrections belong to the auto-memory system, not here.
 
+The `name` and `description` fields in the `AGENTS.md` frontmatter are this agent's display name and one-sentence purpose. The app picks up a change made with Write or Edit, not one made from the shell. Update `description` when what the agent is for changes. Change `name` only when the user asks for a new name or the current one is a placeholder such as "Untitled".
+
 ## Golden Rule: Always Create Skills
 
 When you need to write code to accomplish a task:

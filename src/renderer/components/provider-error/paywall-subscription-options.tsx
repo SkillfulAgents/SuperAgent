@@ -4,6 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { ConnectionEditor } from '@renderer/components/settings/llm-connections-tab'
 import { ProviderLogo } from '@renderer/components/settings/provider-logo'
 import { Button } from '@renderer/components/ui/button'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
 import { useUser } from '@renderer/context/user-context'
 import { useConnectionMutation, useLlmConnections } from '@renderer/hooks/use-llm-connections'
@@ -12,7 +13,7 @@ import { useCancelQueuedMessage, useSendMessage } from '@renderer/hooks/use-mess
 import { useProviderUsages, supportsUsage } from '@renderer/hooks/use-provider-usage'
 import { useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useModelSettings } from '@renderer/hooks/use-settings'
-import { globalSelectionChangeSchema, resolveSelection, type ConnectionInfo, type GlobalSelectionChange, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
+import { globalSelectionChangeSchema, resolveSelection, type ConnectionInfo, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 import { isProviderUsageExhausted } from '@shared/lib/llm-provider/usage-schema'
 import type { ConnectionSetupObserver } from '@renderer/components/settings/connection-setup-events'
 import { usePaywallTracking, type PaywallAnalyticsContext, type SubscriptionRecovery } from './paywall-analytics'
@@ -39,6 +40,48 @@ type SavedSubscriptionOption = {
   connection: ConnectionInfo
   subscription: Subscription
   selection: ResolvedConnectionSelection
+}
+
+const CHAT_BUSY = 'The chat is still busy. Try again when its current turn finishes.'
+
+function canMakeDefault(connection: Pick<ConnectionInfo, 'userId'>, user: { isAuthMode: boolean; isAdmin: boolean; userId?: string }) {
+  return !user.isAuthMode || (user.isAdmin && (connection.userId === null || connection.userId === user.userId))
+}
+
+// Cloud app defaults accept only connections shared with everyone, so a
+// personal subscription is shared first.
+function useMakeDefault(agentSlug: string) {
+  const { isAuthMode } = useUser()
+  const { mutateAsync: mutateConnection } = useConnectionMutation()
+  const { mutateAsync: setAgentDefault } = useUpdateAgentPreferences(agentSlug)
+  return useCallback(async (connection: ConnectionInfo, selection: ModelSelection, assertCanContinue: () => void) => {
+    if (isAuthMode && connection.userId !== null) {
+      await mutateConnection({ path: `/${encodeURIComponent(connection.id)}/share`, method: 'POST' })
+      assertCanContinue()
+    }
+    const change = globalSelectionChangeSchema.parse(await mutateConnection({
+      path: '/defaults/default', method: 'PUT',
+      body: { llmProviderId: selection.llmProviderId, model: selection.model },
+    }))
+    try {
+      assertCanContinue()
+      await setAgentDefault({ defaultLlmProviderId: selection.llmProviderId, defaultModel: selection.model })
+    } catch (cause) {
+      if (!change.before.defaultSelection)
+        throw new Error('The app default was set, but this agent\'s default could not be saved. Check Model Providers settings.')
+      let restored: { updated: boolean }
+      try {
+        restored = await mutateConnection({
+          path: '/defaults/default/compare-and-set', method: 'PUT',
+          body: { expected: change.after, restore: change.before },
+        }) as { updated: boolean }
+      } catch {
+        throw new Error('Could not restore your previous app default. Check Model Providers settings before retrying.')
+      }
+      if (!restored.updated) throw new Error('The app default was changed elsewhere, so it was left as is. Check Model Providers settings.')
+      throw cause
+    }
+  }, [isAuthMode, mutateConnection, setAgentDefault])
 }
 
 function selectionForConnection(connection: ConnectionInfo): ResolvedConnectionSelection | null {
@@ -142,13 +185,13 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
   analytics: PaywallAnalyticsContext
   onResumed: (recovery: SubscriptionRecovery) => void
 }) {
-  const { isAdmin, isAuthMode } = useUser()
+  const { user, isAdmin, isAuthMode } = useUser()
   const track = usePaywallTracking()
   const { isActive } = useMessageStream(session.sessionId, session.agentSlug, ['isActive'])
   const { mutateAsync: sendMessage } = useSendMessage({ quiet: true })
   const { mutateAsync: cancelQueuedMessage } = useCancelQueuedMessage()
-  const { mutateAsync: setGlobalDefault } = useConnectionMutation()
-  const { mutateAsync: setAgentDefault } = useUpdateAgentPreferences(session.agentSlug)
+  const makeDefault = useMakeDefault(session.agentSlug)
+  const viewer = { isAuthMode, isAdmin, userId: user?.id }
   const [pending, setPending] = useState<{ connectionId: string; scope: SwitchScope } | null>(null)
   const [error, setError] = useState('')
   const inFlight = useRef(false)
@@ -162,29 +205,19 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
 
   const switchTo = useCallback(async (option: SavedSubscriptionOption, scope: SwitchScope) => {
     if (inFlight.current || active.current) return
-    const canAlwaysUse = !isAuthMode || (isAdmin && option.connection.userId === null)
-    if (scope === 'always' && !canAlwaysUse) return
+    if (scope === 'always' && !canMakeDefault(option.connection, { isAuthMode, isAdmin, userId: user?.id })) return
     inFlight.current = true
     setError('')
     setPending({ connectionId: option.connection.id, scope })
     const attemptId = uuid()
-    let globalDefaultChange: GlobalSelectionChange | null = null
-    let agentDefaultChanged = false
     try {
       if (scope === 'always') {
-        globalDefaultChange = globalSelectionChangeSchema.parse(await setGlobalDefault({
-          path: '/defaults/default', method: 'PUT',
-          body: { llmProviderId: option.selection.llmProviderId, model: option.selection.model },
-        }))
-        if (!mounted.current || active.current) throw new Error('The chat is still busy. Try again when its current turn finishes.')
-        await setAgentDefault({
-          defaultLlmProviderId: option.selection.llmProviderId,
-          defaultModel: option.selection.model,
+        await makeDefault(option.connection, option.selection, () => {
+          if (!mounted.current || active.current) throw new Error(CHAT_BUSY)
         })
-        agentDefaultChanged = true
       }
       if (!mounted.current) return
-      if (active.current) throw new Error('The chat is still busy. Try again when its current turn finishes.')
+      if (active.current) throw new Error(CHAT_BUSY)
       const sent = await sendMessage({
         ...session,
         content: 'Continue',
@@ -194,7 +227,7 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
       if (sent.queued) {
         const cancelled = await cancelQueuedMessage({ ...session, uuid: sent.uuid })
         throw new Error(cancelled.cancelled
-          ? 'The chat is still busy. Try again when its current turn finishes.'
+          ? CHAT_BUSY
           : 'The chat became busy and already started this continuation on its current provider.')
       }
       track('paywall_subscription_switched', {
@@ -205,29 +238,19 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
       })
       onResumed({ attemptId, provider: option.subscription.provider, scope })
     } catch (cause) {
-      let failure = cause
-      if (globalDefaultChange && !agentDefaultChanged && !globalDefaultChange.before.defaultSelection) {
-        failure = new Error('The app default was set, but this agent\'s default could not be saved. Check Model Providers settings.')
-      } else if (globalDefaultChange && !agentDefaultChanged) {
-        try {
-          const restored = await setGlobalDefault({
-            path: '/defaults/default/compare-and-set', method: 'PUT',
-            body: {
-              expected: globalDefaultChange.after,
-              restore: globalDefaultChange.before,
-            },
-          }) as { updated: boolean }
-          if (!restored.updated) failure = new Error('The app default was changed elsewhere, so it was left as is. Check Model Providers settings.')
-        } catch {
-          failure = new Error('Could not restore your previous app default. Check Model Providers settings before retrying.')
-        }
-      }
-      if (mounted.current) setError(failure instanceof Error ? failure.message : 'Could not switch subscriptions. Try again.')
+      track('paywall_subscription_switch_failed', {
+        ...analytics,
+        attemptId,
+        provider: option.subscription.provider,
+        scope,
+        reason: cause instanceof Error ? cause.message.slice(0, 120) : 'unknown',
+      })
+      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Could not switch subscriptions. Try again.')
     } finally {
       inFlight.current = false
       if (mounted.current) setPending(null)
     }
-  }, [analytics, cancelQueuedMessage, isAdmin, isAuthMode, onResumed, sendMessage, session, setAgentDefault, setGlobalDefault, track])
+  }, [analytics, cancelQueuedMessage, isAdmin, isAuthMode, user?.id, makeDefault, onResumed, sendMessage, session, track])
 
   return (
     <div data-testid="active-subscription-connections">
@@ -235,7 +258,8 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
       <p className="mt-1 text-xs leading-5 text-muted-foreground">Switch this chat now, or make the connection your default.</p>
       <div className="mt-3 space-y-2">
         {options.map(option => {
-          const canAlwaysUse = !isAuthMode || (isAdmin && option.connection.userId === null)
+          const canAlwaysUse = canMakeDefault(option.connection, viewer)
+          const sharesOnDefault = isAuthMode && option.connection.userId !== null
           const switching = pending?.connectionId === option.connection.id
           return (
             <div key={option.connection.id} data-testid="active-subscription-connection"
@@ -253,7 +277,9 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
                   {switching && pending?.scope === 'session' ? 'Switching…' : 'Switch for this session'}
                 </Button>
                 <Button type="button" variant="outline" size="sm" disabled={isActive || pending !== null || !canAlwaysUse}
-                  title={canAlwaysUse ? undefined : 'App-wide defaults require a global connection and workspace admin access.'}
+                  title={!canAlwaysUse
+                    ? 'App-wide defaults require workspace admin access.'
+                    : sharesOnDefault ? 'Shares this connection with everyone in this workspace.' : undefined}
                   onClick={() => void switchTo(option, 'always')}>
                   {switching && pending?.scope === 'always' ? 'Switching…' : `Always use ${option.subscription.name}`}
                 </Button>
@@ -276,7 +302,11 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
 }) {
   const { subscription } = attempt
   const track = usePaywallTracking()
-  const { user, isAuthMode } = useUser()
+  const { user, isAuthMode, isAdmin } = useUser()
+  const offerDefault = canMakeDefault({ userId: isAuthMode ? user?.id ?? null : null }, { isAuthMode, isAdmin, userId: user?.id })
+  const [useAsDefault, setUseAsDefault] = useState(offerDefault)
+  const makeDefault = useMakeDefault(session.agentSlug)
+  const defaultsSaved = useRef(false)
   const { data: settings } = useModelSettings()
   const { refetch } = useLlmConnections()
   const { isActive } = useMessageStream(session.sessionId, session.agentSlug, ['isActive'])
@@ -357,6 +387,13 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
         failureReason = 'model_unavailable'
         throw new Error('Your connection was saved, but no model is available yet. Try again.')
       }
+      if (useAsDefault && !defaultsSaved.current) {
+        failureReason = 'default_failed'
+        await makeDefault(connection!, selection, () => {
+          if (!mounted.current || active.current) throw new Error(CHAT_BUSY)
+        })
+        defaultsSaved.current = true
+      }
       failureReason = 'send_failed'
       resumeRequestPending.current = true
       const sent = await sendMessage({
@@ -375,7 +412,7 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
           : 'The chat became busy and already started this continuation on its current provider.')
       }
       finished.current = true
-      report('resumed', { resumeAttempt: resumeAttempt.current, outcome: 'message_accepted' })
+      report('resumed', { resumeAttempt: resumeAttempt.current, outcome: 'message_accepted', madeDefault: defaultsSaved.current })
       onResumed({ attemptId: attempt.attemptId, provider: subscription.provider })
     } catch (cause) {
       report('resume_failed', { resumeAttempt: resumeAttempt.current, failureReason })
@@ -386,7 +423,7 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
       inFlight.current = false
       if (mounted.current) setResuming(false)
     }
-  }, [cancelQueuedMessage, refetch, sendMessage, session, onResumed, report, attempt.attemptId, subscription.provider])
+  }, [cancelQueuedMessage, refetch, sendMessage, session, onResumed, report, attempt.attemptId, subscription.provider, useAsDefault, makeDefault])
 
   useEffect(() => {
     // A provider error may arrive just before the previous turn becomes idle.
@@ -403,7 +440,9 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
           <>
             <DialogHeader>
               <DialogTitle>{subscription.name} connected</DialogTitle>
-              <DialogDescription>Your subscription is saved. This chat will use it when you resume.</DialogDescription>
+              <DialogDescription>{useAsDefault
+                ? 'Your subscription is saved. This chat and new chats will use it.'
+                : 'Your subscription is saved. This chat will use it when you resume.'}</DialogDescription>
             </DialogHeader>
             {resuming ? (
               <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -419,6 +458,15 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
             )}
           </>
         ) : (
+          <>
+          {offerDefault && (
+            <label className="flex items-start gap-2 text-sm">
+              <Checkbox className="mt-0.5" checked={useAsDefault} onCheckedChange={checked => setUseAsDefault(checked === true)} />
+              <span>{isAuthMode
+                ? 'Use for new chats too. This shares the subscription with everyone in this workspace.'
+                : 'Use for new chats too'}</span>
+            </label>
+          )}
           <ConnectionEditor
             initialProvider={subscription.provider}
             userId={isAuthMode ? user?.id ?? null : null}
@@ -430,6 +478,7 @@ function SubscriptionDialog({ attempt, session, onClose, onResumed }: {
             saveLabel="Save and resume chat"
             onSetupEvent={observeSetup}
           />
+          </>
         )}
       </DialogContent>
     </Dialog>

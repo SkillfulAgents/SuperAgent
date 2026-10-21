@@ -28,7 +28,7 @@ import { inferOomSigkillFatal } from '@shared/lib/container/runtime-death'
 import { parseBackgroundTasksChanged } from '@shared/lib/container/background-tasks-changed'
 import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
-import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { sessionCredentialSource, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -1288,6 +1288,7 @@ export class LiveSession {
       return
     }
 
+    if (content.subtype !== 'resume') this.trackResponse('agent_response_completed')
     // The output is complete whether or not the session settles: the
     // renderer reconciles what streamed against the transcript (whose write
     // can lag), or a follow-up turn's stream_start could blink it out.
@@ -1308,6 +1309,18 @@ export class LiveSession {
     if (content.subtype !== 'resume') this.notifyCompleted()
   }
 
+  private trackResponse(event: string, properties: Record<string, unknown> = {}): void {
+    this.ctx.host.send('analytics', {
+      event,
+      properties: {
+        agentSlug: this.ctx.agentSlug,
+        session_id: this.ctx.sessionId,
+        credential_source: sessionCredentialSource(this.ctx.agentSlug, this.ctx.sessionId),
+        ...properties,
+      },
+    })
+  }
+
   private turnFailed(classification: ReturnType<typeof classifyResult>): void {
     const errorMessage = classification.errorText || 'An error occurred during execution'
     const apiErrorCode = this.lastApiErrorCode || null
@@ -1325,6 +1338,7 @@ export class LiveSession {
       terminalReason ? `[${terminalReason}]` : '',
     )
     const error = { error: errorMessage, apiErrorCode, errorPresentation, terminalReason, apiErrorStatus, isActive: false }
+    this.trackResponse('agent_response_failed', { terminal_reason: terminalReason, api_error_status: apiErrorStatus })
     const turnOutcome = this.response.recordOutcome('failed', errorMessage)
     this.ctx.emit({ type: 'session_error', ...error, turnOutcome })
     this.publish({ type: 'session_error', ...error })

@@ -215,6 +215,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       const queued = !silent && isActive && !isWaitingBackground
       const runtimeOptions = queued || silent ? {} : composerOptions.toRuntimeOptions()
       onMessageSent?.(content, localId, queued)
+      let credentialSource: string | undefined
       try {
         const result = await sendMessage.mutateAsync({
           sessionId,
@@ -233,11 +234,16 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         // the ghost — a server-queued message is re-id'd by the CLI, so it never
         // matches our uuid and never materializes.
         onMessageUuidAssigned?.(localId, result.uuid, result.queued)
+        credentialSource = result.credentialSource
       } catch (error) {
         onMessageFailed?.(localId)
         throw error
       }
-      track('message_sent', { origin: 'user', input_mode: inputMode })
+      track('message_sent', {
+        origin: 'user', input_mode: inputMode,
+        session_id: sessionId, credential_source: credentialSource ?? 'unknown',
+        notify_only: silent,
+      })
     }, [createFirstTurn, onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,
     keepMessageUntilComplete: !sessionId,

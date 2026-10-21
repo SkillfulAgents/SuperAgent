@@ -245,6 +245,7 @@ describe('PlatformPaywallCard', () => {
     expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({
       paywallId: expect.any(String), entryPoint: 'platform_paywall', ctaKind: 'ask_admin',
       blocked: true, placement: 'composer', role: 'member', live: true,
+      session_id: 's', credential_source: 'platform',
     }))
     expect(mocks.track).toHaveBeenCalledTimes(1)
     act(() => { screen.getByRole('button', { name: 'Go to billing' }).click() })

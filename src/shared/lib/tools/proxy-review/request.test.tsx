@@ -1,12 +1,24 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
+import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 
+const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
+  useRouter: () => ({ state: { location: { pathname: '/agents/my-agent/sessions/s1', searchStr: '' } } }),
+}))
+
+let mockAccounts: unknown[] = []
+let mockMcps: unknown[] = []
+vi.mock('@renderer/hooks/use-connected-accounts', () => ({
+  useAgentConnectedAccounts: () => ({ data: { accounts: mockAccounts } }),
+}))
+vi.mock('@renderer/hooks/use-remote-mcps', () => ({
+  useAgentRemoteMcps: () => ({ data: { mcps: mockMcps } }),
 }))
 
 const mockApiFetch = vi.fn()
@@ -76,6 +88,14 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     await waitFor(() => expect(screen.getByTestId('proxy-review-completed')).toBeInTheDocument())
   })
 
+  it('sends the label default for the smallest risk group', async () => {
+    const user = userEvent.setup()
+    renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-allow-label-read'))
+    expect(sentBody()).toMatchObject({ decision: 'allow', scope: labelDefaultKey('read'), reviewType: 'api' })
+  })
+
   it('sends the stamped api type even when the path looks like a tool call', async () => {
     renderCard({ reviewType: 'api', targetPath: 'tools/call: something' })
     await chooseAlwaysAllowAll()
@@ -117,28 +137,36 @@ describe('ProxyReviewRequestItem request body', () => {
     expect(screen.queryByTestId('proxy-review-body')).toBeNull()
   })
 
-  it('offers label and scope allows on an API card only when the headline names the call', async () => {
+  it('offers the label allow on an API card only when the headline names the call', async () => {
     const user = userEvent.setup()
     const { unmount } = renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read', 'write'] })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
-    expect(await screen.findByTestId('proxy-review-allow-once-menu-btn')).toBeInTheDocument()
+    expect(await screen.findByTestId('proxy-review-always-allow-all')).toBeInTheDocument()
     expect(screen.queryByTestId('proxy-review-allow-label-read')).toBeNull()
-    expect(screen.queryByTestId('proxy-review-specific-scope-toggle')).toBeNull()
     await user.click(screen.getByTestId('proxy-review-deny-btn-chevron'))
     expect(await screen.findByTestId('proxy-review-deny-reason-input')).toBeInTheDocument()
-    expect(screen.getByTestId('proxy-review-always-deny-read')).toBeInTheDocument()
     unmount()
     renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
     expect(await screen.findByTestId('proxy-review-allow-label-read')).toBeInTheDocument()
-    expect(screen.getByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
   })
 
-  it('keeps per-tool policies on an MCP card, which never carries an endpoint description', async () => {
+  it('explains a menu option on keyboard focus, not on opening the menu', async () => {
     const user = userEvent.setup()
-    renderCard({ reviewType: 'mcp', matchedScopes: ['create_issue'] })
+    renderCard({ toolkit: 'linear', targetPath: 'graphql', matchedScopes: ['read'], endpointDescription: 'Query: issues - List issues with filters' })
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
-    expect(await screen.findByTestId('proxy-review-specific-scope-toggle')).toBeInTheDocument()
+    await screen.findByTestId('proxy-review-allow-label-read')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    act(() => screen.getByTestId('proxy-review-allow-label-read').focus())
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Auto-allow every read-level scope for this account')
+  })
+
+  it('offers only Allow Once when a require rule held the request', () => {
+    renderCard({
+      ruleOutcomes: [{ ruleId: 'r1', version: 1, effect: 'require', restatement: 'Review every post', result: 'false' }],
+    })
+    expect(screen.getByTestId('proxy-review-allow-once-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('proxy-review-always-allow-btn')).toBeNull()
   })
 
   it('opens a folded body on click, and has nothing to open without one', async () => {
@@ -149,5 +177,70 @@ describe('ProxyReviewRequestItem request body', () => {
     unmount()
     renderCard({})
     expect(screen.queryByTestId('proxy-review-body-toggle')).toBeNull()
+  })
+})
+
+describe('ProxyReviewRequestItem connection link', () => {
+  beforeEach(() => {
+    mockNavigate.mockReset()
+    mockAccounts = []
+    mockMcps = []
+  })
+
+  it.each([
+    { reviewType: 'api' as const, detail: 'account-acct-or-mcp' },
+    { reviewType: 'mcp' as const, detail: 'mcp-acct-or-mcp' },
+  ])('opens the $reviewType connection page and returns to the card', async ({ reviewType, detail }) => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    mockMcps = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType })
+    await userEvent.setup().click(screen.getByTestId('proxy-review-connection-link'))
+
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'my-agent' },
+      search: { detail, source: 'home', from: '/agents/my-agent/sessions/s1' },
+    })
+  })
+
+  it('opens the connection page from the Allow menu', async () => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    await user.click(await screen.findByTestId('proxy-review-edit-permissions'))
+
+    expect(mockNavigate).toHaveBeenCalledOnce()
+    expect(mockNavigate.mock.calls[0][0]).toMatchObject({ search: { detail: 'account-acct-or-mcp' } })
+  })
+
+  it('links the toolkit name on the answered card', async () => {
+    mockApiFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api' })
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('proxy-review-allow-once-btn'))
+    await screen.findByTestId('proxy-review-completed')
+    await user.click(screen.getByTestId('proxy-review-connection-link'))
+
+    expect(mockNavigate).toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ detail: 'account-acct-or-mcp' }) }))
+  })
+
+  it('links the toolkit name on a read-only card too', () => {
+    mockAccounts = [{ id: 'acct-or-mcp' }]
+    renderCard({ reviewType: 'api', readOnly: true })
+
+    expect(screen.getByTestId('proxy-review-connection-link')).toHaveTextContent('Railway')
+  })
+
+  it.each([
+    { case: 'another member owns', accounts: [{ kind: 'connected-account', toolkitSlug: 'railway', mappingId: 'm1' }] },
+    { case: 'is no longer on the agent', accounts: [{ id: 'other-account' }] },
+  ])('renders no link for a connection that $case', ({ accounts }) => {
+    mockAccounts = accounts
+    renderCard({ reviewType: 'api' })
+
+    expect(screen.queryByTestId('proxy-review-connection-link')).not.toBeInTheDocument()
+    expect(screen.getByText('Railway')).toBeInTheDocument()
   })
 })

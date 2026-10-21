@@ -34,7 +34,13 @@ export async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs
       ruleOutcomes: entry.ruleOutcomes ?? null,
       createdAt: new Date(),
     })
-    if (options.analytics !== false) trackServerEvent('api_called', { slug: entry.toolkit })
+    if (options.analytics !== false) {
+      trackServerEvent('api_called', {
+        slug: entry.toolkit,
+        decision: entry.policyDecision ?? 'unknown',
+        rule_allowed: Boolean(entry.ruleVersionId),
+      })
+    }
   } catch (error) {
     console.error('[proxy] Failed to write audit log:', error)
   }

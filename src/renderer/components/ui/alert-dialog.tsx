@@ -1,5 +1,6 @@
 import * as React from "react"
 import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
+import { X } from "lucide-react"
 
 import { cn } from "@shared/lib/utils"
 import { buttonVariants } from "@renderer/components/ui/button"
@@ -124,6 +125,29 @@ const AlertDialogCancel = React.forwardRef<
 ))
 AlertDialogCancel.displayName = AlertDialogPrimitive.Cancel.displayName
 
+/**
+ * The X in the top-right corner, drawn exactly like DialogContent's close.
+ * It is the alert's Cancel underneath, so Radix still focuses it on open and
+ * Escape still maps to it; an alert that uses it has no Cancel in its footer.
+ */
+const AlertDialogClose = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Cancel>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Cancel>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Cancel
+    ref={ref}
+    className={cn(
+      "absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none",
+      className
+    )}
+    {...props}
+  >
+    <X className="h-4 w-4" />
+    <span className="sr-only">Close</span>
+  </AlertDialogPrimitive.Cancel>
+))
+AlertDialogClose.displayName = "AlertDialogClose"
+
 export {
   AlertDialog,
   AlertDialogPortal,
@@ -136,4 +160,5 @@ export {
   AlertDialogDescription,
   AlertDialogAction,
   AlertDialogCancel,
+  AlertDialogClose,
 }

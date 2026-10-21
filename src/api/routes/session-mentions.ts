@@ -60,8 +60,6 @@ export async function notifySessionMentions(
 ): Promise<void> {
   if (mentions.teammates.length === 0) return
   const sender = c.get('user' as never) as Sender
-  const members = new Map((await listAgentMembers(message.agentSlug).catch(() => [])).map((member) => [member.id, member]))
-  const sessionPath = `/agents/${encodeURIComponent(message.agentSlug)}/sessions/${encodeURIComponent(message.sessionId)}`
 
   for (const teammate of mentions.teammates) {
     try {
@@ -75,25 +73,24 @@ export async function notifySessionMentions(
       })
     } catch (error) {
       captureException(error, { tags: { component: 'agents', operation: 'notify-mention' }, level: 'warning' })
+      trackServerEvent('tagged_in_session_failed', {
+        agentSlug: message.agentSlug,
+        sessionId: message.sessionId,
+        messageUuid: message.messageUuid,
+      })
       continue
     }
-    const taggee = members.get(teammate.id)
+    // No names, emails or message text: analytics must not carry PII. Tenant
+    // identity only — better-auth ids match no client-side Amplitude user.
     const properties = {
-      taggerId: sender.id,
-      taggerName: sender.name,
-      taggerEmail: sender.email,
-      taggeeId: teammate.id,
-      taggeeName: taggee?.name ?? teammate.name,
-      taggeeEmail: taggee?.email,
-      messageContent: mentions.text,
       messageUuid: message.messageUuid,
+      messageLength: mentions.text.length,
+      silent: mentions.silent,
       agentSlug: message.agentSlug,
-      agentName: message.agentName,
       sessionId: message.sessionId,
-      sessionName: message.sessionName,
-      sessionPath,
+      teammateCount: mentions.teammates.length,
     }
-    trackServerEvent('tagged_in_session', properties, teammate.id, taggee?.email ? { email: taggee.email } : undefined)
-    trackServerEvent('added_user_tag_in_session', properties, sender.id)
+    trackServerEvent('tagged_in_session', properties)
+    trackServerEvent('added_user_tag_in_session', properties)
   }
 }

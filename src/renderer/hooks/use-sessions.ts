@@ -125,7 +125,7 @@ export function useCreateSession(options: {
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
-      return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
+      return res.json() as Promise<ApiSession & { initialMessageUuid: string; credentialSource?: string }>
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
@@ -135,6 +135,8 @@ export function useCreateSession(options: {
       // A voice-started session's first message is the entry marker, not something the person said.
       track('message_sent', {
         origin,
+        session_id: created.id,
+        credential_source: created.credentialSource ?? 'unknown',
         ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
       })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)

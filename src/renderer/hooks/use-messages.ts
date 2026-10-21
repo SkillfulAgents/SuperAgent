@@ -336,7 +336,7 @@ export function useSendMessage(options: {
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to send message')
       // uuid is the server-assigned message id, used to materialize the
       // optimistic pending copy by exact id match.
-      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
+      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean; credentialSource?: string }>
     },
     onSuccess: (result, variables) => {
       if (variables.shouldQuery === false) {
