@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -94,6 +95,25 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
     await user.click(await screen.findByTestId('proxy-review-allow-label-read'))
     expect(sentBody()).toMatchObject({ decision: 'allow', scope: labelDefaultKey('read'), reviewType: 'api' })
+  })
+
+  it('offers and saves the read group for GitHub check runs despite the broad repo scope', async () => {
+    const targetPath = 'repos/SkillfulAgents/iOS-App/commits/126311d90f14c14e7ca8a69f1753242a272ad5c7/check-runs'
+    const match = matchScopes('github', 'GET', targetPath)
+    const user = userEvent.setup()
+    renderCard({
+      toolkit: 'github',
+      method: 'GET',
+      targetPath,
+      matchedScopes: match.scopes,
+      scopeDescriptions: match.descriptions,
+      endpointDescription: match.endpointDescription,
+    })
+
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(screen.queryByTestId('proxy-review-allow-label-destructive')).not.toBeInTheDocument()
+    await user.click(await screen.findByTestId('proxy-review-allow-label-read'))
+    expect(sentBody()).toMatchObject({ decision: 'allow', scope: '*read', reviewType: 'api' })
   })
 
   it('sends the stamped api type even when the path looks like a tool call', async () => {
