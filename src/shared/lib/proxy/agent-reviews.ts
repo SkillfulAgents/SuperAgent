@@ -165,8 +165,9 @@ export class AgentReviews {
    * deny sweep denies. An allow sweep doesn't release the request outright
    * when its caller asked to recheck: the caller decides it again under the
    * new policy (a require rule may still hold it) and settles or resumes it,
-   * the review open meanwhile. A review whose caller did not ask (or one
-   * already rechecking) is released unless a require rule held it.
+   * the review open meanwhile. One already rechecking keeps the sweep for its
+   * next resume, since its policy read may predate it. A review whose caller
+   * did not ask is released unless a require rule held it.
    */
   private settleSwept(entry: ReviewRegistryEntry, decision: ReviewDecision): void {
     if (decision === 'deny') {
@@ -176,6 +177,7 @@ export class AgentReviews {
     const settler = this.settlers.get(entry.id)
     if (settler?.recheck) {
       if (settler.waiter) this.handOver(entry.id, settler, 'recheck')
+      else if (!this.held.has(entry.id)) this.held.set(entry.id, 'recheck')
       return
     }
     if (!heldByRequireRule(detailsOf(entry).ruleOutcomes)) this.settleDecided(entry, 'allow')
@@ -295,6 +297,8 @@ export class AgentReviews {
    * meanwhile. Resolves to how it ended.
    */
   settle(id: string, decision: ReviewDecision): Promise<ReviewOutcome> {
+    // A sweep kept during the recheck is answered by this decision.
+    if (this.held.get(id) === 'recheck') this.held.delete(id)
     const outcome = this.resume(id)
     const entry = this.inputs.getOpenRequest(id)
     if (entry && isReviewEntry(entry) && this.settlers.has(id)) {
