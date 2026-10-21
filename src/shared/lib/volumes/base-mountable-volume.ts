@@ -1,5 +1,5 @@
 import type { ByteRange, FileKind } from '@shared/lib/agent-actor/types'
-import type { VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
+import type { VolumeAttention, VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
 
 /** One entry of a volume, with what a WebDAV listing reports. `name` is '' for the volume root. */
 export interface VolumeEntry {
@@ -61,14 +61,9 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
-  /** One line for the drive's card when changes have not reached the source, or null. */
-  get attention(): string | null {
+  /** Changes that have not reached the source, or null. */
+  get attention(): VolumeAttention | null {
     return null
-  }
-
-  /** Files a delete of this volume's definition would lose, or null when it cannot tell. */
-  unsynced(): Promise<number | null> {
-    return Promise.resolve(0)
   }
 
   abstract list(path: string): Promise<VolumeEntry[]>

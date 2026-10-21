@@ -17,8 +17,7 @@ export const githubBrowseSchema = z.object({
 }).refine(value => !value.branch || value.repoId !== undefined, 'Select a repository first')
   .refine(value => value.path === undefined || value.branch !== undefined, 'Select a branch first')
 
-export const githubRepoSchema = z.object({ id: z.number().int().positive(), name: nameSchema, owner: z.object({ login: nameSchema }),
-  archived: z.boolean().optional(), permissions: z.object({ push: z.boolean() }).optional() })
+export const githubRepoSchema = z.object({ id: z.number().int().positive(), name: nameSchema, owner: z.object({ login: nameSchema }) })
 export const githubReposSchema = z.array(githubRepoSchema)
 export const githubBranchesSchema = z.array(z.object({ name: branchSchema }))
 export const githubErrorSchema = z.object({ message: z.string() })

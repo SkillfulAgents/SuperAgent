@@ -171,19 +171,15 @@ describe('volume settings', () => {
     expect(screen.getByRole('alertdialog')).toHaveTextContent('The source folder and its files will remain unchanged')
     expect(state.remove).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Delete drive' }))
-    expect(state.remove).toHaveBeenCalledWith({ id: 'v1', discard: false })
+    expect(state.remove).toHaveBeenCalledWith('v1')
   })
-  it('shows what a drive has not synced, and discards it only after the server refused with that count', async () => {
-    state.definitions = [{ ...state.definitions[0], type: 'github', hostPath: null, attention: '1 file not on GitHub yet' }]
-    state.remove.mockRejectedValueOnce(new Error('Could not update drives'))
-      .mockRejectedValueOnce(new Error('1 file has not reached the source. Delete again to discard it.', { cause: 'unsynced' }))
+  it('warns what a drive has not synced, and deletes it on the first confirm', async () => {
+    state.definitions = [{ ...state.definitions[0], type: 'github', hostPath: null, attention: { badge: { label: '1 conflict', tone: 'warning' }, detail: 'notes.md (conflict markers to resolve)', unsynced: 2 } }]
     render(<VolumesTab />)
+    expect(screen.getByText('1 conflict')).toHaveAttribute('title', 'notes.md (conflict markers to resolve)')
     await userEvent.click(screen.getByRole('button', { name: 'Delete Notes' }))
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('Remove "Notes" from saved drives. 1 file not on GitHub yet')
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Remove "Notes" from saved drives. 2 files that have not synced will be lost.')
     await userEvent.click(screen.getByRole('button', { name: 'Delete drive' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Delete drive' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Delete again to discard it')
-    await userEvent.click(screen.getByRole('button', { name: 'Delete drive' }))
-    expect(state.remove.mock.calls.map(([call]) => call.discard)).toEqual([false, false, true])
+    expect(state.remove).toHaveBeenCalledExactlyOnceWith('v1')
   })
 })

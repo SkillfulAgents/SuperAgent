@@ -116,22 +116,14 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
   throw new VolumeError('Drive not found', 404)
 }
 
-/** Deletes the definition and returns 0, or deletes nothing and returns how many files it would lose (null: unknown) unless `discard`. */
-export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer, discard = false): Promise<number | null> {
+export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): Promise<void> {
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
-  if (!discard) {
-    const row = await db.select().from(volumeDefinitions).where(ownership).get()
-    const stored = row && storedDefinition(row)
-    const volume = stored && instantiateVolume(stored)
-    const unsynced = volume ? await volume.unsynced() : 0
-    if (unsynced !== 0) return unsynced
-  }
   const rows = await db.delete(volumeDefinitions).where(and(ownership,
     notExists(db.select({ id: agentVolumes.id }).from(agentVolumes).where(eq(agentVolumes.volumeId, id))),
   )).returning({ type: volumeDefinitions.type }).all()
   if (rows.length > 0) {
     await removeVolume(rows[0].type, id)
-    return 0
+    return
   }
   if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
     throw new VolumeError('Remove this drive from all agents before deleting it', 409)

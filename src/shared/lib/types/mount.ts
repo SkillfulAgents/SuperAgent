@@ -11,10 +11,17 @@ export interface StoredVolume {
 }
 
 /** A volume as the API returns it: no config, only the host folder the card shows. */
+/** Changes that have not reached the source. */
+export interface VolumeAttention {
+  badge?: { label: string; tone: 'warning' | 'error' } // shown in place of the health badge
+  detail?: string // the badge's tooltip
+  unsynced: number // files a delete of the drive would lose
+}
+
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   sourceLabel?: string // display-only description for remote sources
   sourceReadOnly?: boolean // the source itself refuses writes, whatever the attachment says
-  attention?: string // changes that have not reached the source, for the card
+  attention?: VolumeAttention
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 

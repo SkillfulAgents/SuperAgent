@@ -34,7 +34,6 @@ export function VolumesTab() {
     : { onBack: backToList, label: undefined }
   const [deleting, setDeleting] = useState<VolumeDefinitionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [refused, setRefused] = useState(false)
   const definitions = registry.data ?? []
   const selectedVolume = definitions.find(volume => volume.id === selectedId)
 
@@ -42,19 +41,17 @@ export function VolumesTab() {
     if (!deleting) return
     try {
       setError(null)
-      await remove.mutateAsync({ id: deleting.id, discard: refused })
+      await remove.mutateAsync(deleting.id)
       setDeleting(null)
-      setRefused(false)
       if (selectedId === deleting.id) backToList()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete drive')
-      setRefused(err instanceof Error && err.cause === 'unsynced')
     }
   }
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
-      {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setRefused(false); setDeleting(selectedVolume) }} />
+      {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
         : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>
       <div className="flex items-start justify-between gap-4">
@@ -74,7 +71,7 @@ export function VolumesTab() {
             <IntegrationRow key={volume.id} data-testid="saved-volume-row"
               icon={<VolumeIcon type={volume.type} className="h-4 w-4 text-muted-foreground" />}
               name={volume.name}
-              nameBadge={<VolumeStatusBadge health={volume.health} />}
+              nameBadge={<VolumeStatusBadge health={volume.health} attention={volume.attention} />}
               subtitle={<>
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="min-w-0 truncate font-mono" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</span>}
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
@@ -87,7 +84,7 @@ export function VolumesTab() {
               right={<>
                 {volume.canManage && <Button variant="ghost" size="icon" aria-label={`Delete ${volume.name}`} disabled={volume.attachmentCount > 0}
                   title={volume.attachmentCount > 0 ? 'Remove from all agents before deleting' : 'Delete saved drive'}
-                  onClick={event => { event.stopPropagation(); setError(null); setRefused(false); setDeleting(volume) }}><Trash2 className="h-4 w-4" /></Button>}
+                  onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><Trash2 className="h-4 w-4" /></Button>}
                 <RowHoverChevron />
               </>}
             />
@@ -104,7 +101,9 @@ export function VolumesTab() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete saved drive?</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove &quot;{deleting?.name}&quot; from saved drives. {deleting?.attention ?? (refused ? '' : 'The source folder and its files will remain unchanged.')}
+              Remove &quot;{deleting?.name}&quot; from saved drives. {deleting?.attention?.unsynced
+                ? `${deleting.attention.unsynced} ${deleting.attention.unsynced === 1 ? 'file that has' : 'files that have'} not synced will be lost.`
+                : 'The source folder and its files will remain unchanged.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

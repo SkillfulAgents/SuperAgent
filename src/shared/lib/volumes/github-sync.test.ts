@@ -30,7 +30,6 @@ beforeEach(async () => {
   client.githubHead.mockImplementation(async () => head)
   client.githubTree.mockImplementation(async () => githubTreeSchema.parse({ tree: Object.entries(remote).map(([name, bytes]) => ({ path: name, sha: blobSha(bytes), mode: modes.get(name) ?? '100644', type: modes.get(name) === '160000' ? 'commit' : 'blob' })), truncated: false }).tree)
   client.githubBlob.mockImplementation(async (_config, sha) => [...Object.values(remote), ...history].find(bytes => blobSha(bytes) === sha))
-  client.githubRepo.mockImplementation(async () => ({ permissions: { push: true } }))
   client.githubCommit.mockImplementation(async (_config, expected: string, changes: { path: string; contents: Buffer | null }[], headline: string) => {
     if (expected !== head) throw new WorkspaceFileError('not-accessible', `is at ${head} but expected ${expected}`)
     for (const change of changes) {
@@ -201,7 +200,7 @@ it('labels a same-line conflict with how to resolve it, never pushes markers, an
   await write('notes.txt', `${marked}more\n`)
   await sync.run(true)
   expect(commits).toEqual([])
-  expect(sync.attention).toContain('notes.txt (conflict markers to resolve)')
+  expect(sync.attention).toMatchObject({ badge: { label: '1 conflict', tone: 'warning' }, detail: 'notes.txt (conflict markers to resolve)', unsynced: 1 })
   await write('notes.txt', 'BOTH\ntwo\n')
   await sync.run(true)
   expect(remote['notes.txt'].toString()).toBe('BOTH\ntwo\n')
@@ -211,7 +210,7 @@ it("keeps GitHub's version when the agent deletes a conflicted file", async () =
   const { volume, sync, text } = await conflicted()
   await volume.delete('notes.txt')
   expect(await text('notes.txt')).toBe('TEAM\ntwo\n')
-  expect(await sync.unsynced()).toBe(0)
+  expect(sync.attention).toBeNull()
   await sync.run(true)
   expect(commits).toEqual([])
 })
@@ -265,7 +264,7 @@ it('retries a lost reply on an unmoved head, and clears an edit whose commit lan
   expect(sync.attention).toBeNull()
 })
 
-it('pulls and retries when another push wins the race, and stops pushes on a refusal at an unmoved head', async () => {
+it('pulls and retries when another push wins the race, and on a refusal at an unmoved head says why and retries on the next use', async () => {
   const { row, sync, write } = await setup({ 'notes.txt': 'kept', 'other.txt': 'o' })
   await write('notes.txt', 'mine')
   const commit = client.githubCommit.getMockImplementation()!
@@ -275,9 +274,10 @@ it('pulls and retries when another push wins the race, and stops pushes on a ref
   await write('notes.txt', 'protected')
   client.githubCommit.mockRejectedValueOnce(new WorkspaceFileError('not-accessible', 'GitHub refused the push: protected branch'))
   await sync.run(true)
-  expect(sync.stopped).toBe('GitHub refused the push: protected branch')
-  expect(new GithubMountableVolume(row.id, row.name, row.config).readOnly).toBe(true)
-  expect(sync.attention).toContain('Pushes stopped: GitHub refused the push: protected branch')
+  expect(sync.attention).toMatchObject({ badge: { label: 'Sync stopped', tone: 'error' }, detail: expect.stringContaining('GitHub refused the push: protected branch') })
+  expect(new GithubMountableVolume(row.id, row.name, row.config).readOnly).toBe(false)
+  await sync.run()
+  expect([remote['notes.txt'].toString(), sync.attention]).toEqual(['protected', null])
 })
 
 it("keeps paths the repo root's .gitignore matches local on a subfolder drive", async () => {
@@ -448,7 +448,7 @@ it('holds both sides of a tracked file moved onto a tracked workflow', async () 
   await volume.move('notes.txt', '.github/workflows/ci.yml')
   await sync.run(true)
   expect(commits).toEqual([])
-  expect(sync.attention).toContain('notes.txt (under .github/workflows)')
+  expect(sync.attention?.detail).toContain('notes.txt (under .github/workflows)')
 })
 
 it('drops an upload whose client went away', async () => {
@@ -465,7 +465,7 @@ it('pauses a pull that would overwrite a local file GitHub just added', async ()
   teammate({ 'secret.txt': 'theirs' })
   await sync.run()
   expect(await text('secret.txt')).toBe('mine')
-  expect(sync.attention).toContain('GitHub added a file the drive already has: secret.txt')
+  expect(sync.attention?.detail).toContain('GitHub added a file the drive already has: secret.txt')
 })
 
 it('holds a write onto a path GitHub tracks as a link', async () => {
@@ -475,7 +475,7 @@ it('holds a write onto a path GitHub tracks as a link', async () => {
   await write('link', 'a file')
   await sync.run(true)
   expect(commits).toEqual([])
-  expect(sync.attention).toContain('link (a link or submodule on GitHub)')
+  expect(sync.attention?.detail).toContain('link (a link or submodule on GitHub)')
 })
 
 it('refuses to load unreadable edits instead of forgetting them', async () => {
@@ -513,7 +513,7 @@ it("stops pushing while the repo's .gitignore above a subfolder drive cannot be 
   await write('.env', 'SECRET=1')
   await sync.run(true)
   expect(commits).toEqual([])
-  expect(sync.attention).toContain('Sync paused: offline')
+  expect(sync.attention).toMatchObject({ badge: { label: 'Sync paused' }, detail: expect.stringContaining('offline') })
 })
 
 it('does not keep checking GitHub for a drive whose only edits are held', async () => {
@@ -542,7 +542,7 @@ it('keeps an upload too large to push local, and says so', async () => {
   await write('big.bin', 'x'.repeat(800_000))
   await sync.run(true)
   expect([commits, sync.unpushed]).toEqual([[], 1])
-  expect(sync.attention).toContain('big.bin (over the size limit)')
+  expect(sync.attention?.detail).toContain('big.bin (over the size limit)')
 })
 
 it('records the cause when every retry of a push loses its reply', async () => {
@@ -551,7 +551,7 @@ it('records the cause when every retry of a push loses its reply', async () => {
   client.githubCommit.mockRejectedValue(new VolumeError('GitHub is temporarily unavailable. Please try again.', 503))
   await sync.run(true)
   expect(client.githubCommit).toHaveBeenCalledTimes(3)
-  expect(sync.attention).toContain('Sync paused: GitHub is temporarily unavailable. Please try again.')
+  expect(sync.attention).toMatchObject({ badge: { label: 'Sync paused' }, detail: expect.stringContaining('GitHub is temporarily unavailable. Please try again.') })
 })
 
 /** A teammate's commit moves the branch. */
@@ -598,7 +598,7 @@ it('keeps a conflict held when the upload that made it is replayed', async () =>
   await write('notes.txt', 'AGENT\ntwo\n')
   await sync.run(true)
   expect([commits, remote['notes.txt'].toString()]).toEqual([[], 'TEAM\ntwo\n'])
-  expect(sync.attention).toContain('notes.txt (conflict markers to resolve)')
+  expect(sync.attention?.detail).toContain('notes.txt (conflict markers to resolve)')
 })
 
 it('pushes a drive written to without pause two minutes after its first unpushed write', async () => {

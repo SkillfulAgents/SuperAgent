@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
+import type { VolumeAttention } from '@shared/lib/types/mount'
 import { githubBrowseSchema, type GithubVolumeConfig } from './github-schema'
 import { githubBranches, githubFolder, githubHead, githubRepo, githubRepos, requireGithubAccount } from './github-client'
 import { githubSync } from './github-sync'
@@ -22,17 +23,14 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
 
   readonly type = 'github'
   readonly cacheMode = 'local'
-  override readonly readOnly: boolean
   readonly sync
 
   constructor(id: string, name: string, config: GithubVolumeConfig, volumeId = id, private readonly agentSlug = '') {
     super(id, name, config)
     this.sync = githubSync({ id: volumeId, name, config })
-    this.readOnly = this.sync.stopped !== null
   }
 
-  override get attention(): string | null { return this.sync.attention }
-  override unsynced(): Promise<number | null> { return this.sync.unsynced() }
+  override get attention(): VolumeAttention | null { return this.sync.attention }
 
   override get sourceLabel(): string { return `GitHub · ${this.config.owner}/${this.config.repo}@${this.config.branch}${this.config.path ? `/${this.config.path}` : ''}` }
 

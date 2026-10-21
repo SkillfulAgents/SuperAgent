@@ -84,12 +84,7 @@ routes.patch('/:id', async c => {
 })
 routes.delete('/:id', async c => {
   const id = c.req.param('id')
-  const unsynced = await deleteVolumeDefinition(id, volumeViewer(c), c.req.query('discard') === '1')
-  if (unsynced !== 0) {
-    const error = unsynced === null ? 'The drive’s list of changes cannot be read. Delete again to discard any changes not on the source.'
-      : `${unsynced} ${unsynced === 1 ? 'file has' : 'files have'} not reached the source. Delete again to discard ${unsynced === 1 ? 'it' : 'them'}.`
-    return c.json({ error, unsynced }, 409)
-  }
+  await deleteVolumeDefinition(id, volumeViewer(c))
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'deleted' })
   return c.json({ success: true })
 })
