@@ -43,12 +43,17 @@ describe('sectionOf', () => {
   it('prefers headings that are exactly the text over ones that merely contain it', () => {
     const doc = '### Aftermath of World War I\n\nearlier\n\n## Aftermath\n\nlater\n\n## Impact'
     expect(sectionOf(doc, 'aftermath')).toBe('## Aftermath\n\nlater')
-    expect(sectionOf(doc, 'after')).toBe('### Aftermath of World War I\n\nearlier\n\n## Aftermath\n\nlater')
+    expect(sectionOf(doc, 'after')).toBe('(match 1 of 2)\n### Aftermath of World War I\n\nearlier\n\n(match 2 of 2)\n## Aftermath\n\nlater')
   })
 
   it('names the heading each of several matches sits under', () => {
     const doc = '## Drill A\n\n### Specifications\n\n18V\n\n## Drill B\n\n### Specifications\n\n20V'
-    expect(sectionOf(doc, 'specifications')).toBe('(under "Drill A")\n### Specifications\n\n18V\n\n(under "Drill B")\n### Specifications\n\n20V')
+    expect(sectionOf(doc, 'specifications')).toBe('(match 1 of 2, under "Drill A")\n### Specifications\n\n18V\n\n(match 2 of 2, under "Drill B")\n### Specifications\n\n20V')
+    // Each capped on its own: a long first match does not hide the second.
+    const long = `## A\n\n### Specs\n\n${'x '.repeat(4000)}\n\n## B\n\n### Specs\n\nshort`
+    const both = sectionOf(long, 'specs')
+    expect(both).toContain('(match 2 of 2, under "B")\n### Specs\n\nshort')
+    expect(both).toContain('…[this section continues for')
   })
 
   it('does not repeat a nested match inside a section already returned', () => {
@@ -71,6 +76,8 @@ describe('tidyRead', () => {
   it('joins a list marker left alone on its line with the text it introduces', () => {
     expect(tidyRead('-\n\nPlatform\n\n- Pricing\n-\n\n- Nested')).toBe('- Platform\n\n- Pricing\n\n- Nested')
     expect(tidyRead('  -\n  Solutions')).toBe('  - Solutions')
+    // A bare marker before another bare marker (REI's product tiles) is dropped.
+    expect(tidyRead('-\n-\nTent $199')).toBe('- Tent $199')
     // Carousel dots and other glyph-only lines are dropped (Craigslist: 799 of 1,689 lines).
     expect(tidyRead('Bike\n•\n• •\n$120\n·')).toBe('Bike\n$120')
   })

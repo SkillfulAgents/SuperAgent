@@ -802,14 +802,14 @@ import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlace
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
-import { observeAction, pressPolicy, effectWantsTree, sameDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
-import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
-import { readerScript, parseReadResult, outlineOf, sectionOf, capSection, tidyRead, formatUnreadFrames } from './page-reader';
+import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
+import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
+import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
-import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName, bodyFileName, readableBody } from './traffic-capture';
+import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName, bodyFileName, requestFileName, readableBody } from './traffic-capture';
 import {
-  observeUrl, resetUrlTracking,
+  observeUrl, resetUrlTracking, lastObservedUrl,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -950,7 +950,7 @@ const TREE_READ_TIMEOUT_MS = 10_000;
  * the new baseline either way. Null when it could not run or there was no
  * baseline for this page to compare with.
  */
-async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[] }, docStart = 0): Promise<EffectTreeDiff | null> {
+async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[]; overlayOpened?: boolean }, docStart = 0): Promise<EffectTreeDiff | null> {
   const prior = getTreeBaseline(url, docStart);
   const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (r.exitCode !== 0) return null;
@@ -959,7 +959,7 @@ async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: 
   // carry over to the next one and would already include this read.
   const result = prior
     ? {
-      diff: diffTrees(prior.refs, parseTreeRefs(r.stdout), { excludeRefs: exclude.refs, excludeSubtrees: exclude.subtrees, seen: prior.seen, acknowledged: prior.acknowledged }),
+      diff: diffTrees(prior.refs, parseTreeRefs(r.stdout), { excludeRefs: exclude.refs, excludeSubtrees: exclude.subtrees, seen: prior.seen, acknowledged: prior.acknowledged, overlayOpened: exclude.overlayOpened }),
       baselineAgeMs: now - prior.takenAt,
       baselineSource: prior.source,
     }
@@ -990,13 +990,16 @@ async function runWithEffect(
   noteChallenge(settled.before);
   noteChallenge(settled.after);
   if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, treeDiff: null, docStart: 0 };
+  const lastReported = lastObservedUrl();
   const recorded = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
   // With both reads in hand, the action navigated when the URL differs
   // between them — not when it differs from the last URL some earlier call
   // recorded (a page that moved on its own before this action did not
   // "navigate" on it).
+  const reloaded = settled.before?.url === settled.after?.url && newDocument(settled.before, settled.after);
+  const movedBefore = lastReported !== null && settled.before?.url && settled.before.url !== lastReported && (await addressBarUrl(settled.before.url)) !== lastReported;
   const observed = recorded && settled.before?.url && settled.after?.url
-    ? { ...recorded, navigated: settled.before.url !== settled.after.url }
+    ? { ...recorded, navigated: settled.before.url !== settled.after.url || reloaded, ...(reloaded ? { reloaded: true } : {}), ...(movedBefore ? { changedBefore: lastReported } : {}) }
     : recorded;
   // A URL change inside one document (an SPA route, a hash) is not a page
   // load: the effect and the refs carry over, and the result says so.
@@ -1005,7 +1008,7 @@ async function runWithEffect(
   const effect = digest?.navigated && !sameDoc ? null : settled.effect;
   const docStart = settled.after?.docStart ?? 0;
   const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
-    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees }, docStart)
+    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees, overlayOpened: effect.opened.length > 0 }, docStart)
     : null;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff, docStart };
 }
@@ -1025,14 +1028,22 @@ async function explainUnknownRef(stdout: string, actionRef?: string): Promise<st
     ?? (/Could not locate element with role=/.test(stdout) && actionRef ? /@?(e\d+)/.exec(actionRef) : null);
   if (!m) return stdout;
   const cdp = browserState.cdpUrl || undefined;
-  const urlRead = await execBrowser(['get', 'url'], cdp);
-  if (urlRead.exitCode !== 0 || !urlRead.stdout.trim()) return stdout;
-  const url = await addressBarUrl(urlRead.stdout.trim());
-  const was = getTreeBaseline(url)?.seen.get(m[1]);
-  if (!was) return stdout;
+  // By document, not URL: after an in-page URL change (a back within the
+  // page, a hash) the baseline is still this document's.
+  const page = await observeNow();
+  if (!page.url) return stdout;
+  const was = getTreeBaseline(page.url, page.docStart)?.seen.get(m[1]);
+  if (!was) {
+    // A ref from before the page loaded a new document (the observer's load
+    // start moved on): every ref of that document is gone.
+    const old = lineFromPreviousDocument(m[1]);
+    return old
+      ? `${stdout}\n${m[1]} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
+      : stdout;
+  }
   const fresh = await execBrowser(['snapshot', '-i', '-c'], cdp, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (fresh.exitCode !== 0) return stdout;
-  setTreeBaseline(url, fresh.stdout, 'action');
+  setTreeBaseline(page.url, fresh.stdout, 'action', Date.now(), page.docStart);
   return stdout + formatUnknownRef(m[1], was, parseTreeRefs(fresh.stdout));
 }
 
@@ -1767,12 +1778,17 @@ app.post('/browser/click', async (c) => {
     // On a challenge wall, and on a site that served one, the click moves the
     // mouse along a human-like path first (challenge-input.ts).
     let humanInput = false;
+    // Focus landing in a text field ends a click's wait only when the field is
+    // what was clicked: a dialog's "Done" that hands focus back to a date
+    // field is still closing (bench: Google Hotels).
+    const target = getTreeBaseline((await tabManager.queryTabs().catch(() => [])).find(t => t.active)?.url ?? '')?.seen.get(body.ref.replace(/^@/, '')) ?? '';
+    const clickedField = target === '' || /^(textbox|searchbox|combobox|textarea)\b/.test(target);
     const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
       (before) => {
         humanInput = useHumanInput(before);
         return withRefRestore(body.ref, () => execBrowser(['click', body.ref, ...(humanInput ? ['--human'] : [])], browserState.cdpUrl || undefined));
       },
-      ACTION_POLICIES.click,
+      clickedField ? ACTION_POLICIES.click : { ...ACTION_POLICIES.click, recheck: () => true },
     );
 
     if (result.exitCode !== 0) {
@@ -1837,6 +1853,9 @@ app.post('/browser/fill', async (c) => {
 });
 
 // POST /browser/scroll - Scroll page
+/** How long a scroll that reached the bottom waits for a page that loads more on scroll. */
+const SCROLL_BOTTOM_RECHECK_MS = 1_500;
+
 app.post('/browser/scroll', async (c) => {
   try {
     const body = await c.req.json<{ sessionId: string; direction: string; amount?: number }>();
@@ -1863,11 +1882,21 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const probe = await execBrowser(
-      ['eval', 'JSON.stringify({y:window.scrollY,vh:window.innerHeight,h:document.documentElement.scrollHeight})'],
-      browserState.cdpUrl || undefined
-    );
-    const scrollInfo: ScrollInfo | null = probe.exitCode === 0 ? parseScrollInfo(probe.stdout) : null;
+    const readScroll = async (): Promise<ScrollInfo | null> => {
+      const probe = await execBrowser(
+        ['eval', 'JSON.stringify({y:window.scrollY,vh:window.innerHeight,h:document.documentElement.scrollHeight})'],
+        browserState.cdpUrl || undefined
+      );
+      return probe.exitCode === 0 ? parseScrollInfo(probe.stdout) : null;
+    };
+    let scrollInfo = await readScroll();
+    // At the bottom after scrolling down: a feed that loads more on scroll
+    // grows a moment later (live: "(bottom of page)" 8 ms after the scroll,
+    // the next batch 1.5 s after). One more look before saying so.
+    if (scrollInfo && body.direction === 'down' && scrollInfo.y + scrollInfo.viewportHeight >= scrollInfo.pageHeight) {
+      await new Promise(r => setTimeout(r, SCROLL_BOTTOM_RECHECK_MS));
+      scrollInfo = (await readScroll()) ?? scrollInfo;
+    }
 
     notifyBrowserAction();
     return c.json({ success: true, ...(scrollInfo && { scrollInfo }) });
@@ -2108,7 +2137,7 @@ app.post('/browser/read', async (c) => {
       content = outlineOf(text);
       if (!content) note = 'The page has no headings.';
     } else if (body.section && body.section.trim()) {
-      content = capSection(sectionOf(text, body.section));
+      content = sectionOf(text, body.section);
       if (!content) {
         const outline = outlineOf(text);
         note = `No heading contains ${JSON.stringify(body.section.trim())}.${outline ? ` Headings on this page:\n${outline}` : ' The page has no headings.'}`;
@@ -2192,11 +2221,22 @@ app.post('/browser/capture-traffic', async (c) => {
       const bodyDir = path.join(WORKSPACE_CAPTURES_DIR, fileName.replace(/\.har$/, ''));
       let n = 0;
       for (const e of endpoints) {
-        const entry = redacted.log.entries.find(x => x.request.method === e.method && x.request.url === e.url && typeof x.response.content.text === 'string');
+        // The largest response at that URL (the summary's example).
+        const entry = redacted.log.entries
+          .filter(x => x.request.method === e.method && x.request.url === e.url && typeof x.response.content.text === 'string')
+          .sort((a, b) => (b.response.content.text?.length ?? 0) - (a.response.content.text?.length ?? 0))[0];
         if (!entry?.response.content.text) continue;
         if (n === 0) await fs.promises.mkdir(bodyDir, { recursive: true });
         const file = path.join(bodyDir, bodyFileName(++n, e.url, e.mimeType));
         await fs.promises.writeFile(file, readableBody(entry.response.content.text));
+        // Its request too, so the headers can be read without opening the
+        // whole HAR (bench, USGS: a 62,000-token file read in pieces).
+        await fs.promises.writeFile(requestFileName(file), JSON.stringify({
+          method: entry.request.method,
+          url: entry.request.url,
+          headers: entry.request.headers,
+          ...(entry.request.postData ? { postData: entry.request.postData } : {}),
+        }, null, 2));
         bodies.set(`${e.method} ${e.url}`, file);
       }
 

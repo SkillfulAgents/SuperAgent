@@ -98,10 +98,11 @@ values, and focus. When the page's controls changed, the lines under it list
 the elements added (`+`), changed (`~`, with what they were) and removed
 (`−`) since your last snapshot, each with its ref: a menu, a dialog, a
 suggestion list or new results can be used straight from the result. `⟳`
-lines are elements the site re-rendered under a new ref (`e422 → e526`): use
-the new ref; the old one no longer works. `Effect: none observed within Nms (…)` states only that nothing in that scope
-changed — not that the click failed: a highlight, a change inside an iframe
-or canvas, or a slow server all look like this. Snapshot or screenshot if you
+lines were replaced by identical lines in the same place under new refs
+(`e422 → e526`): the old ref no longer works; the new one is the element
+there now. `Effect: none observed within Nms (…)` states only that nothing in
+that scope changed — not that the click failed: a highlight, a change inside
+a cross-origin iframe or a canvas, or a slow server all look like this. Snapshot or screenshot if you
 need to know; do not click again on that basis, which would undo a toggle.
 Fill results report the value the page actually committed. A fill warning
 means the field now holds a different value than you sent; both are shown

@@ -45,6 +45,19 @@ export interface UrlDigest {
    * not reloaded and refs still work. Set by the caller, which has the reads.
    */
   sameDocument?: boolean
+  /** A new document at the same URL (a form post that lands back on its page). Set by the caller. */
+  reloaded?: boolean
+  /**
+   * The URL the last result reported, when the page had moved off it before
+   * this action ran (a map drag rewriting the query, a route change that
+   * landed after the previous result). Set by the caller.
+   */
+  changedBefore?: string
+}
+
+/** The URL the last observation recorded, or null. */
+export function lastObservedUrl(): string | null {
+  return lastKnownUrl
 }
 
 /** Record the current URL and report whether it changed since last seen. */
@@ -59,15 +72,23 @@ export function observeUrl(currentUrl: string): UrlDigest {
 }
 
 const SAME_DOCUMENT = (url: string): string =>
-  `\nURL changed to ${url} — same document (no page load), so refs from your snapshot still work.`
+  `\nURL changed to ${url} — same document (no page load): refs of elements still on the page keep working.`
+
+const CHANGED_BEFORE = (url: string, was: string): string =>
+  `\nURL is ${url} — it changed from ${was} after the last result, before this action; this action did not change it.`
+
+const RELOADED = (url: string): string =>
+  `\nA new page loaded at the same URL (${url}). Refs from previous snapshots are stale; take a fresh browser_snapshot before further ref actions.`
 
 /** Render the URL digest for click results (always shows the URL). */
 export function formatUrlDigest(digest: UrlDigest | null): string {
   if (!digest) return ''
+  if (digest.reloaded) return RELOADED(digest.url)
   if (digest.navigated && digest.sameDocument) return SAME_DOCUMENT(digest.url)
   if (digest.navigated) {
     return `\nPage NAVIGATED — now at ${digest.url}. Refs from previous snapshots are stale; take a fresh browser_snapshot before further ref actions.`
   }
+  if (digest.changedBefore) return CHANGED_BEFORE(digest.url, digest.changedBefore)
   if (digest.firstObservation) {
     return `\nNow at ${digest.url}.`
   }
@@ -77,10 +98,12 @@ export function formatUrlDigest(digest: UrlDigest | null): string {
 /** Render the URL digest for press results (quiet unless something moved). */
 export function formatUrlDigestBrief(digest: UrlDigest | null): string {
   if (!digest) return ''
+  if (digest.reloaded) return RELOADED(digest.url)
   if (digest.navigated && digest.sameDocument) return SAME_DOCUMENT(digest.url)
   if (digest.navigated) {
     return `\nPage NAVIGATED — now at ${digest.url}. Refs from previous snapshots are stale; take a fresh browser_snapshot before further ref actions.`
   }
+  if (digest.changedBefore) return CHANGED_BEFORE(digest.url, digest.changedBefore)
   if (digest.firstObservation) {
     return ` (now at ${digest.url})`
   }

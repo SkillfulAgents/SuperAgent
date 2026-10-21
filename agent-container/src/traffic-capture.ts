@@ -264,14 +264,21 @@ export function summarizeEndpoints(har: Har, pageUrl: string, max = 30): { endpo
       key = `${e.request.method} ${u.origin}${u.pathname}`
       firstParty = pageHost !== '' && registrableHost(u.host) === pageHost
     } catch { /* keep the raw key */ }
+    const bytes = e.response.content.text?.length ?? e.response.content.size ?? 0
     const g = groups.get(key)
-    if (g) { g.count++; continue }
+    // The group's example is its largest response: a repeat can come back
+    // short (cached, revalidated — SFPL: 4.3 KB listed for a 50 KB answer).
+    if (g) {
+      g.count++
+      if (bytes > g.bytes) Object.assign(g, { url: e.request.url, status: e.response.status, bytes })
+      continue
+    }
     groups.set(key, {
       method: e.request.method,
       url: e.request.url,
       status: e.response.status,
       mimeType: (e.response.content.mimeType ?? '').split(';')[0],
-      bytes: e.response.content.text?.length ?? e.response.content.size ?? 0,
+      bytes,
       count: 1,
       firstParty,
     })
@@ -306,6 +313,9 @@ export function formatCaptureSummary(opts: {
       lines.push(`- ${e.method} ${e.status} ${url} · ${e.mimeType || 'unknown type'} · ${kb(e.bytes)}${e.count > 1 ? ` · ×${e.count}` : ''}${e.firstParty ? '' : ' · third-party'}${body ? ` · body: ${body}` : ''}`)
     }
     if (opts.more > 0) lines.push(`… ${opts.more} more in the file`)
+    if (opts.bodies && opts.bodies.size > 0) {
+      lines.push('Beside each body file, <name>.request.json holds that request: method, URL, headers and body, as recorded.')
+    }
   }
   // What the file does not hold matters as much: agent-browser builds the HAR
   // from Chrome's request/response events, which carry no Cookie headers and
@@ -344,6 +354,11 @@ export function bodyFileName(n: number, url: string, mimeType: string): string {
   try { const u = new URL(url); slug = `${u.host}${u.pathname}` } catch { /* keep the raw url */ }
   slug = slug.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'body'
   return `${String(n).padStart(2, '0')}-${slug}.${/json/i.test(mimeType) ? 'json' : 'txt'}`
+}
+
+/** The request file written beside a body file. */
+export function requestFileName(bodyFile: string): string {
+  return bodyFile.replace(/\.(json|txt)$/, '.request.json')
 }
 
 /** A body for reading: JSON pretty-printed (one 50 KB line defeats Read), anything else as is. */

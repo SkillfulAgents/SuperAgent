@@ -52,10 +52,19 @@ describe('formatUrlDigest', () => {
     expect(msg).toContain('stale')
   })
 
+  it('says when the URL moved after the last result and before this action, and that the action did not move it', () => {
+    const d = { url: 'https://a.com/s?map=1', navigated: false, firstObservation: false, changedBefore: 'https://a.com/s' }
+    for (const msg of [formatUrlDigest(d), formatUrlDigestBrief(d)]) {
+      expect(msg).toBe('\nURL is https://a.com/s?map=1 — it changed from https://a.com/s after the last result, before this action; this action did not change it.')
+    }
+    // A reload at the same URL.
+    expect(formatUrlDigest({ url: 'https://a.com/login', navigated: true, firstObservation: false, reloaded: true })).toContain('A new page loaded at the same URL (https://a.com/login)')
+  })
+
   it('says a same-document URL change is no page load and the refs still work (both forms)', () => {
     const d = { url: 'https://a.com/#/results', navigated: true, firstObservation: false, sameDocument: true }
     for (const msg of [formatUrlDigest(d), formatUrlDigestBrief(d)]) {
-      expect(msg).toBe('\nURL changed to https://a.com/#/results — same document (no page load), so refs from your snapshot still work.')
+      expect(msg).toBe('\nURL changed to https://a.com/#/results — same document (no page load): refs of elements still on the page keep working.')
       expect(msg).not.toContain('NAVIGATED')
       expect(msg).not.toContain('stale')
     }

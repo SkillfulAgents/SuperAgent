@@ -111,6 +111,12 @@ export interface TreeDiff {
   rerendered: Array<{ from: RefLine; to: RefLine }>
   changed: ChangedRef[]
   removed: RefLine[]
+  /**
+   * A menu or listbox that was not in the baseline arrived ('menu' or
+   * 'listbox'), else ''. Options that change inside a list already open are
+   * not a popup appearing.
+   */
+  popup?: string
 }
 
 export function treeDiffIsEmpty(d: TreeDiff): boolean {
@@ -125,7 +131,7 @@ export function lineWithoutRef(text: string): string {
 /** What `before` was, in the terms that differ from `after`. */
 function describeWas(before: RefLine, after: RefLine): string {
   const parts: string[] = []
-  if (before.name !== after.name && before.name && after.name) parts.push(`name ${JSON.stringify(clipAround(before.name, after.name, 40))}`)
+  if (before.name !== after.name && before.name && after.name) parts.push(`name was ${JSON.stringify(clipAround(before.name, after.name, 40))}`)
   const key = (a: string): string => a.split('=')[0]
   const afterKeys = new Map(after.attrs.map(a => [key(a), a]))
   const beforeKeys = new Map(before.attrs.map(a => [key(a), a]))
@@ -177,6 +183,12 @@ export interface DiffOptions {
   excludeRefs?: Iterable<string>
   /** Refs left out with everything nested under them: a native select and its options. */
   excludeSubtrees?: Iterable<string>
+  /**
+   * A dialog opened with the action: what left the tree is behind it, not
+   * re-rendered — a dialog's own "Close" or "Departure" field is not the
+   * page's (bench: Google Flights, Hotels, Maps).
+   */
+  overlayOpened?: boolean
   /** Lines the agent has seen earlier on this page (see TreeBaseline.seen). */
   seen?: ReadonlyMap<string, string>
   /**
@@ -229,12 +241,20 @@ export function diffTrees(before: TreeRefs, after: TreeRefs, opts: DiffOptions =
   for (const [ref, line] of before.lines) {
     if (!excluded(ref) && !after.lines.has(ref)) removed.push(line)
   }
-  // Pair what left with what arrived looking exactly the same, in tree order:
-  // one element re-rendered under a new ref, not one removed and one added.
-  // A line that names one element (a name, and once on each side) pairs on
-  // its own; generic lines (`listitem`, an unnamed button) pair only when
-  // most of what left arrived again identical — a region re-drawn as a whole,
-  // not three new rows that happen to look like three old ones.
+  // Pair what left with what arrived looking exactly the same: one element
+  // re-rendered under a new ref, not one removed and one added. Looking the
+  // same is not enough on its own — a calendar's "1" of October and of
+  // November, two laptops whose names the site cut to the same 16 characters,
+  // each with its own "Add to cart" (live review) — so a pair needs an
+  // anchor:
+  //  - a line whose name (with a letter in it) is unique on both sides pairs
+  //    when its enclosing lines and both neighbours are the same lines;
+  //  - failing that, a line pairs when a neighbour is itself a pair, its
+  //    enclosing lines match and the run of identical lines it stands in is
+  //    as long on both sides (a re-drawn region, element by element — not 3
+  //    rows that replaced 10; a list re-drawn with one item appended);
+  //  - a name of only digits ("1", "2": a day, a page number) never anchors.
+  // When everything that left came back identical, the order alone pairs them.
   const keyOf = (l: RefLine): string => lineWithoutRef(l.text)
   const arrivals = new Map<string, RefLine[]>()
   for (const l of added) arrivals.set(keyOf(l), [...(arrivals.get(keyOf(l)) ?? []), l])
@@ -242,17 +262,93 @@ export function diffTrees(before: TreeRefs, after: TreeRefs, opts: DiffOptions =
   for (const l of removed) departures.set(keyOf(l), (departures.get(keyOf(l)) ?? 0) + 1)
   let matches = 0
   for (const [k, n] of departures) matches += Math.min(n, arrivals.get(k)?.length ?? 0)
-  const redrawn = removed.length > 0 && matches * 2 >= removed.length
-  const pairable = (l: RefLine): boolean =>
-    redrawn || (l.name !== '' && departures.get(keyOf(l)) === 1 && arrivals.get(keyOf(l))?.length === 1)
+  const total = removed.length > 0 && matches === removed.length && matches === added.length
+  const beforeOrder = [...before.lines.values()]
+  const afterOrder = [...after.lines.values()]
+  const beforePos = new Map(beforeOrder.map((l, i) => [l.ref, i]))
+  const afterPos = new Map(afterOrder.map((l, i) => [l.ref, i]))
+  const neighbour = (order: RefLine[], pos: Map<string, number>, l: RefLine, d: number): RefLine | undefined => {
+    const i = pos.get(l.ref)
+    return i === undefined ? undefined : order[i + d]
+  }
+  const ancestry = (tree: TreeRefs, l: RefLine): string => {
+    const keys: string[] = []
+    let p = l.parent
+    for (let guard = 0; p && guard < 8; guard++) {
+      const pl = tree.lines.get(p)
+      if (!pl) break
+      keys.push(keyOf(pl))
+      p = pl.parent
+    }
+    return keys.join(' > ')
+  }
+  // Unique in the whole tree on each side, not only among what moved: with
+  // ten "disclaimer *" buttons staying put, the one that left is not identified.
+  const countIn = (order: RefLine[]): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const l of order) m.set(keyOf(l), (m.get(keyOf(l)) ?? 0) + 1)
+    return m
+  }
+  const beforeCount = countIn([...before.lines.values()])
+  const afterCount = countIn([...after.lines.values()])
+  const identifying = (l: RefLine): boolean =>
+    /\p{L}/u.test(l.name) && beforeCount.get(keyOf(l)) === 1 && afterCount.get(keyOf(l)) === 1
+  const digitsOnly = (l: RefLine): boolean => l.name !== '' && !/\p{L}/u.test(l.name)
+  // How many lines in a row, around `l`, read exactly like it.
+  const run = (order: RefLine[], pos: Map<string, number>, l: RefLine): number => {
+    const i = pos.get(l.ref) ?? 0
+    let a = i, b = i
+    while (a > 0 && keyOf(order[a - 1]) === keyOf(l)) a--
+    while (b < order.length - 1 && keyOf(order[b + 1]) === keyOf(l)) b++
+    return b - a + 1
+  }
+  const pairOf = new Map<string, RefLine>()
+  const taken = new Set<RefLine>()
+  const sameKey = (a: RefLine | undefined, b: RefLine | undefined): boolean => (a ? keyOf(a) : '') === (b ? keyOf(b) : '')
+  const isPair = (a: RefLine | undefined, b: RefLine | undefined): boolean => Boolean(a && b && pairOf.get(a.ref) === b)
+  const tryPair = (l: RefLine, ok: (to: RefLine) => boolean): void => {
+    const to = (arrivals.get(keyOf(l)) ?? []).find(a => !taken.has(a) && ok(a))
+    if (to) { pairOf.set(l.ref, to); taken.add(to) }
+  }
+  if (opts.overlayOpened) {
+    // No pairs: the page is behind the dialog.
+  } else if (total) {
+    for (const l of removed) tryPair(l, () => true)
+  } else {
+    for (const l of removed) {
+      if (!identifying(l)) continue
+      tryPair(l, to => ancestry(before, l) === ancestry(after, to) &&
+        sameKey(neighbour(beforeOrder, beforePos, l, -1), neighbour(afterOrder, afterPos, to, -1)) &&
+        sameKey(neighbour(beforeOrder, beforePos, l, 1), neighbour(afterOrder, afterPos, to, 1)))
+    }
+    for (let round = 0, grew = true; grew && round < 50; round++) {
+      grew = false
+      for (const l of removed) {
+        if (pairOf.has(l.ref) || digitsOnly(l)) continue
+        tryPair(l, to => ancestry(before, l) === ancestry(after, to) &&
+          run(beforeOrder, beforePos, l) === run(afterOrder, afterPos, to) && (
+          isPair(neighbour(beforeOrder, beforePos, l, -1), neighbour(afterOrder, afterPos, to, -1)) ||
+          isPair(neighbour(beforeOrder, beforePos, l, 1), neighbour(afterOrder, afterPos, to, 1))))
+        if (pairOf.has(l.ref)) grew = true
+      }
+    }
+  }
   const rerendered: Array<{ from: RefLine; to: RefLine }> = []
-  const paired = new Set<RefLine>()
   const stillRemoved: RefLine[] = []
   for (const l of removed) {
-    const to = pairable(l) ? arrivals.get(keyOf(l))?.shift() : undefined
-    if (to) { rerendered.push({ from: l, to }); paired.add(to) } else stillRemoved.push(l)
+    const to = pairOf.get(l.ref)
+    if (to) rerendered.push({ from: l, to }); else stillRemoved.push(l)
   }
-  return { added: added.filter(l => !paired.has(l)), returned, rerendered, changed, removed: stillRemoved }
+  const paired = new Set(rerendered.map(r => r.to))
+  // A menu, or a listbox, that was not there before: options changing in a
+  // list already open are not one appearing (GitHub's branch filter), and a
+  // suggestion list open elsewhere does not hide a menu that just opened.
+  const MENU = /^(menu|menuitem|menuitemcheckbox|menuitemradio)\b/
+  const LIST = /^(listbox|option)\b/
+  const had = (re: RegExp): boolean => [...before.lines.values()].some(l => re.test(l.text))
+  const popup = added.some(l => MENU.test(l.text)) && !had(MENU) ? 'menu'
+    : added.some(l => /^listbox\b/.test(l.text)) || (added.some(l => LIST.test(l.text)) && !had(LIST)) ? 'listbox' : ''
+  return { added: added.filter(l => !paired.has(l)), returned, rerendered, changed, removed: stillRemoved, popup }
 }
 
 /** Lines shown before the rest is summarised as a count. */
@@ -261,6 +357,8 @@ export const TREE_DIFF_MAX_LINES = 25
 export const TREE_DIFF_MAX_REMOVED_LINES = 6
 /** Re-rendered elements: enough old → new pairs to keep acting, then a count. */
 export const TREE_DIFF_MAX_RERENDER_LINES = 6
+/** Elements back in the tree are listed up to this many, then counted. */
+export const TREE_DIFF_MAX_BACK_LINES = 5
 /** Changed lines listed ahead of the added ones; the rest follow them. */
 export const TREE_DIFF_LEADING_CHANGED_LINES = 8
 const LINE_CHARS = 200
@@ -296,38 +394,53 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   if (treeDiffIsEmpty(d)) return ''
   const max = opts.maxLines ?? TREE_DIFF_MAX_LINES
   const since = opts.baselineSource === 'snapshot' ? `your snapshot ${ageText(opts.baselineAgeMs)}` : `the previous action's tree ${ageText(opts.baselineAgeMs)}`
+  // A parent that adds nothing but a wrapper — its one child has the same
+  // name (a calendar gridcell around its button) — is listed through the child.
+  const addedRefs = new Set(d.added.map(l => l.ref))
+  // Not when the parent carries state or the child is a generic box (an
+  // option [selected] around its text: the option is the line to keep).
+  const wrappers = new Set(d.added.filter(l => {
+    const parent = l.parent && addedRefs.has(l.parent) ? d.added.find(p => p.ref === l.parent) : undefined
+    return parent !== undefined && l.name !== '' && parent.name === l.name && parent.attrs.length === 0 && !/^generic\b/.test(l.text)
+  }).map(l => l.parent as string))
+  const addedCount = d.added.length - wrappers.size
   const counts = [
-    d.rerendered.length > 0 ? `${d.rerendered.length} re-rendered with new refs` : '',
-    d.added.length > 0 ? `${d.added.length} added` : '',
+    d.rerendered.length > 0 ? `${d.rerendered.length} replaced by identical lines` : '',
+    addedCount > 0 ? `${addedCount} added` : '',
     d.returned.length > 0 ? `${d.returned.length} back` : '',
     d.changed.length > 0 ? `${d.changed.length} changed` : '',
     d.removed.length > 0 ? `${d.removed.length} removed` : '',
   ].filter(Boolean).join(', ')
-  // A parent that adds nothing but a wrapper — its one child has the same
-  // name (a calendar gridcell around its button) — is listed through the child.
-  const addedRefs = new Set(d.added.map(l => l.ref))
-  const wrappers = new Set(d.added.filter(l => l.parent && addedRefs.has(l.parent) && l.name !== '' &&
-    d.added.find(p => p.ref === l.parent)?.name === l.name).map(l => l.parent as string))
   // Changed lines first: they are mostly the controls the agent just acted
   // on, and a results list arriving with them must not push them out of the cap.
   const changedLines = d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (${c.was})` : ''}`)
+  // Inside a dialog that arrived: listed before anything else that arrived
+  // (Airbnb: late result prices pushed the new filter dialog's radios out).
+  const addedByRef = new Map(d.added.map(l => [l.ref, l]))
+  const inNewDialog = (l: RefLine): boolean => {
+    for (let p: RefLine | undefined = l, guard = 0; p && guard < 32; p = p.parent ? addedByRef.get(p.parent) : undefined, guard++) {
+      if (/^(dialog|alertdialog)\b/.test(p.text)) return true
+    }
+    return false
+  }
+  const shownAdded = d.added.filter(l => !wrappers.has(l.ref))
+  const ordered = [...shownAdded.filter(inNewDialog), ...shownAdded.filter(l => !inNewDialog(l))]
   const main: string[] = [
     ...changedLines.slice(0, TREE_DIFF_LEADING_CHANGED_LINES),
-    ...d.added.filter(l => !wrappers.has(l.ref)).map(l => `+ ${clip(l.text, LINE_CHARS)}`),
+    ...ordered.map(l => `+ ${clip(l.text, LINE_CHARS)}`),
     ...changedLines.slice(TREE_DIFF_LEADING_CHANGED_LINES),
   ]
   // A menu or listbox that arrived while many elements left: a modal menu
   // (Radix and others) takes the page out of the tree like a dialog does.
-  // The interactive view lists a menu's items, not always the menu itself.
-  const popupLine = opts.dialogOpened ? undefined : d.added.find(l => /^(menu|menuitem|menuitemcheckbox|menuitemradio|listbox|option)\b/.test(l.text))
-  const popup = !popupLine ? '' : /^(listbox|option)\b/.test(popupLine.text) ? 'listbox' : 'menu'
+  const popup = opts.dialogOpened ? '' : d.popup ?? ''
   const collapse = opts.dialogOpened || (popup !== '' && d.removed.length > TREE_DIFF_MAX_REMOVED_LINES)
   const removedShown = collapse ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)
   // First: refs that stopped working. Acting on one of them is the failure
   // this prevents (✗ Unknown ref after a site re-drew the page).
   const lines: string[] = []
   if (d.rerendered.length > 0) {
-    lines.push(`⟳ ${d.rerendered.length} element${d.rerendered.length === 1 ? '' : 's'} re-rendered — same line, new ref; the old ref${d.rerendered.length === 1 ? '' : 's'} no longer work${d.rerendered.length === 1 ? 's' : ''}:`)
+    const one = d.rerendered.length === 1
+    lines.push(`⟳ ${d.rerendered.length} line${one ? ' was' : 's were'} replaced by ${one ? 'an identical line' : 'identical lines'} in the same place, under ${one ? 'a new ref' : 'new refs'}; the old ref${one ? '' : 's'} no longer work${one ? 's' : ''}:`)
     const shown = d.rerendered.slice(0, TREE_DIFF_MAX_RERENDER_LINES)
     lines.push(...shown.map(r => `  ${clip(lineWithoutRef(r.to.text), 120)}: ${r.from.ref} → ${r.to.ref}`))
     if (d.rerendered.length > shown.length) lines.push(`  … ${d.rerendered.length - shown.length} more re-rendered`)
@@ -335,8 +448,12 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
   const mainShown = main.slice(0, Math.max(0, max - removedShown - lines.length))
   lines.push(...mainShown)
   if (main.length > mainShown.length) lines.push(`… ${main.length - mainShown.length} more added/changed not shown`)
-  if (d.returned.length > 0) {
-    lines.push(`+ ${d.returned.length} element${d.returned.length === 1 ? '' : 's'} back in the tree exactly as you last saw ${d.returned.length === 1 ? 'it' : 'them'}, same refs`)
+  if (d.returned.length > 0 && d.returned.length <= TREE_DIFF_MAX_BACK_LINES) {
+    // A few: listed, their refs may be the ones to use (Google Hotels: the
+    // search dialog's combobox came back and was only counted).
+    lines.push(...d.returned.map(l => `+ ${clip(l.text, LINE_CHARS)} (back, same ref)`))
+  } else if (d.returned.length > 0) {
+    lines.push(`+ ${d.returned.length} elements back in the tree exactly as you last saw them, same refs`)
   }
   lines.push(...d.removed.slice(0, removedShown).map(l => `− ${clip(l.text, LINE_CHARS)}`))
   const removedHidden = d.removed.length - removedShown
@@ -344,7 +461,7 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
     lines.push(opts.dialogOpened
       ? `− ${removedHidden} other element${removedHidden === 1 ? ' is' : 's are'} not in the tree while the dialog is open`
       : collapse
-        ? `− ${removedHidden} other element${removedHidden === 1 ? '' : 's'} left the tree as the ${popup} appeared`
+        ? `− ${removedHidden} other element${removedHidden === 1 ? '' : 's'} left the tree while a ${popup} appeared`
         : `− ${removedHidden} more no longer in the tree`)
   }
   return `\nTree changes since ${since} (${counts}):\n${lines.join('\n')}`
@@ -368,10 +485,20 @@ export function formatUnknownRef(ref: string, wasText: string, current: TreeRefs
   }
   const same = [...current.lines.values()].filter(l => lineWithoutRef(l.text) === was)
   const head = `\n${id} was ${clip(was, 160)} when last read; no element in the current tree has that ref.`
-  if (same.length === 1) return `${head} The element with that same role, name and state now has ref @${same[0].ref}.`
+  // Which element it was is not known — a calendar's "15" of the next month
+  // has the same line — so the note lists, it does not identify.
+  if (same.length === 1) return `${head} One element in the current tree has that same role, name and state: @${same[0].ref}.`
   if (same.length > 1) {
     const listed = same.slice(0, 8).map(l => `@${l.ref}`).join(', ')
-    return `${head} ${same.length} elements now have that same role, name and state: ${listed}${same.length > 8 ? ', …' : ''}.`
+    return `${head} ${same.length} elements in the current tree have that same role, name and state: ${listed}${same.length > 8 ? ', …' : ''}.`
+  }
+  // Same role and name in another state (a combobox now expanded=true).
+  const roleName = (text: string): string => /^(\S+)(?: ("(?:[^"\\]|\\.)*"))?/.exec(lineWithoutRef(text))?.slice(1).join(' ').trim() ?? ''
+  const wantRn = roleName(wasText)
+  const similar = /"/.test(wantRn) ? [...current.lines.values()].filter(l => roleName(l.text) === wantRn) : []
+  if (similar.length > 0) {
+    const listed = similar.slice(0, 5).map(l => `@${l.ref} (${clip(lineWithoutRef(l.text), 100)})`).join(', ')
+    return `${head} No element has that role, name and state; with that role and name: ${listed}${similar.length > 5 ? ', …' : ''}.`
   }
   return `${head} No element in the current tree has that role, name and state.`
 }
@@ -397,6 +524,8 @@ export interface TreeBaseline {
 }
 
 let baseline: TreeBaseline | null = null
+/** The last baseline of the previous document, kept to explain its refs after a load. */
+let previousDocument: TreeBaseline | null = null
 
 /** Cap on remembered lines per page — a long infinite scroll must not grow without bound. */
 const SEEN_MAX = 20_000
@@ -417,6 +546,7 @@ export function setTreeBaseline(url: string, tree: string, source: TreeBaseline[
     seen.set(ref, line.text)
   }
   while (seen.size > SEEN_MAX) seen.delete(seen.keys().next().value as string)
+  if (baseline && !sameDocumentAs(baseline, url, docStart)) previousDocument = baseline
   baseline = { url, refs, takenAt: now, source, docStart, seen, acknowledged: new Map() }
 }
 
@@ -433,4 +563,11 @@ export function acknowledgeTreeValue(url: string, ref: string, value: string | n
 
 export function resetTreeBaseline(): void {
   baseline = null
+  previousDocument = null
+}
+
+/** What `ref` was on the document before the current one, or null. */
+export function lineFromPreviousDocument(ref: string): { text: string; url: string } | null {
+  const text = previousDocument?.seen.get(ref.replace(/^@/, ''))
+  return text && previousDocument ? { text, url: previousDocument.url } : null
 }

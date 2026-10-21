@@ -286,7 +286,9 @@ The result reports what the click changed: navigation, dialogs, announcements, a
     // A challenge wall (or a site that served one) gets a human-like mouse
     // path; it explains the slower click and a "covered by" error.
     const human = data?.humanInput === true ? ' (human-like mouse path: this site served a challenge page)' : ''
-    let text = `Clicked ${args.ref}.${human}${formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
+    // A new tab in front: its notice says where the agent is; the URL digest
+    // compared two different tabs.
+    let text = `Clicked ${args.ref}.${human}${tabInfo ? '' : formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -402,7 +404,7 @@ This cannot type text — multi-character strings are rejected. To type into the
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}${tabInfo ? '' : effectText(data, 'press', 50)}`
+    let text = `Pressed "${args.key}".${tabInfo ? '' : formatUrlDigestBrief(digest)}${tabInfo ? '' : effectText(data, 'press', 50)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -604,8 +606,12 @@ Notes: this APPENDS to existing content (it does not clear first — use browser
     let text: string
     if (data && typeof data.committedValue === 'string') {
       text = `Typed ${args.text.length} chars into ${args.ref} — field value is now: "${data.committedValue}".${effectText(data, 'type', 300, { valueReadBack: true })}`
+    } else if (args.ref) {
+      // The field took focus and the keys, but its value could not be read
+      // afterwards (a site that swaps the input for another on focus).
+      text = `Typed ${args.text.length} chars after focusing ${args.ref}; the field's value could not be read back afterwards.${effectText(data, 'type', 300)}`
     } else {
-      text = `Typed ${args.text.length} chars into the focused element. If the field is inside a payment iframe, verify visually with browser_screenshot.${effectText(data, 'type', 300, { valueReadBack: Boolean(args.ref) })}`
+      text = `Typed ${args.text.length} chars into the focused element. If the field is inside a payment iframe, verify visually with browser_screenshot.${effectText(data, 'type', 300)}`
     }
     text += getTabWarning()
     return {

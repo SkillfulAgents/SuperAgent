@@ -38,7 +38,7 @@ export interface ReadResult {
   frames: ReadFrame[]
 }
 
-/** Build the reader eval: one IIFE returning JSON `{text, truncated}`. */
+/** Build the reader eval: one IIFE returning JSON `{text, truncated, frames}`. */
 export function readerScript(): string {
   return (
     '(function(){' +
@@ -48,7 +48,10 @@ export function readerScript(): string {
     // of only U+200B). The joiner U+200D stays: it holds emoji together.
     'var zw=/[\\u200b\\u200c\\u2060\\ufeff]/g;' +
     'var ws=function(s){return String(s||"").replace(zw,"").replace(/\\s+/g," ").trim()};' +
-    'var vis=function(el){try{if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,opacityProperty:true,checkVisibilityCSS:true,checkOpacity:true});return el.getClientRects().length>0}catch(e){return false}};' +
+    'var VW=(typeof innerWidth==="number"&&innerWidth)||1,VH=(typeof innerHeight==="number"&&innerHeight)||1;' +
+    // Rendered at all: display, content-visibility, visibility. Opacity and
+    // position are decided by the pre-pass below.
+    'var shown=function(el){try{if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,checkVisibilityCSS:true});return el.getClientRects().length>0}catch(e){return false}};' +
     // Block text as the browser lays it out: one line per line break, blank runs collapsed.
     'var blockText=function(el){return String(el.innerText||"").replace(zw,"").split("\\n").map(function(l){return l.replace(/[ \\t\\u00a0]+/g," ").trim()}).filter(function(l){return l}).join("\\n")};' +
     'var SKIP=/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|CANVAS|IFRAME|OBJECT|EMBED|HEAD|OPTION|DATALIST)$/;' +
@@ -59,66 +62,131 @@ export function readerScript(): string {
     // chosen; screen-reader-only text gets a line of its own ("Delinquent"
     // beside "Date"); an icon's name is missing ("35,878" with no "star").
     'var SRONLY=".sr-only,.visually-hidden,.visuallyhidden,.screen-reader-text,.screenreader-only,.a-offscreen,.u-visually-hidden";' +
+    // Screen-reader text that stands for a picture a person sees (a star rating) is kept.
+    'var RATING=/\\b(rated|rating|out of \\d|stars?)\\b/i;' +
     // Also walked: live regions (often screen-reader-only status text such as
-    // "No results returned." above 30 results), form controls (checked state,
-    // typed values) and <time> (its machine date).
-    'var SPECIAL="select,input,textarea,time[datetime],[aria-live],[role=status],[role=alert],svg[aria-label],[role=img][aria-label],img[alt],"+SRONLY;' +
-    'var plain=function(el){return !cardAnc.has(el)&&!el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
+    // "No results returned." above 30 results), form controls and ARIA
+    // checkboxes (checked state, typed values), <time> (its machine date) and
+    // slots (shadow DOM).
+    'var SPECIAL="select,input,textarea,time[datetime],relative-time,slot,[aria-live],[role=status],[role=alert],[role=checkbox],[role=radio],[role=switch],svg[aria-label],[role=img][aria-label],img[alt],"+SRONLY;' +
+    // One pass over every element up front (~20 ms on a 17,000-element page).
+    // hidden: what a person cannot see but innerText would read — opacity 0
+    // (an inactive carousel slide; not below the fold, where it is usually
+    // waiting for a fade-in on scroll), screen-reader-only boxes (1px,
+    // clipped), and fixed panels parked outside the viewport (a closed cart
+    // drawer), with everything inside them. deep: boxes whose innerText
+    // cannot be trusted — they hold hidden text, a shadow root (innerText
+    // does not enter it) or cards — so the walk goes into them.
+    'var hidden=new Set(),deep=new Set(),fixedIn=new Set(),groups=new Map();' +
+    'var parentOf=function(e){return e.parentElement||(e.parentNode&&e.parentNode.host)||null};' +
+    'var markUp=function(e){for(var a=e;a&&!deep.has(a);a=parentOf(a))deep.add(a)};' +
     // Cards: three or more sibling boxes of one tag and class (a results grid)
-    // whose first holds more than one line. Their text runs together once
-    // walked, so a line `---` goes between two neighbouring ones — which price
-    // belongs to which product.
-    // Found once up front: a container of cards is walked even when it has no
-    // other structure (its innerText would run the cards together), and so is
-    // every box that holds one.
+    // whose first holds a few lines. Their text runs together once walked, so
+    // a line `---` goes between neighbouring ones — which price belongs to
+    // which product.
     'var sig=function(c){var t=String(c.tagName).toUpperCase();var cl=c.getAttribute("class")||"";return /^(DIV|ARTICLE|SECTION|A)$/.test(t)&&(cl||t==="ARTICLE")?t+"."+cl:""};' +
-    'var multi=function(c){return String(c.innerText||"").trim().indexOf("\\n")>=0};' +
-    'var cardSigs=new Map();var cardAnc=new Set();' +
-    'try{var groups=new Map();[].slice.call(document.body.querySelectorAll("div[class],article,section[class],a[class]")).forEach(function(c){var p=c.parentElement;var g=sig(c);if(!p||!g)return;var m=groups.get(p);if(!m){m={};groups.set(p,m)}(m[g]=m[g]||[]).push(c)});' +
-    'groups.forEach(function(m,p){var ok={};var any=false;for(var g in m){if(m[g].length>=3&&multi(m[g][0])){ok[g]=1;any=true}}if(!any)return;cardSigs.set(p,ok);for(var a=p;a&&!cardAnc.has(a);a=a.parentElement)cardAnc.add(a)})}catch(e){}' +
-    'var srOnly=function(el){try{if(el.matches(SRONLY))return true;var r=el.getBoundingClientRect();if(r.width<=1&&r.height<=1){var po=getComputedStyle(el).position;return po==="absolute"||po==="fixed"}}catch(e){}return false};' +
+    // A card links somewhere (a product, a listing); a form group or a
+    // label/value pair does not, and is not set apart.
+    'var multi=function(c){var t=String(c.innerText||"").replace(zw,"").replace(/\\n\\s*(?=\\n)/g,"").trim();return t.length>=20&&t.indexOf("\\n")>=0&&(c.matches("a[href]")||!!c.querySelector("a[href]"))};' +
+    // Screen-reader headings are structure (BLS: a chart's title over its SVG).
+    'var HEAD=/^H[1-6]$/;var isHead=function(e){return HEAD.test(String(e.tagName).toUpperCase())||(e.getAttribute&&e.getAttribute("role")==="heading")};' +
+    // A link or button with no visible text of its own: its screen-reader
+    // text, all of it, is its name (an icon link: "Instagram", "(opens in a
+    // new tab)").
+    'var srLike=function(x){try{if(x.matches(SRONLY))return true;var r=x.getBoundingClientRect();if(r.width<=1&&r.height<=1){var c=getComputedStyle(x);return c.position==="absolute"||c.position==="fixed"}}catch(e){}return false};' +
+    'var onlyName=function(e){try{var h=e.closest("a,button,[role=button],[role=link]");if(!h||!ws(e.textContent))return false;var tw=document.createTreeWalker(h,4);for(var t=tw.nextNode();t;t=tw.nextNode()){if(!ws(t.nodeValue))continue;var hid=false;for(var a=t.parentElement;a&&a!==h.parentElement;a=a.parentElement){if(srLike(a)){hid=true;break}}if(!hid)return false}return true}catch(x){return false}};' +
+    'var box=function(e,ty){return e.tagName==="INPUT"&&(ty==="checkbox"||ty==="radio")};' +
+    'var scan=function(root){var all=root.querySelectorAll("*");for(var i=0;i<all.length;i++){var e=all[i];var p=parentOf(e);' +
+    'if(p&&hidden.has(p)){hidden.add(e)}else{var cs=null;try{cs=getComputedStyle(e)}catch(x){}' +
+    'if(cs){var fx=cs.position==="fixed"||(p!==null&&fixedIn.has(p));if(fx)fixedIn.add(e);var r=null;var gone=false;' +
+    // A styled-away native checkbox (opacity 0 under a custom box) still has a state.
+    'if(cs.opacity==="0"&&!box(e,String(e.type||"").toLowerCase())){r=e.getBoundingClientRect();if(r.top<VH)gone=true}' +
+    'if(!gone&&fx){r=r||e.getBoundingClientRect();if(r.width>0&&r.height>0&&(r.right<=0||r.left>=VW||r.bottom<=0||r.top>=VH))gone=true}' +
+    'if(!gone&&cs.position==="absolute"){r=r||e.getBoundingClientRect();if(r.width>0&&(r.right<=0||r.bottom+(window.scrollY||0)<=0)&&!onlyName(e))gone=true}' +
+    'if(!gone&&(cs.position==="absolute"||cs.position==="fixed")){r=r||e.getBoundingClientRect();if(r.width<=1&&r.height<=1&&(cs.overflow==="hidden"||cs.clip!=="auto"||cs.clipPath!=="none")&&!RATING.test(e.textContent||"")&&!onlyName(e)&&!isHead(e))gone=true}' +
+    'if(gone){hidden.add(e);if(p&&String(e.textContent||"").trim())markUp(p)}}}' +
+    'if(e.shadowRoot&&!hidden.has(e)){markUp(e);scan(e.shadowRoot)}' +
+    'var g=p?sig(e):"";if(g&&!hidden.has(e)){var m=groups.get(p);if(!m){m={};groups.set(p,m)}(m[g]=m[g]||[]).push(e)}}};' +
+    'try{if(document.body)scan(document.body)}catch(x){}' +
+    'var cardSigs=new Map();' +
+    'try{groups.forEach(function(m,p){var ok={};var any=false;for(var g in m){if(m[g].length>=3&&multi(m[g][0])){ok[g]=1;any=true}}if(!any)return;cardSigs.set(p,ok);markUp(p)})}catch(x){}' +
+    'var vis=function(el){return shown(el)&&!hidden.has(el)};' +
+    'var plain=function(el){return !deep.has(el)&&!el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
+    // The rendered children: a shadow root's for its host, the assigned nodes for a slot.
+    'var kids=function(el){if(el.shadowRoot)return el.shadowRoot.childNodes;if(el.tagName==="SLOT"&&el.assignedNodes){var a=el.assignedNodes({flatten:true});if(a.length)return a}return el.childNodes};' +
+    // A field whose text is painted transparent is a code editor's input layer, not a value.
+    'var clear=function(el){try{var c=getComputedStyle(el);var f=String(c.webkitTextFillColor||c.color);return f==="transparent"||/^rgba\\([^)]*,\\s*0\\)$/.test(f)}catch(e){return false}};' +
+    'var bigAlts=[];' +
+    // Rows of one table share the cells a rowspan carries down.
+    'var spans=new Map();' +
+    'var CTRL="select,input,textarea,[role=checkbox],[role=radio],[role=switch],svg[aria-label],[role=img][aria-label],img[alt]";' +
+    'var cellText=function(c){if(c.querySelector(CTRL)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join(""));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
+    'var SEP="\\n\\n---\\n\\n";' +
     'var walk=function(node,depth){if(full)return;' +
     'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);else if(t)push(" ");return}' +
-    'if(node.nodeType!==1)return;var el=node;var tag=String(el.tagName||"").toUpperCase();if(SKIP.test(tag))return;' +
+    'if(node.nodeType!==1)return;var el=node;var tag=String(el.tagName||"").toUpperCase();if(SKIP.test(tag)||hidden.has(el))return;' +
+    'if(tag==="INPUT"){var ty=String(el.type||"").toLowerCase();if(ty==="checkbox"||ty==="radio"){if(shown(el))push(el.checked?" [x] ":" [ ] ");return}}' +
     // display:contents has no box of its own but its children render.
-    'if(!vis(el)){var dc=false;try{dc=getComputedStyle(el).display==="contents"}catch(e){}if(!dc)return}' +
-    // An icon is its name; a large image's alt is left out (a product photo repeats the product name).
+    'if(!shown(el)){var dc=false;try{dc=getComputedStyle(el).display==="contents"}catch(e){}if(!dc)return}' +
+    'if(el.matches&&el.matches(SRONLY)&&!isHead(el)){if(RATING.test(el.textContent||"")||onlyName(el))push(" "+ws(el.textContent)+" ");return}' +
     'var role=el.getAttribute?el.getAttribute("role"):null;' +
-    'if(tag==="SVG"||tag==="IMG"||role==="img"){var il=tag==="IMG"?el.getAttribute("alt"):el.getAttribute("aria-label");var small=true;try{small=el.getBoundingClientRect().width<=48}catch(e){}if(il&&(tag!=="IMG"||small))push(" "+ws(il)+" ");return}' +
+    'if(role==="checkbox"||role==="radio"||role==="switch"){var ac=el.getAttribute("aria-checked");push(ac==="true"?" [x] ":ac==="mixed"?" [-] ":" [ ] ")}' +
+    // An icon is its name; a large image's alt is left out (a product photo
+    // repeats the product name) unless the page has no text at all.
+    'if(tag==="SVG"||tag==="IMG"||(role==="img"&&!ws(el.innerText))){var il=tag==="IMG"?el.getAttribute("alt"):el.getAttribute("aria-label");var small=true;try{small=el.getBoundingClientRect().width<=48}catch(e){}if(il&&(tag!=="IMG"||small)){var ctx=tag==="IMG"?(el.closest("a,button,li,td")||el.parentElement):null;if(!(ctx&&ws(ctx.innerText).indexOf(ws(il))>=0))push(" "+ws(il)+" ")}else if(il)bigAlts.push(ws(il));return}' +
     'if(tag==="SELECT"){var so=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null;if(so)push(" "+ws(so.text)+" ");return}' +
-    // A box's state and a field's value; never a password.
-    'if(tag==="INPUT"){var ty=String(el.type||"").toLowerCase();if(ty==="checkbox"||ty==="radio"){push(el.checked?" [x] ":" [ ] ")}else if(ty!=="password"&&ty!=="hidden"&&ty!=="submit"&&ty!=="button"&&ty!=="image"&&el.value){push(" ["+ws(el.value).slice(0,200)+"] ")}return}' +
-    'if(tag==="TEXTAREA"){if(el.value)push(" ["+ws(el.value).slice(0,500)+"] ");return}' +
-    'if(srOnly(el))return;' +
+    // A field's value; never a password.
+    'if(tag==="INPUT"){if(ty!=="password"&&ty!=="hidden"&&ty!=="submit"&&ty!=="button"&&ty!=="image"&&el.value&&!clear(el)){push(" ["+ws(el.value).slice(0,200)+"] ")}return}' +
+    'if(tag==="TEXTAREA"){if(el.value&&!clear(el))push(" ["+ws(el.value).slice(0,500)+"] ");return}' +
     'if(tag==="BR"){push("\\n");return}' +
-    'if(tag==="TIME"&&el.getAttribute("datetime")){var tt=ws(el.innerText);var dt=el.getAttribute("datetime");push(" "+tt+(tt.indexOf(dt)<0?" ["+dt+"]":"")+" ");return}' +
+    'if((tag==="TIME"||tag==="RELATIVE-TIME")&&el.getAttribute("datetime")){var tt=ws(el.innerText)||ws(el.shadowRoot&&el.shadowRoot.textContent);var dt=el.getAttribute("datetime");push(" "+tt+(tt.indexOf(dt)<0?" ["+dt+"]":"")+" ");return}' +
     // <h1>–<h6>, and ARIA headings by aria-level (Google's results use role=heading).
-    'var hl=0;var h=/^H([1-6])$/.exec(tag);if(h)hl=+h[1];else if(el.getAttribute&&el.getAttribute("role")==="heading"){hl=parseInt(el.getAttribute("aria-level")||"2",10);if(!(hl>=1&&hl<=6))hl=2}' +
+    'var hl=0;var h=/^H([1-6])$/.exec(tag);if(h)hl=+h[1];else if(role==="heading"){hl=parseInt(el.getAttribute("aria-level")||"2",10);if(!(hl>=1&&hl<=6))hl=2}' +
     // A heading in its source casing: text-transform is presentation, and a
     // quoted caption must match the page's text (BLS: "CHART 8. ANNUAL …").
     'if(hl){var ht=ws(el.innerText);try{if(getComputedStyle(el).textTransform!=="none")ht=ws(el.textContent)}catch(e){}if(ht)push("\\n\\n"+"######".slice(0,hl)+" "+ht+"\\n\\n");return}' +
-    'if(tag==="PRE"){push("\\n\\n```\\n"+String(el.innerText||"").replace(/\\s+$/,"")+"\\n```\\n\\n");return}' +
-    // A row of a data table is one line of cells; a layout table's row (one
-    // holding a table of its own — Hacker News, old forums) is walked instead.
-    'if(tag==="TR"){if(el.querySelector("table")){push("\\n\\n");for(var r=el.firstChild;r;r=r.nextSibling)walk(r,depth);push("\\n\\n");return}' +
-    'var cs=[].slice.call(el.cells||[]).filter(vis).map(function(c){return ws(c.innerText)});if(cs.join("")!=="")push("\\n| "+cs.join(" | ")+" |");return}' +
+    // Code as written: the source text when it has the same lines as the
+    // rendered text (highlighters that lay each line out as a flex row double
+    // innerText's line breaks); without its own line breaks, the rendered
+    // text, every other line dropped when every other line is empty.
+    'if(tag==="PRE"){var it=String(el.innerText||"").replace(zw,"");var tc=String(el.textContent||"").replace(zw,"");var nb=function(s){return s.split("\\n").filter(function(l){return l.trim()}).length};' +
+    'var code=tc.indexOf("\\n")>=0&&nb(tc)===nb(it)?tc:it;var ls=code.replace(/^\\n+/,"").replace(/\\s+$/,"").split("\\n");if(ls.length>=3&&ls.every(function(l,i){return i%2===0||l===""}))ls=ls.filter(function(l,i){return i%2===0});' +
+    'push("\\n\\n```\\n"+ls.join("\\n")+"\\n```\\n\\n");return}' +
+    // A row of a data table is one line of cells, a rowspan's cell repeated
+    // on the rows it covers and a colspan's columns kept (Nobel laureates:
+    // "Name" spans two columns); a layout table's row (one holding a table of
+    // its own — Hacker News, old forums) is walked instead.
+    'if(tag==="TR"){if(el.querySelector("table")){push("\\n\\n");var rk=kids(el);for(var ri=0;ri<rk.length;ri++)walk(rk[ri],depth);push("\\n\\n");return}' +
+    'var tb=el.closest("table");var carry=spans.get(tb)||[];var row=[];var col=0;' +
+    'var take=function(){while(carry[col]&&carry[col].n>0){row.push(carry[col].t);carry[col].n--;col++}};' +
+    'var cells=[].slice.call(el.cells||[]);for(var ci=0;ci<cells.length;ci++){var c=cells[ci];if(!vis(c))continue;take();var ct=cellText(c);var rs=Math.max(1,c.rowSpan||1);var csp=Math.min(20,Math.max(1,c.colSpan||1));' +
+    'for(var si=0;si<csp;si++){row.push(si===0?ct:"");if(rs>1)carry[col]={t:si===0?ct:"",n:rs-1};col++}}take();spans.set(tb,carry);' +
+    'if(row.join("")!=="")push("\\n| "+row.join(" | ")+" |");return}' +
     'if(tag==="LI"){var pre="\\n"+new Array(Math.max(0,depth)+1).join("  ")+"- ";' +
     'if(plain(el)){var lt=blockText(el).split("\\n").join(" · ");if(lt)push(pre+lt);return}' +
-    'push(pre);for(var c=el.firstChild;c;c=c.nextSibling)walk(c,depth);return}' +
+    'push(pre);var lk=kids(el);for(var li2=0;li2<lk.length;li2++)walk(lk[li2],depth);return}' +
     'var block=BLOCK.test(tag);' +
-    'if(plain(el)){var bt=block?blockText(el):ws(el.innerText);if(bt)push(block?"\\n\\n"+bt+"\\n\\n":" "+bt+" ");return}' +
-    'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;var cc=cardSigs.get(el);var prev="";' +
-    // Only between neighbours: anything visible in between (a heading, a
-    // paragraph — GitHub's README code blocks share one class) ends the run.
-    'for(var k=el.firstChild;k;k=k.nextSibling){if(cc){if(k.nodeType===1&&vis(k)){var g2=sig(k);if(g2&&cc[g2]){if(prev===g2)push("\\n\\n---\\n\\n");prev=g2}else prev=""}else if(k.nodeType===3&&String(k.nodeValue||"").trim())prev=""}walk(k,d2)}if(block)push("\\n\\n")};' +
+    // Inline text is joined as the page joins it; a box (inline-block, flex
+    // item) is set apart by spaces.
+    'if(plain(el)){var bt=block?blockText(el):ws(el.innerText);var inl=false;if(!block){try{inl=getComputedStyle(el).display==="inline"}catch(e){}}if(bt)push(block?"\\n\\n"+bt+"\\n\\n":inl?bt:" "+bt+" ");return}' +
+    'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;var cc=cardSigs.get(el);var prev="";var had=false;var ks=kids(el);' +
+    // Only between neighbours that both read as something: anything visible
+    // in between (a heading, a paragraph — GitHub's README code blocks share
+    // one class) ends the run.
+    'for(var ki=0;ki<ks.length;ki++){var k=ks[ki];if(cc){if(k.nodeType===1&&vis(k)){var g2=sig(k);if(g2&&cc[g2]){var at=out.length;walk(k,d2);var got=out.slice(at).join("").trim()!=="";' +
+    'if(got&&had&&prev===g2&&!full){out.splice(at,0,SEP);n+=SEP.length}if(got)had=true;prev=g2;continue}prev="";had=false}else if(k.nodeType===3&&String(k.nodeValue||"").trim()){prev="";had=false}}walk(k,d2)}' +
+    'if(block)push("\\n\\n")};' +
     'try{if(document.body)walk(document.body,-1)}catch(e){}' +
-    'var md=out.join("").split("\\n").map(function(l){return /^\\s*- /.test(l)?l.replace(/\\s+$/,""):l.replace(/[ \\t]+/g," ").trim()}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
+    // Lines tidied outside code blocks only: indentation inside them is the code.
+    'var inF=false;var md=out.join("").split("\\n").map(function(l){if(/^```/.test(l)){inF=!inF;return l}if(inF)return l.replace(/\\s+$/,"");' +
+    'if(/^\\s*- /.test(l))return l.replace(/^(\\s*- )\\s+/,"$1").replace(/\\s+$/,"");return l.replace(/[ \\t]+/g," ").trim().replace(/ +([.,;:!?])(?=\\s|$)/g,"$1")}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
+    'if(!md&&bigAlts.length)md=bigAlts.join("\\n");' +
     // The frames the walk skipped, and how much of the viewport each covers
     // (bench, Target: a PerimeterX "Human verification challenge" frame over
     // the whole page read as an empty search result).
-    'var frames=[];try{var vw=(typeof innerWidth==="number"&&innerWidth)||1,vh=(typeof innerHeight==="number"&&innerHeight)||1;[].slice.call(document.querySelectorAll("iframe")).forEach(function(f){if(!vis(f)||frames.length>=12)return;var r=f.getBoundingClientRect();' +
-    'var w=Math.max(0,Math.min(r.right,vw)-Math.max(r.left,0)),h=Math.max(0,Math.min(r.bottom,vh)-Math.max(r.top,0));var host="";try{host=new URL(f.src,location.href).host}catch(e){}' +
-    'frames.push({name:ws(f.getAttribute("aria-label")||f.title||""),host:host,cover:Math.round(w*h/(vw*vh)*100)/100})})}catch(e){}' +
+    'var frames=[];try{[].slice.call(document.querySelectorAll("iframe")).forEach(function(f){if(!vis(f)||frames.length>=12)return;var r=f.getBoundingClientRect();' +
+    'var w=Math.max(0,Math.min(r.right,VW)-Math.max(r.left,0)),h=Math.max(0,Math.min(r.bottom,VH)-Math.max(r.top,0));var host="";try{host=new URL(f.src,location.href).host}catch(e){}' +
+    'frames.push({name:ws(f.getAttribute("aria-label")||f.title||""),host:host,cover:Math.round(w*h/(VW*VH)*100)/100})})}catch(e){}' +
     'return JSON.stringify({text:md,truncated:full,frames:frames})})()'
   )
 }
@@ -172,7 +240,7 @@ export function tidyRead(text: string): string {
     if (marker) {
       let j = i + 1
       while (j < lines.length && lines[j].trim() === '') j++
-      if (j < lines.length && !/^\s*(- |#|\||```)/.test(lines[j])) {
+      if (j < lines.length && !/^\s*(- |#|\||```)/.test(lines[j]) && !/^\s*-\s*$/.test(lines[j])) {
         out.push(`${marker[1]}- ${lines[j].trim()}`)
         i = j
         continue
@@ -246,7 +314,8 @@ export function outlineOf(text: string): string {
 /**
  * The sections whose heading is `needle` (case-insensitive) — or, when none
  * is exactly that, whose heading contains it — each up to the next heading of
- * the same or a higher level. '' when no heading matches.
+ * the same or a higher level, each capped (capSection). '' when no heading
+ * matches.
  */
 export function sectionOf(text: string, needle: string): string {
   const want = needle.trim().toLowerCase()
@@ -265,8 +334,11 @@ export function sectionOf(text: string, needle: string): string {
     const parent = hs.slice(0, i).reverse().find(o => o.level < h.level)
     parts.push({ text: lines.slice(h.line, end).join('\n').trim(), parent: parent?.title ?? '' })
   })
-  // Several matches ("Specifications" under each product): name the heading
-  // each one sits under, so they cannot be mixed up.
-  if (parts.length > 1) return parts.map(p => (p.parent ? `(under "${p.parent}")\n${p.text}` : p.text)).join('\n\n')
-  return parts.map(p => p.text).join('\n\n')
+  // Several matches ("Specifications" under each product): number them and
+  // name the heading each sits under, so they cannot be mixed up; each is
+  // capped on its own, so a long first one cannot hide the second.
+  if (parts.length > 1) {
+    return parts.map((p, i) => `(match ${i + 1} of ${parts.length}${p.parent ? `, under "${p.parent}"` : ''})\n${capSection(p.text)}`).join('\n\n')
+  }
+  return parts.map(p => capSection(p.text)).join('\n\n')
 }

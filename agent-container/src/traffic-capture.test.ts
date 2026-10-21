@@ -15,6 +15,7 @@ import {
   readableBody,
   shouldRedact,
   summarizeEndpoints,
+  requestFileName,
   type HarEntry,
 } from './traffic-capture'
 
@@ -187,6 +188,22 @@ describe('isApiLike / summarizeEndpoints', () => {
     ])
     expect(more).toBe(0)
     expect(summarizeEndpoints(har, 'https://www.shop.com/', 2).more).toBe(2)
+  })
+
+  it('takes the largest response of a group as its example: a repeat can come back short (SFPL)', () => {
+    const har = harSchema.parse({
+      log: {
+        entries: [
+          { ...entry({ url: 'https://a.com/api/avail?x=1', text: '{"a":1}' }) },
+          { ...entry({ url: 'https://a.com/api/avail?x=2', text: JSON.stringify({ items: 'x'.repeat(5000) }) }) },
+        ],
+      },
+    })
+    const [e] = summarizeEndpoints(har, 'https://a.com/').endpoints
+    expect(e.url).toBe('https://a.com/api/avail?x=2')
+    expect(e.bytes).toBeGreaterThan(5000)
+    expect(e.count).toBe(2)
+    expect(requestFileName('/w/c/01-a.com-api-avail.json')).toBe('/w/c/01-a.com-api-avail.request.json')
   })
 
   it('formats the summary with sizes and counts, and says what is left out', () => {

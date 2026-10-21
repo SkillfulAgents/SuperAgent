@@ -6,6 +6,7 @@ import {
   diffTrees,
   formatTreeDiff,
   getTreeBaseline,
+  lineFromPreviousDocument,
   parseTreeRefs,
   resetTreeBaseline,
   setTreeBaseline,
@@ -173,11 +174,14 @@ describe('formatTreeDiff', () => {
     const page = Array.from({ length: 12 }, (_, i) => `- button "B${i}" [ref=e${i + 1}]`).join('\n')
     const text = formatTreeDiff(diffTrees(parseTreeRefs(page), parseTreeRefs('- menu "Account" [ref=e50]\n  - menuitem "Sign out" [ref=e51]')), opts)
     expect(text).toContain('+ menuitem "Sign out" [ref=e51]')
-    expect(text).toContain('− 12 other elements left the tree as the menu appeared')
+    expect(text).toContain('− 12 other elements left the tree while a menu appeared')
     expect(text).not.toContain('− button')
     // The interactive view may list only the items, not the menu.
     const itemsOnly = formatTreeDiff(diffTrees(parseTreeRefs(page), parseTreeRefs('- menuitem "Profile" [ref=e51]')), opts)
-    expect(itemsOnly).toContain('− 12 other elements left the tree as the menu appeared')
+    expect(itemsOnly).toContain('− 12 other elements left the tree while a menu appeared')
+    // Options changing inside a list that was already open are not a menu appearing (GitHub's branch filter).
+    const filtered = formatTreeDiff(diffTrees(parseTreeRefs(`- option "main" [ref=e1]\n${page}`), parseTreeRefs('- option "main" [ref=e1]\n- option "v0.3" [ref=e60]')), opts)
+    expect(filtered).not.toContain('appeared')
     const few = formatTreeDiff(diffTrees(parseTreeRefs('- button "B0" [ref=e1]\n- button "B1" [ref=e2]'), parseTreeRefs('- listbox [ref=e50]\n  - option "One" [ref=e51]')), opts)
     expect(few).toContain('− button "B0" [ref=e1]')
   })
@@ -186,7 +190,7 @@ describe('formatTreeDiff', () => {
     const long = 'Add to cart: Stainless steel combination wrench set, metric, 12 pieces'
     const d = diffTrees(parseTreeRefs(`- button "${long}" [ref=e1]`), parseTreeRefs(`- button "${long.replace('12 pieces', '14 pieces')}" [ref=e1]`))
     expect(d.changed[0].was).toContain('12 pieces')
-    expect(d.changed[0].was.startsWith('name "…')).toBe(true)
+    expect(d.changed[0].was.startsWith('name was "…')).toBe(true)
   })
 
   it('reports the page behind an opened dialog as one count, and its return as one line', () => {
@@ -233,8 +237,8 @@ describe('re-rendered elements', () => {
 
   it('leads with the old → new refs, then what is genuinely new or gone', () => {
     expect(formatTreeDiff(diffTrees(parseTreeRefs(before), parseTreeRefs(after)), { baselineAgeMs: 2000, baselineSource: 'snapshot' })).toBe(
-      '\nTree changes since your snapshot 2s ago (4 re-rendered with new refs, 1 added, 1 removed):\n' +
-      '⟳ 4 elements re-rendered — same line, new ref; the old refs no longer work:\n' +
+      '\nTree changes since your snapshot 2s ago (4 replaced by identical lines, 1 added, 1 removed):\n' +
+      '⟳ 4 lines were replaced by identical lines in the same place, under new refs; the old refs no longer work:\n' +
       '  combobox "Enter Keyword or Item No." [expanded=false]: e422 → e526\n' +
       '  button "Submit search keywords": e423 → e527\n' +
       '  button "disclaimer *": e724 → e1185\n' +
@@ -259,6 +263,29 @@ describe('re-rendered elements', () => {
     expect(twice.rerendered).toHaveLength(0)
   })
 
+  it('does not pair look-alikes whose surroundings differ (live: a calendar month, truncated product names)', () => {
+    // Next month: every day comes back as the same line under a new ref.
+    const month = (name: string, base: number) => `- grid "${name}" [ref=e${base}]\n` +
+      Array.from({ length: 30 }, (_, i) => `  - gridcell "${i + 1}" [ref=e${base + 1 + i}]`).join('\n')
+    expect(diffTrees(parseTreeRefs(month('October 2026', 500)), parseTreeRefs(month('November 2026', 600))).rerendered).toHaveLength(0)
+    // Page 2 → 3: two laptops whose names the site cut to the same 16 characters.
+    const card = (price: string, name: string, base: number) => `- heading "${price}" [level=4, ref=e${base}]\n- link "${name}" [ref=e${base + 1}]\n- button "Add to cart" [ref=e${base + 2}]`
+    const grid = (a: string, b: string, base: number) => `${card(a, 'Acer Aspire ES1-', base)}\n${card(b, 'Lenovo V110-15', base + 10)}`
+    expect(diffTrees(parseTreeRefs(grid('$364.46', '$399.00', 700)), parseTreeRefs(grid('$391.48', '$405.00', 760))).rerendered).toHaveLength(0)
+    // Days without a grid line around them: a number names nothing on its own;
+    // only a complete return (everything that left came back) pairs them.
+    const days = (base: number, first: string) => `- button "Previous month" [ref=e9]\n- gridcell "${first}" [ref=e${base}]\n- gridcell "2" [ref=e${base + 1}]`
+    expect(diffTrees(parseTreeRefs(days(10, '1')), parseTreeRefs(days(20, '1'))).rerendered).toHaveLength(2)
+    expect(diffTrees(parseTreeRefs(days(10, '1') + '\n- link "x" [ref=e30]'), parseTreeRefs(days(20, '1') + '\n- link "y" [ref=e31]')).rerendered).toHaveLength(0)
+  })
+
+  it('pairs a list re-drawn with an item appended, element by element (p5 fixture)', () => {
+    const d = diffTrees(parseTreeRefs('- button "Item one" [ref=e40]\n- button "Item two" [ref=e41]\n- iframe "Inner" [ref=e33]'),
+      parseTreeRefs('- button "Item one" [ref=e49]\n- button "Item two" [ref=e50]\n- button "Item three" [ref=e51]\n- iframe "Inner" [ref=e33]'))
+    expect(d.rerendered.map(r => [r.from.ref, r.to.ref])).toEqual([['e40', 'e49'], ['e41', 'e50']])
+    expect(d.added.map(l => l.ref)).toEqual(['e51'])
+  })
+
   it('caps the pairs and counts the rest', () => {
     const many = (base: number) => Array.from({ length: 12 }, (_, i) => `- link "Item ${i}" [ref=e${base + i}]`).join('\n')
     const text = formatTreeDiff(diffTrees(parseTreeRefs(many(100)), parseTreeRefs(many(200))), { baselineAgeMs: 0, baselineSource: 'action' })
@@ -273,13 +300,35 @@ describe('re-rendered elements', () => {
   })
 })
 
+describe('a dialog that arrived', () => {
+  it('lists its own lines before other arrivals', () => {
+    const late = Array.from({ length: 30 }, (_, i) => `- generic "$${500 + i} for 2 nights" [ref=e${100 + i}]`).join('\n')
+    const after = `${late}\n- dialog "Type of place" [ref=e300]\n  - radio "Entire home" [checked=false, ref=e301]\n  - radio "Room" [checked=false, ref=e302]`
+    const text = formatTreeDiff(diffTrees(parseTreeRefs(''), parseTreeRefs(after)), { baselineAgeMs: 0, baselineSource: 'action', dialogOpened: true })
+    const lines = text.split('\n')
+    expect(lines[2]).toBe('+ dialog "Type of place" [ref=e300]')
+    expect(lines[3]).toBe('+ radio "Entire home" [checked=false, ref=e301]')
+  })
+
+  it('lists a few elements that came back, with their refs', () => {
+    const seen = new Map([['e9', 'combobox "Search" [expanded=true, ref=e9]']])
+    const text = formatTreeDiff(diffTrees(parseTreeRefs('- button "x" [ref=e1]'), parseTreeRefs('- button "x" [ref=e1]\n- combobox "Search" [expanded=true, ref=e9]'), { seen }), { baselineAgeMs: 0, baselineSource: 'action' })
+    expect(text).toContain('+ combobox "Search" [expanded=true, ref=e9] (back, same ref)')
+  })
+
+  it('does not pair what a dialog hid with its own look-alikes', () => {
+    const d = diffTrees(parseTreeRefs('- textbox "Departure" [ref=e79]'), parseTreeRefs('- textbox "Departure" [ref=e120]'), { overlayOpened: true })
+    expect(d.rerendered).toHaveLength(0)
+  })
+})
+
 describe('formatUnknownRef', () => {
   const current = parseTreeRefs('- button "Select" [ref=e1233]\n- button "disclaimer *" [ref=e1185]\n- button "disclaimer *" [ref=e1186]')
   it('says what the ref was and which current refs carry exactly that line', () => {
     expect(formatUnknownRef('e691', 'button "Select" [ref=e691]', current))
-      .toBe('\ne691 was button "Select" when last read; no element in the current tree has that ref. The element with that same role, name and state now has ref @e1233.')
+      .toBe('\ne691 was button "Select" when last read; no element in the current tree has that ref. One element in the current tree has that same role, name and state: @e1233.')
     expect(formatUnknownRef('@e724', 'button "disclaimer *" [ref=e724]', current))
-      .toContain('2 elements now have that same role, name and state: @e1185, @e1186.')
+      .toContain('2 elements in the current tree have that same role, name and state: @e1185, @e1186.')
     expect(formatUnknownRef('e9', 'link "Gone" [ref=e9]', current))
       .toContain('No element in the current tree has that role, name and state.')
   })
@@ -287,6 +336,16 @@ describe('formatUnknownRef', () => {
   it('says so when a fresh read brought the ref back (the CLI had reset its ref table)', () => {
     expect(formatUnknownRef('e1233', 'button "Summary" [ref=e1233]', parseTreeRefs('- button "Summary" [ref=e1233]')))
       .toBe('\ne1233 is in the current tree again (button "Summary") after a fresh read — the CLI\'s ref table had been reset. This action was not performed.')
+  })
+})
+
+describe('previous document', () => {
+  afterEach(() => resetTreeBaseline())
+  it('keeps the last document\'s lines to explain its refs after a load', () => {
+    setTreeBaseline('https://a.com/', '- button "Decline" [ref=e532]', 'snapshot', 1000, 111)
+    setTreeBaseline('https://a.com/', '- button "Search" [ref=e600]', 'action', 2000, 222)
+    expect(lineFromPreviousDocument('@e532')).toEqual({ text: 'button "Decline" [ref=e532]', url: 'https://a.com/' })
+    expect(lineFromPreviousDocument('e600')).toBeNull()
   })
 })
 

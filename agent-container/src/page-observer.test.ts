@@ -136,6 +136,39 @@ describe('observerScript', () => {
     expect(p.run().stateHash).toBe(c.stateHash)
   })
 
+  it('leaves controls without state out of the state hash: a link added is a census change only', () => {
+    const box = el({ tag: 'input', type: 'checkbox', checked: false })
+    const sel: Record<string, unknown[]> = { [INTERACTIVE]: [box] }
+    const p = makePage({ sel })
+    const a = p.run()
+    sel[INTERACTIVE] = [box, el({ tag: 'a', text: 'More' })]
+    const b = p.run()
+    expect(b.interactive).toBe(2)
+    expect(b.stateHash).toBe(a.stateHash)
+  })
+
+  it('counts visible progress indicators', () => {
+    const BUSY = '[aria-busy="true"],[role="progressbar"],progress,[class*="spinner" i],[class*="loader" i],[class*="loading" i],[class*="skeleton" i],[id*="spinner" i],[id*="loading" i]'
+    const { run } = makePage({ sel: { [BUSY]: [el({ role: 'progressbar' }), el({ role: 'progressbar', visible: false })] } })
+    expect(run().busy).toBe(1)
+  })
+
+  it('reads the controls and text of a visible same-origin frame, and the focus inside it', () => {
+    const inner = el({ tag: 'button', label: 'Options', attrs: { 'aria-expanded': 'true' } })
+    const frameDoc = {
+      body: { innerText: 'Edit Duplicate' },
+      activeElement: inner,
+      querySelectorAll: (q: string) => (q === INTERACTIVE ? [inner] : []),
+    }
+    const frame = { ...el({ tag: 'iframe', sameOrigin: true }), contentDocument: frameDoc }
+    inner.getAttribute = (k: string) => ({ 'aria-label': 'Options', 'aria-expanded': 'true' } as Record<string, string>)[k] ?? null
+    const { run } = makePage({ sel: { iframe: [frame], [INTERACTIVE]: [] }, body: 'Page', active: frame })
+    const o = run()
+    expect(o.interactive).toBe(1)
+    expect(o.contentChars).toBe('Page Edit Duplicate'.length)
+    expect(o.focus).toBe('button "Options"')
+  })
+
   it('names open dialogs and dedupes them', () => {
     const { run } = makePage({ sel: { [TOP]: [el({ tag: 'dialog', heading: 'Delete project?' }), el({ role: 'alertdialog', label: 'Confirm' }), el({ tag: 'dialog', heading: 'Delete project?' }), el({ tag: 'dialog', visible: false })] } })
     expect(run().top).toEqual([{ kind: 'dialog', name: 'Delete project?' }, { kind: 'alertdialog', name: 'Confirm' }])

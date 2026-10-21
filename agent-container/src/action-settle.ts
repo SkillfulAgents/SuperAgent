@@ -54,6 +54,9 @@ export interface ActionPolicy {
 }
 
 const RECHECK_MS = 1200
+/** While a spinner the action raised is still up, the page is read again every BUSY_POLL_MS, until BUSY_WAIT_MS. */
+const BUSY_POLL_MS = 600
+const BUSY_WAIT_MS = 3000
 
 /** Focus roles that take typing: a click landing here is complete in itself. */
 const TEXT_FIELD_FOCUS = /^(textbox|searchbox|combobox|textarea|input)\b/
@@ -85,7 +88,10 @@ export const ACTION_POLICIES: Record<ActionVerb, ActionPolicy> = {
 export function pressPolicy(key: string): ActionPolicy {
   const last = key.trim().toLowerCase().split('+').pop() ?? ''
   const activating = ACTIVATING_KEYS.has(last)
-  return { ...ACTION_POLICIES.press, settleMs: activating ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS, recheck: () => activating }
+  // Escape closes things, and a closing dialog animates out (MUI: ~200 ms)
+  // — at 50 ms it was still there and "dialog closed" was missed.
+  const settleMs = activating || last === 'escape' || last === 'esc' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS
+  return { ...ACTION_POLICIES.press, settleMs, recheck: () => activating }
 }
 
 export interface ActionEffect {
@@ -111,6 +117,13 @@ export interface ActionEffect {
   /** Preview of the value (capped by the observer) and the full value's length. */
   focusValue: string
   focusValueChars: number
+  /**
+   * More progress indicators (spinners, aria-busy, progressbars) are visible
+   * than before the action: what it started is still loading.
+   */
+  busyRose?: boolean
+  /** Visible cross-origin frames: their contents are not read. */
+  unreadFrames?: number
 }
 
 const topKey = (e: TopLayerEntry): string => `${e.kind}|${e.name}`
@@ -135,6 +148,8 @@ export function diffObservations(before: PageObservation, after: PageObservation
     focusValueChanged: after.focus === before.focus && after.focusId === before.focusId && after.focusValueHash !== before.focusValueHash,
     focusValue: after.focusValue,
     focusValueChars: after.focusValueChars,
+    busyRose: after.busy > before.busy,
+    unreadFrames: after.iframes.filter(f => !f.sameOrigin).length,
   }
 }
 
@@ -144,8 +159,17 @@ export function sameDocument(a: PageObservation | null, b: PageObservation | nul
 }
 
 /**
- * The page's content moved: a dialog, the control census, labels, text or a
- * challenge. A control's own state, focus or an announcement alone is not
+ * A different document, whatever the URL: both load starts known and not
+ * equal. A failed login that posts and lands back on /login is a page load
+ * at the same URL (the-internet.herokuapp.com).
+ */
+export function newDocument(a: PageObservation | null, b: PageObservation | null): boolean {
+  return Boolean(a && b && a.docStart > 0 && b.docStart > 0 && a.docStart !== b.docStart)
+}
+
+/**
+ * The page's content moved: a dialog, the control census, text or a
+ * challenge. A control's own state or label, focus or an announcement alone is not
  * this — a filter checkbox ticks at once and its results arrive later
  * (bench, toolshop: each grid landed in the NEXT action's diff).
  */
@@ -155,7 +179,10 @@ export function contentChanged(e: ActionEffect): boolean {
   // not the result.
   const announcedChars = e.announced.reduce((n, a) => n + a.length + 2, 0)
   const textMoved = e.textChanged && !(announcedChars > 0 && Math.abs(e.textDelta) <= announcedChars)
-  return e.opened.length > 0 || e.closed.length > 0 || e.interactiveDelta !== 0 || e.labelsChanged || textMoved || e.blockerAppeared !== ''
+  // Labels alone are not it either: a button whose text turns into a spinner
+  // (DuckDuckGo's "More results") flips its label before the results come;
+  // a view swapped in place changes the page's text too.
+  return e.opened.length > 0 || e.closed.length > 0 || e.interactiveDelta !== 0 || textMoved || e.blockerAppeared !== ''
 }
 
 /** True when the diff found anything the result will report. */
@@ -214,7 +241,7 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   // Comparable: the same URL, or the same document under a new URL (an SPA's
   // pushState) — a reload or a real navigation is a different page.
   const diff = (after: PageObservation | null): ActionEffect | null =>
-    before && after && (after.url === before.url || sameDocument(before, after)) ? diffObservations(before, after) : null
+    before && after && ((after.url === before.url && !newDocument(before, after)) || sameDocument(before, after)) ? diffObservations(before, after) : null
 
   await sleep(policy.settleMs)
   let after = await read()
@@ -229,19 +256,33 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   // when a label flipped with it (the field's Open button now reads Close).
   const promised = (e: ActionEffect): boolean =>
     e.announced.length > 0 && e.interactiveDelta === 0 && e.opened.length === 0 && e.closed.length === 0 && e.blockerAppeared === ''
+  // A spinner that appeared with the action is a promise too, whatever else
+  // moved (DuckDuckGo's "More results": the button turned into a spinner,
+  // the results came a second later).
+  const onlyClosed = (e: ActionEffect): boolean =>
+    e.interactiveDelta < 0 && e.opened.length === 0 && !e.textChanged && !e.labelsChanged && e.blockerAppeared === '' && e.announced.length === 0
   const settledYet = (e: ActionEffect): boolean =>
-    !promised(e) && (contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged)))
-  if (effect && !settledYet(effect) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
+    !promised(e) && !e.busyRose && !((policy.verb === 'click' || policy.verb === 'press') && onlyClosed(e)) &&
+    (contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged)))
+  const wantsMore = (e: ActionEffect): boolean => policy.recheck(e) || (Boolean(e.busyRose) && policy.verb !== 'hover')
+  if (effect && !settledYet(effect) && wantsMore(effect) && elapsed() < policy.recheckMs) {
     // Silence at the settle: a late effect is the other explanation.
     await sleep(Math.max(0, policy.recheckMs - elapsed()))
-    const again = await read()
-    const first = effect
-    if (again) {
+    const announced = new Set(effect.announced)
+    for (;;) {
+      const again = await read()
+      if (!again) break
+      const next = diff(again)
       after = again
-      effect = diff(again)
-      // What was announced at the settle stays reported if it is gone by now.
-      if (effect) effect = { ...effect, announced: [...new Set([...first.announced, ...effect.announced])] }
+      effect = next
+      if (!next) break
+      next.announced.forEach(a => announced.add(a))
+      // Still loading: look again, up to BUSY_WAIT_MS after the action.
+      if (!next.busyRose || elapsed() + BUSY_POLL_MS > BUSY_WAIT_MS) break
+      await sleep(BUSY_POLL_MS)
     }
+    // What was announced at the settle stays reported if it is gone by now.
+    if (effect) effect = { ...effect, announced: [...announced] }
   }
   return { result, before, after, effect, waitedMs: Math.round(elapsed()) }
 }
@@ -299,6 +340,10 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
   // (the target's own subtree is left out of it) means the target was all
   // that changed — the counts would be about it alone.
   const counted = !tree && !(opts.valueReadBack && opts.treeDiff)
+  // Except what the page did with a select's value without adding or
+  // removing anything: a re-sort keeps every element and line, so the diff
+  // is empty while the controls' labels moved (live: toolshop's sort).
+  const resorted = !tree && opts.verb === 'select' && Boolean(opts.treeDiff) && effect.interactiveDelta === 0 && effect.labelsChanged
   const parts: string[] = []
   // First: the page is now a challenge wall (the same recognition as the
   // status line's ⚠ — vendor DOM or wording, never a guess).
@@ -312,8 +357,14 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
     const d = effect.textDelta
     parts.push(`page text changed (${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars)`)
   }
-  if (effect.stateChanged && counted) parts.push('control state changed (checked/pressed/expanded/selected)')
-  if (effect.labelsChanged && counted && !effect.stateChanged) parts.push('labels of visible controls changed')
+  // State is read as one hash over the visible controls: with controls added
+  // or removed, or the read-back target's own state in it, it says nothing more.
+  const stateNote = effect.stateChanged && counted && effect.interactiveDelta === 0 && !opts.valueReadBack
+  if (stateNote) parts.push('control state changed (checked/pressed/expanded/selected)')
+  if (effect.labelsChanged && counted && !stateNote) parts.push('labels of visible controls changed')
+  if (resorted) parts.push('labels of visible controls changed; the tree has the same elements as before')
+  // Still there at the last read: the page is loading something.
+  if (effect.busyRose) parts.push('a progress indicator (spinner, aria-busy) that appeared with this action is still showing')
   if (effect.focusValueChanged && !opts.valueReadBack) {
     const preview = effect.focusValue.length < effect.focusValueChars
     parts.push(`field value now ${JSON.stringify(effect.focusValue)}${preview ? ` (${effect.focusValueChars} chars, first ${effect.focusValue.length} shown)` : ''}`)
@@ -326,7 +377,8 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
     if (tree) return focusNote ? `\nEffect: ${focusNote}${tree}` : `\nEffect: t${tree.slice(2)}`
     if (opts.valueReadBack) return ''
     if (focusNote && effect.focusChanged) return `\nEffect: ${focusNote}`
-    return `\nEffect: none observed within ${opts.settleMs}ms (${OBSERVED_SCOPE})${focusNote ? ` — ${focusNote}` : ''}`
+    const frames = effect.unreadFrames ? `; not read: ${effect.unreadFrames} cross-origin frame${effect.unreadFrames === 1 ? '' : 's'}` : ''
+    return `\nEffect: none observed within ${opts.settleMs}ms (${OBSERVED_SCOPE}${frames})${focusNote ? ` — ${focusNote}` : ''}`
   }
   if (focusNote) parts.push(focusNote)
   return `\nEffect: ${parts.join(' · ')}${tree}`

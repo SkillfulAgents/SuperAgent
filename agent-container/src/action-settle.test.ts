@@ -42,7 +42,14 @@ describe('diffObservations', () => {
       focusValueChanged: false,
       focusValue: '',
       focusValueChars: 0,
+      busyRose: false,
+      unreadFrames: 0,
     })
+  })
+
+  it('names the cross-origin frames it could not read when it saw nothing', () => {
+    const e = diffObservations(base, { ...base, iframes: [{ title: 'Card', host: 'js.stripe.com', sameOrigin: false }, { title: 'Demo', host: 'a.com', sameOrigin: true }] })
+    expect(formatActionEffect(e, { settleMs: 1200, verb: 'click' })).toBe('\nEffect: none observed within 1200ms (dialogs, live regions, page text, control state, focus; not read: 1 cross-origin frame)')
   })
 
   it('says when a challenge wall came up with the action, before anything else', () => {
@@ -252,6 +259,13 @@ describe('observeAction', () => {
     expect(out.effect?.announced).toEqual(['Loading…'])
   })
 
+  it('rechecks a click or Enter whose only effect so far is controls going away (a suggestion list closing)', async () => {
+    const h = harness([base, { ...base, interactive: 28 }, { ...base, interactive: 28, contentChars: 900, contentHash: 5 }])
+    const out = await h.run(pressPolicy('Enter'))
+    expect(h.evals).toEqual([0, 300, 1200])
+    expect(out.effect?.textChanged).toBe(true)
+  })
+
   it('never rechecks a hover', async () => {
     const h = harness([base, { ...base }])
     const out = await h.run(ACTION_POLICIES.hover)
@@ -266,13 +280,29 @@ describe('observeAction', () => {
       expect(h.evals).toEqual([0, 300, 1200])
       expect(out.effect?.interactiveDelta).toBe(12)
     }
-    for (const key of ['Tab', 'Escape', 'ArrowDown', 'Control+a', 'a']) {
+    for (const key of ['Tab', 'ArrowDown', 'Control+a', 'a']) {
       const h = harness([base, { ...base, focus: 'link "Next"' }])
       const out = await h.run(pressPolicy(key))
       expect(out.waitedMs).toBe(50)
       expect(out.effect?.focusChanged).toBe(true)
       expect(h.evals).toEqual([0, 50])
     }
+    // Escape waits out a closing animation (MUI's dialog: ~200 ms), without a recheck.
+    const esc = harness([base, { ...base, top: [] }])
+    await esc.run(pressPolicy('Escape'))
+    expect(esc.evals).toEqual([0, 300])
+  })
+
+  it('keeps reading while a spinner the action raised is up, up to 3 s (DuckDuckGo "More results")', async () => {
+    const spinning = { ...base, busy: 1, labelHash: 4, stateHash: 9 }
+    const h = harness([base, spinning, spinning, spinning, { ...base, interactive: 55, contentChars: 900, contentHash: 3 }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(h.evals).toEqual([0, 300, 1200, 1800, 2400])
+    expect(out.effect?.interactiveDelta).toBe(15)
+    // A spinner that never goes away: the reads stop at 3 s.
+    const stuck = harness([base, spinning, spinning, spinning, spinning, spinning, spinning])
+    await stuck.run(ACTION_POLICIES.click)
+    expect(stuck.evals).toEqual([0, 300, 1200, 1800, 2400, 3000])
   })
 })
 
@@ -320,6 +350,17 @@ describe('formatActionEffect with a tree diff', () => {
     expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true, treeDiff: tree(diff()) })).toBe('')
     expect(formatActionEffect(diffObservations(base, { ...base }), { settleMs: 200, verb: 'fill', valueReadBack: true })).toBe('')
     // No tree read (no baseline): the counts stay.
-    expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true })).toBe('\nEffect: +1 interactive elements · control state changed (checked/pressed/expanded/selected)')
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true })).toBe('\nEffect: +1 interactive elements')
+  })
+
+  it('reports a select that re-sorted the page: same elements, labels moved (toolshop)', () => {
+    const resort = diffObservations(base, { ...base, stateHash: 8, labelHash: 3 })
+    expect(formatActionEffect(resort, { settleMs: 300, verb: 'select', valueReadBack: true, treeDiff: tree(diff()) }))
+      .toBe('\nEffect: labels of visible controls changed; the tree has the same elements as before')
+  })
+
+  it('does not call a census change a state change', () => {
+    const grew = diffObservations(base, { ...base, stateHash: 8, interactive: 45 })
+    expect(formatActionEffect(grew, { settleMs: 300, verb: 'click' })).toBe('\nEffect: +5 interactive elements')
   })
 })
