@@ -278,8 +278,13 @@ export function formatTreeDiff(d: TreeDiff, opts: TreeDiffFormatOptions): string
     d.changed.length > 0 ? `${d.changed.length} changed` : '',
     d.removed.length > 0 ? `${d.removed.length} removed` : '',
   ].filter(Boolean).join(', ')
+  // A parent that adds nothing but a wrapper — its one child has the same
+  // name (a calendar gridcell around its button) — is listed through the child.
+  const addedRefs = new Set(d.added.map(l => l.ref))
+  const wrappers = new Set(d.added.filter(l => l.parent && addedRefs.has(l.parent) && l.name !== '' &&
+    d.added.find(p => p.ref === l.parent)?.name === l.name).map(l => l.parent as string))
   const main: string[] = [
-    ...d.added.map(l => `+ ${clip(l.text, LINE_CHARS)}`),
+    ...d.added.filter(l => !wrappers.has(l.ref)).map(l => `+ ${clip(l.text, LINE_CHARS)}`),
     ...d.changed.map(c => `~ ${clip(c.line.text, LINE_CHARS)}${c.was ? ` (${c.was})` : ''}`),
   ]
   const removedShown = opts.dialogOpened ? 0 : Math.min(d.removed.length, TREE_DIFF_MAX_REMOVED_LINES)

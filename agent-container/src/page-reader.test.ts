@@ -66,6 +66,8 @@ describe('tidyRead', () => {
   it('joins a list marker left alone on its line with the text it introduces', () => {
     expect(tidyRead('-\n\nPlatform\n\n- Pricing\n-\n\n- Nested')).toBe('- Platform\n\n- Pricing\n\n- Nested')
     expect(tidyRead('  -\n  Solutions')).toBe('  - Solutions')
+    // Carousel dots and other glyph-only lines are dropped (Craigslist: 799 of 1,689 lines).
+    expect(tidyRead('Bike\n•\n• •\n$120\n·')).toBe('Bike\n$120')
   })
 })
 

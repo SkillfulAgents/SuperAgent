@@ -180,6 +180,16 @@ describe('formatTreeDiff', () => {
   })
 })
 
+describe('wrapper lines', () => {
+  it('lists a same-named parent and child once, through the child (a calendar gridcell around its button)', () => {
+    const after = parseTreeRefs('- gridcell "Wednesday, October 21" [ref=e10]\n  - button "Wednesday, October 21" [ref=e11]\n- gridcell "Thursday" [ref=e12]\n  - button "Pick" [ref=e13]')
+    const text = formatTreeDiff(diffTrees(parseTreeRefs(''), after), { baselineAgeMs: 0, baselineSource: 'action' })
+    expect(text).not.toContain('gridcell "Wednesday, October 21"')
+    expect(text).toContain('+ button "Wednesday, October 21" [ref=e11]')
+    expect(text).toContain('+ gridcell "Thursday" [ref=e12]')
+  })
+})
+
 describe('re-rendered elements', () => {
   // makingcosmetics.com (bench, SUP-1265): closing a modal re-drew the page —
   // every element came back under a new ref, and the agent then clicked an

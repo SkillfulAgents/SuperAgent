@@ -44,33 +44,57 @@ export function readerScript(): string {
     '(function(){' +
     'var out=[];var n=0;var full=false;' +
     'var push=function(s){if(full)return;out.push(s);n+=s.length;if(n>' + READ_COLLECT_LIMIT + ')full=true};' +
-    // Zero-width spaces and joiners are layout glue, not text (Meta's ad cards: 180 lines of only U+200B).
-    'var zw=/[\\u200b-\\u200d\\u2060\\ufeff]/g;' +
+    // Zero-width spaces are layout glue, not text (Meta's ad cards: 180 lines
+    // of only U+200B). The joiner U+200D stays: it holds emoji together.
+    'var zw=/[\\u200b\\u200c\\u2060\\ufeff]/g;' +
     'var ws=function(s){return String(s||"").replace(zw,"").replace(/\\s+/g," ").trim()};' +
     'var vis=function(el){try{if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,opacityProperty:true,checkVisibilityCSS:true,checkOpacity:true});return el.getClientRects().length>0}catch(e){return false}};' +
     // Block text as the browser lays it out: one line per line break, blank runs collapsed.
     'var blockText=function(el){return String(el.innerText||"").replace(zw,"").split("\\n").map(function(l){return l.replace(/[ \\t\\u00a0]+/g," ").trim()}).filter(function(l){return l}).join("\\n")};' +
-    'var SKIP=/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG|CANVAS|IFRAME|OBJECT|EMBED|HEAD|SELECT|OPTION|DATALIST)$/;' +
+    'var SKIP=/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|CANVAS|IFRAME|OBJECT|EMBED|HEAD|OPTION|DATALIST)$/;' +
     'var BLOCK=/^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|HEADER|HR|MAIN|NAV|OL|P|SECTION|TABLE|THEAD|TBODY|TFOOT|UL|SUMMARY|CAPTION|LEGEND)$/;' +
     'var STRUCT="h1,h2,h3,h4,h5,h6,[role=heading],li,tr,pre";' +
+    // Where the browser's innerText says the wrong thing, the walk goes in
+    // instead (bench reviews): a <select> lists every option and not which is
+    // chosen; screen-reader-only text gets a line of its own ("Delinquent"
+    // beside "Date"); an icon's name is missing ("35,878" with no "star").
+    'var SRONLY=".sr-only,.visually-hidden,.visuallyhidden,.screen-reader-text,.screenreader-only,.a-offscreen,.u-visually-hidden";' +
+    // Also walked: live regions (often screen-reader-only status text such as
+    // "No results returned." above 30 results), form controls (checked state,
+    // typed values) and <time> (its machine date).
+    'var SPECIAL="select,input,textarea,time[datetime],[aria-live],[role=status],[role=alert],svg[aria-label],[role=img][aria-label],img[alt],"+SRONLY;' +
+    'var plain=function(el){return !el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
+    'var srOnly=function(el){try{if(el.matches(SRONLY))return true;var r=el.getBoundingClientRect();if(r.width<=1&&r.height<=1){var po=getComputedStyle(el).position;return po==="absolute"||po==="fixed"}}catch(e){}return false};' +
     'var walk=function(node,depth){if(full)return;' +
-    'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);return}' +
+    'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);else if(t)push(" ");return}' +
     'if(node.nodeType!==1)return;var el=node;var tag=String(el.tagName||"").toUpperCase();if(SKIP.test(tag))return;' +
     // display:contents has no box of its own but its children render.
     'if(!vis(el)){var dc=false;try{dc=getComputedStyle(el).display==="contents"}catch(e){}if(!dc)return}' +
+    // An icon is its name; a large image's alt is left out (a product photo repeats the product name).
+    'var role=el.getAttribute?el.getAttribute("role"):null;' +
+    'if(tag==="SVG"||tag==="IMG"||role==="img"){var il=tag==="IMG"?el.getAttribute("alt"):el.getAttribute("aria-label");var small=true;try{small=el.getBoundingClientRect().width<=48}catch(e){}if(il&&(tag!=="IMG"||small))push(" "+ws(il)+" ");return}' +
+    'if(tag==="SELECT"){var so=el.options&&el.selectedIndex>=0?el.options[el.selectedIndex]:null;if(so)push(" "+ws(so.text)+" ");return}' +
+    // A box's state and a field's value; never a password.
+    'if(tag==="INPUT"){var ty=String(el.type||"").toLowerCase();if(ty==="checkbox"||ty==="radio"){push(el.checked?" [x] ":" [ ] ")}else if(ty!=="password"&&ty!=="hidden"&&ty!=="submit"&&ty!=="button"&&ty!=="image"&&el.value){push(" ["+ws(el.value).slice(0,200)+"] ")}return}' +
+    'if(tag==="TEXTAREA"){if(el.value)push(" ["+ws(el.value).slice(0,500)+"] ");return}' +
+    'if(srOnly(el))return;' +
+    'if(tag==="BR"){push("\\n");return}' +
+    'if(tag==="TIME"&&el.getAttribute("datetime")){var tt=ws(el.innerText);var dt=el.getAttribute("datetime");push(" "+tt+(tt.indexOf(dt)<0?" ["+dt+"]":"")+" ");return}' +
     // <h1>–<h6>, and ARIA headings by aria-level (Google's results use role=heading).
     'var hl=0;var h=/^H([1-6])$/.exec(tag);if(h)hl=+h[1];else if(el.getAttribute&&el.getAttribute("role")==="heading"){hl=parseInt(el.getAttribute("aria-level")||"2",10);if(!(hl>=1&&hl<=6))hl=2}' +
-    'if(hl){var ht=ws(el.innerText);if(ht)push("\\n\\n"+"######".slice(0,hl)+" "+ht+"\\n\\n");return}' +
+    // A heading in its source casing: text-transform is presentation, and a
+    // quoted caption must match the page's text (BLS: "CHART 8. ANNUAL …").
+    'if(hl){var ht=ws(el.innerText);try{if(getComputedStyle(el).textTransform!=="none")ht=ws(el.textContent)}catch(e){}if(ht)push("\\n\\n"+"######".slice(0,hl)+" "+ht+"\\n\\n");return}' +
     'if(tag==="PRE"){push("\\n\\n```\\n"+String(el.innerText||"").replace(/\\s+$/,"")+"\\n```\\n\\n");return}' +
     // A row of a data table is one line of cells; a layout table's row (one
     // holding a table of its own — Hacker News, old forums) is walked instead.
     'if(tag==="TR"){if(el.querySelector("table")){push("\\n\\n");for(var r=el.firstChild;r;r=r.nextSibling)walk(r,depth);push("\\n\\n");return}' +
     'var cs=[].slice.call(el.cells||[]).filter(vis).map(function(c){return ws(c.innerText)});if(cs.join("")!=="")push("\\n| "+cs.join(" | ")+" |");return}' +
     'if(tag==="LI"){var pre="\\n"+new Array(Math.max(0,depth)+1).join("  ")+"- ";' +
-    'if(!el.querySelector(STRUCT)){var lt=blockText(el).split("\\n").join(" · ");if(lt)push(pre+lt);return}' +
+    'if(plain(el)){var lt=blockText(el).split("\\n").join(" · ");if(lt)push(pre+lt);return}' +
     'push(pre);for(var c=el.firstChild;c;c=c.nextSibling)walk(c,depth);return}' +
     'var block=BLOCK.test(tag);' +
-    'if(!el.querySelector(STRUCT)){var bt=block?blockText(el):ws(el.innerText);if(bt)push(block?"\\n\\n"+bt+"\\n\\n":" "+bt+" ");return}' +
+    'if(plain(el)){var bt=block?blockText(el):ws(el.innerText);if(bt)push(block?"\\n\\n"+bt+"\\n\\n":" "+bt+" ");return}' +
     'if(block)push("\\n\\n");var d2=(tag==="UL"||tag==="OL")?depth+1:depth;for(var k=el.firstChild;k;k=k.nextSibling)walk(k,d2);if(block)push("\\n\\n")};' +
     'try{if(document.body)walk(document.body,-1)}catch(e){}' +
     'var md=out.join("").split("\\n").map(function(l){return /^\\s*- /.test(l)?l.replace(/\\s+$/,""):l.replace(/[ \\t]+/g," ").trim()}).join("\\n").replace(/\\n{3,}/g,"\\n\\n").trim();' +
@@ -125,8 +149,11 @@ export function tidyRead(text: string): string {
     }
     out.push(lines[i])
   }
-  // Leading blank lines go; a first line's indentation is part of its list.
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '').trimEnd()
+  // Lines of nothing but bullet glyphs (carousel dots: 799 of 1,689 lines on a
+  // Craigslist results page) go; leading blank lines go; a first line's
+  // indentation is part of its list.
+  return out.filter(l => !/^\s*[•·●○◦▪▫■□]+(\s+[•·●○◦▪▫■□]+)*\s*$/.test(l)).join('\n')
+    .replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '').trimEnd()
 }
 
 /**

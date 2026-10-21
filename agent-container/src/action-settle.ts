@@ -202,11 +202,20 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   let after = await read()
   let effect = diff(after)
 
-  if (effect && !effectHasChange(effect, { countFocus: policy.countFocus }) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
+  // An announcement alone ("Searching…") is a promise, not the result: it
+  // does not stand in for the late read (bench, Placer: the results arrived
+  // after "Searching…" and the result never showed them).
+  if (effect && !effectHasChange({ ...effect, announced: [] }, { countFocus: policy.countFocus }) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
     // Silence at the settle: a late effect is the other explanation.
     await sleep(Math.max(0, policy.recheckMs - elapsed()))
     const again = await read()
-    if (again) { after = again; effect = diff(again) }
+    const first = effect
+    if (again) {
+      after = again
+      effect = diff(again)
+      // What was announced at the settle stays reported if it is gone by now.
+      if (effect) effect = { ...effect, announced: [...new Set([...first.announced, ...effect.announced])] }
+    }
   }
   return { result, before, after, effect, waitedMs: Math.round(elapsed()) }
 }
