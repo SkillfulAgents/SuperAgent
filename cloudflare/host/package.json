@@ -1,0 +1,10 @@
+{
+  "name": "gamut-ng-host",
+  "private": true,
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261021.1"
+  }
+}

@@ -1,4 +1,5 @@
 import { MessageNotAcceptedError } from './message-dispatch-error'
+import { WebSocket } from 'ws'
 import { getSettings } from '../config/settings'
 import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
 import { isQueuedSessionSend } from './session-send-context'
@@ -3202,6 +3203,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       memoryPercent: 12.5,
       cpuPercent: 5.0,
     }
+  }
+
+  openWebSocket(url: string, headers: Record<string, string>, protocols?: string | string[]): WebSocket {
+    return new WebSocket(url, protocols, { headers })
   }
 
   getWebSocketBaseUrl(port: number): string {

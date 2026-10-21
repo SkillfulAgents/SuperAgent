@@ -85,6 +85,14 @@ vi.mock('./lambda-microvm-runtime', () => ({
   },
 }))
 
+vi.mock('./cloudflare-container-runtime', () => ({
+  CloudflareContainerRuntimeClient: class {
+    static isEligible() { return false }
+    static async isAvailable() { return false }
+    static async isRunning() { return false }
+  },
+}))
+
 const mockExecWithPath = vi.fn()
 const mockSpawnWithPath = vi.fn()
 vi.mock('./base-container-client', () => ({

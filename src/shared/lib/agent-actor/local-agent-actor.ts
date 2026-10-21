@@ -20,10 +20,10 @@ import { runComputerUse, runScript } from './host-runs'
 import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
-import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
+import { getSettings } from '@shared/lib/config/settings'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
   AccountReauthOps,
@@ -125,6 +125,12 @@ export class LocalAgentActor implements AgentActor {
         sessions: {
           store: createLocalSessionStore(slug, deps, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
+            containerFetch: workspaceInContainer()
+              ? async (path, init) => {
+                  const runtime = deps.containerHost.runtime(slug)
+                  return runtime.getCachedInfo().status === 'running' ? runtime.getClient().fetch(path, init) : null
+                }
+              : undefined,
           }),
           host: deps.host,
           runtime: createSessionsRuntime(slug, deps),
@@ -178,9 +184,11 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
         throw new Error(`Container for agent ${slug} is not running`)
       }
       const c = client()
-      return new WebSocket(`${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`, init?.protocols, {
-        headers: { ...init?.headers, ...c.getHostAuthHeaders() },
-      })
+      return c.openWebSocket(
+        `${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`,
+        { ...init?.headers, ...c.getHostAuthHeaders() },
+        init?.protocols,
+      )
     },
     hostBridgeIp: () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
@@ -399,4 +407,9 @@ function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps): AccountR
     replace: (entryId, replacementAccountId) =>
       deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId),
   }
+}
+
+/** The runner keeps no workspace on this machine, so the actor reads it from the container. */
+function workspaceInContainer(): boolean {
+  return getSettings().container.containerRunner === 'cloudflare-container'
 }
