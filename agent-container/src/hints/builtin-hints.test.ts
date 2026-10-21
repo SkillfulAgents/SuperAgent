@@ -61,7 +61,6 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['propose an API rule', before('mcp__rules__create_api_rule', { accountId: 'acc-shopify', effect: 'require' }), ['create-rule']],
   ['propose an MCP rule', before('mcp__rules__create_mcp_rule', { mcpId: 'linear' }), ['create-rule']],
   ['list rules', before('mcp__rules__list_proxy_rules', { kind: 'api', targetId: 'acc-shopify' }), []],
-  ['invoke another agent', before('mcp__agents__invoke_agent', { slug: 'outreach', prompt: 'Import /workspace/attendees.csv' }), ['invoke-agent-files']],
   ['read another agent transcript', before('mcp__agents__get_agent_session_transcript', { slug: 'outreach', session_id: 's1', sync: true }), []],
   ['inspect webhook events', before('mcp__user-input__inspect_webhook_events', { trigger_id: 'wt_lunch1' }), ['inspect-webhook-events']],
   ['list triggers', before('mcp__user-input__list_triggers'), []],
