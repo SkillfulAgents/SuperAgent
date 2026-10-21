@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Tested browser use feature: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it correctly in the response.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut app with sidebar containing the \"QA-20261021-172709-bena\" agent.",
+    "Clicked on \"QA-20261021-172709-bena\" agent in the sidebar — Agent page opened, displaying agent configuration panel with chat input field.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was correctly entered and displayed in the text input.",
+    "Clicked Send message button — Message was sent successfully, creating a new chat session with URL /agents/qa-20261021-172709-bena-2wnfgsiukq/sessions/c06697dd-eb38-4b1a-a0e0-9f4f70ab12d3, and agent status changed to \"working\".",
+    "Waited for agent to process the request (up to 3 minutes) — Agent completed processing in 11 seconds, showing 3 tool calls and using 155,228 tokens.",
+    "Verified response mentions \"Example Domain\" — Agent response states: \"The page title is 'Example Domain'. https://example.com loaded normally (HTTP 200), and I've closed the browser since that was all you needed.\" The response correctly mentions \"Example Domain\" as expected."
+  ],
+  "bugs": [],
+  "durationMs": 83144,
+  "sessionId": "04f9c308-7647-406d-9442-718e42dca786",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 13360,
+    "cacheCreationTokens": 87861,
+    "cacheReadTokens": 1249197,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.301956
+  }
+}
