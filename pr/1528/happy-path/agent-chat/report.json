@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: nse — Result: Agent responded within ~10 seconds with message \"2 + 2 = 4.\"\n\n**[STEP]** Step 6: Verified response mentions \"4\" and took screenshot — Result: Response clearly shows \"2 + 2 = 4.\" which contains the number 4. Screenshot captured showing complete chat with user question and agent answer.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 108874,
+  "sessionId": "a2b73802-4196-436f-a35c-f66dc661c830",
+  "cost": {
+    "inputTokens": 584,
+    "outputTokens": 15069,
+    "cacheCreationTokens": 129704,
+    "cacheReadTokens": 1820524,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.420111
+  }
+}
