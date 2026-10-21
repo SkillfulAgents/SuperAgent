@@ -14,6 +14,7 @@ import {
   listConnections,
   saveConnection,
   deleteConnection,
+  shareConnection,
   setGlobalSelection,
   compareAndSetGlobalDefault,
   globalSelectionState,
@@ -72,6 +73,10 @@ routes.post('/', async (c) =>
 routes.put('/:id', async (c) =>
   c.json({ id: await saveConnection(await c.req.json(), viewer(c), c.req.param('id')) })
 )
+routes.post('/:id/share', IsAdmin(), async (c) => {
+  await shareConnection(c.req.param('id'), viewer(c))
+  return c.json({ success: true })
+})
 routes.delete('/:id', async (c) => {
   await deleteConnection(c.req.param('id'), viewer(c))
   return c.json({ success: true })

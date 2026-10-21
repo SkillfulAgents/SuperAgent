@@ -27,6 +27,8 @@ const webTestIgnore = [
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
+  // Writes app-wide model defaults — also belongs to the isolated wizard suite.
+  '**/paywall-subscriptions.spec.ts',
   // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
   '**/pwa-precache.spec.ts',
   // WebKit-engine regression (async-scroll follow) — runs under the web-webkit project.

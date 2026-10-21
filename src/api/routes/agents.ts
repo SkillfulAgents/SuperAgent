@@ -1,4 +1,4 @@
-import { assertConnectionSelectionAccess, markSessionSelection, selectionUnchangedSince, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { assertConnectionSelectionAccess, markSessionSelection, selectionUnchangedSince, withSessionSelection, sessionRuntime, sessionCredentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
@@ -2228,6 +2228,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
+        credentialSource: sessionCredentialSource(slug, sessionId),
       },
       201
     )
@@ -2871,7 +2872,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: true,
       })
       await notifyMentions()
-      return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
+      return c.json({ success: true, uuid: messageUuid, queued: true, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
     }
 
     // Use cached status to avoid spawning docker process
@@ -2905,7 +2906,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // No stream frames follow an append, so the warm summary is told directly.
       actor.sessions.recordActivity(sessionId)
       await notifyMentions()
-      return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
+      return c.json({ success: true, uuid: messageUuid, queued: false, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
     }
 
     return await withSessionSelection(agentSlug, sessionId, async () => {
@@ -3018,7 +3019,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         console.error(error)
       }
 
-      return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
+      return c.json({ success: true, uuid: messageUuid, queued: wasQueued, credentialSource: sessionCredentialSource(agentSlug, sessionId) }, 201)
     })
   } catch (error) {
     const runtimeError = findAgentRuntimeError(error)

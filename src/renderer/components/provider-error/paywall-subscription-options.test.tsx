@@ -114,6 +114,11 @@ beforeEach(() => {
         limits: [{ kind: 'window', id: 'weekly', label: 'Weekly', usedPercent: 50 }],
       })
     }
+    const shareMatch = url.match(/^\/api\/llm-connections\/([^/]+)\/share$/)
+    if (shareMatch && init?.method === 'POST') {
+      saved = saved.map(item => item.id === decodeURIComponent(shareMatch[1]) ? { ...item, userId: null } : item)
+      return Response.json({ success: true })
+    }
     if (url === '/api/llm-connections/defaults/default' && init?.method === 'PUT') return Response.json({
       success: true,
       before: { defaultSelection: { llmProviderId: 'platform', model: 'old-model' }, summarizerSelection: null },
@@ -327,6 +332,17 @@ describe('subscription paywall recovery', () => {
     expect(screen.getByRole('button', { name: 'Always use Grok' })).toBeDisabled()
   })
 
+  it('lets a cloud admin always use their personal saved connection by sharing it first', async () => {
+    state.isAdmin = true
+    saved = [savedSubscription()]
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Always use Grok' }))
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    const urls = state.fetch.mock.calls.map(([url]) => url)
+    expect(urls.indexOf('/api/llm-connections/saved-grok/share')).toBeGreaterThan(-1)
+    expect(urls.indexOf('/api/llm-connections/saved-grok/share')).toBeLessThan(urls.indexOf('/api/llm-connections/defaults/default'))
+  })
+
   it.each([
     ['Grok', 'grok', 'Grok'],
     ['OpenAI', 'codex', 'Codex'],
@@ -337,6 +353,7 @@ describe('subscription paywall recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: `Connect ${name}` }))
     expect(screen.getByRole('button', { name: 'Save and resume chat' })).toBeDisabled()
     expect(screen.queryByText('Available to')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: `Sign in with ${signInName}` }))
     await screen.findByText('me@example.test')
     save()
@@ -377,6 +394,68 @@ describe('subscription paywall recovery', () => {
     expect(events('sign_in_succeeded')).toHaveLength(0)
     expect(events('saved')[0]).toMatchObject({ authMethod: 'setup_token', saveAttempt: 1 })
     expect(JSON.stringify(state.track.mock.calls)).not.toContain('test-setup-token')
+  })
+
+  it('makes a newly connected local subscription the app and agent default before resuming', async () => {
+    state.isAuthMode = false
+    mount()
+    openClaude()
+    expect(screen.getByRole('checkbox', { name: /new chats/i })).toBeChecked()
+    save()
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    const urls = state.fetch.mock.calls.map(([url]) => url)
+    const defaultWrite = state.fetch.mock.calls.find(([url]) => url === '/api/llm-connections/defaults/default')
+    const preferenceWrite = state.fetch.mock.calls.find(([url]) => url === '/api/agents/agent/preferences')
+    expect(JSON.parse(String(defaultWrite?.[1].body))).toEqual({ llmProviderId: 'new-connection', model: 'new-model' })
+    expect(JSON.parse(String(preferenceWrite?.[1].body))).toEqual({ defaultLlmProviderId: 'new-connection', defaultModel: 'new-model' })
+    expect(urls.indexOf('/api/llm-connections/defaults/default')).toBeLessThan(urls.indexOf('/api/agents/agent/preferences'))
+    expect(urls.indexOf('/api/agents/agent/preferences')).toBeLessThan(urls.findIndex(url => url.endsWith('/messages')))
+    expect(urls.some(url => url.endsWith('/share'))).toBe(false)
+    expect(events('resumed')[0]).toMatchObject({ madeDefault: true })
+  })
+
+  it('shares a cloud admin\'s new subscription before making it the app and agent default', async () => {
+    state.isAdmin = true
+    mount()
+    openClaude()
+    expect(screen.getByRole('checkbox', { name: /everyone in this workspace/i })).toBeChecked()
+    save()
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    const urls = state.fetch.mock.calls.map(([url]) => url)
+    const create = state.fetch.mock.calls.find(([url, init]) => url === '/api/llm-connections' && init?.method === 'POST')
+    expect(JSON.parse(create?.[1].body)).toMatchObject({ userId: 'me' })
+    expect(urls.indexOf('/api/llm-connections/new-connection/share')).toBeGreaterThan(-1)
+    expect(urls.indexOf('/api/llm-connections/new-connection/share')).toBeLessThan(urls.indexOf('/api/llm-connections/defaults/default'))
+    expect(urls.indexOf('/api/agents/agent/preferences')).toBeLessThan(urls.findIndex(url => url.endsWith('/messages')))
+  })
+
+  it('keeps a cloud admin\'s new subscription personal and session-only when they opt out', async () => {
+    state.isAdmin = true
+    mount()
+    openClaude()
+    fireEvent.click(screen.getByRole('checkbox', { name: /everyone in this workspace/i }))
+    save()
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    const urls = state.fetch.mock.calls.map(([url]) => url)
+    expect(urls.some(url => url.endsWith('/share') || url.includes('/defaults/') || url.endsWith('/preferences'))).toBe(false)
+    expect(events('resumed')[0]).toMatchObject({ madeDefault: false })
+  })
+
+  it('does not resume until the defaults are saved, and retries them with the saved connection', async () => {
+    state.isAuthMode = false
+    failAgentDefault = true
+    mount()
+    openClaude()
+    save()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not update agent default')
+    expect(sendCount).toBe(0)
+    expect(events('resume_failed')[0]).toMatchObject({ failureReason: 'default_failed' })
+    failAgentDefault = false
+    fireEvent.click(screen.getByRole('button', { name: 'Resume chat' }))
+    await waitFor(() => expect(onResumed).toHaveBeenCalledOnce())
+    expect(createCount).toBe(1)
+    expect(sendCount).toBe(1)
+    expect(state.fetch.mock.calls.filter(([url]) => url === '/api/agents/agent/preferences')).toHaveLength(2)
   })
 
   it('retries resuming with the already-saved connection after a failed send', async () => {

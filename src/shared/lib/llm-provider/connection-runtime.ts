@@ -128,6 +128,15 @@ export function sessionRuntime(agentId: string, sessionId: string): ConnectionRu
   return sessionRuntimes.get(`${agentId}:${sessionId}`)
 }
 
+export function credentialSource(provider: string | undefined): string {
+  if (!provider) return 'unknown'
+  return provider === 'platform' ? 'platform' : `byo:${provider}`
+}
+
+export function sessionCredentialSource(agentId: string, sessionId: string): string {
+  return credentialSource(sessionRuntime(agentId, sessionId)?.provider)
+}
+
 const selectionTurns = new Map<string, Promise<unknown>>()
 export async function withSessionSelection<T>(
   agentId: string,
