@@ -1,6 +1,6 @@
 /**
  * The app's volume list, the real Docker client and the agent image, end to end.
- * Opt-in, needs Docker Desktop, builds the image first:
+ * Opt-in, needs Docker (Desktop, or native Linux), builds the image first:
  *   RUN_VOLUMES_E2E=1 npx vitest run src/shared/lib/volumes/volumes.e2e.test.ts
  */
 import fs from 'fs'
@@ -61,7 +61,8 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     fs.writeFileSync(path.join(tmpDir, 'settings.json'), JSON.stringify({ container: { agentImage: IMAGE } }))
     const app = new Hono()
     app.route('/api/volumes', volumes)
-    server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' })
+    // Native Linux containers reach the host through docker0, not its loopback.
+    server = serve({ fetch: app.fetch, port: 0, hostname: client().getHostBridgeIp() ?? '127.0.0.1' })
   }, 900_000)
 
   afterAll(async () => {

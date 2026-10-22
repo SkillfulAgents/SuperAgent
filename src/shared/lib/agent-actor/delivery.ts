@@ -153,7 +153,6 @@ export function createSessionDelivery(
       if (request.cancelAwaiting) await live.cancelAwaitingInput(sessionId)
       // Decided with the mark, nothing awaited between: a turn that started
       // while this send waited its turn, or that the attach revealed, counts.
-      if (request.ifIdle && live.isActive(sessionId)) return { status: 'busy' }
       const mark = live.markSending(sessionId)
       // A message joining a running turn must not carry the runtime: the
       // container treats a change as an interrupt and restart of the turn.

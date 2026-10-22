@@ -36,12 +36,16 @@ import type {
   ContainerOps,
   FileOps,
   InputOps,
+  LockOps,
   McpReauthOps,
+  McpSessionOps,
   MessageOps,
   MemoryOps,
   ReviewOps,
   SessionOps,
   UsageOps,
+  VolumeUploadOps,
+  WidgetOps,
 } from './types'
 
 /**
@@ -54,8 +58,7 @@ import type {
  * the client and every cached fact about the container.
  *
  * The user-input, review, re-auth and computer-use managers are routers over
- * state the actors own: the actor reports its request transitions to the
- * first, and the registry hands all of them the way to every actor's stores.
+ * state the actors own: the registry hands them the way to every actor's stores.
  */
 export interface LocalActorDeps {
   readonly containerHost: typeof containerHost
@@ -100,6 +103,10 @@ export class LocalAgentActor implements AgentActor {
   readonly files: FileOps
   readonly memories: MemoryOps
   readonly config: ConfigOps
+  readonly locks: LockOps
+  readonly widgets: WidgetOps
+  readonly mcpSessions: McpSessionOps
+  readonly volumeUploads: VolumeUploadOps
   /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
   readonly store: SessionStore
   /**
@@ -122,7 +129,6 @@ export class LocalAgentActor implements AgentActor {
     this.state =
       state ??
       createAgentState(slug, {
-        transitions: deps.userInputRequestManager,
         sessions: {
           store: createLocalSessionStore(slug, deps, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
@@ -143,6 +149,10 @@ export class LocalAgentActor implements AgentActor {
     this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
+    this.locks = createLockOps(this.state)
+    this.widgets = createWidgetOps(this.state)
+    this.mcpSessions = createMcpSessionOps(this.state)
+    this.volumeUploads = createVolumeUploadOps(this.state)
   }
 
   /** The registry is dropping this handle: release everything it owns. */
@@ -229,12 +239,16 @@ function createSessionOps(
     // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
     delete: (sessionId) => {
       live.unsubscribe(sessionId)
+      state.deferredNaming.delete(sessionId)
       return deps.sessionService.deleteSession(store, sessionId)
     },
     // Decided and let go of in one step, before the delete, as `delete` does.
     deleteMany: async (sessionIds) => {
       const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
-      for (const sessionId of idle) live.unsubscribe(sessionId)
+      for (const sessionId of idle) {
+        live.unsubscribe(sessionId)
+        state.deferredNaming.delete(sessionId)
+      }
       return deps.sessionService.deleteSessionsBatch(store, idle)
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
@@ -289,6 +303,11 @@ function createSessionOps(
     grantCapability: async (sessionId, capability) => live.grantCapability(sessionId, capability),
 
     attach: (sessionId, options) => delivery.attach(sessionId, options),
+
+    deferNaming: async (sessionId) => {
+      state.deferredNaming.add(sessionId)
+    },
+    takeDeferredNaming: async (sessionId) => state.deferredNaming.delete(sessionId),
   }
 }
 
@@ -402,7 +421,7 @@ async function answerRequest(
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: async (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
+    submit: async (id, decision) => deps.reviewManager.submitDecision(slug, id, decision),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
@@ -452,6 +471,49 @@ function createSessionsRuntime(slug: AgentSlug, deps: LocalActorDeps): SessionsR
         { name: 'local-agent-actor.stop-after-fatal-error' },
       )
     },
+  }
+}
+
+function createLockOps(state: AgentState): LockOps {
+  const locks = state.locks
+  return {
+    tryAcquire: async (key) => locks.tryAcquire(key),
+    acquire: (key) => locks.acquire(key),
+    release: async (key, token) => locks.release(key, token),
+  }
+}
+
+function createWidgetOps(state: AgentState): WidgetOps {
+  const refreshes = state.widgetRefreshes
+  return {
+    beginRefresh: async (widgetSlug) => refreshes.begin(widgetSlug),
+    beginOrJoinRefresh: (widgetSlug) => refreshes.beginOrJoin(widgetSlug),
+    finishRefresh: async (widgetSlug, token, outcome) => refreshes.finish(widgetSlug, token, outcome),
+    refreshing: async () => refreshes.refreshing(),
+    refreshedAt: async () => refreshes.refreshedAt(),
+    claimStaleSweep: async (throttleMs) => refreshes.claimStaleSweep(throttleMs),
+    notePostRun: async () => refreshes.notePostRun(),
+    isLatestPostRun: async (stamp) => refreshes.isLatestPostRun(stamp),
+  }
+}
+
+function createMcpSessionOps(state: AgentState): McpSessionOps {
+  const sessions = state.mcpSessions
+  return {
+    open: async (mcpId, protocolVersion) => sessions.open(mcpId, protocolVersion),
+    get: async (mcpId, id) => sessions.get(mcpId, id),
+    bind: async (id, upstreamSessionId) => sessions.bind(id, upstreamSessionId),
+    unbind: async (id, upstreamSessionId) => sessions.unbind(id, upstreamSessionId),
+    close: async (id) => sessions.close(id),
+  }
+}
+
+function createVolumeUploadOps(state: AgentState): VolumeUploadOps {
+  const uploads = state.volumeUploads
+  return {
+    begin: async (key) => uploads.begin(key),
+    end: async (key, upload, outcome) => uploads.end(key, upload, outcome),
+    allowDelete: async (key) => uploads.allowDelete(key),
   }
 }
 

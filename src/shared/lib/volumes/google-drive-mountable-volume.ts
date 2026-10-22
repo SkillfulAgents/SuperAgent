@@ -14,7 +14,7 @@ import { GoogleDriveChangeFeed } from './google-drive-changes'
 import { volumeFolderBrowser } from './volume-folder-browser'
 import { rangedVolumeFile } from './remote-file'
 import { RemoteHealthCache } from './remote-health-cache'
-import { volumeUploads } from './volume-upload-guard'
+import { guardDelete, guardedUpload } from './guarded-upload'
 import { throwIfUploadAborted } from './remote-transfer'
 import { VolumeError } from './volume-error'
 
@@ -459,7 +459,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
-    return volumeUploads.write(JSON.stringify([this.id, relative]), body, signal, () =>
+    return guardedUpload(this.agentSlug, JSON.stringify([this.id, relative]), body, signal, () =>
       withGoogleDriveAccount(this.config.accountId, () => this.writeImpl(relative, body, signal)))
   }
 
@@ -551,7 +551,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
 
   private async deleteImpl(relative: string): Promise<void> {
     this.writableName(relative)
-    volumeUploads.beforeDelete(JSON.stringify([this.id, relative]))
+    await guardDelete(this.agentSlug, JSON.stringify([this.id, relative]))
     const planned = await this.planned(relative)
     // A folder is held too, so nothing is written into it while it is checked empty and trashed.
     await this.change([planned.parentId, planned.entry.file.id], async (fresh, settle) => {

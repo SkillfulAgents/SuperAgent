@@ -193,6 +193,17 @@ export function installCloudDashboardAuth(
 }
 
 /**
+ * The popout's identity across launches, for Electron's window-state
+ * persistence. A cloud dashboard is named by its deployment; a local one by
+ * nothing more, because the local API's port can change between launches.
+ * Unique among open windows, as Electron requires, for the same reason the
+ * popout map's key is: one window per dashboard per deployment.
+ */
+export function dashboardWindowName(agentSlug: string, dashboardSlug: string, apiBaseUrl: string, cloud: boolean): string {
+  return `dashboard|${cloud ? apiBaseUrl : 'local'}|${agentSlug}/${dashboardSlug}`
+}
+
+/**
  * `apiBaseUrl` is where the dashboard lives: the local API, or the cloud
  * workspace's own address. Popouts are built in main, so they have to be told;
  * a hard-coded local origin opens a dashboard belonging to a different
@@ -211,6 +222,10 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
 
   const url = buildDashboardViewUrl(apiBaseUrl, agentSlug, dashboardSlug)
   const win = new BrowserWindow({
+    // Each dashboard reopens where it was last left: Electron saves a named
+    // window's bounds and restores them on the next window of that name.
+    name: dashboardWindowName(agentSlug, dashboardSlug, apiBaseUrl, cloud),
+    windowStatePersistence: true,
     width: 1000,
     height: 700,
     title: 'Gamut Dashboard',

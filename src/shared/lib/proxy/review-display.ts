@@ -111,7 +111,8 @@ export function generateReviewDisplayText(
   return `Allow ${method} request to ${toolkitDisplay}?`
 }
 
-const PREVIEW_MAX_CHARS = 2000
+// Room for an email the card decodes from its body: headers, text, and HTML, before any attachment. Matches PARSE_MAX_BYTES.
+const PREVIEW_MAX_CHARS = 64_000
 // Bodies past this size are shown from their start, unparsed.
 export const PARSE_MAX_BYTES = 64_000
 const GRAPHQL_KEYS = new Set(['query', 'variables', 'operationName'])

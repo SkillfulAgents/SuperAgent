@@ -57,7 +57,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   }
   getBuiltinCatalog() {
     return PLATFORM_CATALOG.filter(model => model.family === 'grok').map(model => ({
-      ...model, supportedSpeeds: undefined, blurb: 'Uses your Grok subscription', supportsWebSearch: true,
+      ...model, supportedSpeeds: undefined, longContextPriceCliff: undefined, blurb: 'Uses your Grok subscription', supportsWebSearch: true,
     }))
   }
   async getContainerEnvVars() { return {} }

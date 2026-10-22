@@ -28,6 +28,7 @@ import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
+import { useCustomPreview } from './custom-previews'
 
 // Endpoint descriptions come from API docs and carry inline Markdown
 // (`code`, [links](…)). The title renders them inline: no paragraph or block
@@ -184,6 +185,7 @@ function ScopeReviewRequestItem({
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
+  const customPreview = useCustomPreview(toolkit, method, targetPath, requestBody)
   const named = !!endpointDescription
 
   // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
@@ -336,14 +338,17 @@ function ScopeReviewRequestItem({
   const readOnlyConfig = readOnly
     ? {
         extraContent: (
-          <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+          <>
+            {customPreview?.preview}
+            <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+          </>
         ),
       }
     : false as const
 
   return (
     <RequestItemShell
-      title={displayText ? <Markdown components={TITLE_MARKDOWN}>{displayText}</Markdown> : requestLabel}
+      title={customPreview?.title ??(displayText ? <Markdown components={TITLE_MARKDOWN}>{displayText}</Markdown> : requestLabel)}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -355,7 +360,8 @@ function ScopeReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Code block showing method/path + toolkit, what the request sends, and the rules that held it */}
+      {/* The call as its service shows it, when a custom preview can read it, then method/path + toolkit, what the request sends, and the rules that held it */}
+      {customPreview?.preview}
       <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
       {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 

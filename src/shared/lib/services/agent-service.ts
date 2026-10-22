@@ -35,7 +35,6 @@ import {
   type AgentLiveSummary,
   type AgentRecord,
 } from '@shared/lib/agent-actor'
-import { background } from '@shared/lib/background'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -104,22 +103,20 @@ async function readInstructionsDocument(slug: string): Promise<InstructionsDocum
 }
 
 /**
- * Per-slug promise chains: every change to an agent's identity, which spans
+ * The agent's identity lock: every change to an agent's identity, which spans
  * the catalog row and the `AGENTS.md` projection, runs to completion before
  * the next one starts, so two overlapping renames cannot leave the row with
- * one name and the document with the other. The same in-process
- * serialization the config documents use for their read-modify-write.
+ * one name and the document with the other.
  */
-const identityChains = new Map<string, Promise<unknown>>()
-function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
-  const previous = identityChains.get(slug) ?? Promise.resolve()
-  const run = previous.then(fn, fn)
-  const settled = run.catch(() => undefined)
-  identityChains.set(slug, settled)
-  background(settled.then(() => {
-    if (identityChains.get(slug) === settled) identityChains.delete(slug)
-  }), { name: 'agent-service.drop-identity-chain' })
-  return run
+const IDENTITY_LOCK = 'identity'
+async function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const { locks } = agentRegistry.get(slug)
+  const token = await locks.acquire(IDENTITY_LOCK)
+  try {
+    return await fn()
+  } finally {
+    await locks.release(IDENTITY_LOCK, token)
+  }
 }
 
 /**

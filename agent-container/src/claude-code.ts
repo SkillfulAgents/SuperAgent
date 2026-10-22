@@ -1266,6 +1266,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             // when one is active (native is Anthropic-server-side, absent on non-Claude models).
             ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
             'Read',
+            'Glob',
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
           ],
