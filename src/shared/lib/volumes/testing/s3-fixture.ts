@@ -114,7 +114,7 @@ export function s3Fixture() {
     throw new Error(`Unhandled mock S3 operation: ${request.method}`)
   })
   const fixture: VolumeContractFixture = {
-    volume: () => new S3MountableVolume(id, 'S3', config),
+    volume: () => new S3MountableVolume(id, 'S3', config, 'agent'),
     put: (path, bytes) => { put(`mounted/${path}`, bytes) },
     mkdir: path => { put(`mounted/${path}/`, new Uint8Array()) },
     bytes: path => objects.get(`mounted/${path}`)?.bytes,

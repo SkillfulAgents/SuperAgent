@@ -35,12 +35,16 @@ import type {
   ContainerOps,
   FileOps,
   InputOps,
+  LockOps,
   McpReauthOps,
+  McpSessionOps,
   MessageOps,
   MemoryOps,
   ReviewOps,
   SessionOps,
   UsageOps,
+  VolumeUploadOps,
+  WidgetOps,
 } from './types'
 
 /**
@@ -98,6 +102,10 @@ export class LocalAgentActor implements AgentActor {
   readonly files: FileOps
   readonly memories: MemoryOps
   readonly config: ConfigOps
+  readonly locks: LockOps
+  readonly widgets: WidgetOps
+  readonly mcpSessions: McpSessionOps
+  readonly volumeUploads: VolumeUploadOps
   /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
   readonly store: SessionStore
   /**
@@ -140,6 +148,10 @@ export class LocalAgentActor implements AgentActor {
     this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
+    this.locks = createLockOps(this.state)
+    this.widgets = createWidgetOps(this.state)
+    this.mcpSessions = createMcpSessionOps(this.state)
+    this.volumeUploads = createVolumeUploadOps(this.state)
   }
 
   /** The registry is dropping this handle: release everything it owns. */
@@ -226,12 +238,16 @@ function createSessionOps(
     // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
     delete: (sessionId) => {
       live.unsubscribe(sessionId)
+      state.deferredNaming.delete(sessionId)
       return deps.sessionService.deleteSession(store, sessionId)
     },
     // Decided and let go of in one step, before the delete, as `delete` does.
     deleteMany: async (sessionIds) => {
       const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
-      for (const sessionId of idle) live.unsubscribe(sessionId)
+      for (const sessionId of idle) {
+        live.unsubscribe(sessionId)
+        state.deferredNaming.delete(sessionId)
+      }
       return deps.sessionService.deleteSessionsBatch(store, idle)
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
@@ -286,6 +302,11 @@ function createSessionOps(
     grantCapability: async (sessionId, capability) => live.grantCapability(sessionId, capability),
 
     attach: (sessionId, options) => delivery.attach(sessionId, options),
+
+    deferNaming: async (sessionId) => {
+      state.deferredNaming.add(sessionId)
+    },
+    takeDeferredNaming: async (sessionId) => state.deferredNaming.delete(sessionId),
   }
 }
 
@@ -446,6 +467,49 @@ function createSessionsRuntime(slug: AgentSlug, deps: LocalActorDeps): SessionsR
         .stopContainer()
         .catch((err) => console.error(`[LocalAgentActor] Failed to stop container for ${slug}:`, err))
     },
+  }
+}
+
+function createLockOps(state: AgentState): LockOps {
+  const locks = state.locks
+  return {
+    tryAcquire: async (key) => locks.tryAcquire(key),
+    acquire: (key) => locks.acquire(key),
+    release: async (key, token) => locks.release(key, token),
+  }
+}
+
+function createWidgetOps(state: AgentState): WidgetOps {
+  const refreshes = state.widgetRefreshes
+  return {
+    beginRefresh: async (widgetSlug) => refreshes.begin(widgetSlug),
+    finishRefresh: async (widgetSlug, token, outcome) => refreshes.finish(widgetSlug, token, outcome),
+    joinRefresh: (widgetSlug) => refreshes.join(widgetSlug),
+    refreshing: async () => refreshes.refreshing(),
+    refreshedAt: async () => refreshes.refreshedAt(),
+    claimStaleSweep: async (throttleMs) => refreshes.claimStaleSweep(throttleMs),
+    notePostRun: async () => refreshes.notePostRun(),
+    isLatestPostRun: async (stamp) => refreshes.isLatestPostRun(stamp),
+  }
+}
+
+function createMcpSessionOps(state: AgentState): McpSessionOps {
+  const sessions = state.mcpSessions
+  return {
+    open: async (mcpId, protocolVersion) => sessions.open(mcpId, protocolVersion),
+    get: async (mcpId, id) => sessions.get(mcpId, id),
+    bind: async (id, upstreamSessionId) => sessions.bind(id, upstreamSessionId),
+    unbind: async (id) => sessions.unbind(id),
+    close: async (id) => sessions.close(id),
+  }
+}
+
+function createVolumeUploadOps(state: AgentState): VolumeUploadOps {
+  const uploads = state.volumeUploads
+  return {
+    begin: async (key) => uploads.begin(key),
+    end: async (key, upload, outcome) => uploads.end(key, upload, outcome),
+    allowDelete: async (key) => uploads.allowDelete(key),
   }
 }
 
