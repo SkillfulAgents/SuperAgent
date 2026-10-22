@@ -1,0 +1,133 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e175]:
+            - link "Discover New Agents New" [ref=e176] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e177]
+              - generic [ref=e180]: Discover New Agents
+              - generic [ref=e181]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - img [ref=e45]
+            - button "New agent in Your Agents" [ref=e47] [cursor=pointer]:
+              - img [ref=e48]
+            - list [ref=e50]:
+              - button "QA-20261022-012556-2jkn Last run never Open QA-20261022-012556-2jkn New session with QA-20261022-012556-2jkn" [ref=e51] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20261022-012556-2jkn Last run never" [ref=e53]:
+                    - /url: /agents/qa-20261022-012556-2jkn-ovxswqbgsd
+                    - generic [ref=e54]: QA-20261022-012556-2jkn
+                    - generic [ref=e55]: Last run never
+                  - generic [ref=e56]:
+                    - link "Open QA-20261022-012556-2jkn" [ref=e57]:
+                      - /url: /agents/qa-20261022-012556-2jkn-ovxswqbgsd
+                      - img "idle" [ref=e58]:
+                        - img [ref=e59]
+                    - link "New session with QA-20261022-012556-2jkn" [ref=e68]:
+                      - /url: /agents/qa-20261022-012556-2jkn-ovxswqbgsd/sessions/new
+                      - img [ref=e69]
+              - button "QA-20261022-012555-cohv Last run never Open QA-20261022-012555-cohv New session with QA-20261022-012555-cohv Collapse New Session working" [ref=e398] [cursor=pointer]:
+                - generic [ref=e73]:
+                  - link "QA-20261022-012555-cohv Last run never" [ref=e74]:
+                    - /url: /agents/qa-20261022-012555-cohv-v53px7fbec
+                    - generic [ref=e75]: QA-20261022-012555-cohv
+                    - generic [ref=e76]: Last run never
+                  - generic [ref=e77]:
+                    - link "Open QA-20261022-012555-cohv" [ref=e78]:
+                      - /url: /agents/qa-20261022-012555-cohv-v53px7fbec
+                      - img "working" [ref=e399]:
+                        - img "working" [ref=e400]
+                    - link "New session with QA-20261022-012555-cohv" [ref=e89]:
+                      - /url: /agents/qa-20261022-012555-cohv-v53px7fbec/sessions/new
+                      - img [ref=e90]
+                  - button "Collapse" [expanded] [ref=e404]:
+                    - img [ref=e415]
+                - list [ref=e418]:
+                  - listitem [ref=e419]:
+                    - link "New Session working" [ref=e420]:
+                      - /url: /agents/v53px7fbec/sessions/d70495e6-8018-441f-9e85-5411428eab16
+                      - generic [ref=e422]: New Session
+                      - img "working" [ref=e424]
+          - status [ref=e93]
+          - listitem [ref=e94]:
+            - button "Add section" [ref=e95] [cursor=pointer]:
+              - img [ref=e97]
+              - generic [ref=e98]: Add section
+      - generic [ref=e100]:
+        - button "Settings" [ref=e101] [cursor=pointer]:
+          - img [ref=e102]
+          - generic [ref=e105]: Settings
+        - button "0.5.46" [ref=e106] [cursor=pointer]:
+          - generic [ref=e107]: 0.5.46
+      - button "Toggle Sidebar" [ref=e108]
+    - main [ref=e109]:
+      - generic [ref=e186]:
+        - generic [ref=e187]:
+          - button "Toggle Sidebar" [ref=e188] [cursor=pointer]:
+            - img
+            - generic [ref=e189]: Toggle Sidebar
+          - generic [ref=e192]:
+            - link "QA-20261022-012555-cohv" [ref=e439]:
+              - /url: /agents/qa-20261022-012555-cohv-v53px7fbec
+            - text: /New Session
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - img "working" [ref=e440]
+              - generic [ref=e204]: working
+            - button "Stop Agent" [ref=e206] [cursor=pointer]:
+              - img
+        - generic [ref=e446]:
+          - region "Messages" [ref=e448]:
+            - log [ref=e450]:
+              - time [ref=e452]: Today at 1:26 AM
+              - paragraph [ref=e459]: Hello! What is 2+2?
+          - generic [ref=e465]:
+            - generic [ref=e469]:
+              - textbox "Type a message..." [ref=e472]:
+                - text: Type a message...
+                - paragraph [ref=e473]
+              - generic [ref=e474]:
+                - generic [ref=e475]:
+                  - button "Add files" [ref=e476] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e477] [cursor=pointer]':
+                    - generic [ref=e478]:
+                      - text: Opus 5.5
+                      - generic [ref=e479]: · Medium
+                    - img
+                - generic [ref=e480]:
+                  - button "Set up voice input" [ref=e481] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e483]:
+              - generic [ref=e484]: ↵
+              - generic [ref=e485]: Send
+              - generic [ref=e486]: ·
+              - generic [ref=e487]: ⇧↵
+              - generic [ref=e488]: New line
+  - region "Notifications alt+T"
