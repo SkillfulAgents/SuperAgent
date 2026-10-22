@@ -3,6 +3,7 @@ import { buttonVariants } from './button'
 import { FileIconTile } from './file-icon-tile'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { openableProps } from '@renderer/lib/openable'
+import { MAX_ZIP_BYTES } from '@renderer/lib/file-types'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
@@ -23,7 +24,7 @@ interface FileDeliveryRowProps {
  * The whole row opens the preview drawer. What sits at its right end says what
  * that will get you: a chevron when the drawer can render the file, pointing at
  * the panel it opens, and a Download button when it cannot, since for a .xlsx or
- * a .zip saving it is the only thing the user can do with it. Files that preview
+ * a .pptx saving it is the only thing the user can do with it. Files that preview
  * can still be downloaded from inside the drawer.
  */
 export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, className }: FileDeliveryRowProps) {
@@ -31,6 +32,8 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
   const file = describeWorkspaceFile(filePath, agentSlug)
   const detail = description?.trim() || (file.relativePath !== file.name ? file.relativePath : null)
   const metadata = [detail, sizeBytes !== undefined ? formatFileSize(sizeBytes) : null].filter(Boolean)
+  // Past the limit the drawer only says so, so the row keeps the one-click download.
+  const previewable = file.previewable && !(file.preview === 'archive' && (sizeBytes ?? 0) > MAX_ZIP_BYTES)
 
   return (
     <div
@@ -43,7 +46,7 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
       )}
       data-testid="file-delivery-row"
       data-file-name={file.name}
-      data-file-action={file.previewable ? 'preview' : 'download'}
+      data-file-action={previewable ? 'preview' : 'download'}
     >
       <FileIconTile filename={file.name} />
       <div className="min-w-0 flex-1">
@@ -54,7 +57,7 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
           </div>
         )}
       </div>
-      {file.previewable || !file.downloadUrl ? (
+      {previewable || !file.downloadUrl ? (
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
       ) : (
         <a

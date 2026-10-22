@@ -88,6 +88,8 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'prebuilt `url` prop; composed by lib/workspace-file-url.ts from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
+  'components/file-preview/renderers/zip-archive.ts::downloadZip.load::fetch(url)':
+    'prebuilt `url` prop; same origin as use-file-content.ts above',
   'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
     'the same prebuilt `fileUrl` the renderer loads, refetched only when the ' +
     'file-content cache is cold; same origin as use-file-content.ts above',
