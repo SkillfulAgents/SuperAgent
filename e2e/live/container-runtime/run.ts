@@ -36,7 +36,7 @@ const options = optionsSchema.parse({
   expected: {
     node: args.node ?? '22.23.4', python: args.python ?? '3.11.17',
     uv: args.uv ?? '0.13.5', bun: args.bun ?? '1.4.3',
-    rclone: args.rclone ?? '1.75.2', typescript: args.typescript ?? '5.5.4',
+    rclone: args.rclone ?? '1.75.2', typescript: args.typescript ?? '5.9.3',
     'ts-node': args['ts-node'] ?? '10.9.2',
   },
 })
@@ -117,7 +117,14 @@ async function fixture(name: string, phase: 'initial' | 'restart') {
     assert.equal(evidence.versions[name], version, `${name} version`)
   }
   const required = phase === 'initial'
-    ? ['python-stdlib', 'pip-user', 'stdlib-venv', 'copied-venv', 'uv-venv', 'native-wheel', 'uv-project', 'uv-tool', 'uvx', 'node-typescript', 'ts-node-script', 'ts-node-require', 'ts-node-import-enum', 'ts-node-type-errors', 'bun', 'archives', 'media', 'rclone', 'python-helpers']
+    ? [
+        'python-stdlib', 'pip-user', 'stdlib-venv', 'copied-venv', 'uv-venv', 'native-wheel',
+        'uv-project', 'uv-tool', 'uvx', 'node-typescript', 'ts-node-script', 'ts-node-require',
+        'ts-node-import-enum', 'ts-node-type-errors', 'ts-node-transpile-only',
+        'ts-node-installation', 'ts-node-register', 'ts-node-project-commonjs',
+        'ts-node-project-nodenext', 'ts-node-project-compiler', 'bun', 'archives',
+        'media', 'rclone', 'python-helpers',
+      ]
     : ['persisted-pip-user', 'persisted-stdlib-venv', 'persisted-copied-venv', 'persisted-uv-venv', 'persisted-native-wheel', 'persisted-uv-project', 'persisted-uv-tool', 'persisted-bun', 'persisted-files']
   for (const check of required) assert(checks.includes(check), `Missing tools check: ${check}`)
   console.log(`[runtime-smoke] ${phase}: ${checks.length} deterministic tool checks passed`)
