@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Live probe: an agent asks its owner to set up an integration only they may.
+ * Live probe: an agent sets its own Linear app up in its browser.
  *
  * Boots the REAL host against a seeded data dir, which runs the REAL agent
  * container and the real model, then drives the browser through
  * `integration-setup.spec.ts`: the agent calls add_agent_integration for
- * Linear, the owner setup card opens, the owner looks at the prefilled setup
- * and declines with a reason, and the agent carries on with it. The Playwright
- * run records the whole thing, so this is also how the demo video is made.
+ * Linear, opens the prefilled Linear app link it gets back in its browser,
+ * and asks the user to log in to Linear, where the probe stops. The
+ * Playwright run records the whole thing, so this is also how the demo video
+ * is made.
  *
  * Run:
  *   node e2e/live/integration-setup/run.mjs
@@ -219,16 +220,16 @@ async function main() {
     })
     exitCode = result.status ?? 1
 
-    // The container's own log is the proof that the tool parked on the owner
-    // under its own tool-use id, which only the PreToolUse capture provides.
+    // The container's own log: Linear was set up by the agent, not parked on
+    // the owner, and the agent took it to its browser.
     console.log('\nContainer-side evidence:')
     let allOk = exitCode === 0
     const containers = probeContainers(before)
     allOk = check('the probe ran one real agent container', containers.length === 1, containers.join(', ')) && allOk
     for (const name of containers) {
       const logs = captureAndRemoveContainer(name) ?? ''
-      allOk = check('add_agent_integration parked on the owner', /Created pending integration_setup request toolu_/.test(logs)) && allOk
-      allOk = check('the tool had its tool-use id', !/no tool use ID available/.test(logs)) && allOk
+      allOk = check('add_agent_integration did not park on the owner', !/Created pending integration_setup request/.test(logs)) && allOk
+      allOk = check('the agent asked for a login in its browser', /Created pending browser_input request toolu_/.test(logs)) && allOk
     }
     if (!allOk) exitCode = exitCode || 1
 

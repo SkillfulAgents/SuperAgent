@@ -2391,11 +2391,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'Here are the search results.'
     )],
     // Owner setup request: the real container's add_agent_integration posts the
-    // call to /x-agent/chat/add, which parks it on the owner for Linear.
+    // call to /x-agent/chat/add, which parks it on the owner for Email.
     ['ask integration setup', new UserInputRequestScenario([
       {
         name: 'mcp__chat__add_agent_integration',
-        input: { provider: 'linear', name: 'Support Triage', reason: 'So the team can delegate support issues to me in Linear' },
+        input: { provider: 'platform-email', name: 'Support Desk', config: { localPart: 'support' }, reason: 'So customers can email support requests to me' },
       },
     ], {
       onEmitted: ({ agentSlug, sessionId, toolUseIds: [toolUseId], inputs: [input] }) => {

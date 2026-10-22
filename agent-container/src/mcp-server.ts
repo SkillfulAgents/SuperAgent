@@ -59,6 +59,7 @@ import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integ
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
 import { makeAddAgentIntegrationTool } from './tools/chat/add-agent-integration'
+import { authorizeAgentIntegrationTool, completeAgentIntegrationAuthorizationTool } from './tools/chat/authorize-agent-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
@@ -180,6 +181,8 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       listChatUsersTool,
       listChatChannelsTool,
       makeAddAgentIntegrationTool(getCallerSessionId),
+      authorizeAgentIntegrationTool,
+      completeAgentIntegrationAuthorizationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
   })

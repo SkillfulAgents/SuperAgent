@@ -1,5 +1,6 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { textResult } from './host-client'
+import { webhookRelayAvailable } from '../../webhook-relay-env'
 
 const SLACK_MANIFEST = `{
   "display_information": { "name": "BOT_NAME" },
@@ -38,24 +39,27 @@ const PROVIDERS_INFO = `Supported agent integration providers. Each gives this a
 
 ## Set up by the agent's owner
 
-add_agent_integration asks the owner with a setup card in the app and returns once the integration is connected. Pass a reason. Do not collect credentials: the owner enters them in the app.
-
 **Email** (provider \`platform-email\`, Platform-connected deployments)
    The agent's own inbox, with an address like assistant@company.ongamut.so. Not Gmail/Outlook OAuth.
-   Suggestions: \`name\` (sender name), \`config.localPart\` (the inbox name before the @).
+   add_agent_integration asks the owner with a setup card in the app and returns once the inbox is connected. Pass a reason, and optionally \`name\` (sender name) and \`config.localPart\` (the inbox name before the @) as suggestions.
    For an existing inbox, call list_agent_integrations and follow its sending instructions; new emails need no existing conversation.
+
+## Set up by the agent in its browser
+
+**Offer to do these for the user:** you can create the app in your browser and fill everything in. The user only needs to be logged in to the service (ask with request_browser_input when a login page appears) and approve what you ask.
 
 **Linear** (provider \`linear\`)
    The agent's own Linear app: people mention it or delegate issues to it, and it gets Linear tools under its own identity.
-   Suggestions: \`name\` (the app name).
+   1. add_agent_integration with provider \`linear\`, \`name\` (the app name) and config {webhooks: true} when this host has a webhook relay (see the end of this list; otherwise config {}). It returns a prefilled Linear app creation link.
+   2. Open the link, keep the app private and create it. Copy its Client ID, Client secret and (with webhooks) webhook Signing secret.
+   3. authorize_agent_integration with those as config {clientId, clientSecret, webhookSecret}, open the link it returns and approve: pick the workspace and the teams the agent works in.
 
-**GitHub** (provider \`github\`)
+**GitHub** (provider \`github\`, needs a webhook relay)
    The agent's own GitHub App: mentioning it in an issue or pull request starts work, and it acts as its own bot.
-   Suggestions: \`name\` (the app name, up to 34 characters), \`config.organization\` (to use an organization's repositories).
+   1. add_agent_integration with provider \`github\`, \`name\` (the app name, up to 34 characters) and config {organization} to use an organization's repositories (config {} for the user's own).
+   2. authorize_agent_integration, open the link it returns, create the preconfigured app, then install it on the repositories the user chooses.
 
-## Set up by the agent
-
-Collect the fields below from the user and pass them in config.
+For the bots below, collect the fields from the user or get them in your browser, and pass them in config.
 
 1. **Telegram**
    Required: \`botToken\` — create a bot via @BotFather on Telegram and copy the token.
@@ -116,13 +120,16 @@ ${SLACK_MANIFEST}
 
 export const listAvailableIntegrationProvidersTool = tool(
   'list_available_integration_providers',
-  `List the supported agent integration providers (Email, Linear, GitHub, Telegram, Slack, iMessage), which ones the agent's owner sets up, and the configuration fields each needs.
+  `List the supported agent integration providers (Email, Linear, GitHub, Telegram, Slack, iMessage), how each is set up, and the configuration fields each needs.
 
-Use this to understand what information you need to collect from the user before calling add_agent_integration.
+Use this to understand what to collect or do before calling add_agent_integration.
 
-For Slack, the setup is complex — offer to do it for the user using browser tools (navigate to api.slack.com, create the app, generate tokens, etc.).`,
+For Slack, Linear and GitHub, offer to do the setup for the user with your browser tools: create the app in the service and fill in what it gives you.`,
   {},
   async () => {
-    return textResult(PROVIDERS_INFO)
+    const relay = webhookRelayAvailable()
+      ? 'This host has a webhook relay: set Linear up with webhooks (config {webhooks: true}).'
+      : 'This host has no webhook relay: set Linear up without webhooks (config {}); GitHub cannot be set up here.'
+    return textResult(`${PROVIDERS_INFO}\n\n${relay}`)
   },
 )

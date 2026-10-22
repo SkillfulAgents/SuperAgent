@@ -24,9 +24,9 @@ vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog'
 
 const props = {
   toolUseId: 'tu-setup',
-  provider: 'linear',
-  reason: 'Triage the support queue',
-  prefill: { name: 'Support bot' },
+  provider: 'platform-email',
+  reason: 'So customers can email support requests to me',
+  prefill: { name: 'Support Desk', localPart: 'support' },
   sessionId: 's-1',
   agentSlug: 'my-agent',
   onComplete: vi.fn(),
@@ -40,12 +40,12 @@ describe('IntegrationSetupRequestItem', () => {
 
   it('opens the provider setup with the agent\'s suggestions for the owner', async () => {
     render(<IntegrationSetupRequestItem {...props} />)
-    expect(screen.getByText('Set up Linear for this agent?')).toBeInTheDocument()
-    expect(screen.getByText('Triage the support queue')).toBeInTheDocument()
+    expect(screen.getByText('Set up Email for this agent?')).toBeInTheDocument()
+    expect(screen.getByText('So customers can email support requests to me')).toBeInTheDocument()
 
     await userEvent.click(screen.getByTestId('integration-setup-open-btn'))
 
-    expect(screen.getByTestId('setup-dialog')).toHaveTextContent('linear {"name":"Support bot"}')
+    expect(screen.getByTestId('setup-dialog')).toHaveTextContent('platform-email {"name":"Support Desk","localPart":"support"}')
     expect(props.onComplete).not.toHaveBeenCalled()
   })
 
@@ -53,7 +53,7 @@ describe('IntegrationSetupRequestItem', () => {
     isOwner = false
     render(<IntegrationSetupRequestItem {...props} />)
     expect(screen.queryByTestId('integration-setup-open-btn')).not.toBeInTheDocument()
-    expect(screen.getByText(/Only the agent's owner can set up Linear/)).toBeInTheDocument()
+    expect(screen.getByText(/Only the agent's owner can set up Email/)).toBeInTheDocument()
     expect(screen.getByTestId('integration-setup-decline-btn')).toBeEnabled()
   })
 

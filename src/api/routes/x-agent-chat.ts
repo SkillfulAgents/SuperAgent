@@ -94,23 +94,23 @@ xAgentChat.post('/add', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
     const body = await c.req.json()
-    const { provider, config, name } = body
+    const { provider, config = {}, name } = body
 
     if (!provider) {
       return c.json({ error: 'Missing required field: provider' }, 400)
     }
     await assertIntegrationAvailable(provider)
-    if (!getIntegrationSetup(provider).allowAgentCreation) {
+    const setup = getIntegrationSetup(provider)
+    if (!setup.allowAgentCreation) {
       // The container waits on the same tool-use id until the owner connects one or declines.
       if (!(await requestOwnerSetup(callerSlug, ownerSetupRequestInputSchema.parse(body)))) {
         return c.json({ error: 'Could not ask the owner to set up this integration' }, 500)
       }
       return c.json({ status: 'owner_setup_requested', provider }, 202)
     }
-    if (!config) {
-      return c.json({ error: 'Missing required fields: provider, config' }, 400)
-    }
 
+    // Links on the address the container calls from: the agent's browser runs
+    // the setup, and the bundled one reaches the host there.
     const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
@@ -150,12 +150,74 @@ xAgentChat.post('/add', async (c) => {
       provider: created.provider,
       status: created.status,
       name: created.name,
+      // An installation that still needs authorization: the agent carries on with it.
+      ...(created.status !== 'active' && setup.agentNextStep ? { nextStep: setup.agentNextStep(created) } : {}),
     }, 201)
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'add' } })
     return c.json({ error: 'Failed to add chat integration' }, 500)
+  }
+})
+
+/** The caller's own installation of a provider it may set up, or a response saying why not. */
+async function agentSetUpIntegration(callerSlug: string, integrationId: unknown) {
+  const integration = typeof integrationId === 'string' ? await getAgentIntegration(integrationId) : null
+  if (!integration || integration.agentSlug !== callerSlug) return { error: 'Integration not found', status: 404 as const }
+  await assertIntegrationAvailable(integration.provider)
+  const setup = getIntegrationSetup(integration.provider)
+  if (!setup.allowAgentCreation) return { error: 'Only the agent\'s owner can authorize this integration', status: 403 as const }
+  return { integration, setup }
+}
+
+// POST /authorize — the provider's authorization link for an installation the agent set up
+const authorizeSchema = z.object({ integration_id: z.string(), config: z.record(z.string(), z.unknown()).optional() })
+xAgentChat.post('/authorize', async (c) => {
+  try {
+    const { integration_id, config } = authorizeSchema.parse(await c.req.json())
+    const found = await agentSetUpIntegration(getCallerSlug(c), integration_id)
+    if ('error' in found) return c.json({ error: found.error }, found.status)
+    const authorization = found.setup.authorize
+    if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
+    const result = await authorization.run(found.integration, authorization.inputSchema.parse(config ?? {}), integrationSetupContext(found.integration.provider, c.req.raw, found.integration.agentSlug))
+    // As in the owner's route: the account keeps running until there is a usable link.
+    await agentIntegrationManager.pauseIntegration(found.integration.id)
+    return c.json(result)
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'authorize' } })
+    return c.json({ error: 'Could not authorize integration' }, 500)
+  }
+})
+
+// POST /complete-authorization — the provider's redirect, for a browser that could not load the callback
+const completeAuthorizationSchema = z.object({ integration_id: z.string(), url: z.url() })
+xAgentChat.post('/complete-authorization', async (c) => {
+  try {
+    const { integration_id, url } = completeAuthorizationSchema.parse(await c.req.json())
+    const found = await agentSetUpIntegration(getCallerSlug(c), integration_id)
+    if ('error' in found) return c.json({ error: found.error }, found.status)
+    const redirect = new URL(url)
+    const query = Object.fromEntries(redirect.searchParams)
+    // Only this provider's callback, as the browser would have loaded it.
+    if (!redirect.pathname.endsWith(`/${found.integration.provider}/callback`) || !query.state || !found.setup.callback) {
+      return c.json({ error: `Not a ${found.integration.provider} authorization callback URL` }, 400)
+    }
+    const result = await found.setup.callback({ state: query.state, code: query.code, error: query.error, parameters: query })
+    // A further step in the provider (GitHub installs the app it just created).
+    if (result.redirectUrl) return c.json({ status: 'continue', url: result.redirectUrl })
+    if (result.cancelled || !result.integrationId) return c.json({ error: 'Authorization was cancelled' }, 400)
+    if (result.integrationId !== found.integration.id) return c.json({ error: 'This authorization belongs to another integration' }, 400)
+    await agentIntegrationManager.resumeIntegration(result.integrationId)
+    const integration = await getAgentIntegration(result.integrationId)
+    return c.json({ status: integration?.status ?? 'unknown' })
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'complete-authorization' } })
+    return c.json({ error: 'Could not complete authorization' }, 500)
   }
 })
 

@@ -16,13 +16,22 @@ delivery.
    `mcp__chat__list_available_integration_providers` to learn who sets it up and
    which fields it needs.
 3. For Telegram, Slack, or iMessage, collect the required configuration from the
-   user. Use the secret-request flow for sensitive tokens when available; never
-   echo a token back.
+   user, or offer to create the bot yourself in your browser (Slack). Use the
+   secret-request flow for sensitive tokens when available; never echo a token
+   back.
 4. Call `mcp__chat__add_agent_integration` with the selected provider and
-   configuration. For Email, Linear, and GitHub, only the agent's owner can set
-   up the integration: the call shows them a setup card in the app and returns
-   once it is connected, or with an error if they decline. Pass a `reason`, and
-   never collect credentials for these; the owner enters them in the app.
+   configuration.
+   - **Linear and GitHub** are set up by you in your browser. The call creates
+     the integration and returns its next step: the prefilled Linear app to
+     create, or `authorize_agent_integration` to call. Then call
+     `mcp__chat__authorize_agent_integration` (with the Linear app's
+     credentials) and approve the link it returns in your browser. Ask the user
+     to log in with the browser hand-off when a login page appears. If the page
+     the service sends you back to does not load, pass its address to
+     `mcp__chat__complete_agent_integration_authorization`.
+   - **Email** can only be set up by the agent's owner: the call shows them a
+     setup card in the app and returns once the inbox is connected, or with an
+     error if they decline. Pass a `reason`.
 5. List integrations again to confirm that setup succeeded.
 
 Do not use `request_connected_account` or remote-MCP discovery for this flow.

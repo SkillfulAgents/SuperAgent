@@ -55,6 +55,8 @@ import {
   listChatProvidersRenderer,
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
+  completeAgentIntegrationAuthorizationRenderer,
   sendChatMessageRenderer,
 } from './chat-tools/renderer'
 import { addAgentIntegrationRenderer } from './add-agent-integration/renderer'
@@ -123,6 +125,8 @@ const toolRenderers = new Map([
   listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
   addAgentIntegrationRenderer,
+  authorizeAgentIntegrationRenderer,
+  completeAgentIntegrationAuthorizationRenderer,
   sendChatMessageRenderer,
 ].map(renderer => [renderer.definition, renderer]))
 

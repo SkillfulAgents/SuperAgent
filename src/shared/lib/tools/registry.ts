@@ -75,6 +75,8 @@ import {
   listAvailableChatProvidersDef,
   listAgentIntegrationsDef,
   addChatIntegrationDef,
+  authorizeAgentIntegrationDef,
+  completeAgentIntegrationAuthorizationDef,
   sendChatMessageDef,
 } from './chat-tools/definition'
 import { addAgentIntegrationDef } from './add-agent-integration/definition'
@@ -155,6 +157,8 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__chat__list_available_integration_providers': listAvailableChatProvidersDef,
   'mcp__chat__list_agent_integrations': listAgentIntegrationsDef,
   'mcp__chat__add_agent_integration': addAgentIntegrationDef,
+  'mcp__chat__authorize_agent_integration': authorizeAgentIntegrationDef,
+  'mcp__chat__complete_agent_integration_authorization': completeAgentIntegrationAuthorizationDef,
   'mcp__chat__send_chat_message': sendChatMessageDef,
   // Historical transcripts retain the original tool names.
   'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,

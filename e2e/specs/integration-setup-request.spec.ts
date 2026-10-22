@@ -4,7 +4,7 @@ import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
 // "ask integration setup" makes the mock agent call add_agent_integration for
-// Linear, which only the owner may set up: the host parks it on a setup card.
+// Email, which only the owner may set up: the host parks it on a setup card.
 test.describe('Integration setup request', () => {
   test.describe.configure({ timeout: 60_000 })
 
@@ -24,13 +24,14 @@ test.describe('Integration setup request', () => {
 
     const card = page.getByTestId('integration-setup-request')
     await expect(card).toBeVisible({ timeout: 15000 })
-    await expect(card).toContainText('Set up Linear for this agent?')
-    await expect(card).toContainText('So the team can delegate support issues to me in Linear')
+    await expect(card).toContainText('Set up Email for this agent?')
+    await expect(card).toContainText('So customers can email support requests to me')
 
     await card.getByTestId('integration-setup-open-btn').click()
     const dialog = page.getByRole('dialog')
-    await expect(dialog).toContainText('Set up integration with Linear')
-    await expect(dialog.getByLabel('Integration name')).toHaveValue('Support Triage')
+    await expect(dialog).toContainText('Set up integration with Email')
+    await expect(dialog.getByLabel('Sender name')).toHaveValue('Support Desk')
+    await expect(dialog.getByLabel('Inbox name')).toHaveValue('support')
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
     // Closing the form leaves the ask open.

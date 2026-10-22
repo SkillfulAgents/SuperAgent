@@ -8,6 +8,8 @@ interface AddResult {
   provider: string
   status: string
   name: string | null
+  /** For an installation that still needs authorization: what to do in the browser next. */
+  nextStep?: string
 }
 
 interface OwnerSetupRequested {
@@ -24,20 +26,22 @@ export const AGENT_INTEGRATION_PROVIDERS = ['telegram', 'slack', 'imessage', 'pl
 export function makeAddAgentIntegrationTool(getCallerSessionId: () => string) {
   return tool(
     'add_agent_integration',
-    `Give this agent its own identity on an external service: a chat bot (Telegram, Slack, iMessage), its own email inbox, or its own Linear or GitHub app.
+    `Give this agent its own identity on an external service: a chat bot (Telegram, Slack, iMessage), its own Linear or GitHub app, or its own email inbox.
 
 Call list_agent_integrations first: the integration may already exist. Then call list_available_integration_providers for each provider's fields and setup steps.
 
-Telegram, Slack and iMessage are set up directly: collect the provider's fields from the user and pass them in config. The integration is created when this returns.
+Telegram, Slack and iMessage: collect the provider's fields (or create the bot yourself in your browser) and pass them in config. The integration is created when this returns.
 
-Email (platform-email), Linear and GitHub can only be set up by the agent's owner. This tool asks them with a setup card in the app and returns once the integration is connected, or with an error if they decline. That can take a while. Never collect credentials for these: the owner enters them in the app. You may suggest a name, and for Email config.localPart (the inbox name before the @), for GitHub config.organization; the owner can change them.
+Linear and GitHub: you set these up in your browser. This creates the integration and returns its next step: the app to create (Linear) or authorize_agent_integration to call. Finish with authorize_agent_integration.
 
-Use reason to tell the owner what the integration is for. These are the agent's own accounts, not the user's: to act as the user in their own Gmail, Linear or GitHub, use request_connected_account instead.`,
+Email (platform-email) can only be set up by the agent's owner. This tool asks them with a setup card in the app and returns once the inbox is connected, or with an error if they decline; that can take a while. You may suggest a name (the sender name) and config.localPart (the inbox name before the @); pass a reason saying what the inbox is for.
+
+These are the agent's own accounts, not the user's: to act as the user in their own Gmail, Linear or GitHub, use request_connected_account instead.`,
     {
       provider: z.enum(AGENT_INTEGRATION_PROVIDERS).describe('Provider to set up'),
-      config: z.record(z.string(), z.unknown()).optional().describe('Provider-specific fields (see list_available_integration_providers). Required for Telegram, Slack and iMessage; optional suggestions for the rest'),
-      name: z.string().optional().describe('Optional display name: the bot name, the email sender name, or the Linear/GitHub app name'),
-      reason: z.string().optional().describe('For owner-approved providers: one sentence on what the integration is for, shown to the owner'),
+      config: z.record(z.string(), z.unknown()).optional().describe('Provider-specific fields (see list_available_integration_providers)'),
+      name: z.string().optional().describe('Optional display name: the bot name, the Linear/GitHub app name, or the email sender name'),
+      reason: z.string().optional().describe('For Email: one sentence on what the inbox is for, shown to the owner'),
     },
     async ({ provider, config, name, reason }) => {
       const toolUseId = inputManager.consumeCurrentToolUseId()
@@ -66,7 +70,8 @@ Use reason to tell the owner what the integration is for. These are the agent's 
         `  Provider: ${created.provider}\n` +
         `  ID: ${created.id}\n` +
         `  Status: ${created.status}` +
-        (created.name ? `\n  Name: ${created.name}` : ''),
+        (created.name ? `\n  Name: ${created.name}` : '') +
+        (created.nextStep ? `\n\nNext step:\n${created.nextStep}` : ''),
       )
     },
   )

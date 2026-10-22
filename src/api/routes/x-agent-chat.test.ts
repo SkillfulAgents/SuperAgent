@@ -68,9 +68,14 @@ const mockGetActiveIntegrationIds = vi.fn()
 const mockEnsureSession = vi.fn()
 const mockGetConnectorClass = vi.fn()
 
+const mockPauseIntegration = vi.fn()
+const mockResumeIntegration = vi.fn()
+
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
   agentIntegrationManager: {
     addIntegration: (...args: unknown[]) => mockAddIntegration(...args),
+    pauseIntegration: (...args: unknown[]) => mockPauseIntegration(...args),
+    resumeIntegration: (...args: unknown[]) => mockResumeIntegration(...args),
     getConnector: (...args: unknown[]) => {
       const transport = mockGetConnector(...args)
       return transport ? mockChatIntegration(transport) : undefined
@@ -124,6 +129,7 @@ import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registr
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { answerOwnerSetupRequests } from '@shared/lib/agent-integrations/owner-setup-request'
 import type { AgentIntegrationRecord } from '@shared/lib/agent-integrations/types'
+import { z } from 'zod'
 
 function createApp() {
   const app = new Hono()
@@ -140,6 +146,18 @@ function createIntegration(overrides: Record<string, unknown> = {}) {
     status: 'connected',
     ...overrides,
   }
+}
+
+/** A provider only the owner may set up (no allowAgentCreation). */
+function registerOwnerSetupProvider() {
+  const provider = 'test-owner-setup'
+  if (agentIntegrationRegistry.getDefinition(provider)) return
+  agentIntegrationRegistry.register({
+    definition: { provider, name: 'Owner Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
+    policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
+    create: async () => { throw new Error('not needed') },
+    setup: { prepare: async () => { throw new Error('an agent must not prepare an owner-managed integration') } },
+  })
 }
 
 function immediateTimeout() {
@@ -257,6 +275,106 @@ describe('x-agent chat route', () => {
     expect(await response.json()).toMatchObject({ status: 'disconnected' })
   })
 
+  describe('a provider the agent sets up in its browser', () => {
+    const provider = 'test-agent-oauth'
+    const post = (route: string, body: Record<string, unknown>) => app.request(`/api/x-agent/chat/${route}`, {
+      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    const run = vi.fn()
+    const callback = vi.fn()
+
+    beforeEach(() => {
+      run.mockResolvedValue({ url: 'https://provider.example/authorize?state=s1' })
+      if (agentIntegrationRegistry.getDefinition(provider)) return
+      agentIntegrationRegistry.register({
+        definition: { provider, name: 'OAuth Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'private-oauth-app', credentialFields: [] } },
+        policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
+        create: async () => { throw new Error('not needed') },
+        setup: {
+          allowAgentCreation: true,
+          agentNextStep: record => `Create the app for ${record.id}`,
+          prepare: async (_input, context) => ({ config: { redirectUri: context.callbackUrl }, status: 'disconnected' }),
+          authorize: { inputSchema: z.object({ clientId: z.string() }).strict(), run: (...args) => run(...args) },
+          callback: (...args) => callback(...args),
+        },
+      })
+    })
+
+    it('creates the installation on the address the container calls from, with its next step', async () => {
+      mockCreateChatIntegration.mockResolvedValue('oauth-1')
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'disconnected' }))
+
+      const response = await app.request('http://host.docker.internal:3000/api/x-agent/chat/add', {
+        method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, name: 'Bot' }),
+      })
+
+      expect(response.status).toBe(201)
+      expect(await response.json()).toMatchObject({ id: 'oauth-1', status: 'disconnected', nextStep: 'Create the app for oauth-1' })
+      expect(mockCreateChatIntegration).toHaveBeenCalledWith(expect.objectContaining({
+        provider, config: { redirectUri: `http://host.docker.internal:3000/api/agent-integrations/providers/${provider}/callback` },
+      }))
+      expect(mockAddIntegration).not.toHaveBeenCalled()
+    })
+
+    it('hands the agent its authorization link', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'disconnected' }))
+
+      const response = await post('authorize', { integration_id: 'oauth-1', config: { clientId: 'client' } })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ url: 'https://provider.example/authorize?state=s1' })
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ id: 'oauth-1' }), { clientId: 'client' }, expect.objectContaining({ agentSlug: 'agent-one' }))
+      expect(mockPauseIntegration).toHaveBeenCalledWith('oauth-1')
+    })
+
+    it('authorizes only the caller\'s own installations of providers it may set up', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-2', agentSlug: 'agent-two', provider }))
+      expect((await post('authorize', { integration_id: 'oauth-2' })).status).toBe(404)
+
+      registerOwnerSetupProvider()
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'owner-1', provider: 'test-owner-setup' }))
+      expect((await post('authorize', { integration_id: 'owner-1' })).status).toBe(403)
+      expect(run).not.toHaveBeenCalled()
+    })
+
+    it('completes the provider callback from the address the browser was sent to', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider, status: 'active' }))
+      callback.mockResolvedValue({ integrationId: 'oauth-1' })
+
+      const response = await post('complete-authorization', {
+        integration_id: 'oauth-1',
+        url: `http://localhost:47891/api/agent-integrations/providers/${provider}/callback?state=s1&code=c1&installation_id=7`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ status: 'active' })
+      expect(callback).toHaveBeenCalledWith({ state: 's1', code: 'c1', error: undefined, parameters: { state: 's1', code: 'c1', installation_id: '7' } })
+      expect(mockResumeIntegration).toHaveBeenCalledWith('oauth-1')
+    })
+
+    it('passes a further provider step back to the agent', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider }))
+      callback.mockResolvedValue({ redirectUrl: 'https://provider.example/install?state=s1' })
+
+      const response = await post('complete-authorization', { integration_id: 'oauth-1', url: `http://x/api/agent-integrations/providers/${provider}/callback?state=s1&code=c1` })
+
+      expect(await response.json()).toEqual({ status: 'continue', url: 'https://provider.example/install?state=s1' })
+      expect(mockResumeIntegration).not.toHaveBeenCalled()
+    })
+
+    it('refuses addresses that are not this provider\'s callback, and another installation\'s authorization', async () => {
+      mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'oauth-1', provider }))
+      const notCallback = await post('complete-authorization', { integration_id: 'oauth-1', url: 'https://evil.example/steal?state=s1&code=c1' })
+      expect(notCallback.status).toBe(400)
+      expect(callback).not.toHaveBeenCalled()
+
+      callback.mockResolvedValue({ integrationId: 'someone-else' })
+      const other = await post('complete-authorization', { integration_id: 'oauth-1', url: `http://x/api/agent-integrations/providers/${provider}/callback?state=s2&code=c2` })
+      expect(other.status).toBe(400)
+      expect(mockResumeIntegration).not.toHaveBeenCalled()
+    })
+  })
+
   describe('a provider only the owner may set up', () => {
     const provider = 'test-owner-setup'
     const add = (body: Record<string, unknown>) => app.request('/api/x-agent/chat/add', {
@@ -264,15 +382,7 @@ describe('x-agent chat route', () => {
       body: JSON.stringify({ provider, ...body }),
     })
 
-    beforeEach(() => {
-      if (agentIntegrationRegistry.getDefinition(provider)) return
-      agentIntegrationRegistry.register({
-        definition: { provider, name: 'Owner Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
-        policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
-        create: async () => { throw new Error('not needed') },
-        setup: { prepare: async () => { throw new Error('an agent must not prepare an owner-managed integration') } },
-      })
-    })
+    beforeEach(registerOwnerSetupProvider)
 
     it('parks the call on an owner setup card instead of creating the integration', async () => {
       const response = await add({

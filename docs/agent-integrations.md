@@ -155,8 +155,22 @@ and requires explicit provider opt-in, preserving owner-only interactive setup.
 Initial authorization-required rows are inserted disconnected atomically.
 
 The agent's `add_agent_integration` tool posts to `/api/x-agent/chat/add`. A
-provider with `allowAgentCreation` is created there. For any other provider the
-route asks the owner instead (`owner-setup-request.ts`): it registers an
+provider with `allowAgentCreation` is created there, on the address the
+container calls from: the agent runs the rest of the setup in its browser, and
+the bundled browser reaches the host there. An installation that still needs
+authorization returns the provider's `agentNextStep` (Linear: the prefilled app
+creation link and what to copy back; GitHub: call authorize). The agent then
+calls `authorize_agent_integration` (`/api/x-agent/chat/authorize`, the
+provider's `authorize`) and approves the returned link in its browser. A browser
+that cannot load the host's callback page (a host or cloud browser on a
+desktop install) hands the address it was redirected to back through
+`complete_agent_integration_authorization` (`/api/x-agent/chat/complete-authorization`),
+which runs the provider's `callback` only for that provider's callback path and
+only for the caller's own installation; a further provider step (GitHub's
+install page) is returned to open next.
+
+For any other provider (Email) the route asks the owner instead
+(`owner-setup-request.ts`): it registers an
 `integration_setup` request under the call's tool-use id in the calling session
 and returns 202, and the container waits on that id. The card opens the
 provider's own setup form, seeded with the agent's suggestions (name, Email inbox
