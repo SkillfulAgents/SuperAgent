@@ -32,7 +32,9 @@ function MeetingVoiceSelect({ id, value, onChange, disabled, voices, defaultVoic
     <SelectTrigger id={id} className="mt-1"><SelectValue /></SelectTrigger>
     <SelectContent>
       <SelectItem value={DEFAULT_VOICE_OPTION}>Default ({defaultLabel})</SelectItem>
-      {voices.filter(voice => voice.id !== defaultVoice).map(voice => <SelectItem key={voice.id} value={voice.id}>{voice.label}</SelectItem>)}
+      {voices.filter(voice => voice.id !== defaultVoice).map(voice => <SelectItem key={voice.id} value={voice.id}>
+        {voice.label}<span className="text-muted-foreground ml-2">({voice.description})</span>
+      </SelectItem>)}
     </SelectContent>
   </Select>
 }

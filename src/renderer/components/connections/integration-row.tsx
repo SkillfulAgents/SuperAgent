@@ -8,19 +8,19 @@ type IntegrationIconFallback = 'oauth' | 'mcp' | 'blocks'
 interface IntegrationListProps {
   children: ReactNode
   className?: string
-  /** `list` = stacked divided rows; `grid` = 2-col grid of bordered cards. */
+  /** `list` = stacked divided rows; `grid` = cards, two columns above mobile. */
   variant?: 'list' | 'grid'
 }
 
 /**
  * Shared list container for integration/connection rows.
  * - `list` (default): rounded card with divided rows.
- * - `grid`: 2-column grid of standalone bordered tiles.
+ * - `grid`: one column on mobile, two columns of bordered tiles above it.
  */
 export function IntegrationList({ children, className, variant = 'list' }: IntegrationListProps) {
   if (variant === 'grid') {
     return (
-      <div className={cn('grid grid-cols-2 gap-2 items-start', className)}>
+      <div className={cn('grid grid-cols-1 gap-2 items-start sm:grid-cols-2', className)}>
         {children}
       </div>
     )

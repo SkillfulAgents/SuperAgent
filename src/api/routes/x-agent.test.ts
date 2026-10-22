@@ -1124,23 +1124,6 @@ describe('/invoke', () => {
     expect(targetAuthors).toHaveLength(1)
   })
 
-  it('answers 409 without sending when the target session started running meanwhile', async () => {
-    reviewDecisions.push('allow')
-    // Idle when the route checks, running by the delivery's own turn.
-    mockIsSessionActive.mockReturnValueOnce(false).mockReturnValue(true)
-
-    const res = await authedFetch('/x-agent/invoke', {
-      slug: TARGET_SLUG,
-      prompt: 'follow-up',
-      sessionId: 'existing-sess',
-      attachments: ['/workspace/report.bin'],
-    })
-
-    expect(res.status).toBe(409)
-    expect(mockSendMessage).not.toHaveBeenCalled()
-    expect(mockTargetDelete).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace\/uploads\/x-agent\//), { recursive: true, confined: true })
-  })
-
   it('cleans up the container session if registerSession fails (no orphan)', async () => {
     reviewDecisions.push('allow')
     mockRegisterSession.mockRejectedValueOnce(new Error('disk full'))
@@ -1645,7 +1628,7 @@ describe('/invoke', () => {
     expect(mockGetTranscript).toHaveBeenCalledTimes(3)
   })
 
-  it('rejects when continuing an already-running session', async () => {
+  it('adds the prompt to the turn of an already-running session', async () => {
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(true)
     const res = await authedFetch('/x-agent/invoke', {
@@ -1653,44 +1636,9 @@ describe('/invoke', () => {
       prompt: 'hi',
       sessionId: 'existing-sess',
     })
-    expect(res.status).toBe(409)
-  })
-
-  it('reserves an idle existing session while pre-send work is in progress', async () => {
-    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-    await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
-    let releaseStart!: () => void
-    const startGate = new Promise<void>((resolve) => { releaseStart = resolve })
-    mockEnsureRunning.mockImplementationOnce(async () => {
-      await startGate
-      return {
-        createSession: mockCreateSession,
-        sendMessage: mockSendMessage,
-        deleteSession: mockDeleteSession,
-        fetch: mockTargetFetch,
-      } as never
-    })
-
-    const first = authedFetch('/x-agent/invoke', {
-      slug: TARGET_SLUG,
-      prompt: 'first',
-      sessionId: 'existing-sess',
-    })
-    await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledOnce())
-
-    const second = await authedFetch('/x-agent/invoke', {
-      slug: TARGET_SLUG,
-      prompt: 'second',
-      sessionId: 'existing-sess',
-    })
-    expect(second.status).toBe(409)
-    const third = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'third', sessionId: 'existing-sess' })
-    expect(third.status).toBe(409)
-    expect(mockSendMessage).not.toHaveBeenCalled()
-
-    releaseStart()
-    expect((await first).status).toBe(200)
-    expect(mockSendMessage).toHaveBeenCalledOnce()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ sessionId: 'existing-sess', status: 'running' })
+    expect(mockSendMessage).toHaveBeenCalledWith('existing-sess', 'hi', undefined, expect.objectContaining({ preserveRuntime: true }))
   })
 
   it('continues existing session via sendMessage when not running', async () => {

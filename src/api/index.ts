@@ -67,6 +67,7 @@ import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
 import { defaultCacheControl } from './middleware/default-cache-control'
+import { apiErrorHandler } from './error-handler'
 
 const app = new Hono()
 
@@ -309,10 +310,7 @@ if (isCloudProxyEnabled()) {
 }
 
 // Global error handler
-app.onError((err, c) => {
-  console.error('API Error:', err)
-  return c.json({ error: 'Internal server error' }, 500)
-})
+app.onError(apiErrorHandler)
 
 // 404 handler
 app.notFound((c) => {

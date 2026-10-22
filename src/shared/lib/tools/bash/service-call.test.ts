@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { identifyDirectSite, identifyServiceCall } from './service-call'
+import { TOOLKIT_ALLOWED_HOSTS } from '@shared/lib/proxy/allowed-hosts'
 
 const AUTH = '-H "Authorization: Bearer $PROXY_TOKEN"'
 
@@ -18,6 +19,31 @@ for id in 1 2; do curl -sS "$G/messages/$id" ${AUTH}; done`
   it('splits a shared host by path only where the path decides', () => {
     expect(identifyServiceCall('curl "$PROXY_BASE_URL/abc/www.googleapis.com/drive/v3/files"')?.name).toBe('Google Drive')
     expect(identifyServiceCall('curl "$PROXY_BASE_URL/abc/graph.microsoft.com/v1.0/me"')).toBeNull()
+    expect(identifyServiceCall('curl "$PROXY_BASE_URL/abc/graph.facebook.com/v21.0/me"')).toBeNull()
+    expect(identifyServiceCall('curl "$PROXY_BASE_URL/abc/www.googleapis.com/drive/v3-other/files"')).toBeNull()
+  })
+
+  it.each([
+    ['gmail.googleapis.com', '/gmail/v1/users/me/messages', 'Gmail'],
+    ['sheets.googleapis.com', '/v4/spreadsheets/123', 'Google Sheets'],
+    ['docs.googleapis.com', '/v1/documents/123', 'Google Docs'],
+    ['slides.googleapis.com', '/v1/presentations/123', 'Google Slides'],
+    ['tasks.googleapis.com', '/tasks/v1/users/@me/lists', 'Google Tasks'],
+    ['slack.com', '/api/conversations.list', 'Slack'],
+    ['discord.com', '/api/users/@me', 'Discord'],
+  ])('names the API at %s when composite or bot accounts share its host', (host, path, name) => {
+    expect(identifyServiceCall(`curl "$PROXY_BASE_URL/abc/${host}${path}"`)?.name).toBe(name)
+  })
+
+  it('prefers a specific host over a broad toolkit wildcard without guessing on shared hosts', () => {
+    const original = TOOLKIT_ALLOWED_HOSTS.googlesuper
+    try {
+      TOOLKIT_ALLOWED_HOSTS.googlesuper = [...original, '*.googleapis.com', '*.microsoft.com']
+      expect(identifyServiceCall('curl "$PROXY_BASE_URL/abc/MEET.GOOGLEAPIS.COM/v2/conferenceRecords"')?.name).toBe('Google Meet')
+      expect(identifyServiceCall('curl "$PROXY_BASE_URL/abc/graph.microsoft.com/v1.0/me"')).toBeNull()
+    } finally {
+      TOOLKIT_ALLOWED_HOSTS.googlesuper = original
+    }
   })
 
   it('capitalizes a toolkit the service catalog does not name', () => {
@@ -84,6 +110,9 @@ describe('identifyDirectSite', () => {
     const drive = 'https://www.googleapis.com/drive/v3/files'
     expect(identifyDirectSite(`curl ${drive}`)?.toolkit).toBe('googledrive')
     expect(identifyDirectSite(`curl ${drive} https://www.googleapis.com/calendar/v3/calendars`)?.toolkit).toBeNull()
+    expect(identifyDirectSite('curl https://GMAIL.GOOGLEAPIS.COM/gmail/v1/users/me/messages')?.toolkit).toBe('gmail')
+    expect(identifyDirectSite('curl https://graph.microsoft.com/v1.0/me')?.toolkit).toBeNull()
+    expect(identifyDirectSite('curl https://graph.facebook.com/v21.0/me')?.toolkit).toBeNull()
   })
 
   it('stays plain Bash without a fetch, a literal site, one site, or with any platform URL', () => {
