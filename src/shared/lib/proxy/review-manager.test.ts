@@ -659,9 +659,9 @@ describe('ReviewManager', () => {
       expect(requestBodyPreview(bytes('{"query":"  "}'))).toBeUndefined()
       // Past 64 KB the body is shown from its start, not parsed and reformatted.
       const big = `{"a":"${'x'.repeat(70_000)}"}`
-      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 2000)}…`)
+      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 64_000)}…`)
       expect(requestBodyPreview(null)).toBeUndefined()
-      expect(requestBodyPreview(bytes('x'.repeat(3000)))).toHaveLength(2001)
+      expect(requestBodyPreview(bytes('x'.repeat(70_000)))).toHaveLength(64_001)
     })
 
     it('names a GraphQL operation by its action, not its root-field key', () => {
