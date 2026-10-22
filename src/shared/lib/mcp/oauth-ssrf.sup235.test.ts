@@ -86,6 +86,18 @@ describe('SUP-235: discoverOAuthMetadata SSRF guard', () => {
     else process.env.E2E_MOCK = originalE2EMock
   })
 
+  it.each([200, 401])('rejects private authorization servers discovered without a challenge after HTTP %s', async (status) => {
+    mockFetch.mockResolvedValueOnce(new Response('{}', { status }))
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      resource: PUBLIC_MCP_URL,
+      authorization_servers: ['http://169.254.169.254/latest/meta-data'],
+    }), { status: 200 }))
+
+    expect(await discoverOAuthMetadata(PUBLIC_MCP_URL)).toBeNull()
+    expect(fetchedAny('169.254.169.254')).toBe(false)
+    expect(mockFetch.mock.calls[1][0]).toBe('https://mcp.example.com/.well-known/oauth-protected-resource/mcp')
+  })
+
   // Case 1: loopback resource_metadata from the WWW-Authenticate header.
   it('rejects a loopback resource_metadata URL and never fetches it', async () => {
     // Probe (to the public MCP URL) returns 401 pointing resource_metadata at

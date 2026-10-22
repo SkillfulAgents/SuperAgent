@@ -57,7 +57,7 @@ describe('awaitReview', () => {
     await flush()
     expect(pending().map((review) => review.id)).toEqual([card.id])
 
-    expect(manager.submitDecision(card.id, 'deny', 'agent')).toBe(true)
+    expect(manager.submitDecision('agent', card.id, 'deny')).toBe(true)
     await expect(decision).resolves.toBe('deny')
   })
 
@@ -70,7 +70,7 @@ describe('awaitReview', () => {
 
     manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
     await flush()
-    expect(manager.submitDecision(card.id, 'deny', 'agent')).toBe(true)
+    expect(manager.submitDecision('agent', card.id, 'deny')).toBe(true)
     finishRecheck('allow')
 
     await expect(decision).resolves.toBe('deny')

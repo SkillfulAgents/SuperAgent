@@ -52,7 +52,7 @@ describe('proxy review session awaiting', () => {
     expect(sessions().activity(SESSION_ID)).toBe('awaiting')
 
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
-    manager.submitDecision(id, 'deny', AGENT_SLUG)
+    manager.submitDecision(AGENT_SLUG, id, 'deny')
     await promise.catch(() => {})
   })
 
@@ -60,7 +60,7 @@ describe('proxy review session awaiting', () => {
     const promise = manager.requestReview(reviewDetails())
     expect(sessions().activity(SESSION_ID)).toBe('awaiting')
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
-    manager.submitDecision(id, 'allow', AGENT_SLUG)
+    manager.submitDecision(AGENT_SLUG, id, 'allow')
     await promise
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     expect(sessions().activity(SESSION_ID)).toBe('working')
@@ -84,10 +84,10 @@ describe('proxy review session awaiting', () => {
     const p1 = manager.requestReview(reviewDetails())
     const p2 = manager.requestReview(reviewDetails())
     const [r1, r2] = manager.getPendingReviewsForAgent(AGENT_SLUG)
-    manager.submitDecision(r1.id, 'allow', AGENT_SLUG)
+    manager.submitDecision(AGENT_SLUG, r1.id, 'allow')
     await p1
     expect(sessions().activity(SESSION_ID)).toBe('awaiting')
-    manager.submitDecision(r2.id, 'deny', AGENT_SLUG)
+    manager.submitDecision(AGENT_SLUG, r2.id, 'deny')
     await p2.catch(() => {})
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
   })
@@ -108,12 +108,12 @@ describe('proxy review session awaiting', () => {
     })
 
     const id = manager.getPendingReviewsForAgent(AGENT_SLUG)[0].id
-    manager.submitDecision(id, 'deny', AGENT_SLUG)
+    manager.submitDecision(AGENT_SLUG, id, 'deny')
     await promise.catch(() => {})
 
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
     expect(sessions().activity(SESSION_ID)).toBe('awaiting')
 
-    userInputRequestManager.resolve('secret-1', 'cancelled')
+    userInputRequestManager.resolve(AGENT_SLUG, 'secret-1', 'cancelled')
   })
 })

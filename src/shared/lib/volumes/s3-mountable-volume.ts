@@ -11,7 +11,7 @@ import { RemoteListingCache } from './remote-listing-cache'
 import { RemoteHealthCache } from './remote-health-cache'
 import { rangedVolumeFile } from './remote-file'
 import { throwIfUploadAborted, uploadChunks } from './remote-transfer'
-import { volumeUploads } from './volume-upload-guard'
+import { guardDelete, guardedUpload } from './guarded-upload'
 import { VolumeError } from './volume-error'
 
 export const S3_PART_BYTES = 8 * 1024 * 1024
@@ -208,7 +208,7 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
   }
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
     this.key(relative, true)
-    return volumeUploads.write(this.uploadKey(relative), body, signal, () => this.audit('PUT', relative, async () => {
+    return guardedUpload(this.agentSlug, this.uploadKey(relative), body, signal, () => this.audit('PUT', relative, async () => {
       const Key = this.key(relative)
       // A baseline only: the check just before publishing is always fresh.
       const previous = this.knownAbsent(relative) ? null : await this.existingFile(relative)
@@ -285,7 +285,7 @@ export class S3MountableVolume extends BaseMountableVolume<S3VolumeConfig> {
   }
   async delete(relative: string): Promise<void> {
     const key = this.key(relative, true)
-    volumeUploads.beforeDelete(this.uploadKey(relative))
+    await guardDelete(this.agentSlug, this.uploadKey(relative))
     await this.audit('DELETE', relative, () => this.change([relative], async () => {
       const object = await this.head(key)
       if (!object) {
