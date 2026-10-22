@@ -188,6 +188,7 @@
     "lucide-react": "^1.40.0",
     "markdown-it": "^14.3.3",
     "p-limit": "^3.1.0",
+    "postal-mime": "^4.0.6",
     "postcss": "^8.4.0",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-history": "^1.5.1",

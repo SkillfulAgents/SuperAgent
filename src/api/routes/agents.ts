@@ -784,7 +784,7 @@ async function enrichAgentsWithSummary(
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
-        widgets: widgetRefreshService.decorate(agent.slug, widgets),
+        widgets: await widgetRefreshService.decorate(agent.slug, widgets),
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
@@ -1252,18 +1252,15 @@ function getSummarizerModel(): string {
   return resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 }
 
-// Sessions opened by a system notice (voice mode started from the agent
-// home) rather than by something the person said. The notice must not name
-// the session; the first human message does, when it arrives. In-memory:
-// after a restart such a session simply keeps its placeholder name.
-const sessionsAwaitingHumanName = new Set<string>()
-
-/** Name a session opened by a notice from the first message a person sends to it. */
-function nameSessionFromFirstHumanMessage(agentSlug: string, sessionId: string, message: string, agentName: string): void {
-  const key = `${agentSlug}/${sessionId}`
-  if (!sessionsAwaitingHumanName.has(key) || isSystemMessageText(message)) return
-  sessionsAwaitingHumanName.delete(key)
-  generateAndUpdateSessionNameAsync(agentSlug, sessionId, message, agentName).catch(console.error)
+/**
+ * Name a session opened by a system notice (voice mode started from the
+ * agent home) from the first message a person sends to it. The notice must
+ * not name the session; the agent remembers which sessions wait for this
+ * (`sessions.deferNaming`).
+ */
+async function nameSessionFromFirstHumanMessage(actor: AgentActor, sessionId: string, message: string, agentName: string): Promise<void> {
+  if (isSystemMessageText(message) || !(await actor.sessions.takeDeferredNaming(sessionId))) return
+  generateAndUpdateSessionNameAsync(actor.slug, sessionId, message, agentName).catch(console.error)
 }
 
 // Generate session name using AI (fire and forget)
@@ -2149,7 +2146,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
     if (isSystemMessageText(message.trim())) {
-      sessionsAwaitingHumanName.add(`${slug}/${sessionId}`)
+      await actor.sessions.deferNaming(sessionId)
     } else {
       generateAndUpdateSessionNameAsync(
         slug,
@@ -2758,7 +2755,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     const queued = delivery.status !== 'sent' || delivery.queued
     if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
-      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
+      await nameSessionFromFirstHumanMessage(actor, sessionId, text, agent.name)
     }
     if (mentions.teammates.length > 0) {
       const sessionName = (await actor.sessions.metadata(sessionId))?.name
@@ -6501,7 +6498,7 @@ agents.get('/:id/widgets', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
     const widgets = await listWidgetsFromFilesystem(slug)
-    return c.json(widgetRefreshService.decorate(slug, widgets))
+    return c.json(await widgetRefreshService.decorate(slug, widgets))
   } catch (error) {
     console.error('Failed to list widgets:', error)
     return c.json({ error: 'Failed to list widgets' }, 500)

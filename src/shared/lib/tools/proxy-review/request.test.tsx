@@ -4,6 +4,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
+import { gmailSendCustomPreview } from './gmail-send'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { canonicalizeTargetPath } from '@shared/lib/proxy/target-path'
@@ -69,6 +70,32 @@ describe('ProxyReviewRequestItem title', () => {
     expect(screen.getByText('To').tagName).toBe('CODE')
     expect(document.body.textContent).not.toContain('](')
     expect(document.body.textContent).not.toContain('`')
+  })
+
+  describe('of a call a custom preview draws', () => {
+    const gmailSend = (mime: string) => ({
+      toolkit: 'gmail',
+      targetPath: 'gmail/v1/users/me/messages/send',
+      displayText: 'Allow sending a message?',
+      requestBody: JSON.stringify({ raw: Buffer.from(mime).toString('base64url') }, null, 2),
+    })
+
+    it('is the custom preview\'s once it reads the body', async () => {
+      renderCard(gmailSend('To: dana@acme.com\r\nSubject: Hi\r\n\r\nhello'))
+      expect(await screen.findByText('Allow sending this email from Gmail?')).toBeTruthy()
+      expect(screen.getByTestId('gmail-send')).toBeTruthy()
+      expect(screen.queryByText('Allow sending a message?')).toBeNull()
+    })
+
+    it('stays the endpoint\'s when the body does not read', async () => {
+      const props = gmailSend('Resent-To: hidden@elsewhere.io\r\nTo: dana@acme.com\r\n\r\nhello')
+      renderCard(props)
+      // The card's read started first, so it has settled once this one has.
+      await act(async () => { await gmailSendCustomPreview.read(props.requestBody) })
+      expect(screen.getByText('Allow sending a message?')).toBeTruthy()
+      expect(screen.queryByText('Allow sending this email from Gmail?')).toBeNull()
+      expect(screen.queryByTestId('gmail-send')).toBeNull()
+    })
   })
 })
 

@@ -148,14 +148,14 @@ describe('MCP connection replacement', () => {
     const other = park('other-agent')
     syncEnvironment.mockImplementation(async () => {
       expect(mapped('shared-agent')).toEqual(['mine'])
-      expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
       return true
     })
     expect((await replace(request.id)).status).toBe(200)
     expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mapped('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.remoteMcpServers).where(eq(schema.remoteMcpServers.id, 'old')).get()).toEqual(original)
-    expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('other-agent', other.id)).not.toBeNull()
     expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'remote-mcps', expect.objectContaining({ slug: 'shared-agent' }), undefined)
   })
 
@@ -192,7 +192,7 @@ describe('MCP connection replacement', () => {
     const request = park()
     expect((await replace(request.id, ['invalid'])).status).toBe(expected)
     expect(mapped('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
   })
 
   it('rejects stale cards and multiple replacements', async () => {
@@ -223,7 +223,7 @@ describe('MCP connection replacement', () => {
     const request = park()
     expect((await replace(request.id)).status).toBe(500)
     expect(mapped('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
     expect(syncEnvironment).not.toHaveBeenCalled()
   })
 })

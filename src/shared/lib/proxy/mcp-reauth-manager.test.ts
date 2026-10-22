@@ -150,7 +150,7 @@ describe('McpReauthManager', () => {
     ])
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
-    expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
+    expect(userInputRequestManager.getRecentResolution('agent-1', request.id)?.outcome).toBe('answered')
     manager.completeMcp('agent-2', 'mcp-1')
     await expect(other).resolves.toEqual({ outcome: 'resumed' })
   })

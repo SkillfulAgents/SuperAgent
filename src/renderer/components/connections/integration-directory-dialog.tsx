@@ -612,7 +612,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
     const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
       <div className="space-y-2">
-        {setup && <McpSetupGuide guide={setup} redirectUri={redirectUris?.preferred} />}
+        {setup && <McpSetupGuide guide={setup} redirectUri={draft.authType === 'oauth' ? redirectUris?.preferred : undefined} />}
         <div>
           <Label className="text-xs font-normal text-muted-foreground/70">Name</Label>
           <Input

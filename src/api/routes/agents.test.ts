@@ -5850,7 +5850,7 @@ describe('browser credential broker routes', () => {
       'https://new.example/login',
       ['apple-passwords'],
     )
-    expect(userInputRequestManager.getOpenRequest('tool-credential')?.payload)
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-credential')?.payload)
       .toMatchObject({ browserContext: { url: 'https://new.example/login' } })
   })
 
@@ -6033,9 +6033,9 @@ describe('browser credential broker routes', () => {
         password: 'host-only-secret',
       },
     })
-    const reclaimed = userInputRequestManager.claimRequest('tool-credential')
+    const reclaimed = userInputRequestManager.claimRequest('test-agent', 'tool-credential')
     expect(reclaimed?.request.id).toBe('tool-credential')
-    userInputRequestManager.releaseClaim('tool-credential', reclaimed!.token)
+    userInputRequestManager.releaseClaim('test-agent', 'tool-credential', reclaimed!.token)
   })
 
   it('does not disclose credentials when the page origin changes', async () => {
@@ -6215,8 +6215,8 @@ describe('decision routes settle their request immediately', () => {
     parkOpen('tool-dec-11', 'browser_input')
     // The gate saw it open; the other decision lands before this one claims.
     vi.spyOn(agentRegistry.get('test-agent').inputs, 'claim').mockImplementationOnce(async (id) => {
-      userInputRequestManager.resolve(id, 'answered', 'test-agent')
-      return userInputRequestManager.claimRequest(id, 'test-agent')
+      userInputRequestManager.resolve('test-agent', id, 'answered')
+      return userInputRequestManager.claimRequest('test-agent', id)
     })
 
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-11' })
@@ -6368,7 +6368,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 
   it('echoes the settled outcome when the resolution is still on record', async () => {
     parkOpen('tool-gate-out', 'secret')
-    userInputRequestManager.resolve('tool-gate-out', 'declined')
+    userInputRequestManager.resolve('test-agent', 'tool-gate-out', 'declined')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-out',
       secretName: 'K',
@@ -6418,7 +6418,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     })
     expect(res.status).toBe(404)
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(userInputRequestManager.getOpenRequest('tool-gate-auto')).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-gate-auto')).not.toBeNull()
   })
 
   it.each(GATE_CASES)(
@@ -6440,7 +6440,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       expect(mockContainerFetch).not.toHaveBeenCalled()
       expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
       // Still open — a rejected probe must not settle what it could not decide.
-      expect(userInputRequestManager.getOpenRequest(body.toolUseId as string)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('victim-agent', body.toolUseId as string)).not.toBeNull()
     },
   )
 
@@ -6453,7 +6453,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true, alreadySettled: true })
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(userInputRequestManager.getOpenRequest('tool-gate-auto-x')).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('victim-agent', 'tool-gate-auto-x')).not.toBeNull()
   })
 
   it('a request with no agent in scope is unattributable: refused at registration, decidable by nobody', async () => {
@@ -6467,7 +6467,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     } finally {
       consoleError.mockRestore()
     }
-    expect(userInputRequestManager.getOpenRequest('tool-gate-noagent')).toBeNull()
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-gate-noagent')).toBeNull()
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-noagent',
       secretName: 'K',
@@ -6482,7 +6482,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     // Settling must not widen who may read the record: another agent's route
     // gets the same outcome-less shape an unknown id gets, never the outcome.
     parkOpen('tool-gate-settled-agent', 'secret', 'sess-1', {}, 'victim-agent')
-    userInputRequestManager.resolve('tool-gate-settled-agent', 'answered')
+    userInputRequestManager.resolve('victim-agent', 'tool-gate-settled-agent', 'answered')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-settled-agent',
       secretName: 'K',
@@ -6495,7 +6495,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 
   it('does not disclose a settled outcome through a route of another kind', async () => {
     parkOpen('tool-gate-settled-kind', 'secret')
-    userInputRequestManager.resolve('tool-gate-settled-kind', 'answered')
+    userInputRequestManager.resolve('test-agent', 'tool-gate-settled-kind', 'answered')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
       toolUseId: 'tool-gate-settled-kind',
       answers: { Q: 'A' },
@@ -6507,7 +6507,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 
   it("does not disclose a settled outcome through another session's route", async () => {
     parkOpen('tool-gate-settled-sess', 'secret', 'sess-2')
-    userInputRequestManager.resolve('tool-gate-settled-sess', 'declined')
+    userInputRequestManager.resolve('test-agent', 'tool-gate-settled-sess', 'declined')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-settled-sess',
       secretName: 'K',
