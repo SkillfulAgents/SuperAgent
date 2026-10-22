@@ -2,6 +2,7 @@ import type { ContainerClient, ContainerConfig, ContainerRunner, ImagePullProgre
 export { CONTAINER_RUNNER_IDS } from './types'
 export type { ContainerRunner } from './types'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient, ensureAppleContainerReady, stopAppleContainerRuntime } from './apple-container-client'
@@ -735,7 +736,7 @@ function doPullImage(
     const armStallTimer = () => {
       if (!stallTimeoutMs) return
       clearTimeout(stallTimer)
-      stallTimer = setTimeout(() => { void onStall() }, stallTimeoutMs)
+      stallTimer = setTimeout(() => { background(onStall(), { name: 'client-factory.abort-stalled-pull' }) }, stallTimeoutMs)
     }
     armStallTimer()
 

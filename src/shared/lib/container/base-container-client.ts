@@ -41,6 +41,7 @@ import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getOrCreateHostToken } from './host-token-store'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 import { getPlatformProxyBaseUrl } from '../platform-auth/config'
@@ -1837,7 +1838,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       this.wsConnections.set(sessionId, ws)
     }
 
-    setupWebSocket().catch((error) => {
+    background(setupWebSocket().catch((error) => {
       if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
@@ -1853,7 +1854,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
       callback(closeMessage)
       rejectReady(error instanceof Error ? error : new Error(String(error)))
-    })
+    }), { name: 'container-client.open-session-stream' })
 
     const unsubscribe = () => {
       cancelled = true

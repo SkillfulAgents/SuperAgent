@@ -35,6 +35,7 @@ import {
   type AgentLiveSummary,
   type AgentRecord,
 } from '@shared/lib/agent-actor'
+import { background } from '@shared/lib/background'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -115,9 +116,9 @@ function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
   const run = previous.then(fn, fn)
   const settled = run.catch(() => undefined)
   identityChains.set(slug, settled)
-  void settled.then(() => {
+  background(settled.then(() => {
     if (identityChains.get(slug) === settled) identityChains.delete(slug)
-  })
+  }), { name: 'agent-service.drop-identity-chain' })
   return run
 }
 

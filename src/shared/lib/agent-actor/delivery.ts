@@ -8,6 +8,7 @@
  * Composed from the agent's live sessions, its container client and its
  * session store, all inside the actor.
  */
+import { background } from '@shared/lib/background'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import type { ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
 import { getSettings } from '@shared/lib/config/settings'
@@ -235,7 +236,7 @@ export function createSessionDelivery(
       // Answered at the deadline, when the caller may already be gone: the
       // session is revoked the moment it lands, not left running for the
       // caller's retry to duplicate.
-      creating.then((late) => revoke(late.id), () => {})
+      background(creating.then((late) => revoke(late.id), () => {}), { name: 'session-delivery.revoke-late-session' })
       throw new StartError('created-late', true, 'The session was not created before its deadline')
     }
     const session = created

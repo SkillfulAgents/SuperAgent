@@ -68,7 +68,15 @@
       "excludedFiles": ["**/*.test.ts"],
       "parserOptions": { "project": true },
       "rules": {
-        "@typescript-eslint/no-floating-promises": "error"
+        "@typescript-eslint/no-floating-promises": "error",
+        "@typescript-eslint/no-misused-promises": ["error", { "checksConditionals": false, "checksSpreads": false }],
+        "local-rules/no-floating-work": "error"
+      }
+    },
+    {
+      "files": ["src/**/testing/**/*.ts"],
+      "rules": {
+        "local-rules/no-floating-work": "off"
       }
     }
   ],

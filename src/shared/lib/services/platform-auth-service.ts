@@ -6,6 +6,7 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
@@ -275,15 +276,15 @@ async function reconcileAfterAuthChange(): Promise<void> {
 function notifyPlatformServiceAuthChanged(connected: boolean): void {
   // The success log is the only positive signal this fire-and-forget path ran;
   // platform-auth-service.notify.test.ts asserts on it.
-  void import('./platform-service')
+  background(import('./platform-service')
     .then((mod) => {
       mod.platformService.onAuthChanged(connected)
       console.log(`[platform-auth] platform-service notified of auth change (connected=${connected})`)
     })
-    .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } }))
+    .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } })), { name: 'platform-auth.notify-platform-service' })
   // The desktop notifications subscription follows platform connectivity:
   // start on connect (self-gates on auth mode), tear down on disconnect.
-  void import('../scheduler/platform-notifications-manager')
+  background(import('../scheduler/platform-notifications-manager')
     .then((mod) =>
       connected
         ? mod.platformNotificationsManager.start()
@@ -291,21 +292,21 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
     )
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
-    )
+    ), { name: 'platform-auth.notify-platform-notifications' })
   // The webhook relay goes (un)available with the connection, and starts over
   // when the token changes.
-  void import('../webhook-relay')
+  background(import('../webhook-relay')
     .then((mod) => mod.getWebhookRelay().onAuthChanged())
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-webhook-relay' } }),
-    )
+    ), { name: 'platform-auth.notify-webhook-relay' })
   // Which members claim trigger events depends on the connection: an org
   // token claims per member, an opaque key as itself.
-  void import('../scheduler/trigger-manager')
+  background(import('../scheduler/trigger-manager')
     .then((mod) => mod.triggerManager.syncRegistrations())
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-trigger-manager' } }),
-    )
+    ), { name: 'platform-auth.notify-trigger-manager' })
 }
 
 function getEnvManagedStatus(): PlatformAuthStatus | null {

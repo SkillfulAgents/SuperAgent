@@ -15,6 +15,7 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { background } from '@shared/lib/background'
 import {
   getScheduledTask,
   markTaskExecuted,
@@ -114,11 +115,11 @@ export async function deliverSessionWake(
     await markTaskExecuted(task.id, sessionId)
 
     if (trigger === 'scheduled') {
-      notificationManager
+      background(notificationManager
         .triggerScheduledSessionResumed(sessionId, task.agentSlug, task.id, sessionMeta.name)
         .catch((err) => {
           console.error('[WakeDelivery] Failed to trigger resume notification:', err)
-        })
+        }), { name: 'wake-delivery.notify-session-resumed' })
     }
 
     // The pending wake is session-level state (badges, resume banner) — nudge

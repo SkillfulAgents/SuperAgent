@@ -10,6 +10,7 @@ import { agentCatalog } from '../agent-actor'
 import { workspaceBasename } from '../agent-actor/workspace-path'
 import { publicWorkspaceFileUrl } from '../utils/workspace-file-url'
 import { captureException } from '../error-reporting'
+import { background } from '../background'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import type { MeetingBotHost, MeetingRecordingLink } from './bot-host'
 import { meetingPolicy } from './definitions'
@@ -165,9 +166,9 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   observeSession(context: IntegrationSessionContext): void {
     if (!context.sessionId) return
-    void setMeetingSession(context.externalId, context.sessionId).catch(error => {
+    background(setMeetingSession(context.externalId, context.sessionId).catch(error => {
       captureException(error, { tags: { component: 'meeting-integration', operation: 'record-session' }, extra: { meetingId: context.externalId } })
-    })
+    }), { name: 'meeting-integration.record-session' })
   }
 
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] {
@@ -330,9 +331,9 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     const schedule = () => {
       const entry = this.pollers.get(meetingId)
       if (!entry) return
-      entry.timer = setTimeout(() => void this.poll(meetingId).then(schedule), MEETING_POLL_INTERVAL_MS)
+      entry.timer = setTimeout(() => background(this.poll(meetingId).then(schedule), { name: 'meeting-integration.poll' }), MEETING_POLL_INTERVAL_MS)
     }
-    this.pollers.set(meetingId, { timer: setTimeout(() => void this.poll(meetingId).then(schedule), 0), failures: 0 })
+    this.pollers.set(meetingId, { timer: setTimeout(() => background(this.poll(meetingId).then(schedule), { name: 'meeting-integration.poll' }), 0), failures: 0 })
   }
   private untrack(meetingId: string): void {
     const entry = this.pollers.get(meetingId)

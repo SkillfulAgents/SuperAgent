@@ -1,5 +1,6 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { background } from '@shared/lib/background'
 import {
   containerWidgetRefreshResponseSchema,
   type ApiAgentWidget,
@@ -159,9 +160,9 @@ class WidgetRefreshService {
       // The container ran and the SCRIPT failed — that is the agent's code,
       // and no turn is going to notice on its own. Ask the agent to fix it.
       if (snapshot.lastError) {
-        void openWidgetRepairSession(agentSlug, widgetSlug, snapshot.lastError).catch((err) => {
+        background(openWidgetRepairSession(agentSlug, widgetSlug, snapshot.lastError).catch((err) => {
           console.warn(`[WidgetRefresh] repair session for ${agentSlug}/${widgetSlug} failed:`, err)
-        })
+        }), { name: 'widget-refresh.open-repair-session' })
       }
       return { ok: true, snapshot }
     } catch (error) {
@@ -196,7 +197,7 @@ class WidgetRefreshService {
     const widgets = await listWidgetsFromFilesystem(agentSlug)
     const stale = widgets.filter((w) => w.isStale)
     for (const widget of stale) {
-      void this.refreshWidget(agentSlug, widget.slug, { wake: opts.wake, reason: 'stale' })
+      background(this.refreshWidget(agentSlug, widget.slug, { wake: opts.wake, reason: 'stale' }), { name: 'widget-refresh.refresh-widget' })
     }
     return { refreshing: this.refreshingSlugs(agentSlug) }
   }
@@ -214,9 +215,9 @@ class WidgetRefreshService {
       agentSlug,
       setTimeout(() => {
         this.postRunTimers.delete(agentSlug)
-        this.runPostRun(agentSlug).catch((error) => {
+        background(this.runPostRun(agentSlug).catch((error) => {
           console.warn(`[WidgetRefresh] post-run sweep for ${agentSlug} failed:`, error)
-        })
+        }), { name: 'widget-refresh.post-run-sweep' })
       }, POST_RUN_DEBOUNCE_MS),
     )
   }
@@ -234,7 +235,7 @@ class WidgetRefreshService {
       return now - completed >= POST_RUN_MIN_INTERVAL_MS
     })
     for (const widget of picked) {
-      void this.refreshWidget(agentSlug, widget.slug, { wake: false, reason: 'after-run' })
+      background(this.refreshWidget(agentSlug, widget.slug, { wake: false, reason: 'after-run' }), { name: 'widget-refresh.refresh-widget' })
     }
     return picked.map((w) => w.slug)
   }

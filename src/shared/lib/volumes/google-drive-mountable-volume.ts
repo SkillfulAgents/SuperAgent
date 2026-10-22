@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { background } from '@shared/lib/background'
 import { DriveExportTooLargeError, driveRequest, driveUpload, requireGoogleDriveAccount, withGoogleDriveAccount, type DriveRequest } from './google-drive-client'
 import pLimit from 'p-limit'
 import { googleDriveBrowseSchema, DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
@@ -410,7 +411,9 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       if (prefetching.has(key) || googleDriveListingCache.cached(key)) continue
       prefetching.add(key)
       // A failed listing ahead is read again when the walk reaches it.
-      void limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key))
+      background(limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key)), {
+        name: 'google-drive-volume.prefetch-folder',
+      })
     }
   }
 

@@ -35,6 +35,7 @@ import {
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { background } from '@shared/lib/background'
 import {
   sortSessionsByActivity,
   type SessionActivityFields,
@@ -455,7 +456,7 @@ function metadataOnlySession(
  */
 function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void {
   if (sessionIds.length === 0) return
-  void store.config
+  background(store.config
     .update('sessionMetadata', async (current) => {
       const metadata = { ...(current ?? {}) } as SessionMetadataMap
       const now = Date.now()
@@ -473,7 +474,7 @@ function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void 
     .catch((error) => {
       console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
       captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
-    })
+    }), { name: 'session-service.prune-orphaned-metadata' })
 }
 
 // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on network

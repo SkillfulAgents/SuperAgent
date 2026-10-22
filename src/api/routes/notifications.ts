@@ -20,6 +20,7 @@ import {
   getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
 import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
+import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
@@ -60,9 +61,9 @@ notificationsRouter.get('/stream', async (c) => {
     let gate: AgentAccessGate | null = null
 
     const write = (event: GlobalFeedEvent): void => {
-      stream.writeSSE({ data: JSON.stringify(event), event: 'message' }).catch((error) => {
+      background(stream.writeSSE({ data: JSON.stringify(event), event: 'message' }).catch((error) => {
         console.error('Error sending global notification SSE:', error)
-      })
+      }), { name: 'notifications-route.write-event' })
     }
 
     try {
@@ -103,7 +104,7 @@ notificationsRouter.get('/stream', async (c) => {
       })
 
       // Keep-alive ping every 30 seconds
-      pingInterval = setInterval(async () => {
+      pingInterval = setInterval(() => background(async () => {
         try {
           await stream.writeSSE({
             data: JSON.stringify({ type: 'ping' }),
@@ -112,7 +113,7 @@ notificationsRouter.get('/stream', async (c) => {
         } catch {
           if (pingInterval) clearInterval(pingInterval)
         }
-      }, 30000)
+      }, { name: 'notifications-route.write-ping' }), 30000)
 
       await clientGone
     } finally {

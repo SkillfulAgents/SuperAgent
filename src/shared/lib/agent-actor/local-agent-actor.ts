@@ -16,6 +16,7 @@ import { runComputerUse, runScript } from './host-runs'
 import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
+import { background } from '@shared/lib/background'
 import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
@@ -444,9 +445,12 @@ function createSessionsRuntime(slug: AgentSlug, deps: LocalActorDeps): SessionsR
     unexpectedDeath: (sessionId) => runtime().handleUnexpectedDeath(sessionId ? [sessionId] : undefined),
     stopAfterFatalError: () => {
       console.log(`[LocalAgentActor] Stopping container for ${slug} after a fatal error`)
-      runtime()
-        .stopContainer()
-        .catch((err) => console.error(`[LocalAgentActor] Failed to stop container for ${slug}:`, err))
+      background(
+        runtime()
+          .stopContainer()
+          .catch((err) => console.error(`[LocalAgentActor] Failed to stop container for ${slug}:`, err)),
+        { name: 'local-agent-actor.stop-after-fatal-error' },
+      )
     },
   }
 }
