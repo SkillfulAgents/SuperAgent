@@ -92,25 +92,50 @@ export type HarEntry = Har['log']['entries'][number]
 function redactNameValues<T extends { name: string; value: string }>(items: T[], all = false): T[] {
   return items.map(i => {
     if ((all || shouldRedact(i.name, i.value)) && i.value) return { ...i, value: REDACTED }
-    // A header whose value is a URL (Referer, Location) carries that URL's
-    // query string — the same tokens request.url had redacted.
-    return /^https?:\/\//i.test(i.value.trim()) ? { ...i, value: redactUrl(i.value) } : i
+    // A header whose value is a URL (Referer, Location — relative ones too)
+    // carries that URL's query string: the tokens request.url had redacted.
+    return URL_HEADER.test(i.name.trim()) || /^https?:\/\//i.test(i.value.trim()) ? { ...i, value: redactUrl(i.value) } : i
   })
 }
+
+/** Headers whose value is a URL, absolute or relative. */
+const URL_HEADER = /^(location|content-location|referer|refresh)$/i
 
 /** In URLs the placeholder is unbracketed so it survives percent-encoding readably. */
 const URL_REDACTED = 'REDACTED'
 
-/** A URL with the values of sensitive query parameters (and any userinfo) replaced. */
+/**
+ * A URL with the values of sensitive query parameters (and any userinfo)
+ * replaced. A relative one (`/callback?access_token=…`, `//host/…`,
+ * `?token=…`) keeps its form: its query is redacted in place.
+ */
 export function redactUrl(raw: string): string {
   let u: URL
-  try { u = new URL(raw) } catch { return raw.replace(JWT, URL_REDACTED) }
+  try { u = new URL(raw) } catch { return redactRelativeUrl(raw) }
   let touched = false
   if (u.username || u.password) { u.username = ''; u.password = ''; touched = true }
   for (const [k, v] of [...u.searchParams]) {
     if (shouldRedact(k, v)) { u.searchParams.set(k, URL_REDACTED); touched = true }
   }
   return (touched ? u.toString() : raw).replace(JWT, URL_REDACTED)
+}
+
+function redactRelativeUrl(raw: string): string {
+  // A Refresh header's value is "5; url=/next?…": the URL is after "url=".
+  const lead = /^(\s*\d+\s*;\s*url=)/i.exec(raw)?.[1] ?? ''
+  let rest = raw.slice(lead.length).replace(/^(\/\/)[^/@?#]*@/, '$1')
+  const q = rest.indexOf('?')
+  if (q >= 0) {
+    const hash = rest.indexOf('#', q)
+    const query = hash >= 0 ? rest.slice(q + 1, hash) : rest.slice(q + 1)
+    const params = new URLSearchParams(query)
+    let touched = false
+    for (const [k, v] of [...params]) {
+      if (shouldRedact(k, v)) { params.set(k, URL_REDACTED); touched = true }
+    }
+    if (touched) rest = `${rest.slice(0, q)}?${params.toString()}${hash >= 0 ? rest.slice(hash) : ''}`
+  }
+  return `${lead}${rest}`.replace(JWT, URL_REDACTED)
 }
 
 /**
@@ -188,8 +213,12 @@ function redactMultipart(text: string, mimeType: string): string {
     if (!split) return part
     const head = part.slice(0, split.index)
     const value = part.slice(split.index + split[0].length)
-    const name = /name="([^"]*)"/i.exec(head)?.[1]
-    if (name !== undefined && !/filename=/i.test(head) && shouldRedact(name, value.replace(/\r?\n$/, ''))) {
+    // Quoted or bare (RFC 2183 allows a token): name="csrf_token" or name=csrf_token.
+    const m = /(?:^|[;\s])name\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(head)
+    const name = m ? (m[1] ?? m[2]) : undefined
+    const file = /(?:^|[;\s])filename\*?\s*=/i.test(head)
+    // A field whose name cannot be read is not kept: it may be the secret.
+    if (!file && (name === undefined || shouldRedact(name, value.replace(/\r?\n$/, '')))) {
       return `${head}${split[0]}${REDACTED}${/\r?\n$/.exec(value)?.[0] ?? ''}`
     }
     return `${head}${split[0]}${value.replace(JWT, REDACTED)}`

@@ -123,11 +123,18 @@ export function readerScript(): string {
     'var kids=function(el){if(el.shadowRoot)return el.shadowRoot.childNodes;if(el.tagName==="SLOT"&&el.assignedNodes){var a=el.assignedNodes({flatten:true});if(a.length)return a}return el.childNodes};' +
     // A field whose text is painted transparent is a code editor's input layer, not a value.
     'var clear=function(el){try{var c=getComputedStyle(el);var f=String(c.webkitTextFillColor||c.color);return f==="transparent"||/^rgba\\([^)]*,\\s*0\\)$/.test(f)}catch(e){return false}};' +
+    // Text in the composed tree: through shadow roots and the nodes assigned to
+    // slots, which innerText and textContent do not reach (a web component's
+    // <h1><slot></slot></h1>), hidden boxes left out, a box (not inline text)
+    // set apart by spaces as the page lays it out ("Releases" beside its "43").
+    'var composed=function(el){return !!el.querySelector("slot")||deep.has(el)};' +
+    'var flatText=function(el,code){var s="";var go=function(n){if(n.nodeType===3){s+=n.nodeValue;return}if(n.nodeType!==1||hidden.has(n))return;var t=String(n.tagName).toUpperCase();if(SKIP.test(t))return;' +
+    'var d2="";try{d2=getComputedStyle(n).display}catch(e){}if(!shown(n)&&d2!=="contents")return;if(t==="BR"){s+="\\n";return}var gap=!code&&d2!=="inline"&&d2!=="contents"?" ":"";s+=gap;var k=kids(n);for(var i=0;i<k.length;i++)go(k[i]);s+=gap};var k0=kids(el);for(var j=0;j<k0.length;j++)go(k0[j]);return s.replace(zw,"")};' +
     'var bigAlts=[];' +
     // Rows of one table share the cells a rowspan carries down.
     'var spans=new Map();' +
     'var CTRL="select,input,textarea,[role=checkbox],[role=radio],[role=switch],svg[aria-label],[role=img][aria-label],img[alt]";' +
-    'var cellText=function(c){if(c.querySelector(CTRL)||deep.has(c)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join("").split("\\n").map(function(l){return l.replace(/^\\s*(#{1,6}|-)\\s+/,"")}).join(" "));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
+    'var cellText=function(c){if(c.querySelector(CTRL)||composed(c)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join("").split("\\n").map(function(l){return l.replace(/^\\s*(#{1,6}|-)\\s+/,"")}).join(" "));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
     'var SEP="\\n\\n---\\n\\n";' +
     'var walk=function(node,depth){if(full)return;' +
     'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);else if(t)push(" ");return}' +
@@ -152,12 +159,12 @@ export function readerScript(): string {
     'var hl=0;var h=/^H([1-6])$/.exec(tag);if(h)hl=+h[1];else if(role==="heading"){hl=parseInt(el.getAttribute("aria-level")||"2",10);if(!(hl>=1&&hl<=6))hl=2}' +
     // A heading in its source casing: text-transform is presentation, and a
     // quoted caption must match the page's text (BLS: "CHART 8. ANNUAL …").
-    'if(hl){var ht=ws(el.innerText);try{if(getComputedStyle(el).textTransform!=="none")ht=ws(el.textContent)}catch(e){}if(ht)push("\\n\\n"+"######".slice(0,hl)+" "+ht+"\\n\\n");return}' +
+    'if(hl){var ht=ws(el.innerText);try{if(composed(el))ht=ws(flatText(el));else if(getComputedStyle(el).textTransform!=="none")ht=ws(el.textContent)}catch(e){}if(ht)push("\\n\\n"+"######".slice(0,hl)+" "+ht+"\\n\\n");return}' +
     // Code as written: the source text when it has the same lines as the
     // rendered text (highlighters that lay each line out as a flex row double
     // innerText's line breaks); without its own line breaks, the rendered
     // text, every other line dropped when every other line is empty.
-    'if(tag==="PRE"){var it=String(el.innerText||"").replace(zw,"");var tc=String(el.textContent||"").replace(zw,"");var nb=function(s){return s.split("\\n").filter(function(l){return l.trim()}).length};' +
+    'if(tag==="PRE"){var it=String(el.innerText||"").replace(zw,"");var tc=composed(el)?flatText(el,true):String(el.textContent||"").replace(zw,"");if(composed(el))it=tc;var nb=function(s){return s.split("\\n").filter(function(l){return l.trim()}).length};' +
     'var code=tc.indexOf("\\n")>=0&&nb(tc)===nb(it)?tc:it;var ls=code.replace(/^\\n+/,"").replace(/\\s+$/,"").split("\\n");if(ls.length>=3&&ls.every(function(l,i){return i%2===0||l===""}))ls=ls.filter(function(l,i){return i%2===0});' +
     'push("\\n\\n```\\n"+ls.join("\\n")+"\\n```\\n\\n");return}' +
     // A row of a data table is one line of cells, a rowspan's cell repeated

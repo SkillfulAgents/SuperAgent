@@ -191,6 +191,41 @@ describe('PR review: secrets in other places, numbers as written', () => {
     expect(redactBody('garbled', 'multipart/form-data; boundary=Nope')).toBe('[multipart body left out: its parts could not be read for redaction]')
   })
 
+  it('redacts tokens in relative redirects too, keeping their form', () => {
+    expect(redactUrl('/callback?access_token=s3cr3t-value&state=x')).toBe('/callback?access_token=REDACTED&state=x')
+    expect(redactUrl('//cdn.a.com/x?token=abcdef0123456789abcdef#frag')).toBe('//cdn.a.com/x?token=REDACTED#frag')
+    expect(redactUrl('//user:pw@cdn.a.com/x')).toBe('//cdn.a.com/x')
+    expect(redactUrl('?code=abcdef0123456789abcdef')).toBe('?code=REDACTED')
+    expect(redactUrl('/plain/path?q=shoes')).toBe('/plain/path?q=shoes')
+    const e = harSchema.parse({
+      log: {
+        entries: [{
+          request: { method: 'GET', url: 'https://a.com/login', headers: [], cookies: [], queryString: [] },
+          response: {
+            status: 302,
+            headers: [{ name: 'Location', value: '/callback?access_token=s3cr3t-value' }, { name: 'Refresh', value: '0; url=/next?token=abcdef0123456789abcdef' }],
+            cookies: [], content: { mimeType: 'text/plain', text: '' }, redirectURL: '/callback?access_token=s3cr3t-value',
+          },
+        }],
+      },
+    })
+    const r = redactEntry(e.log.entries[0])
+    expect(r.response.headers.map(h => h.value)).toEqual(['/callback?access_token=REDACTED', '0; url=/next?token=REDACTED'])
+    expect(r.response.redirectURL).toBe('/callback?access_token=REDACTED')
+  })
+
+  it('reads unquoted multipart field names (RFC 2183), and redacts a field whose name it cannot read', () => {
+    const body = '--b\r\nContent-Disposition: form-data; name=csrf_token\r\n\r\nq8Zr2LmN4pVx7TbK\r\n' +
+      '--b\r\nContent-Disposition: form-data; name=comment\r\n\r\nhello\r\n' +
+      '--b\r\nContent-Type: text/plain\r\n\r\nopaque-value-without-a-name\r\n' +
+      '--b\r\nContent-Disposition: form-data; name="upload"; filename="a.txt"\r\n\r\nfile text\r\n--b--\r\n'
+    const r = redactBody(body, 'multipart/form-data; boundary=b')
+    expect(r).not.toContain('q8Zr2LmN4pVx7TbK')
+    expect(r).not.toContain('opaque-value-without-a-name')
+    expect(r).toContain('name=comment\r\n\r\nhello\r\n')
+    expect(r).toContain('filename="a.txt"\r\n\r\nfile text\r\n')
+  })
+
   it('keeps integers past 2^53 as written, in body files and in redacted bodies', () => {
     const json = '{"id":12345678901234567890,"price":1.50,"items":[{"sku":98765432109876543210}]}'
     expect(readableBody(json)).toContain('"id": 12345678901234567890')
