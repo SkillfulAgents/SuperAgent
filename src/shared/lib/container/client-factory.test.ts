@@ -123,7 +123,14 @@ import {
   checkAllRunnersAvailability,
   classifyImageCheckOutput,
   clearRunnerAvailabilityCache,
+  createContainerClient,
+  getContainerClientClass,
+  getRunnerDisplayName,
   IMAGE_CHECK_MARKER,
+  registerContainerRunner,
+  SUPPORTED_RUNNERS,
+  type ConcreteContainerClientClass,
+  type ContainerRunner,
   IMAGE_CHECK_TIMEOUT_MS,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
@@ -773,5 +780,37 @@ describe('pullImage integrity check', () => {
 
     await expect(pullImage('docker', IMAGE)).rejects.toThrow(/Image pull failed/)
     expect(argsOf(spawned)).toEqual(['pull'])
+  })
+})
+
+describe('registerContainerRunner', () => {
+  class EmbeddedRunnerClient {
+    static isEligible() { return true }
+    static async isAvailable() { return true }
+    static async isRunning() { return true }
+    constructor(readonly config: unknown) {}
+  }
+  const client = EmbeddedRunnerClient as unknown as ConcreteContainerClientClass
+  const name = 'embedded-runner' as ContainerRunner
+
+  it('makes the runner selectable from settings', () => {
+    registerContainerRunner({ name, displayName: 'Embedded Runner', client })
+    mockGetSettings.mockReturnValue({ container: { containerRunner: name } })
+
+    expect(SUPPORTED_RUNNERS).toContain(name)
+    expect(getContainerClientClass(name)).toBe(client)
+    expect(getRunnerDisplayName(name)).toBe('Embedded Runner')
+    expect(createContainerClient({ agentId: 'agent-1' } as never)).toBeInstanceOf(EmbeddedRunnerClient)
+  })
+
+  it('replaces an earlier registration with the same name', () => {
+    class ReplacementClient extends EmbeddedRunnerClient {}
+    const replacement = ReplacementClient as unknown as ConcreteContainerClientClass
+    registerContainerRunner({ name, displayName: 'Embedded Runner', client })
+    registerContainerRunner({ name, displayName: 'Replacement Runner', client: replacement })
+
+    expect(SUPPORTED_RUNNERS.filter((runner) => runner === name)).toHaveLength(1)
+    expect(getContainerClientClass(name)).toBe(replacement)
+    expect(getRunnerDisplayName(name)).toBe('Replacement Runner')
   })
 })

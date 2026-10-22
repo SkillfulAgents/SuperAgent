@@ -107,6 +107,35 @@ function recomputeSupportedRunners(): void {
   SUPPORTED_RUNNERS = ALL_RUNNERS.filter((r) => r.isEligible()).map((r) => r.name)
 }
 
+export interface ContainerRunnerRegistration {
+  name: string
+  displayName: string
+  client: ConcreteContainerClientClass
+}
+
+const REGISTERED_RUNNERS = new Map<string, ContainerRunnerRegistration>()
+
+/**
+ * Adds a runner whose client class comes from the app embedding SuperAgent.
+ * `settings.container.containerRunner` selects it by name like a built-in one.
+ * Registering the same name again replaces the earlier registration.
+ */
+export function registerContainerRunner(runner: ContainerRunnerRegistration): void {
+  REGISTERED_RUNNERS.set(runner.name, runner)
+  const name = runner.name as ContainerRunner
+  const entry = {
+    name,
+    cliCommand: runner.name,
+    isEligible: () => runner.client.isEligible(),
+    isAvailable: () => runner.client.isAvailable(),
+    isRunning: () => runner.client.isRunning(),
+  }
+  const index = ALL_RUNNERS.findIndex((r) => r.name === name)
+  if (index === -1) ALL_RUNNERS.push(entry)
+  else ALL_RUNNERS[index] = entry
+  recomputeSupportedRunners()
+}
+
 /**
  * User-facing display name for a runner.
  */
@@ -121,7 +150,7 @@ const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
 }
 
 export function getRunnerDisplayName(runner: ContainerRunner): string {
-  return RUNNER_DISPLAY_NAMES[runner] || runner
+  return RUNNER_DISPLAY_NAMES[runner] || REGISTERED_RUNNERS.get(runner)?.displayName || runner
 }
 
 /**
@@ -909,13 +938,15 @@ export function buildImage(
 }
 
 // A concrete (non-abstract) subclass of BaseContainerClient
-type ConcreteContainerClientClass = (new (config: ContainerConfig) => BaseContainerClient) & typeof BaseContainerClient
+export type ConcreteContainerClientClass = (new (config: ContainerConfig) => BaseContainerClient) & typeof BaseContainerClient
 
 /**
  * Get the concrete ContainerClient class for a given runner.
  * Useful for calling static methods (e.g. removeOldImages) with proper dispatch.
  */
 export function getContainerClientClass(runner: ContainerRunner): ConcreteContainerClientClass {
+  const registered = REGISTERED_RUNNERS.get(runner)
+  if (registered) return registered.client
   switch (runner) {
     case 'apple-container':
       return AppleContainerClient
