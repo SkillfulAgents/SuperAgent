@@ -65,7 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # so existing non-root pip --user workflows still work; the installation
 # itself stays root-owned. Workspace projects should continue using venvs.
 # Keep the conventional stdlib path for `python3 -m venv --copies` too.
-COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 RUN UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin \
     uv python install --default 3.11.17 && \
     rm /opt/python/cpython-3.11.17-linux-*/lib/python3.11/EXTERNALLY-MANAGED && \
@@ -88,9 +88,10 @@ RUN UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin \
 # Install TypeScript and ts-node globally. npm's download cache must be
 # flushed in the SAME layer — anything left in /root/.npm ships in the image
 # (and, being pre-compressed tarballs, doesn't even gzip away on the wire).
-# ts-node consumes the classic compiler's JS API; native TypeScript 7 does
-# not expose it. Match the app's compiler until that migration is deliberate.
-RUN npm install -g typescript@5.9.3 ts-node@10.9.2 && rm -rf /root/.npm
+# ts-node 10.9.2 silently skips tsconfig-less scripts with TypeScript 5.9.3.
+# Keep its global fallback on 5.5.4; projects can supply their own compiler.
+# The app/agent build compiler is installed separately in the builder stage.
+RUN npm install -g typescript@5.5.4 ts-node@10.9.2 && rm -rf /root/.npm
 
 # Install Bun (for running dashboard servers)
 # Install as root then copy binary to /usr/local/bin so the claude user can access it
