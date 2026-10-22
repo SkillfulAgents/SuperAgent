@@ -28,7 +28,7 @@ import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
-import { customPreviewFor } from './custom-previews'
+import { useCustomPreview } from './custom-previews'
 
 // Endpoint descriptions come from API docs and carry inline Markdown
 // (`code`, [links](…)). The title renders them inline: no paragraph or block
@@ -185,7 +185,7 @@ function ScopeReviewRequestItem({
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
-  const customPreview = customPreviewFor(toolkit, method, targetPath)
+  const customPreview = useCustomPreview(toolkit, method, targetPath, requestBody)
   const named = !!endpointDescription
 
   // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
@@ -339,7 +339,7 @@ function ScopeReviewRequestItem({
     ? {
         extraContent: (
           <>
-            {customPreview && requestBody && <customPreview.Preview requestBody={requestBody} />}
+            {customPreview?.preview}
             <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
           </>
         ),
@@ -361,7 +361,7 @@ function ScopeReviewRequestItem({
       data-status={isCompleted ? status : undefined}
     >
       {/* The call as its service shows it, when a custom preview can read it, then method/path + toolkit, what the request sends, and the rules that held it */}
-      {customPreview && requestBody && <customPreview.Preview requestBody={requestBody} />}
+      {customPreview?.preview}
       <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
       {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 

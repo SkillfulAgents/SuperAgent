@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import PostalMime, { type Email } from 'postal-mime'
 import { PersonAvatar } from '@renderer/components/agent-integrations/messages/message-parts'
@@ -33,16 +32,41 @@ export interface GmailSend {
 const SHOWN_HEADERS = new Set(['from', 'to', 'cc', 'bcc', 'reply-to', 'subject', 'date', 'mime-version', 'content-type', 'content-transfer-encoding'])
 
 /**
+ * The message's `raw` and `threadId`, from the card's copy of the request body. A copy cut short is read only when the raw runs
+ * to the cut and no key before it sets raw too, so no other raw can hide past the cut or under an escaped key name.
+ */
+function sentMessage(requestBody: string): { raw: string; threadId?: string; cut: boolean } | undefined {
+  const fields = (json: unknown) => (json && typeof json === 'object' && !Array.isArray(json) ? json as Record<string, unknown> : undefined)
+  const threadIdOf = (json: Record<string, unknown>) => (typeof json.threadId === 'string' ? { threadId: json.threadId } : {})
+  let whole: Record<string, unknown> | undefined
+  try {
+    whole = fields(JSON.parse(requestBody))
+  } catch {
+    const match = /"raw":\s*"([A-Za-z0-9+/_-]+=*)…?$/.exec(requestBody)
+    if (!match) return undefined
+    let head: Record<string, unknown> | undefined
+    try {
+      head = fields(JSON.parse(`${requestBody.slice(0, match.index)}"":0}`))
+    } catch {
+      return undefined
+    }
+    return head && !Object.hasOwn(head, 'raw') ? { raw: match[1], ...threadIdOf(head), cut: true } : undefined
+  }
+  return whole && typeof whole.raw === 'string' ? { raw: whole.raw, ...threadIdOf(whole), cut: false } : undefined
+}
+
+/**
  * The email in a Gmail send, read from the request body the card shows, which may be cut short. Undefined when
  * the headers do not all fit, or a recipient could hide from the card.
  */
 export async function readGmailSend(requestBody: string): Promise<GmailSend | undefined> {
-  const raw = /"raw":\s*"([A-Za-z0-9+/_=-]+)(")?/.exec(requestBody)
-  if (!raw) return undefined
-  const cut = !raw[2]
-  const base64 = raw[1].replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
+  const message = sentMessage(requestBody)
+  if (!message) return undefined
+  const { cut, threadId: thread } = message
+  const base64 = message.raw.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
+  // A copy cut short can end inside a group of four characters, which does not decode. A whole raw decodes unpadded.
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- the custom preview treats a rejection as none
-  const bytes = Uint8Array.from(atob(base64.slice(0, base64.length - (base64.length % 4))), (char) => char.charCodeAt(0))
+  const bytes = Uint8Array.from(atob(cut ? base64.slice(0, base64.length - (base64.length % 4)) : base64), (char) => char.charCodeAt(0))
   // A recipient header past the cut would be missing from the card.
   if (cut && !/\r?\n\r?\n/.test(new TextDecoder('latin1').decode(bytes))) return undefined
   const email = await PostalMime.parse(bytes)
@@ -62,7 +86,6 @@ export async function readGmailSend(requestBody: string): Promise<GmailSend | un
   const bcc = read('bcc', email.bcc)
   const replyTo = read('reply-to', email.replyTo)
   if (!from || !to || !cc || !bcc || !replyTo) return undefined
-  const thread = /"threadId":\s*"([^"]+)"/.exec(requestBody)?.[1]
   // The last part of a cut email may itself be cut, so only parts before it draw.
   const whole = cut ? email.attachments.slice(0, -1) : email.attachments
   // Senders often label an image application/octet-stream.
@@ -103,19 +126,20 @@ function senderParts(from = ''): { name: string; address?: string } {
   return match ? { name: match[1], address: match[2] } : { name: from }
 }
 
-/** An address as Gmail's summary line shows it: "me" for the sender, else the name. A recipient with no name shows the whole address, domain included. */
-function shortAddress(value: string, sender: string | undefined): string {
+/**
+ * An address as Gmail's summary line shows it: the name, or the whole address when there is none. Never "me", since the From
+ * the agent wrote need not be the account's, and never a name that reads as an address, since it can name a different one.
+ */
+function shortAddress(value: string): string {
   const { name, address = value } = senderParts(value)
-  if (sender && address.toLowerCase() === sender) return 'me'
-  return name && name !== address ? name : address
+  return name && name !== address && !/[@＠﹫]/.test(name) ? name : address
 }
 
 const GMAIL_DATE: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }
 
 /** Gmail's envelope: the summary line, and the details box its arrow opens in place. */
 function GmailEnvelope({ email }: { email: GmailSend }) {
-  const sender = senderParts(email.from).address?.toLowerCase()
-  const short = (values: string[]) => values.map((value) => shortAddress(value, sender)).join(', ')
+  const short = (values: string[]) => values.map(shortAddress).join(', ')
   const summary = [
     email.to.length + email.cc.length > 0 ? `to ${short([...email.to, ...email.cc])}` : '',
     email.bcc.length > 0 ? `bcc: ${short(email.bcc)}` : '',
@@ -184,20 +208,13 @@ export function GmailSendView({ email }: { email: GmailSend }) {
   )
 }
 
-function GmailSendPreview({ requestBody }: { requestBody: string }) {
-  const [email, setEmail] = useState<GmailSend>()
-  useEffect(() => {
-    let current = true
-    readGmailSend(requestBody).then((read) => { if (current) setEmail(read) }, () => {})
-    return () => { current = false }
-  }, [requestBody])
-  return email ? <GmailSendView email={email} /> : null
-}
-
 export const gmailSendCustomPreview: CustomPreview = {
   toolkit: 'gmail',
   method: 'POST',
   path: /^gmail\/v1\/users\/[^/]+\/messages\/send$/,
   title: 'Allow sending this email from Gmail?',
-  Preview: GmailSendPreview,
+  read: async (requestBody) => {
+    const email = await readGmailSend(requestBody)
+    return email ? <GmailSendView email={email} /> : undefined
+  },
 }

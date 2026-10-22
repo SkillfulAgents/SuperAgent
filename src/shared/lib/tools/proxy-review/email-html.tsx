@@ -37,15 +37,19 @@ export function withImages(html: string, images: ReadonlyMap<string, string>): s
  */
 const EMAIL_HTML_STYLE = 'html,body{margin:0;overflow:hidden;height:auto!important;min-height:0!important}body{display:flow-root;position:relative;padding:12px;font:small Arial,Helvetica,sans-serif;overflow-wrap:anywhere}pre{white-space:pre-wrap}img,table{max-width:100%}'
 
+// React 18's HTML attribute types predate the now-baseline `inert` attribute. On a frame it makes the page inside inert too.
+const INERT = { inert: '' }
+
 /**
  * The HTML part as the recipient's mail app draws it, on the white page emails assume. The frame runs no scripts and loads nothing, so
- * remote images stay blank until the recipient opens the mail. It takes no clicks, so a link cannot navigate it.
- * The policy cannot stop a meta refresh from loading another page into the frame, so every meta tag is renamed to one the browser ignores.
+ * remote images stay blank until the recipient opens the mail. It is inert, taking no clicks and no keyboard focus, so a link cannot navigate it.
+ * The policy cannot stop a meta refresh from loading another page into the frame, or a link from prefetching a host, so every meta and
+ * link tag is renamed to one the browser ignores. The rename runs on the final markup, so no tag can appear by reparsing it.
  * Same-origin, with scripts off, only so the card can read the document's height.
  */
 export function EmailHtml({ html }: { html: string }) {
   const dark = useIsDark()
-  const srcDoc = useMemo(() => `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${EMAIL_HTML_CSP}"><style>${EMAIL_HTML_STYLE}${dark ? EMAIL_HTML_DARK : ''}</style></head><body>${html.replace(/<meta\b/gi, '<x-meta')}`, [html, dark])
+  const srcDoc = useMemo(() => `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${EMAIL_HTML_CSP}"><style>${EMAIL_HTML_STYLE}${dark ? EMAIL_HTML_DARK : ''}</style></head><body>${html.replace(/<(meta|link)\b/gi, '<x-$1')}`, [html, dark])
   const [height, setHeight] = useState(0)
   const observer = useRef<ResizeObserver | null>(null)
   useEffect(() => () => observer.current?.disconnect(), [])
@@ -79,6 +83,7 @@ export function EmailHtml({ html }: { html: string }) {
       style={{ height: height || undefined }}
       className="pointer-events-none block w-full rounded border-0 bg-white dark:bg-[#1f1f1f]"
       data-testid="email-html"
+      {...INERT}
     />
   )
 }
@@ -116,10 +121,25 @@ export function ClampedBody({ children }: { children: ReactNode }) {
   )
 }
 
-/** Every web address the HTML names: links, images, and refreshes, as the recipient's mail app would follow or load them. */
+const WEB_ADDRESS = /\bhttps?:\/\/[^\s"'<>()\\`]+/gi
+/** As WEB_ADDRESS, or one with no scheme (`//host/path`) where an attribute value, a `url(`, or a list item starts. */
+const DECODED_WEB_ADDRESS = /(?:\bhttps?:|(?<![^\s=(,'"]))\/\/[^\s"'<>()\\`]+/gi
+
+/**
+ * Every web address the HTML names: links, images, and refreshes, as the recipient's mail app would follow or load them. Also read from
+ * each attribute and style sheet as the browser decodes them, so an address spelled with character references, or with no scheme, counts.
+ */
 export function webAddresses(html: string): string[] {
-  const found = html.match(/\bhttps?:\/\/[^\s"'<>()\\`]+/gi) ?? []
-  return [...new Set(found.map((address) => address.replace(/&amp;/g, '&').replace(/[.,;:!?]+$/, '')))]
+  const page = new DOMParser().parseFromString(html, 'text/html')
+  const decoded = [
+    ...[...page.querySelectorAll('*')].flatMap((element) => [...element.attributes].map(({ value }) => value)),
+    ...[...page.querySelectorAll('style')].map((style) => style.textContent ?? ''),
+  ]
+  const found = [
+    ...(html.match(WEB_ADDRESS) ?? []).map((address) => address.replace(/&amp;/g, '&')),
+    ...decoded.flatMap((value) => value.match(DECODED_WEB_ADDRESS) ?? []),
+  ]
+  return [...new Set(found.map((address) => address.replace(/[.,;:!?]+$/, '')))]
 }
 
 /** Named as text, so none of them opens or loads here. */

@@ -6,10 +6,17 @@ import { requestBodyPreview } from '@shared/lib/proxy/review-display'
 import { gmailSendCustomPreview, readGmailSend } from './gmail-send'
 import { customPreviewFor } from './custom-previews'
 
-/** The request body as the card gets it: pretty-printed JSON, cut at 64,000 characters. */
+const base64url = (mime: string) => Buffer.from(mime.replace(/\n/g, '\r\n')).toString('base64url')
+
+/** The request body as the card gets it: pretty-printed JSON when it parses, cut at 64,000 characters. */
+const asCard = (text: string) => requestBodyPreview(new TextEncoder().encode(text).buffer) ?? ''
+
 function cardBody(mime: string, extra: Record<string, unknown> = {}): string {
-  const raw = Buffer.from(mime.replace(/\n/g, '\r\n')).toString('base64url')
-  return requestBodyPreview(new TextEncoder().encode(JSON.stringify({ threadId: 't1', raw, ...extra })).buffer) ?? ''
+  return asCard(JSON.stringify({ threadId: 't1', raw: base64url(mime), ...extra }))
+}
+
+async function show(requestBody: string) {
+  render(<>{await gmailSendCustomPreview.read(requestBody)}</>)
 }
 
 const PLAIN = `From: Jeremy <jeremy@example.com>
@@ -26,12 +33,14 @@ Hi Dana,
 Pricing holds through Nov 15.
 `
 
+const LONG = `${PLAIN}${'More pricing detail. '.repeat(3000)}`
+
 describe('a Gmail send on the card', () => {
   it('shows every recipient by its whole address when it has no name, and puts every header and the thread in the details box', async () => {
     expect(customPreviewFor('gmail', 'POST', 'gmail/v1/users/me/messages/send')).toBe(gmailSendCustomPreview)
     expect(gmailSendCustomPreview.title).toBe('Allow sending this email from Gmail?')
-    render(<gmailSendCustomPreview.Preview requestBody={cardBody(PLAIN)} />)
-    expect((await screen.findByTestId('gmail-send-summary')).textContent).toBe('to Dana, ops@acme.com, lead@acme.com, bcc: archive@elsewhere.io')
+    await show(cardBody(PLAIN))
+    expect(screen.getByTestId('gmail-send-summary').textContent).toBe('to Dana, ops@acme.com, lead@acme.com, bcc: archive@elsewhere.io')
     const envelope = screen.getByTestId('gmail-send-envelope').textContent
     for (const row of ['reply-to:replies@elsewhere.io', 'subject:Q3 renewal — quote', 'thread:t1', 'in-reply-to:<m1@acme.com>', 'x-acme-ticket:4417']) expect(envelope).toContain(row)
     expect(screen.getByTestId('gmail-send-body').textContent).toBe('Hi Dana,\nPricing holds through Nov 15.')
@@ -39,23 +48,42 @@ describe('a Gmail send on the card', () => {
     expect(screen.queryByTestId('gmail-send-attachments')).toBeNull()
   })
 
+  it('shows a recipient by address when the From would make it "me", or its name reads as an address', async () => {
+    await show(cardBody(`From: Iddo <attacker@evil.com>
+To: attacker@evil.com, "ceo@acme.com" <ceo@evil.com>, =?UTF-8?Q?dana=EF=BC=A0acme.com?= <dana@evil.com>
+Subject: Note to self
+Content-Type: text/plain; charset=utf-8
+
+hi
+`))
+    expect(screen.getByTestId('gmail-send-summary').textContent).toBe('to attacker@evil.com, ceo@evil.com, dana@evil.com')
+  })
+
+  // Lengths one apart cover both unpadded endings: two and three characters past a group of four.
+  it.each(['Send $1,000', 'Send $1,0000', 'Send $1,00000'])('keeps the last characters of a raw sent without padding: %s', async (tail) => {
+    expect((await readGmailSend(cardBody(PLAIN.replace(/Hi Dana[\s\S]*$/, tail))))?.text).toBe(tail)
+  })
+
   it('shows the start of a body the card cut short, and says the rest is not shown', async () => {
-    render(<gmailSendCustomPreview.Preview requestBody={cardBody(`${PLAIN}${'More pricing detail. '.repeat(3000)}`)} />)
-    expect((await screen.findByTestId('gmail-send-body')).textContent).toMatch(/^Hi Dana,\nPricing holds through Nov 15.\nMore pricing detail/)
+    await show(cardBody(LONG))
+    expect(screen.getByTestId('gmail-send-body').textContent).toMatch(/^Hi Dana,\nPricing holds through Nov 15.\nMore pricing detail/)
     expect(screen.getByTestId('gmail-send-summary').textContent).toContain('bcc: archive@elsewhere.io')
+    expect(screen.getByTestId('gmail-send-envelope').textContent).toContain('thread:t1')
     expect(screen.getByTestId('gmail-send-cut').textContent).toBe('The rest of the email is not shown.')
   })
 
-  it('draws an HTML body in a frame that runs no scripts, loads nothing, and cannot be refreshed into another page', async () => {
-    const html = PLAIN.replace('text/plain', 'text/html').replace(/\n\nHi Dana[\s\S]*$/, '\n\n<META http-equiv="refresh" content="0;url=https://phish.example/login"><p>Hi <b>Dana</b></p><script>window.ran = true</script><img src="https://pixel.example/p.gif">\n')
-    render(<gmailSendCustomPreview.Preview requestBody={cardBody(html)} />)
-    const frame = await screen.findByTestId('email-html')
+  it('draws an HTML body in an inert frame that runs no scripts, loads nothing, and cannot be refreshed into another page', async () => {
+    const html = PLAIN.replace('text/plain', 'text/html').replace(/\n\nHi Dana[\s\S]*$/, '\n\n<META http-equiv="refresh" content="0;url=https://phish.example/login"><LINK rel="dns-prefetch" href="//tracker.example"><p>Hi <b>Dana</b></p><script>window.ran = true</script><img src="https://pixel.example/p.gif">\n')
+    await show(cardBody(html))
+    const frame = screen.getByTestId('email-html')
     expect(frame.getAttribute('sandbox')).toBe('allow-same-origin')
+    expect(frame.hasAttribute('inert')).toBe(true)
     expect(frame.className).toContain('pointer-events-none')
     const srcdoc = frame.getAttribute('srcdoc') ?? ''
     expect(srcdoc).toMatch(/^<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;/)
-    expect(srcdoc).not.toMatch(/<meta http-equiv="refresh"/i)
+    expect(srcdoc).not.toMatch(/<meta http-equiv="refresh"|<link\b/i)
     expect(srcdoc).toContain('<x-meta http-equiv="refresh"')
+    expect(srcdoc).toContain('<x-link rel="dns-prefetch"')
     expect(srcdoc).toContain('<p>Hi <b>Dana</b></p>')
   })
 
@@ -86,7 +114,7 @@ ${Buffer.from('png').toString('base64')}
     }
   })
 
-  it('lists every web address the HTML names, and says the email has attachments it does not show', async () => {
+  it('lists every web address the HTML names, spelled out or not, and says the email has attachments it does not show', async () => {
     const mime = `From: Jeremy <jeremy@example.com>
 To: dana@acme.com
 Subject: Invoice
@@ -96,6 +124,7 @@ Content-Type: multipart/mixed; boundary=m
 Content-Type: text/html
 
 <META http-equiv="refresh" content="0;url=https://phish.example/login"><img src="https://pixel.example/p.gif?u=1&amp;v=2"><a href="https://x.example">x</a>.
+<a href="https&#58;//encoded.example/a">e</a><img src="//relative.example/p.gif"><p>a//b</p>
 --m
 Content-Type: application/pdf
 Content-Disposition: attachment; filename=quote.pdf
@@ -103,9 +132,11 @@ Content-Disposition: attachment; filename=quote.pdf
 pdf
 --m--
 `
-    render(<gmailSendCustomPreview.Preview requestBody={cardBody(mime)} />)
-    const list = await screen.findByTestId('email-web-addresses')
-    expect([...list.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['https://phish.example/login', 'https://pixel.example/p.gif?u=1&v=2', 'https://x.example'])
+    await show(cardBody(mime))
+    const list = screen.getByTestId('email-web-addresses')
+    expect([...list.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
+      'https://phish.example/login', 'https://pixel.example/p.gif?u=1&v=2', 'https://x.example', 'https://encoded.example/a', '//relative.example/p.gif',
+    ])
     expect(screen.getByTestId('gmail-send-attachments').textContent).toBe('Has attachments, not shown.')
   })
 
@@ -117,6 +148,16 @@ pdf
     ['a recipient with a name and no address', PLAIN.replace('Cc: lead@acme.com', 'Cc: Lead')],
   ])('draws nothing for %s, leaving the raw request', async (_case, mime) => {
     expect(await readGmailSend(cardBody(mime))).toBeUndefined()
+  })
+
+  // Past 64 KB the card's copy is the body as sent, so a key it cannot see could set the raw again.
+  it.each([
+    ['a raw that ends before the cut copy does', cardBody(PLAIN, { labelIds: ['x'.repeat(70_000)] })],
+    ['a key before the raw that sets raw too', asCard(`{"r\\u0061w":"${base64url('To: attacker@evil.com\n\nhi')}","raw":"${base64url(LONG)}"}`)],
+    ['a raw inside another object', asCard(`{"payload":{"raw":"${base64url(LONG)}"}}`)],
+  ])('draws nothing for %s', async (_case, requestBody) => {
+    expect(requestBody.endsWith('…')).toBe(true)
+    expect(await readGmailSend(requestBody)).toBeUndefined()
   })
 
   it('leaves a call no custom preview matches to the raw request and its endpoint title', () => {
