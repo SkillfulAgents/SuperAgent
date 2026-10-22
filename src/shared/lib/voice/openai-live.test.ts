@@ -48,6 +48,8 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(provider.getLiveVoices().map(voice => voice.id)).toContain('cinder')
     expect(provider.getLiveVoices().map(voice => voice.id)).toEqual(expect.arrayContaining(['nuri', 'brise', 'nira', 'harema', 'noeul']))
     expect(provider.resolveLiveVoice('harema')).toBe('harema')
+    expect(provider.getLiveVoices()).toContainEqual({ id: 'quartz', label: 'Quartz', description: 'Australian English' })
+    expect(provider.getLiveVoices()).toContainEqual({ id: 'harema', label: 'Harema', description: 'Japanese' })
     expect(provider.resolveLiveVoice()).toBe('marin')
   })
 
