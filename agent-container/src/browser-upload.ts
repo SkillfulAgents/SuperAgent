@@ -227,9 +227,10 @@ export async function runBrowserUpload(
 export function recordFileInputChange(element: any, key: string): void {
   const store = globalThis as typeof globalThis & Record<string, UploadVerification | null>
   store[key] = null
-  const onChange = (event: Event) => {
+  const win = element.ownerDocument.defaultView
+  const onChange = (event: { target: unknown }) => {
     if (event.target !== element) return
-    globalThis.removeEventListener('change', onChange, true)
+    win.removeEventListener('change', onChange, true)
     const uploadedFile = element.files?.[0] ?? null
     store[key] = {
       count: element.files?.length ?? 0,
@@ -237,7 +238,7 @@ export function recordFileInputChange(element: any, key: string): void {
       size: uploadedFile?.size ?? null,
     }
   }
-  globalThis.addEventListener('change', onChange, true)
+  win.addEventListener('change', onChange, true)
 }
 
 export async function uploadToFileInput({
