@@ -223,6 +223,23 @@ export async function runBrowserUpload(
   }
 }
 
+// Runs in the page. Window capture fires before site handlers, which often clear the input.
+export function recordFileInputChange(element: any, key: string): void {
+  const store = globalThis as typeof globalThis & Record<string, UploadVerification | null>
+  store[key] = null
+  const onChange = (event: Event) => {
+    if (event.target !== element) return
+    globalThis.removeEventListener('change', onChange, true)
+    const uploadedFile = element.files?.[0] ?? null
+    store[key] = {
+      count: element.files?.length ?? 0,
+      name: uploadedFile?.name ?? null,
+      size: uploadedFile?.size ?? null,
+    }
+  }
+  globalThis.addEventListener('change', onChange, true)
+}
+
 export async function uploadToFileInput({
   connectionUrl,
   activeTargetUrl,
@@ -239,17 +256,7 @@ export async function uploadToFileInput({
     }
 
     const verificationKey = `__superagentUpload_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    await locator.evaluate((element: any, key: string) => {
-      ;(globalThis as typeof globalThis & Record<string, UploadVerification | null>)[key] = null
-      element.addEventListener('change', () => {
-        const uploadedFile = element.files?.[0] ?? null
-        ;(globalThis as typeof globalThis & Record<string, UploadVerification | null>)[key] = {
-          count: element.files?.length ?? 0,
-          name: uploadedFile?.name ?? null,
-          size: uploadedFile?.size ?? null,
-        }
-      }, { once: true })
-    }, verificationKey)
+    await locator.evaluate(recordFileInputChange, verificationKey)
 
     await locator.setInputFiles({
       name: file.name,
