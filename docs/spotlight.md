@@ -17,7 +17,7 @@ macOS only. No App Intents, no app extension: plain Core Spotlight items.
 | Where | What |
 | --- | --- |
 | `native/macos/SpotlightBridge.swift` | One C function, `spotlight_apply(json)`: domain deletes, id deletes, upserts, in that order. |
-| `scripts/build-spotlight-bridge.sh` | Builds it into `build/spotlight-bridge/libSpotlightBridge.dylib` (arm64 + x86_64, macOS 12+). Part of `dist:mac`; shipped as an extra resource. |
+| `scripts/build-macos-bridges.sh` | Builds it into `build/spotlight-bridge/libSpotlightBridge.dylib` (arm64 + x86_64, macOS 12+). Part of `dist:mac`; shipped as an extra resource. |
 | `src/main/spotlight/spotlight-bridge.ts` | Loads the dylib with koffi and calls it on a worker thread, one call at a time. |
 | `src/main/spotlight/spotlight-items.ts` | Item ids, labels, and the diff. |
 | `src/main/spotlight/spotlight-sync.ts` | What to index, when, and what to do when a side is down or gone. |
@@ -90,7 +90,7 @@ before the app is up and is held until `startSpotlight`.
 
 ## Developing
 
-- `npm run build:spotlight-bridge` once; without it, dev logs one line and skips
+- `npm run build:macos-bridges` once; without it, dev logs one line and skips
   indexing.
 - A dev build is `Electron.app`, so its entries are under **Electron** in
   Spotlight, not Gamut. Every dev checkout shares that bundle id: two running at

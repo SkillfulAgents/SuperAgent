@@ -260,18 +260,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
-  // True after macOS refused the last notification (the user turned
-  // notifications off for the app). Cleared by the next one macOS shows.
+  // True when the user turned off notifications for the app in macOS System Settings.
   getOsNotificationsBlocked: (): Promise<boolean> => {
     return ipcRenderer.invoke('get-os-notifications-blocked')
-  },
-
-  onOsNotificationsBlockedChange: (callback: (blocked: boolean) => void): (() => void) => {
-    const handler = (_e: unknown, blocked: boolean) => callback(blocked)
-    ipcRenderer.on('os-notifications-blocked-change', handler)
-    return () => {
-      ipcRenderer.off('os-notifications-blocked-change', handler)
-    }
   },
 
   // Pull events queued while the window was closed (main-process fallback
@@ -557,7 +548,6 @@ declare global {
         callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
       ) => () => void
       getOsNotificationsBlocked: () => Promise<boolean>
-      onOsNotificationsBlockedChange: (callback: (blocked: boolean) => void) => () => void
       flushPendingNotificationEvents: () => Promise<{
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>

@@ -159,8 +159,11 @@ export function NotificationsTab() {
   useEffect(() => {
     const api = window.electronAPI
     if (!api?.getOsNotificationsBlocked) return
-    void api.getOsNotificationsBlocked().then(setOsNotificationsBlocked)
-    return api.onOsNotificationsBlockedChange(setOsNotificationsBlocked)
+    const check = () => void api.getOsNotificationsBlocked().then(setOsNotificationsBlocked)
+    check()
+    // The user changes the toggle in System Settings, then comes back to the app.
+    window.addEventListener('focus', check)
+    return () => window.removeEventListener('focus', check)
   }, [])
 
   // Reset local state when settings update
@@ -203,7 +206,7 @@ export function NotificationsTab() {
         <Alert variant="destructive">
           <TriangleAlert className="h-4 w-4" />
           <AlertDescription className="flex items-center justify-between gap-4">
-            <span>macOS is blocking Gamut notifications. Turn them on, then send a test.</span>
+            <span>macOS is blocking Gamut notifications. Turn them on in System Settings.</span>
             <Button
               size="sm"
               variant="outline"

@@ -25,7 +25,7 @@ let stopped = false
 /** A click that launched the app arrives before the app can act on it. */
 let pendingIdentifier: string | null = null
 
-/** Built by scripts/build-spotlight-bridge.sh into build/, shipped as an extra resource. */
+/** Built by scripts/build-macos-bridges.sh into build/, shipped as an extra resource. */
 function spotlightBridgeDir(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'spotlight-bridge')
@@ -46,7 +46,7 @@ export function startSpotlight(options: {
       sync = new SpotlightSync({ index, baseUrl: options.baseUrl, activeTarget: options.activation.activeTarget })
       sync.start()
     } else if (!app.isPackaged) {
-      console.log('[Spotlight] Bridge not built; run `npm run build:spotlight-bridge` to index this app.')
+      console.log('[Spotlight] Bridge not built; run `npm run build:macos-bridges` to index this app.')
     }
   })
 
