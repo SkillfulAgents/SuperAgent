@@ -224,13 +224,13 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
           <DialogDescription className="sr-only">Connect APIs or MCP servers to your agents</DialogDescription>
         </DialogHeader>
         <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col gap-4 mt-4 min-h-[50vh]">
-          <div className="flex items-center gap-2">
-            <TabsList>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <TabsList className="self-start">
               <TabsTrigger value="all" data-testid="directory-tab-all">All</TabsTrigger>
               <TabsTrigger value="apis" data-testid="directory-tab-apis">APIs</TabsTrigger>
               <TabsTrigger value="mcps" data-testid="directory-tab-mcps">MCPs</TabsTrigger>
             </TabsList>
-            <div className="relative ml-auto w-56">
+            <div className="relative w-full sm:ml-auto sm:w-56">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder={SEARCH_PLACEHOLDER[tab]}
@@ -453,7 +453,7 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
               )
             })}
             {!embedded && !filter.trim() && (
-              <DirectoryFooterNote className="col-span-2">
+              <DirectoryFooterNote className="sm:col-span-2">
                 Don&apos;t see the API you&apos;re looking for? Check MCPs or ask your agent about connecting to a specific service.
               </DirectoryFooterNote>
             )}
@@ -612,7 +612,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
     const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
       <div className="space-y-2">
-        {setup && <McpSetupGuide guide={setup} redirectUri={redirectUris?.preferred} />}
+        {setup && <McpSetupGuide guide={setup} redirectUri={draft.authType === 'oauth' ? redirectUris?.preferred : undefined} />}
         <div>
           <Label className="text-xs font-normal text-muted-foreground/70">Name</Label>
           <Input

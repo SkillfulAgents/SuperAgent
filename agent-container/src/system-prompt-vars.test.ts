@@ -13,7 +13,7 @@ vi.mock('./volume-mounts', async (importOriginal) => ({
   mountedVolumeIndexes: vi.fn(() => []),
 }))
 
-const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
+const KEYS = ['COMPOSIO_PLATFORM_MODE', 'CONNECTED_ACCOUNT_TOOLKITS', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
 let saved: Record<string, string | undefined>
 beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])); for (const k of KEYS) delete process.env[k] })
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
@@ -406,44 +406,34 @@ describe('generateSystemPrompt rendering', () => {
     }
   })
 
-  // The prompt's toolkit list is what the agent picks a `request_connected_account`
-  // slug from without a discovery round-trip, so it has to stay in step with the
-  // catalog `search_connected_account_services` answers from.
-  it('keeps the prompt toolkit list in step with the searchable service catalog', () => {
+  it('directs account discovery to the searchable catalog instead of duplicating it', () => {
     const line = generateSystemPrompt()
       .split('\n')
-      .find(candidate => candidate.startsWith('**Supported services include:**'))
-    expect(line, 'prompt no longer has a "Supported services include" line').toBeDefined()
-
-    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
-    expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
-    expect(promptSlugs).not.toContain('twitter')
-    expect(promptSlugs).not.toContain('plaid')
-    expect(promptSlugs).not.toContain('shopify')
-    expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
+      .find(candidate => candidate.startsWith('**Discover supported services:**'))
+    expect(line).toContain('mcp__user-input__search_connected_account_services')
+    expect(line).toContain('exact toolkit slugs before requesting a new account')
+    expect(generateSystemPrompt()).not.toContain('**Supported services include:**')
   })
 
   // The catalog reads the env at import, so platform mode needs a fresh import.
-  it('lists X, Plaid, and Shopify in both the prompt and the catalog on Gamut\'s Composio', async () => {
+  it('makes platform-specific accounts discoverable on Gamut\'s Composio', async () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     vi.resetModules()
     const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
-    const line = generateSystemPrompt()
-      .split('\n')
-      .find(candidate => candidate.startsWith('**Supported services include:**'))
-    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
-    expect(promptSlugs).toContain('twitter')
-    expect(promptSlugs).toContain('plaid')
-    expect(promptSlugs).toContain('shopify')
-    expect(promptSlugs.sort()).toEqual(platformServices.map(service => service.slug).sort())
+    const catalogSlugs = platformServices.map(service => service.slug)
+    expect(catalogSlugs).toContain('twitter')
+    expect(catalogSlugs).toContain('plaid')
+    expect(catalogSlugs).toContain('shopify')
+    expect(generateSystemPrompt()).toContain('mcp__user-input__search_connected_account_services')
   })
 
-  // The FAQ used to carry its own copy of the toolkit list, which drifted
-  // silently against the two real sources.
+  // The FAQ may clarify restricted account types, but should not maintain a
+  // second full service catalog that can drift from discovery.
   it('does not let the integrations FAQ grow a second toolkit list', () => {
     const faq = readFileSync(join(__dirname, '..', 'docs', 'faqs', 'what-integrations-are-supported.md'), 'utf8')
     const catalogSlugs = SERVICES.map(service => service.slug)
-    const echoed = catalogSlugs.filter(slug => new RegExp(`\`${slug}\``).test(faq))
+    const accountTypeExamples = new Set(['facebook', 'whatsapp', 'notebook_lm'])
+    const echoed = catalogSlugs.filter(slug => !accountTypeExamples.has(slug) && new RegExp(`\`${slug}\``).test(faq))
     expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
   })
 

@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ContainerConfig } from './types'
 

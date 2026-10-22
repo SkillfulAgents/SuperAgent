@@ -39,6 +39,8 @@ import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { listVolumes } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
+import { getAllProviders } from '@shared/lib/account-providers/service-catalog'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -674,9 +676,16 @@ export class ContainerRuntime {
     envVars['HOST_PLATFORM'] = process.platform
 
     // Enable Composio webhook trigger tools when platform Composio is active
-    if (isPlatformComposioActive()) {
+    const platformComposio = isPlatformComposioActive()
+    if (platformComposio) {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
+    // Discovery and account requests must offer the same services as /api/providers.
+    // Toolkit slugs contain no commas; an empty string explicitly offers none.
+    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAllProviders(getDefaultAccountProvider().name)
+      .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformComposio))
+      .map((provider) => provider.slug)
+      .join(',')
 
     // Webhook tools (custom endpoints, and Composio triggers with the flag
     // above) follow the relay, not Composio mode: a personal Composio key
