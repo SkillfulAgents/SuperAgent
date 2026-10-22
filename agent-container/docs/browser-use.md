@@ -50,11 +50,19 @@ observations, not verdicts: weigh them before reading the tree — a challenge
 wall or login page needs the user; an HTTP 404 on a page with a full tree may
 be a single-page app served from a fallback.
 
+To read a page's text — an article, docs, search results, a listing — use
+`browser_read`: the visible text as light markdown (headings, list items,
+table rows) with no refs, a fraction of the size of a full-text snapshot. Text
+the page hides (closed menus and dialogs, other tabs' panels) is left out. On
+long pages, `outline: true` returns the headings and `section: "<heading
+text>"` returns one section.
+
 Useful snapshot options:
 
 - `fullText: true`: add the page's static text (prices, prose, validation
-  errors, table values) to the same compact tree. This is the way to read a
-  page; refs are identical in both views;
+  errors, table values) to the same compact tree, beside the refs — for text
+  that belongs to controls, such as a form's validation errors; refs are
+  identical in both views;
 - `scope`: restrict a large page to a form, dialog, or other CSS-selected
   region without invalidating refs elsewhere. Combine with `fullText`;
 - `includeUrls: true`: inline link URLs when labels are ambiguous.
@@ -63,7 +71,9 @@ Use `browser_get_state` when the URL, screenshot, and accessibility snapshot
 are all useful together; it takes the same `scope`/`fullText` knobs and
 `screenshot: false` skips the image. Use `browser_screenshot` only for pixel-level facts
 that the accessibility tree cannot express, such as visual layout, charts,
-images, or color.
+images, or color. When nothing on screen changed since the last screenshot of
+the tab, it attaches no new image and names the earlier file instead; Read
+that file if it is no longer in your context, or pass `force: true`.
 
 Large snapshots may be truncated. Scope the next snapshot instead of repeatedly
 requesting the same full page.
@@ -81,27 +91,32 @@ Use the most specific tool:
 - `browser_hover` for hover menus and tooltips;
 - `browser_scroll` for page or container scrolling.
 
-Trust a reported change. Click, key, select and hover results report
-navigation plus an `Effect:` line of what was observed — dialogs opened or
-closed, live-region announcements (toasts, validation errors), control state
-changes (checked, pressed, expanded), typed field values, the change in the
-number of interactive elements, and focus. `Effect: none observed within Nms
-(…)` states only that nothing in that scope changed — not that the click
-failed: a highlight, a change inside an iframe or canvas, or a slow server
-all look like this. Snapshot or screenshot if you need to know; do not click
-again on that basis, which would undo a toggle. Fill results
-report the value the page actually committed. A fill warning means the field
-now holds a different value than you sent; both are shown and the cause is
-not known—check the field before moving on.
+Trust a reported change. Click, key, select, hover, fill and type results
+report navigation plus an `Effect:` line of what was observed — dialogs opened
+or closed, live-region announcements (toasts, validation errors), typed field
+values, and focus. When the page's controls changed, the lines under it list
+the elements added (`+`), changed (`~`, with what they were) and removed
+(`−`) since your last snapshot, each with its ref: a menu, a dialog, a
+suggestion list or new results can be used straight from the result. `⟳`
+lines were replaced by identical lines in the same place under new refs
+(`e422 → e526`): the old ref no longer works; the new one is the element
+there now. `Effect: none observed within Nms (…)` states only that nothing in
+that scope changed — not that the click failed: a highlight, a change inside
+a cross-origin iframe or a canvas, or a slow server all look like this. Snapshot or screenshot if you
+need to know; do not click again on that basis, which would undo a toggle.
+Fill results report the value the page actually committed. A fill warning
+means the field now holds a different value than you sent; both are shown
+and the cause is not known—check the field before moving on.
 
-Navigation makes existing refs stale. Re-snapshot when a result reports
-navigation, when a dialog or dynamic view changes the relevant controls, or
-when fresh refs are otherwise needed. Do not re-snapshot merely to confirm a
+Refs are stable: an element keeps its ref across snapshots and actions until
+it leaves the page. Navigation makes existing refs stale. Re-snapshot when a
+result reports navigation, when it says more changed than it shows, or when
+fresh refs are otherwise needed. Do not re-snapshot merely to confirm a
 successful action whose result already contains the confirmation.
 
-For custom comboboxes, click the trigger, snapshot the opened list, interact
-with the filter if present, and select using a fresh ref. Re-snapshot between
-committed selections because refs may be renumbered.
+For custom comboboxes, click the trigger — its result lists the options that
+appeared, with refs — interact with the filter if present, and click the
+option's ref.
 
 ## Tabs
 
@@ -148,6 +163,25 @@ Use `browser_download` for an actual file or image asset; do not substitute a
 screenshot. Browser downloads are stored under `/workspace/downloads/`.
 Report or deliver the saved path when the user needs the file.
 
+## Finding a Site's API
+
+When a task will repeat against the same site (a scheduled report, a widget, a
+price check), find the JSON endpoints its pages are built from so a script can
+call them instead of driving the browser every run:
+
+1. `browser_capture_traffic(action: "start")`, then use the site in that tab —
+   run each flow twice with different inputs so the varying parameters show.
+2. `browser_capture_traffic(action: "stop", label: "<site>")` saves a HAR
+   under `/workspace/captures/` and lists the data responses (first-party
+   first).
+3. Inspect the file with `jq`, write the script, and call every endpoint for
+   real before relying on it.
+
+The HAR is redacted: cookie, token, session and auth values are replaced and
+their names kept. A script that needs the session reads live cookies from the
+browser when it runs (`browser_run("cookies")` while the browser is open);
+never copy secret values into source.
+
 ## JavaScript and Advanced Commands
 
 `browser_eval` runs in the top frame. Return `JSON.stringify(...)` for
@@ -168,7 +202,8 @@ For a dashboard or development server:
 3. Inspect the rendered and accessibility state.
 4. Exercise the primary controls and at least one important edge state.
 5. Check `browser_run("errors")` and, when relevant,
-   `browser_run("console")`.
+   `browser_run("console")`; `browser_run("a11y")` audits accessibility
+   (missing labels, contrast, ARIA misuse) with the offending elements.
 6. Check server-side logs through the capability's own log tool.
 7. Iterate until visual and functional checks pass.
 
