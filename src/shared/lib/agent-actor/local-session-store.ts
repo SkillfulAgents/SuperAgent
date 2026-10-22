@@ -9,7 +9,7 @@ import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import { createLocalConfigOps } from './local-config-ops'
 import { createLocalFileOps } from './local-file-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from './session-store'
-import type { AgentSlug } from './types'
+import type { AgentSlug, StoreConfigOps, StoreFileOps } from './types'
 
 export interface LocalSessionStoreDeps {
   getAgentWorkspaceDir: (slug: string) => string
@@ -19,13 +19,24 @@ export interface LocalSessionStoreDeps {
 // provide this one until a store is used.
 const defaultDeps: LocalSessionStoreDeps = { getAgentWorkspaceDir: (slug) => getAgentWorkspaceDir(slug) }
 
+/** An agent's files and config documents, for a deployment that doesn't keep workspaces on this machine. */
+export type WorkspaceStore = (slug: AgentSlug) => { files: StoreFileOps; config: StoreConfigOps }
+
+let workspaceStore: WorkspaceStore | null = null
+
+/** Replaces the local workspace directory as where every agent's files and config documents live. */
+export function setWorkspaceStore(store: WorkspaceStore | null): void {
+  workspaceStore = store
+}
+
 export function createLocalSessionStore(
   slug: AgentSlug,
   deps: LocalSessionStoreDeps = defaultDeps,
   hooks: Pick<SessionStore, 'onActivity'> = {},
 ): SessionStore {
-  const files = createLocalFileOps(slug, deps)
-  const config = createLocalConfigOps({ files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
+  const supplied = workspaceStore?.(slug)
+  const files = supplied?.files ?? createLocalFileOps(slug, deps)
+  const config = supplied?.config ?? createLocalConfigOps({ files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
   return {
     slug,
     files,

@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { sql } from 'drizzle-orm'
-import { readMigrationFiles } from 'drizzle-orm/migrator'
+import { readMigrationFiles, type MigrationMeta } from 'drizzle-orm/migrator'
 import * as schema from './schema'
 
 vi.mock('./data-migrations', () => ({
@@ -14,7 +14,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
-import { closeDatabase, getDb, isDatabaseOpen, MIGRATIONS_TABLE, openDatabase } from './open-database'
+import { closeDatabase, getDb, isDatabaseOpen, migrateFromBundle, MIGRATIONS_TABLE, openDatabase } from './open-database'
 import { betterSqlite3 } from './drivers/better-sqlite3'
 import { runDataMigrations } from './data-migrations'
 import { captureException } from '@shared/lib/error-reporting'
@@ -106,6 +106,30 @@ describe('openDatabase', () => {
     const db = await openDatabase()
 
     expect(await migrationRows(db)).toEqual(fromFolder.map((m) => ({ hash: m.hash, created_at: m.folderMillis })))
+  })
+
+  it('lets a driver apply the bundled migrations its own way', async () => {
+    const applied: string[] = []
+    const local = betterSqlite3(path.join(tmpRoot, 'own-migrator.db'))
+    const ownMigrator = {
+      name: 'own-migrator',
+      async open() {
+        const handle = await local.open()
+        return {
+          ...handle,
+          async migrate(migrations: readonly MigrationMeta[]) {
+            applied.push(...migrations.map((m) => m.hash))
+            await migrateFromBundle(handle.db, migrations)
+          },
+        }
+      },
+    }
+
+    const db = await openDatabase({ driver: ownMigrator })
+
+    const fromFolder = readMigrationFiles({ migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    expect(applied).toEqual(fromFolder.map((m) => m.hash))
+    expect(await migrationRows(db)).toHaveLength(fromFolder.length)
   })
 
   it('reports a failed open as fatal and rethrows, leaving the database closed', async () => {
