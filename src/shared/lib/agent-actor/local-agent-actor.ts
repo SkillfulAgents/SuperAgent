@@ -53,8 +53,7 @@ import type {
  * the client and every cached fact about the container.
  *
  * The user-input, review, re-auth and computer-use managers are routers over
- * state the actors own: the actor reports its request transitions to the
- * first, and the registry hands all of them the way to every actor's stores.
+ * state the actors own: the registry hands them the way to every actor's stores.
  */
 export interface LocalActorDeps {
   readonly containerHost: typeof containerHost
@@ -121,7 +120,6 @@ export class LocalAgentActor implements AgentActor {
     this.state =
       state ??
       createAgentState(slug, {
-        transitions: deps.userInputRequestManager,
         sessions: {
           store: createLocalSessionStore(slug, deps, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
@@ -401,7 +399,7 @@ async function answerRequest(
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: async (id, decision) => deps.reviewManager.submitDecision(id, decision, slug),
+    submit: async (id, decision) => deps.reviewManager.submitDecision(slug, id, decision),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),

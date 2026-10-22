@@ -576,7 +576,7 @@ describe('awaiting input status tracking', () => {
       sessions().recoverAwaitingInput(SESSION_ID, [
         { toolUseId: 'alias-recovered', toolName: 'SecretAlias' },
       ])
-      expect(userInputRequestManager.getOpenRequest('alias-recovered', AGENT_SLUG)).toMatchObject({
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'alias-recovered')).toMatchObject({
         kind: 'secret', payload: { recovered: true },
       })
     } finally {
@@ -590,8 +590,8 @@ describe('awaiting input status tracking', () => {
       { toolUseId: 'script-recovery', toolName: 'mcp__user-input__request_script_run' },
       { toolUseId: 'file-recovery', toolName: 'mcp__user-input__deliver_file' },
     ])
-    expect(userInputRequestManager.getOpenRequest('script-recovery', AGENT_SLUG)).toBeNull()
-    expect(userInputRequestManager.getOpenRequest('file-recovery', AGENT_SLUG)).toBeNull()
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'script-recovery')).toBeNull()
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'file-recovery')).toBeNull()
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
   })
 
@@ -916,11 +916,11 @@ describe('awaiting input status tracking', () => {
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // Once the review resolves, the agent-wide sync settles the session.
-      userInputRequestManager.resolve('blocker-review-1', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'blocker-review-1', 'answered')
       sessions().syncAwaiting()
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     } finally {
-      userInputRequestManager.resolve('blocker-review-1', 'cancelled')
+      userInputRequestManager.resolve(AGENT_SLUG, 'blocker-review-1', 'cancelled')
     }
   })
 
@@ -1649,7 +1649,7 @@ describe('Computer use request detection', () => {
       expect(sessions().pendingComputerUse(SESSION_ID)).toHaveLength(0)
       expect(waitingInputNotifications()).toEqual([])
       // Settled once the result was delivered.
-      expect(userInputRequestManager.getOpenRequest('tool-cu-granted', AGENT_SLUG)).toBeNull()
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-granted')).toBeNull()
     } finally {
       if (originalE2eMock === undefined) delete process.env.E2E_MOCK
       else process.env.E2E_MOCK = originalE2eMock
@@ -1671,7 +1671,7 @@ describe('Computer use request detection', () => {
       simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
       await vi.waitFor(() => expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1))
       finishCommand('clicked')
-      await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest('tool-cu-twice', AGENT_SLUG)).toBeNull())
+      await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-twice')).toBeNull())
       expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1)
       expect(live.runtime.containerFetch.mock.calls.filter(([path]) => String(path).includes('tool-cu-twice'))).toEqual([
         ['/inputs/tool-cu-twice/resolve', expect.objectContaining({ body: JSON.stringify({ value: 'clicked' }) })],
@@ -1700,7 +1700,7 @@ describe('Computer use request detection', () => {
       })
 
       await vi.waitFor(() => {
-        const open = userInputRequestManager.getOpenRequest('tool-cu-granted-reg')
+        const open = userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-granted-reg')
         expect(open).toMatchObject({
           kind: 'computer_use',
           blocking: true,

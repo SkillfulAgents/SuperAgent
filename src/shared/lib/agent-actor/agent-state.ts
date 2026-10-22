@@ -9,7 +9,7 @@
  * (`userInputRequestManager` and friends) reach them through the directory
  * the registry attaches.
  */
-import { AgentInputRequests, type UserInputTransitionSink } from '@shared/lib/tools/requests/agent-input-requests'
+import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import { AgentReviews } from '@shared/lib/proxy/agent-reviews'
 import {
   createAccountReauthWaits,
@@ -42,22 +42,17 @@ export interface AgentState {
 }
 
 export interface AgentStateHooks {
-  /** Where the agent's request transitions go first: the router that indexes them. */
-  transitions: UserInputTransitionSink
   /** What the agent's live sessions reach outside the agent. */
   sessions: Pick<LiveSessionsDeps, 'store' | 'host' | 'runtime' | 'capture'>
 }
 
 export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): AgentState {
-  // A request transition is indexed by the router, then put on the wire by
-  // the agent's sessions. The sessions are built from the stores, so the
-  // sink reaches them through this binding, set before any request can exist.
+  // A request transition is put on the wire by the agent's sessions. The
+  // sessions are built from the stores, so the sink reaches them through
+  // this binding, set before any request can exist.
   let sessions: LiveSessions | undefined
   const inputRequests = new AgentInputRequests(slug, {
-    report: (transition) => {
-      hooks.transitions.report(transition)
-      sessions?.requestTransition(transition)
-    },
+    report: (transition) => sessions?.requestTransition(transition),
   })
   const computerUse = new AgentComputerUse(slug)
   // One view of the agent for every host run: the decision routes' (through
