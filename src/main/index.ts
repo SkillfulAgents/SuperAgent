@@ -140,6 +140,7 @@ import { resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
+import { isAllowedRendererPermission } from './renderer-permissions'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -351,15 +352,11 @@ function createWindow() {
     }),
   })
 
-  // Grant microphone (and camera) permissions for the renderer.
-  // Production loads from file:// where Chromium blocks getUserMedia by default.
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
-    callback(allowed.includes(permission))
+    callback(isAllowedRendererPermission(permission))
   })
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
-    return allowed.includes(permission)
+    return isAllowedRendererPermission(permission)
   })
 
   // Spellcheck context menu — show correction suggestions on right-click
