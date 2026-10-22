@@ -1,4 +1,7 @@
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ============================================================================
