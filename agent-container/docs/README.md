@@ -42,6 +42,7 @@ itself important.
 - `audio.md`
 - `exa.md`
 - `in-app-links.md`
+- `agent-and-skill-packages.md`
 
 `session-history.md` is the one guide with executable companions: the two
 readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the
