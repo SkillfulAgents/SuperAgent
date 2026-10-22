@@ -638,9 +638,9 @@ describe('subagent completion detection', () => {
 
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
       expect(sessions().backgroundTasks(SESSION_ID)).toHaveLength(0)
-      expect(userInputRequestManager.getOpenRequest('blocked-bg-child-request')).toBeNull()
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'blocked-bg-child-request')).toBeNull()
     } finally {
-      userInputRequestManager.resolve('blocked-bg-child-request', 'cancelled')
+      userInputRequestManager.resolve(AGENT_SLUG, 'blocked-bg-child-request', 'cancelled')
     }
   })
 
