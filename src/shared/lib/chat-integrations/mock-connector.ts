@@ -6,6 +6,7 @@
  */
 
 import type { UserRequestEvent } from '@shared/lib/tools/types'
+import { background } from '@shared/lib/background'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatAgentIntegration, type OutgoingMessage } from './chat-agent-integration'
 
@@ -31,7 +32,7 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
 
   /** Simulate an incoming message from an external user. */
   simulateIncomingMessage(text: string, chatId = 'mock-chat-1', userId = 'mock-user-1', opts?: { userName?: string; chatName?: string }): void {
-    void this.emitMessage({
+    background(this.emitMessage({
       externalMessageId: `mock-msg-${this.nextMessageId++}`,
       text,
       chatId,
@@ -39,7 +40,7 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
       userName: opts?.userName,
       chatName: opts?.chatName,
       timestamp: new Date(),
-    })
+    }), { name: 'mock-connector.incoming-message' })
   }
 
   /**

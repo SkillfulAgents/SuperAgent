@@ -1,3 +1,4 @@
+import { background } from '@shared/lib/background'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
 /** What one platform account may not run, and the plan that says so (SUP-1124). */
@@ -53,7 +54,7 @@ class PlatformPlanCache {
   ): Promise<PlatformPlanPolicy | null> {
     const entry = this.entries.get(key)
     if (entry && !options.fresh) {
-      if (entry.expiresAt <= Date.now()) void this.reload(key, load)
+      if (entry.expiresAt <= Date.now()) background(this.reload(key, load), { name: 'platform-plan-cache.reload-policy' })
       return entry.policy
     }
     return this.reload(key, load)

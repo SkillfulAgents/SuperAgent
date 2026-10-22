@@ -18,6 +18,7 @@
 
 import pLimit from 'p-limit'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 import type {
   VerificationProfile,
@@ -584,12 +585,12 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     lifecycle.addEventListener('abort', onStop, { once: true })
     if (lifecycle.aborted) onStop()
     const run = new Promise<T>((resolve) => resolve(fn(controller.signal)))
-    void run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
+    run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
 
     let timer: NodeJS.Timeout | undefined
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        if (late) void run.then(late.result, late.failure)
+        if (late) background(run.then(late.result, late.failure), { name: 'webhook-relay.late-claim' })
         else controller.abort(new Error('deadline'))
         reject(new RequestDeadlineError(this.requestTimeoutMs))
       }, this.requestTimeoutMs)
@@ -611,7 +612,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.draining) return
     this.draining = true
     this.deps.detach(() => {
-      void this.drain()
+      background(this.drain(), { name: 'webhook-relay.drain' })
     })
   }
 
@@ -797,7 +798,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     state.retryTimer = null
     state.offering = true
     this.deps.detach(() => {
-      void this.limit(() => this.offer(state))
+      background(this.limit(() => this.offer(state))
         .catch((error: unknown) => {
           captureException(error, { tags: { area: 'webhook-relay', op: 'offer' }, extra: { consumerId: state.id } })
         })
@@ -805,7 +806,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
           state.offering = false
           this.finishIfDrained(state)
           this.pump(state)
-        })
+        }), { name: 'webhook-relay.offer' })
     })
   }
 
@@ -884,7 +885,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.acking || !this.online || this.pendingAcks.size === 0) return
     this.acking = true
     this.deps.detach(() => {
-      void this.runAcks()
+      background(this.runAcks(), { name: 'webhook-relay.ack' })
     })
   }
 
@@ -963,9 +964,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (current?.isActive()) {
       if (now - this.realtimeTokenAt >= this.realtimeTokenRefreshMs) {
         this.realtimeTokenAt = now
-        current.updateToken(config.jwt).catch((error: unknown) => {
+        background(current.updateToken(config.jwt).catch((error: unknown) => {
           console.warn(`[WebhookRelay] Realtime token refresh failed: ${errorMessage(error)}`)
-        })
+        }), { name: 'webhook-relay.refresh-realtime-token' })
       }
       return
     }
@@ -978,7 +979,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.realtime = client
     this.realtimeConnecting = true
     this.realtimeTokenAt = now
-    client
+    background(client
       .connect(
         config,
         (record) => this.onRealtimeInsert(record),
@@ -1004,7 +1005,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       .finally(() => {
         if (this.realtime === client) this.realtimeConnecting = false
         this.emit()
-      })
+      }), { name: 'webhook-relay.connect-realtime' })
   }
 
   private onRealtimeInsert(raw: unknown): void {

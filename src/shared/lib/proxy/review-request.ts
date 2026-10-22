@@ -7,6 +7,7 @@
  */
 import { randomUUID } from 'crypto'
 import type { ReviewDecision, ReviewOutcome, ReviewRequestOptions } from './agent-reviews'
+import { background } from '../background'
 
 /**
  * Decide the parked request again from scratch (policy and proxy rules), for
@@ -36,9 +37,9 @@ export async function awaitReview(
   if (signal?.aborted) throw new Error('Request aborted')
   const id = randomUUID()
   const withdraw = () => {
-    void Promise.resolve(reviews.withdraw(id)).catch((error: unknown) => {
+    background(Promise.resolve(reviews.withdraw(id)).catch((error: unknown) => {
       console.warn('[reviews] Failed to withdraw an aborted review:', error)
-    })
+    }), { name: 'review-request.withdraw-review' })
   }
   signal?.addEventListener('abort', withdraw, { once: true })
   try {

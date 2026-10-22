@@ -26,6 +26,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
@@ -192,9 +193,9 @@ class NotificationManager {
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,
     // a dead endpoint) must never block the trigger path or another channel.
     for (const channel of getNotificationChannels()) {
-      void channel.deliver(event).catch((error) => {
+      background(channel.deliver(event).catch((error) => {
         console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
-      })
+      }), { name: 'notification-manager.deliver-to-channel' })
     }
   }
 

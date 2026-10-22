@@ -35,6 +35,7 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { listVolumes } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
@@ -236,7 +237,7 @@ export class ContainerRuntime {
   handleUnexpectedDeath(restrictToSessionIds?: string[]): void {
     if (this.disposed) return
     const slug = this.slug
-    void recoverFromUnexpectedDeath({
+    background(recoverFromUnexpectedDeath({
       agentId: slug,
       isStopping: () => this.stopping,
       getClient: () => this.getClient(),
@@ -273,7 +274,7 @@ export class ContainerRuntime {
         tags: { area: 'container', op: 'runtime.recover.unhandled' },
         extra: { agentId: slug },
       })
-    })
+    }), { name: 'container-runtime.recover-unexpected-death' })
   }
 
   private assertNotStopping(op: 'start' | 'restart'): void {
@@ -436,7 +437,7 @@ export class ContainerRuntime {
         // If this agent had grabbed a window, ungrab it so the halo disappears
         if (computerUsePermissionManager.getGrabbedApp(slug)) {
           computerUsePermissionManager.clearGrabbedApp(slug)
-          ungrabAC().catch(() => {})  // Best-effort, non-blocking
+          background(ungrabAC().catch(() => {}), { name: 'container-runtime.ungrab-computer-use' })  // Best-effort, non-blocking
         }
 
         // Broadcast status change so UI updates

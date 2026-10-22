@@ -6,6 +6,8 @@
  * process, and this queue keeps a burst of in-process callers from spending
  * their retries on each other.
  */
+import { background } from '../background'
+
 const tails = new Map<string, Promise<unknown>>()
 
 export function serializeByKey<T>(key: string, work: () => Promise<T>): Promise<T> {
@@ -17,8 +19,8 @@ export function serializeByKey<T>(key: string, work: () => Promise<T>): Promise<
     () => undefined,
   )
   tails.set(key, settled)
-  void settled.then(() => {
+  background(settled.then(() => {
     if (tails.get(key) === settled) tails.delete(key)
-  })
+  }), { name: 'keyed-queue.drop-settled-tail' })
   return run
 }

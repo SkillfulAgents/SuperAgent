@@ -9,6 +9,7 @@
  */
 
 import WebSocket from 'ws'
+import { background } from '../background'
 
 export interface RealtimeConfig {
   url: string
@@ -282,9 +283,9 @@ export class SupabaseRealtimeClient {
     console.log(`[SupabaseRealtime] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
 
     this.reconnectTimeout = setTimeout(() => {
-      this.doConnect().catch((err) => {
+      background(this.doConnect().catch((err) => {
         console.error('[SupabaseRealtime] Reconnect failed:', err)
-      })
+      }), { name: 'supabase-realtime-client.reconnect' })
     }, delay)
   }
 

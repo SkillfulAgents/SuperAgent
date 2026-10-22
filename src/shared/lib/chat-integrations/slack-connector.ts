@@ -38,6 +38,7 @@ import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrati
 import { isUnrecoverableSlackError } from './slack-error'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -760,7 +761,7 @@ export class SlackConnector extends ChatAgentIntegration {
         console.warn(`[SlackConnector] Socket Mode failed to start; retrying while waiting for Slack’s first post to the webhook: ${msg}`)
       }
       // A post to the webhook verified while the socket was opening.
-      if (!this.socketMode) void receiver?.client.disconnect().catch(() => {})
+      if (!this.socketMode && receiver) background(receiver.client.disconnect().catch(() => {}), { name: 'slack-connector.close-socket' })
     }
     // disconnect() may have raced this connect (user pause, manager teardown):
     // its app.stop() ran against a socket that didn't exist yet, so the one
@@ -806,7 +807,7 @@ export class SlackConnector extends ChatAgentIntegration {
             // Teardown (or the move to the webhook) began while this attempt was
             // awaiting its connection — the socket that just opened has no owner.
             // Close it (socket-mode's disconnect() never rejects).
-            void client.disconnect()
+            background(client.disconnect(), { name: 'slack-connector.close-socket' })
             return
           }
           // The 'connected' listener already restored state.
@@ -851,7 +852,7 @@ export class SlackConnector extends ChatAgentIntegration {
     for (const key of this.activeReactions) {
       const [effectiveChatId, ts] = key.split(':')
       const { channel } = this.resolveChannel(effectiveChatId)
-      this.removeThinkingReaction(channel, ts).catch(() => {})
+      background(this.removeThinkingReaction(channel, ts).catch(() => {}), { name: 'slack-connector.remove-reaction' })
     }
     this.activeReactions.clear()
     this.lastUserMessageTs.clear()
@@ -1426,9 +1427,9 @@ export class SlackConnector extends ChatAgentIntegration {
   private recordWebhookStatus(status: 'verified' | 'rejected', signingSecret: string, endpointId: string): void {
     if (!this.integration) return
     const integrationId = this.integration.id
-    recordSlackWebhookStatus(integrationId, status, { signingSecret, endpointId }).catch((error: unknown) => {
+    background(recordSlackWebhookStatus(integrationId, status, { signingSecret, endpointId }).catch((error: unknown) => {
       captureException(error, { tags: { component: 'slack', operation: 'record-webhook-status' }, extra: { integrationId } })
-    })
+    }), { name: 'slack-connector.record-webhook-status' })
   }
 
   /** The app has moved off Socket Mode, so the socket has nothing more to bring. */
@@ -1441,7 +1442,7 @@ export class SlackConnector extends ChatAgentIntegration {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    void this.receiver?.client.disconnect().catch(() => {})
+    if (this.receiver) background(this.receiver.client.disconnect().catch(() => {}), { name: 'slack-connector.close-socket' })
     console.log(`[SlackConnector] Slack posts to the webhook for ${this.integration?.id}; Socket Mode closed`)
   }
 }

@@ -222,6 +222,7 @@ import { stopInstanceOnAllProviders } from '../../main/host-browser'
 import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
 import pLimit from 'p-limit'
@@ -1260,7 +1261,7 @@ function getSummarizerModel(): string {
  */
 async function nameSessionFromFirstHumanMessage(actor: AgentActor, sessionId: string, message: string, agentName: string): Promise<void> {
   if (isSystemMessageText(message) || !(await actor.sessions.takeDeferredNaming(sessionId))) return
-  generateAndUpdateSessionNameAsync(actor.slug, sessionId, message, agentName).catch(console.error)
+  background(generateAndUpdateSessionNameAsync(actor.slug, sessionId, message, agentName).catch(console.error), { name: 'agents-route.generate-session-name' })
 }
 
 // Generate session name using AI (fire and forget)
@@ -1764,7 +1765,7 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     const actor = agentRegistry.get(slug)
 
     await actor.container.start()
-    if (sessionId) void preResumeSession(actor, sessionId)
+    if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
     // Skip the session-summary enrichment: it stats every transcript, and every
     // caller of this command discards the body and refetches agent data anyway.
@@ -2148,12 +2149,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (isSystemMessageText(message.trim())) {
       await actor.sessions.deferNaming(sessionId)
     } else {
-      generateAndUpdateSessionNameAsync(
+      background(generateAndUpdateSessionNameAsync(
         slug,
         sessionId,
         message.trim(),
         agent.name
-      ).catch(console.error)
+      ).catch(console.error), { name: 'agents-route.generate-session-name' })
     }
 
     return c.json(
@@ -3084,7 +3085,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
     // Last-Event-ID when it reconnects. The stream ending (the client fell too
     // far behind) ends the response, and the browser reconnects.
     const frames = (await actor.messages.follow(sessionId, { after: c.req.header('Last-Event-ID') })).getReader()
-    void clientGone.then(() => frames.cancel())
+    background(clientGone.then(() => frames.cancel()), { name: 'agents-route.cancel-message-stream' })
     try {
       for (let next = await frames.read(); !next.done; next = await frames.read()) {
         await stream.writeSSE({ id: next.value.id, data: next.value.data, event: 'message' })
@@ -5242,7 +5243,7 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
     const agent = await getAgent(slug)
     const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
     return sendLockedExportStream(zipStream, () => {
-      void logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      background(logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } }), { name: 'agents-route.audit-export' })
       return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
     })
   } catch (error) {
@@ -5257,7 +5258,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
     const agent = await getAgent(slug)
     const zipStream = await exportAgentFull(slug, c.req.raw.signal)
     return sendLockedExportStream(zipStream, () => {
-      void logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      background(logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } }), { name: 'agents-route.audit-export' })
       return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
     })
   } catch (error) {
@@ -7021,8 +7022,8 @@ async function cleanupStaleUploads() {
 }
 
 // Run cleanup on startup and every 30 minutes
-void cleanupStaleUploads()
-setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
+background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' })
+setInterval(() => background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' }), 30 * 60 * 1000).unref()
 
 // =============================================================================
 // Pending user-input requests (unified wire)

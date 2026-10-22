@@ -1,4 +1,5 @@
 import type { FileOps } from '@shared/lib/agent-actor/types'
+import { background } from '@shared/lib/background'
 import { JournalLineSchema, displayAgentResult } from '../workflows/workflow-schemas'
 
 /**
@@ -42,8 +43,8 @@ export class WorkflowJournalTailer {
 
   start(): void {
     if (this.timer) return
-    void this.pollOnce()
-    this.timer = setInterval(() => void this.pollOnce(), this.opts.intervalMs ?? 1000)
+    background(this.pollOnce(), { name: 'workflow-journal-tailer.poll-journal' })
+    this.timer = setInterval(() => background(this.pollOnce(), { name: 'workflow-journal-tailer.poll-journal' }), this.opts.intervalMs ?? 1000)
     // Don't let the poll interval keep the process alive on shutdown.
     this.timer.unref?.()
   }
@@ -56,7 +57,7 @@ export class WorkflowJournalTailer {
     // Final flush: the workflow's completion event (which triggers stop) can beat the
     // last journal `result` line through our 1s poll, so drain once more — otherwise the
     // last agent(s) stay stuck "running" in the UI.
-    void this.pollOnce()
+    background(this.pollOnce(), { name: 'workflow-journal-tailer.poll-journal' })
   }
 
   /** One read+emit pass. Public so tests can drive it without timers. */

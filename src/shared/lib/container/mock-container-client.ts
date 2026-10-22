@@ -27,6 +27,7 @@ import { reviewManager } from '../proxy/review-manager'
 import { matchScopes } from '../proxy/scope-matcher'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
+import { background } from '../background'
 
 export const MOCK_ACCOUNT_ID = 'mock-account-id'
 
@@ -1488,10 +1489,10 @@ export class ProxyReviewScenario implements MockScenario {
     // MOCK_ACCOUNT_ID scope-policy rows across workers.
     const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
     const capturedDelay = delay
-    setTimeout(async () => {
+    setTimeout(() => background(async () => {
       await seedMockConnectedAccount(accountId)
       // Fire-and-forget — the promise resolves when the user decides
-      reviewManager.requestReview({
+      background(reviewManager.requestReview({
         agentSlug,
         accountId,
         reviewType: 'api',
@@ -1523,8 +1524,8 @@ export class ProxyReviewScenario implements MockScenario {
           type: 'result',
           content: { type: 'result', subtype: 'success' },
         })
-      })
-    }, capturedDelay)
+      }), { name: 'mock-proxy-review-scenario.request-review' })
+    }, { name: 'mock-proxy-review-scenario.seed-account' }), capturedDelay)
   }
 }
 
@@ -1568,9 +1569,9 @@ export class MixedPendingRequestsScenario implements MockScenario {
     // Kick the review after the input tool stream has finished (its delay
     // budget is ~200ms for two tools); exact ordering is not load-bearing —
     // specs wait for all three cards independently.
-    setTimeout(async () => {
+    setTimeout(() => background(async () => {
       await seedMockConnectedAccount(accountId)
-      reviewManager.requestReview({
+      background(reviewManager.requestReview({
         agentSlug,
         accountId,
         reviewType: 'api',
@@ -1582,8 +1583,8 @@ export class MixedPendingRequestsScenario implements MockScenario {
       }).catch(() => {
         // Denied or timed out — the turn lifecycle is owned by the input
         // machinery, so nothing to do here.
-      })
-    }, 400)
+      }), { name: 'mock-mixed-pending-requests-scenario.request-review' })
+    }, { name: 'mock-mixed-pending-requests-scenario.seed-account' }), 400)
   }
 }
 
@@ -1641,7 +1642,7 @@ export class XAgentReviewScenario implements MockScenario {
 
     const capturedDelay = delay
     setTimeout(() => {
-      reviewManager.requestXAgentReview(
+      background(reviewManager.requestXAgentReview(
         agentSlug,
         this.targetAgentSlug,
         this.targetAgentName,
@@ -1666,7 +1667,7 @@ export class XAgentReviewScenario implements MockScenario {
           type: 'result',
           content: { type: 'result', subtype: 'success' },
         })
-      })
+      }), { name: 'mock-x-agent-review-scenario.request-review' })
     }, capturedDelay)
   }
 }
@@ -2002,11 +2003,11 @@ let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
 
 // Register browser scenario only when E2E_CHROMIUM_PATH is available
 if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
-  void import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
+  background(import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
     MockContainerClient.scenarios.set('browse ', new BrowserScenario())
     cleanupBrowserSessionFn = cleanupBrowserSession
     console.log('[MockContainerClient] Registered BrowserScenario (E2E_CHROMIUM_PATH available)')
-  })
+  }), { name: 'mock-container-client.register-browser-scenario' })
 }
 
 export class MockContainerClient extends EventEmitter implements ContainerClient {
@@ -3775,7 +3776,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
 // Recording-only scenario; ordinary E2E runs keep the default registry.
 if (process.env.E2E_MOCK === 'true' && process.env.E2E_CONNECTION_REPLACEMENT_DEMO === 'true') {
-  void import('./mock-connection-replacement-scenario').then(({ registerConnectionReplacementDemo }) => {
+  background(import('./mock-connection-replacement-scenario').then(({ registerConnectionReplacementDemo }) => {
     registerConnectionReplacementDemo()
-  })
+  }), { name: 'mock-container-client.register-connection-replacement-demo' })
 }
