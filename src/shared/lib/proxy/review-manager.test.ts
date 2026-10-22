@@ -11,6 +11,7 @@ import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,
 } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
+import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
 
 // The reviews live on the agents' actors; the manager under test is a router
 // over them. These build the actors' stores in memory, attached to the
@@ -26,11 +27,10 @@ function attachAgents(manager: ReviewManager) {
  * What the UI actually sees when a review opens or settles: the registry
  * transition, which the agent's live sessions turn into user_request_created /
  * user_request_resolved. ReviewManager has no announcement channel of its own.
- * Every store reports its transitions to the router first.
  */
 let reported: MockInstance<(transition: UserInputRequestTransition) => void>
 function recordTransitions() {
-  reported = vi.spyOn(userInputRequestManager, 'report')
+  reported = vi.spyOn(LiveSessions.prototype, 'requestTransition')
 }
 const transitions = () => reported.mock.calls.map(([t]) => t)
 const created = () => transitions().filter((t) => t.type === 'created')
@@ -70,7 +70,7 @@ describe('ReviewManager', () => {
     expect(pending.length).toBe(1)
     const reviewId = pending[0].id
 
-    manager.submitDecision(reviewId, 'allow')
+    manager.submitDecision('agent-1', reviewId, 'allow')
     const result = await promise
     expect(result).toBe('allow')
   })
@@ -89,7 +89,7 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    manager.submitDecision(reviewId, 'deny')
+    manager.submitDecision('agent-1', reviewId, 'deny')
     const result = await promise
     expect(result).toBe('deny')
   })
@@ -110,12 +110,12 @@ describe('ReviewManager', () => {
     if (entry.kind !== 'proxy_review') return
     expect(entry.payload.displayText).toBe('Allow POST request to Linear?')
     expect(entry.payload).toHaveProperty('endpointAmbiguous', true)
-    manager.submitDecision(entry.id, 'deny')
+    manager.submitDecision('agent-1', entry.id, 'deny')
     await promise
   })
 
   it('submitDecision returns false for unknown reviewId', () => {
-    const result = manager.submitDecision('nonexistent-id', 'allow')
+    const result = manager.submitDecision('agent-1', 'nonexistent-id', 'allow')
     expect(result).toBe(false)
   })
 
@@ -143,7 +143,7 @@ describe('ReviewManager', () => {
     expect(typeof payload.displayText).toBe('string')
     expect((payload.displayText as string).length).toBeGreaterThan(0)
 
-    manager.submitDecision(entry.id, 'deny')
+    manager.submitDecision('agent-1', entry.id, 'deny')
     await promise
   })
 
@@ -174,7 +174,7 @@ describe('ReviewManager', () => {
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
 
     // resolve the lingering read review so afterEach's rejectAll doesn't reject it
-    manager.submitDecision(manager.getPendingReviewsForAgent('agent-1')[0].id, 'allow')
+    manager.submitDecision('agent-1', manager.getPendingReviewsForAgent('agent-1')[0].id, 'allow')
     await expect(read).resolves.toBe('allow')
   })
 
@@ -192,7 +192,7 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    const result = manager.submitDecision(reviewId, 'allow')
+    const result = manager.submitDecision('agent-1', reviewId, 'allow')
     expect(result).toBe(true)
     await promise
   })
@@ -207,7 +207,7 @@ describe('ReviewManager', () => {
 
     // Past the first call's timeout: the second is still parked.
     vi.advanceTimersByTime(2 * 60 * 1000 + 1)
-    expect(manager.submitDecision('r1', 'allow')).toBe(true)
+    expect(manager.submitDecision('agent-1', 'r1', 'allow')).toBe(true)
     await expect(second).resolves.toBe('allow')
   })
 
@@ -265,7 +265,7 @@ describe('ReviewManager', () => {
     vi.advanceTimersByTime(5 * 60 * 1000 + 1)
     await promise.catch(() => {}) // consume rejection
 
-    expect(manager.submitDecision(reviewId, 'allow')).toBe(false)
+    expect(manager.submitDecision('agent-1', reviewId, 'allow')).toBe(false)
   })
 
   it('submitDecision clears timeout (advancing past 5min after submit does not reject)', async () => {
@@ -282,7 +282,7 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    manager.submitDecision(reviewId, 'allow')
+    manager.submitDecision('agent-1', reviewId, 'allow')
     const result = await promise
     expect(result).toBe('allow')
 
@@ -339,7 +339,7 @@ describe('ReviewManager', () => {
 
     // Clean up
     const reviewId = pending[0].id
-    manager.submitDecision(reviewId, 'deny')
+    manager.submitDecision('agent-1', reviewId, 'deny')
     await promise
   })
 
@@ -394,7 +394,7 @@ describe('ReviewManager', () => {
 
     // Clean up
     const pending = manager.getPendingReviewsForAgent('agent-1')
-    manager.submitDecision(pending[0].id, 'allow')
+    manager.submitDecision('agent-1', pending[0].id, 'allow')
     await promise
   })
 
@@ -410,7 +410,7 @@ describe('ReviewManager', () => {
     })
 
     const pending = manager.getPendingReviewsForAgent('agent-1')
-    manager.submitDecision(pending[0].id, 'allow')
+    manager.submitDecision('agent-1', pending[0].id, 'allow')
     await promise
 
     expect(resolved()).toHaveLength(1)
@@ -453,7 +453,7 @@ describe('ReviewManager', () => {
   // agent B's review by guessing/leaking B's reviewId. submitDecision must
   // refuse to mutate the review when the caller's expected agent doesn't
   // match the review's stored agent.
-  it('SECURITY: submitDecision rejects when expectedAgentSlug does not match review agent', async () => {
+  it('SECURITY: submitDecision finds nothing for a review another agent holds', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-victim',
       accountId: 'acc-1',
@@ -469,33 +469,15 @@ describe('ReviewManager', () => {
 
     // Attacker has role only on agent-attacker, calls
     // POST /api/agents/agent-attacker/proxy-review/<victim's reviewId>
-    const success = manager.submitDecision(reviewId, 'allow', 'agent-attacker')
+    const success = manager.submitDecision('agent-attacker', reviewId, 'allow')
     expect(success).toBe(false)
 
     // Victim's review is still pending — not resolved
     expect(manager.getPendingReviewsForAgent('agent-victim').length).toBe(1)
 
     // Legit owner still resolves cleanly
-    expect(manager.submitDecision(reviewId, 'deny', 'agent-victim')).toBe(true)
+    expect(manager.submitDecision('agent-victim', reviewId, 'deny')).toBe(true)
     expect(await promise).toBe('deny')
-  })
-
-  // Security: same shape for the omitted-arg call path. We keep the optional
-  // arg backwards-compatible for internal callers (resolveMatchingPending
-  // already filters by agentSlug), but any HTTP-facing caller must pass it.
-  it('SECURITY: submitDecision still works when expectedAgentSlug is omitted (internal callers)', async () => {
-    const promise = manager.requestReview({
-      agentSlug: 'agent-1',
-      accountId: 'acc-1',
-      toolkit: 'gmail',
-      method: 'GET',
-      targetPath: '/path',
-      matchedScopes: [],
-      scopeDescriptions: {},
-    })
-    const reviewId = manager.getPendingReviewsForAgent('agent-1')[0].id
-    expect(manager.submitDecision(reviewId, 'allow')).toBe(true)
-    expect(await promise).toBe('allow')
   })
 
   it('double submitDecision for same id: second returns false', async () => {
@@ -512,8 +494,8 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    const first = manager.submitDecision(reviewId, 'allow')
-    const second = manager.submitDecision(reviewId, 'deny')
+    const first = manager.submitDecision('agent-1', reviewId, 'allow')
+    const second = manager.submitDecision('agent-1', reviewId, 'deny')
 
     expect(first).toBe(true)
     expect(second).toBe(false)
@@ -659,9 +641,9 @@ describe('ReviewManager', () => {
       expect(requestBodyPreview(bytes('{"query":"  "}'))).toBeUndefined()
       // Past 64 KB the body is shown from its start, not parsed and reformatted.
       const big = `{"a":"${'x'.repeat(70_000)}"}`
-      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 2000)}…`)
+      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 64_000)}…`)
       expect(requestBodyPreview(null)).toBeUndefined()
-      expect(requestBodyPreview(bytes('x'.repeat(3000)))).toHaveLength(2001)
+      expect(requestBodyPreview(bytes('x'.repeat(70_000)))).toHaveLength(64_001)
     })
 
     it('names a GraphQL operation by its action, not its root-field key', () => {
@@ -723,7 +705,7 @@ describe('ReviewManager', () => {
     }, controller.signal)
 
     const pending = manager.getPendingReviewsForAgent('agent-1')
-    manager.submitDecision(pending[0].id, 'allow')
+    manager.submitDecision('agent-1', pending[0].id, 'allow')
     const result = await promise
     expect(result).toBe('allow')
 
@@ -769,7 +751,7 @@ describe('ReviewManager', () => {
       expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
       expect(pending[0].accountId).toBe('target')
 
-      manager.submitDecision(pending[0].id, 'allow')
+      manager.submitDecision('caller', pending[0].id, 'allow')
       const result = await promise
       expect(result).toBe('allow')
     })
@@ -796,7 +778,7 @@ describe('ReviewManager', () => {
     it('deny resolves with "deny"', async () => {
       const promise = manager.requestXAgentReview('caller', 'target', 'Target', 'read')
       const pending = manager.getPendingReviewsForAgent('caller')
-      manager.submitDecision(pending[0].id, 'deny')
+      manager.submitDecision('caller', pending[0].id, 'deny')
       expect(await promise).toBe('deny')
     })
 
@@ -817,7 +799,7 @@ describe('ReviewManager', () => {
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
       expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
-      manager.submitDecision(pending[0].id, 'allow')
+      manager.submitDecision('caller', pending[0].id, 'allow')
       await expect(attachment).resolves.toBe('allow')
     })
 
@@ -902,7 +884,7 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     const promise = manager.requestReview(DETAILS)
     const reviewId = manager.getPendingReviewsForAgent('shadow-agent')[0].id
 
-    manager.submitDecision(reviewId, 'allow')
+    manager.submitDecision('shadow-agent', reviewId, 'allow')
     await promise
     expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
     expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
@@ -1025,7 +1007,7 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
 
   it('submitDecision settles a registry-only review entry', () => {
     registerRegistryOnlyReview('registry-review-2')
-    expect(manager.submitDecision('registry-review-2', 'allow')).toBe(true)
+    expect(manager.submitDecision('adapter-agent', 'registry-review-2', 'allow')).toBe(true)
     expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(0)
     expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
       id: 'registry-review-2',
@@ -1054,13 +1036,13 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
       autoApproved: false,
       payload: { secretName: 'API_KEY' },
     })
-    expect(manager.submitDecision('stream-tool-1', 'allow')).toBe(false)
+    expect(manager.submitDecision('adapter-agent', 'stream-tool-1', 'allow')).toBe(false)
     expect(userInputRequestManager.getOpenRequestsForSession('adapter-agent', 'session-1')).toHaveLength(1)
   })
 
   it('SECURITY: expectedAgentSlug still gates registry-only entries', () => {
     registerRegistryOnlyReview('registry-review-5')
-    expect(manager.submitDecision('registry-review-5', 'allow', 'other-agent')).toBe(false)
+    expect(manager.submitDecision('other-agent', 'registry-review-5', 'allow')).toBe(false)
     expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(1)
   })
 })
