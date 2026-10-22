@@ -146,15 +146,15 @@ export async function runHttpTransport(options: {
   await invalidRange.arrayBuffer()
   checks.push('workspace-head-and-byte-ranges')
 
-  // The existing memories error handler maps malformed-JSON HTTPExceptions to 500.
-  // Both old and upgraded dependencies return 400 for valid JSON failing the schema.
+  // Malformed JSON (the validator's HTTPException) and valid JSON failing the
+  // schema are both client errors: 400 through the production error handlers.
   for (const [body, expectedStatus] of [
-    ['{"path":', 500], ['{"path":42,"content":false,"revision":"invalid"}', 400],
+    ['{"path":', 400], ['{"path":42,"content":false,"revision":"invalid"}', 400],
   ] as const) {
     const invalid = await fetch(`${base}/api/agents/${slug}/memories/content`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(30_000),
     })
-    assert.equal(invalid.status, expectedStatus, 'Preserve existing malformed/schema-invalid JSON responses')
+    assert.equal(invalid.status, expectedStatus, 'Malformed and schema-invalid JSON must answer 400')
     await invalid.arrayBuffer()
   }
   checks.push('zod-validator-json-boundaries')
@@ -256,6 +256,6 @@ export async function runHttpTransport(options: {
     app: { imageId: appImageId, versions: appVersions, endpointVerified: true },
     agent: { imageId: agentImageId, versions: agentVersions },
     checks, uploadBytes: bytes.length, sha256, streamedChunks, abortCycles: 3, socket,
-    validationStatuses: { malformedJson: 500, invalidSchema: 400 },
+    validationStatuses: { malformedJson: 400, invalidSchema: 400 },
   })
 }

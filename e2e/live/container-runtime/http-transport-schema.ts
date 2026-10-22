@@ -24,5 +24,5 @@ export const transportProofSchema = z.object({
   uploadBytes: z.number().int().positive(), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   streamedChunks: z.number().int().min(2), abortCycles: z.literal(3),
   socket: browserSocketSchema,
-  validationStatuses: z.object({ malformedJson: z.literal(500), invalidSchema: z.literal(400) }),
+  validationStatuses: z.object({ malformedJson: z.literal(400), invalidSchema: z.literal(400) }),
 })
