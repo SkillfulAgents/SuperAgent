@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully tested the agent's ability to open a browser, navigate to https://example.com, and retrieve the page title \"Example Domain\" via Playwright browser tools.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891. Result: Page loaded successfully showing Gamut application home screen with agents listed in sidebar.",
+    "Step 2 - Found and clicked on the \"QA-20261022-000250-zc9e\" agent in the sidebar. Result: Agent page opened successfully with chat interface ready for input.",
+    "Step 3 - Sent message: \"Open a browser and go to https://example.com. Tell me the page title.\" Result: Message was successfully typed into the input field and submitted via Send button. Session was created and agent began processing.",
+    "Step 4 - Waited up to 3 minutes for response. Result: Agent completed work in 9 seconds, made 3 tool calls, and consumed 155,455 tokens. Response text appeared containing \"Example Domain\".",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot. Result: Screenshot confirms the agent's response: \"The page title is Example Domain. The browser opened https://example.com and loaded it normally, and I closed it afterward.\" The response correctly identifies the page title as \"Example Domain\" which is the expected title for https://example.com."
+  ],
+  "bugs": [],
+  "durationMs": 101053,
+  "sessionId": "47ebaa54-2b85-4aaf-8b97-173c59ac1f6d",
+  "cost": {
+    "inputTokens": 414,
+    "outputTokens": 11310,
+    "cacheCreationTokens": 84784,
+    "cacheReadTokens": 1266307,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.289575
+  }
+}
