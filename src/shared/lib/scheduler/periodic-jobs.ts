@@ -1,4 +1,4 @@
-import { containerHost, HEALTH_CHECK_INTERVAL_MS, STATUS_SYNC_INTERVAL_MS } from '@shared/lib/container/container-host'
+import { containerHost } from '@shared/lib/agent-actor'
 import { accountSyncService } from './account-sync-service'
 import { apiLogAutoDeleteMonitor } from './api-log-auto-delete-monitor'
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
@@ -18,8 +18,8 @@ export interface PeriodicJob {
 export function periodicJobs(): PeriodicJob[] {
   return [
     { name: 'task-scheduler', intervalMs: taskScheduler.pollIntervalMs, run: () => taskScheduler.executeOverdueTasks() },
-    { name: 'container-health', intervalMs: HEALTH_CHECK_INTERVAL_MS, run: () => containerHost.runHealthChecks() },
-    { name: 'container-status-sync', intervalMs: STATUS_SYNC_INTERVAL_MS, run: () => containerHost.syncAllStatuses() },
+    { name: 'container-health', intervalMs: containerHost.healthCheckIntervalMs, run: () => containerHost.runHealthChecks() },
+    { name: 'container-status-sync', intervalMs: containerHost.statusSyncIntervalMs, run: () => containerHost.syncAllStatuses() },
     { name: 'account-sync', intervalMs: accountSyncService.pollIntervalMs, run: () => accountSyncService.syncAll() },
     { name: 'session-auto-delete', intervalMs: sessionAutoDeleteMonitor.pollIntervalMs, run: () => sessionAutoDeleteMonitor.cleanupAllAgents() },
     { name: 'api-log-auto-delete', intervalMs: apiLogAutoDeleteMonitor.pollIntervalMs, run: () => apiLogAutoDeleteMonitor.cleanupAllAgents() },
