@@ -213,7 +213,7 @@ export function redactHar(har: Har): Har {
 // --- Summary -------------------------------------------------------------------
 
 const STATIC_PATH = /\.(js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|wasm|map)(\?|$)/i
-const TELEMETRY = /(google-analytics|googletagmanager|doubleclick|segment\.(io|com)|sentry|datadog|hotjar|intercom|newrelic|optimizely|facebook\.com\/tr|clarity\.ms|amplitude|mixpanel|bugsnag|awswaf|px-cloud|px-cdn|perimeterx)|\/(collect|track|beacon|log|events?|telemetry|metrics|pixel)(\/|\?|$)/i
+export const TELEMETRY = /(google-analytics|googletagmanager|doubleclick|segment\.(io|com)|sentry|datadog|hotjar|intercom|newrelic|optimizely|facebook\.com\/tr|clarity\.ms|amplitude|mixpanel|bugsnag|awswaf|px-cloud|px-cdn|perimeterx)|\/(collect|track|beacon|log|events?|telemetry|metrics|pixel)(\/|\?|$)/i
 
 /**
  * A response that looks like data for the page rather than the page or an

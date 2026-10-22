@@ -807,6 +807,7 @@ import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, lin
 import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
+import { parseNetworkActivity, type NetworkActivity } from './network-activity';
 import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName, bodyFileName, requestFileName, readableBody } from './traffic-capture';
 import {
   observeUrl, resetUrlTracking, lastObservedUrl,
@@ -941,6 +942,19 @@ async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObs
   return obs ? withAddressBarUrl(obs) : EMPTY_OBSERVATION;
 }
 
+/**
+ * The requests an action issued (network-activity.ts), for how long its
+ * settle waits. The log is cleared as each action starts, so an agent's own
+ * `network requests` lists what was issued since its last action.
+ */
+const actionNetwork = {
+  start: async (): Promise<boolean> => (await execBrowser(['network', 'requests', '--clear'], browserState.cdpUrl || undefined)).exitCode === 0,
+  since: async (): Promise<NetworkActivity | null> => {
+    const r = await execBrowser(['network', 'requests', '--json', '--type', 'xhr,fetch'], browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
+    return r.exitCode === 0 ? parseNetworkActivity(r.stdout) : null;
+  },
+};
+
 /** Budget for the tree read after an action — a heavy page's tree takes ~1 s. */
 const TREE_READ_TIMEOUT_MS = 10_000;
 
@@ -986,6 +1000,7 @@ async function runWithEffect(
     isFailure: r => r.exitCode !== 0,
     evalScript: observePage,
     policy,
+    network: actionNetwork,
   });
   noteChallenge(settled.before);
   noteChallenge(settled.after);

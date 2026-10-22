@@ -28,6 +28,7 @@
  */
 import { observerScript, parseObservation, type PageObservation, type TopLayerEntry } from './page-observer'
 import { FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS } from './browser-digest'
+import type { NetworkActivity } from './network-activity'
 import { formatTreeDiff, treeDiffIsEmpty, type TreeDiff, type TreeDiffFormatOptions } from './tree-diff'
 
 export type ActionVerb = 'click' | 'press' | 'select' | 'hover' | 'fill' | 'type'
@@ -54,6 +55,8 @@ export interface ActionPolicy {
 }
 
 const RECHECK_MS = 1200
+/** The second look when the action issued no request: a late render, not a result on its way. */
+const QUIET_RECHECK_MS = 600
 /** While a spinner the action raised is still up, the page is read again every BUSY_POLL_MS, until BUSY_WAIT_MS. */
 const BUSY_POLL_MS = 600
 const BUSY_WAIT_MS = 3000
@@ -220,6 +223,13 @@ export interface ObserveActionOptions<R> {
   /** Run an observer script in the page and return its stdout, or null if it could not run. */
   evalScript: (script: string) => Promise<string | null>
   policy: ActionPolicy
+  /**
+   * The page's own requests (network-activity.ts): `start` clears the log as
+   * the action begins and says whether it could; `since` reads what was
+   * issued after. Without it, or when a read fails, the recheck waits the
+   * full time as before.
+   */
+  network?: { start: () => Promise<boolean>; since: () => Promise<NetworkActivity | null> }
   sleep?: (ms: number) => Promise<void>
   now?: () => number
 }
@@ -240,6 +250,8 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   }
 
   const before = await read()
+  const tracking = opts.network ? await opts.network.start() : false
+  const since = async (): Promise<NetworkActivity | null> => (tracking && opts.network ? opts.network.since() : null)
   const result = await opts.exec(before)
   if (opts.isFailure(result)) return { result, before, after: null, effect: null, waitedMs: 0 }
 
@@ -273,8 +285,13 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
     (contentChanged(e) || (policy.countFocus && (e.focusChanged || e.focusValueChanged)))
   const wantsMore = (e: ActionEffect): boolean => policy.recheck(e) || (Boolean(e.busyRose) && policy.verb !== 'hover')
   if (effect && !settledYet(effect) && wantsMore(effect) && elapsed() < policy.recheckMs) {
-    // Silence at the settle: a late effect is the other explanation.
-    await sleep(Math.max(0, policy.recheckMs - elapsed()))
+    // Silence at the settle: a late effect is the other explanation. How
+    // late depends on what the action asked the server for: requests it
+    // issued mean results on their way; none — and no "Loading…" or spinner
+    // from the page either — one short second look.
+    let net = await since()
+    const quiet = net !== null && net.issued === 0 && !promised(effect) && !effect.busyRose
+    await sleep(Math.max(0, (quiet ? QUIET_RECHECK_MS : policy.recheckMs) - elapsed()))
     const announced = new Set(effect.announced)
     for (;;) {
       const again = await read()
@@ -284,8 +301,10 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
       effect = next
       if (!next) break
       next.announced.forEach(a => announced.add(a))
-      // Still loading: look again, up to BUSY_WAIT_MS after the action.
-      if (!next.busyRose || elapsed() + BUSY_POLL_MS > BUSY_WAIT_MS) break
+      // Still loading — a spinner it raised, or a request it issued with no
+      // response yet: look again, up to BUSY_WAIT_MS after the action.
+      if (!next.busyRose) net = net && net.pending > 0 ? await since() : net
+      if (!(next.busyRose || (net !== null && net.pending > 0)) || elapsed() + BUSY_POLL_MS > BUSY_WAIT_MS) break
       await sleep(BUSY_POLL_MS)
     }
     // What was announced at the settle stays reported if it is gone by now.

@@ -149,8 +149,9 @@ function harness(reads: Array<PageObservation | null>) {
   const evals: number[] = []
   return {
     evals,
-    run: (policy = ACTION_POLICIES.click, fail = false) => observeAction({
+    run: (policy = ACTION_POLICIES.click, fail = false, network?: Parameters<typeof observeAction>[0]['network']) => observeAction({
       exec: async () => ({ exitCode: fail ? 1 : 0 }),
+      network,
       isFailure: r => r.exitCode !== 0,
       evalScript: async () => {
         evals.push(t)
@@ -265,6 +266,29 @@ describe('observeAction', () => {
     const out = await h.run(pressPolicy('Enter'))
     expect(h.evals).toEqual([0, 300, 1200])
     expect(out.effect?.textChanged).toBe(true)
+  })
+
+  it('times the second look by what the action asked the server for', async () => {
+    const ticked = { ...base, stateHash: 8 }
+    // Nothing issued (a radio in a form): one short second look.
+    const quiet = harness([base, ticked, ticked])
+    const q = await quiet.run(ACTION_POLICIES.click, false, { start: async () => true, since: async () => ({ issued: 0, pending: 0 }) })
+    expect(quiet.evals).toEqual([0, 300, 600])
+    expect(q.waitedMs).toBe(600)
+    // A request issued and still pending: the full recheck, then reads while it is pending.
+    const pending = [{ issued: 1, pending: 1 }, { issued: 1, pending: 1 }, { issued: 1, pending: 0 }]
+    const busy = harness([base, ticked, ticked, { ...ticked, interactive: 56, contentChars: 900, contentHash: 2 }])
+    const b = await busy.run(ACTION_POLICIES.click, false, { start: async () => true, since: async () => pending.shift() ?? { issued: 1, pending: 0 } })
+    expect(busy.evals).toEqual([0, 300, 1200, 1800])
+    expect(b.effect?.interactiveDelta).toBe(16)
+    // Nothing issued, but the page said it is loading: the full recheck.
+    const said = harness([base, { ...ticked, liveRegions: ['Loading…'] }, ticked])
+    await said.run(ACTION_POLICIES.click, false, { start: async () => true, since: async () => ({ issued: 0, pending: 0 }) })
+    expect(said.evals).toEqual([0, 300, 1200])
+    // The log could not be cleared or read: the full recheck, as without it.
+    const blind = harness([base, ticked, ticked])
+    await blind.run(ACTION_POLICIES.click, false, { start: async () => false, since: async () => ({ issued: 0, pending: 0 }) })
+    expect(blind.evals).toEqual([0, 300, 1200])
   })
 
   it('never rechecks a hover', async () => {

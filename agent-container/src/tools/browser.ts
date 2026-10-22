@@ -679,7 +679,7 @@ Available commands:
 - cookies / cookies set/clear — Cookie management
 - storage local/session [get/set/clear] — Storage management
 - mouse move/down/up/wheel — Low-level mouse control
-- network route/unroute/requests — Network interception (to record traffic to a file, use browser_capture_traffic)
+- network route/unroute/requests — Network interception; \`network requests\` lists what was requested since your last action (to record traffic to a file, use browser_capture_traffic)
 - console / errors — Debug info
 - a11y — Accessibility audit of the current page (axe-core): violations by severity with the offending elements
 - wait <selector|ms|--text|--url|--load|--fn> — Wait for conditions`,
