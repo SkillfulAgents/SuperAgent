@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install system dependencies. --no-install-recommends everywhere: Ubuntu
 # otherwise drags in recommended packages nobody uses; the tools named here
 # arrive via hard Depends.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
@@ -48,40 +48,70 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20.x
+# Keep the agent on the same Node 22 patch as the app image.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get install -y --no-install-recommends nodejs=22.23.4-1nodesource1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python 3.11 and pip
+# Jammy's python3.11 package is still a prerelease. Install the distro's
+# Python package, then provide stable 3.11 through uv below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 \
-    python3-pip \
-    python3.11-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
-    && ln -sf /usr/bin/python3 /usr/bin/python
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install UV (Universal Virtualenv)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Pin uv and the agent's Python. These install paths are build-only: agents
+# can still use uv to install another interpreter in their writable home.
+# This image owns the interpreter. Remove uv's external-management marker
+# so existing non-root pip --user workflows still work; the installation
+# itself stays root-owned. Workspace projects should continue using venvs.
+# Keep the conventional stdlib path for `python3 -m venv --copies` too.
+COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /uvx /bin/
+RUN UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin \
+    uv python install --default 3.11.17 && \
+    rm /opt/python/cpython-3.11.17-linux-*/lib/python3.11/EXTERNALLY-MANAGED && \
+    python3 -m ensurepip --upgrade --default-pip && \
+    bin="$(dirname "$(readlink -f /usr/local/bin/python3)")" && \
+    ln -s "$(dirname "$bin")/lib/python3.11" /usr/local/lib/python3.11 && \
+    ln -s "$bin/pip" /usr/local/bin/pip && \
+    ln -s "$bin/pip3" /usr/local/bin/pip3 && \
+    ln -s /usr/local/bin/python3.11 /usr/bin/python3.11 && \
+    ln -sf /usr/local/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/local/bin/python3.11 /usr/bin/python && \
+    python3 --version && python3 -m pip --version && pip3 --version && \
+    rm -rf /root/.cache
+
+# Preserve the historical /usr/bin/python{,3,3.11} paths above: persisted venvs
+# point to them and would silently switch to 3.10 if python3 were restored to
+# Ubuntu's default. The managed 3.11 tree is root-owned, including for the
+# isolated FUSE helper; the distro binary remains at /usr/bin/python3.10.
 
 # Install TypeScript and ts-node globally. npm's download cache must be
 # flushed in the SAME layer — anything left in /root/.npm ships in the image
 # (and, being pre-compressed tarballs, doesn't even gzip away on the wire).
-RUN npm install -g typescript ts-node && rm -rf /root/.npm
+# ts-node consumes the classic compiler's JS API; native TypeScript 7 does
+# not expose it. Match the app's compiler until that migration is deliberate.
+RUN npm install -g typescript@5.9.3 ts-node@10.9.2 && rm -rf /root/.npm
 
 # Install Bun (for running dashboard servers)
 # Install as root then copy binary to /usr/local/bin so the claude user can access it
 # (symlinks to /root/.bun/bin/ won't work because /root/ is not readable by other users).
 # Remove the installer's /root/.bun copy in the same layer or the ~90MB binary ships twice.
-RUN curl -fsSL https://bun.sh/install | bash && \
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3" && \
     cp /root/.bun/bin/bun /usr/local/bin/bun && \
     ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
     chmod 755 /usr/local/bin/bun && \
     rm -rf /root/.bun
 
-# Install rclone, the FUSE driver that mounts each volume from the app over WebDAV
-RUN curl -fsSL -o /tmp/rclone.deb "https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-$(dpkg --print-architecture).deb" && \
+# Install rclone, the FUSE driver that mounts each volume from the app over WebDAV.
+# Checksums come from the release's SHA256SUMS for the two supported arches.
+RUN arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      amd64) sha256=efbfe852181f7191eb3c9043ed1ab49c9b2d0ba045c61c926a5da111c939ec5c ;; \
+      arm64) sha256=b8ba161d5c837206fad79ff1aabf0a81aa02a5fb164cdbc0ff5db4160aecd278 ;; \
+      *) echo "Unsupported rclone architecture: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/rclone.deb "https://downloads.rclone.org/v1.75.2/rclone-v1.75.2-linux-${arch}.deb" && \
+    echo "$sha256  /tmp/rclone.deb" | sha256sum --check && \
     dpkg -i /tmp/rclone.deb && \
     rm /tmp/rclone.deb
 
@@ -101,6 +131,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # headless_shell — so only the shell is installed (--only-shell). The full
 # chromium build was ~640MB of never-launched weight.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+# Playwright 1.64.1 preserves the existing Chromium 156.0.8078.4 (revision
+# 1248). Pin the installer so refreshing unrelated runtimes cannot move it.
 # The npm package ships the CLI for every platform (~100MB); its postinstall
 # links agent-browser straight to this machine's binary, so the others are
 # dead weight. Pruned only when the link is that direct one.
@@ -113,7 +145,7 @@ RUN npm install -g agent-browser@0.39.1 && \
         done ;; \
     esac && \
     agent-browser --version && \
-    npx playwright install chromium --only-shell && \
+    npx --yes playwright@1.64.1 install chromium --only-shell && \
     chmod -R o+rx /opt/playwright-browsers && \
     rm -rf /root/.npm
 
