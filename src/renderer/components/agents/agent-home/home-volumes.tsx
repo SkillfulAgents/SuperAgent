@@ -93,7 +93,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 disabled={volumes.isRestarting}
               >
                 <RefreshCw className={`${volumes.isRestarting ? 'animate-spin' : ''}`} />
-                {volumes.isRestarting ? 'Restarting...' : 'Restart'}
+                {volumes.isRestarting ? 'Restarting...' : volumes.continuesSessions ? 'Restart & continue' : 'Restart'}
               </Button>
             </div>
           </div>

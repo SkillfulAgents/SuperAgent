@@ -633,9 +633,15 @@ export class LiveSession {
 
   /** Recovery claims this session: it was mid-turn when the runtime died. */
   claimForRecovery(): boolean {
-    if (!this.isActive || this.isInterrupted) return false
+    if (!this.isActive || this.isInterrupted || this.isRecovering) return false
     this.isRecovering = true
     return true
+  }
+
+  /** The continue a recovery sends starts a new turn: the dead turn's parked requests go. */
+  supersedeRequests(): void {
+    this.settleTurnBoundaryRequests('started')
+    this.syncAwaiting()
   }
 
   /** Recovery resumed the turn. */

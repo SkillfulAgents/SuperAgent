@@ -377,6 +377,12 @@ describe('mid-turn recovery snapshot', () => {
     expect(sessions(AGENT_SLUG).isRecovering(SESSION_ID)).toBe(false)
   })
 
+  it('does not claim a session a recovery or restart already holds', () => {
+    sessions(AGENT_SLUG).markActive(SESSION_ID)
+    expect(sessions(AGENT_SLUG).claimMidTurnForRecovery()).toEqual([SESSION_ID])
+    expect(sessions(AGENT_SLUG).claimMidTurnForRecovery()).toEqual([])
+  })
+
   it('does not snapshot idle or interrupted sessions', async () => {
     expect(sessions(AGENT_SLUG).claimMidTurnForRecovery()).toEqual([])
     sessions(AGENT_SLUG).markActive(SESSION_ID)

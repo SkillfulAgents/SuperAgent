@@ -14,6 +14,8 @@ export interface RuntimeSessions {
   settleRecovering(sessionIds: string[]): void
   /** Recovery resumed these: their turn carries on. */
   markRecovered(sessionIds: string[]): void
+  /** Close the requests a recovered session's dead turn left open. */
+  supersedeRequests(sessionId: string): void
   /** The user messages sent while the session was recovering, taken for redelivery. */
   takeCoalesced(sessionId: string): CoalescedUserMessage[]
   isRecovering(sessionId: string): boolean
@@ -42,6 +44,7 @@ export const NO_LIVE_SESSIONS: RuntimeSessions = {
   claimMidTurnForRecovery: () => [],
   settleRecovering: () => {},
   markRecovered: () => {},
+  supersedeRequests: () => {},
   takeCoalesced: () => [],
   isRecovering: () => false,
   isSubscribed: () => false,

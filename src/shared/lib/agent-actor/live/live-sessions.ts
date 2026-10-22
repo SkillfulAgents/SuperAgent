@@ -589,6 +589,10 @@ export class LiveSessions {
     return claimed
   }
 
+  supersedeRequests(sessionId: string): void {
+    this.states.get(sessionId)?.supersedeRequests()
+  }
+
   /** Recovery resumed these sessions. */
   markRecovered(sessionIds: string[]): void {
     for (const sessionId of sessionIds) this.states.get(sessionId)?.recovered()

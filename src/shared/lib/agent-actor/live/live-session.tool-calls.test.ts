@@ -584,6 +584,19 @@ describe('awaiting input status tracking', () => {
     }
   })
 
+  it('does not bring back a card a recovery superseded while its transcript still shows it unanswered', () => {
+    simulateToolUse('mcp__user-input__request_secret', 'superseded-1', { secretName: 'API_KEY' })
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
+
+    sessions().supersedeRequests(SESSION_ID)
+    sessions().recoverAwaitingInput(SESSION_ID, [
+      { toolUseId: 'superseded-1', toolName: 'mcp__user-input__request_secret' },
+    ])
+
+    expect(userInputRequestManager.getOpenRequest('superseded-1', AGENT_SLUG)).toBeNull()
+    expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
+  })
+
   it('does not recover script approvals or delivery tools as unconditional waits', () => {
     sessions().markActive(SESSION_ID)
     sessions().recoverAwaitingInput(SESSION_ID, [
