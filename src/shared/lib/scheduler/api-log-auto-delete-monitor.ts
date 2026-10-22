@@ -11,7 +11,7 @@ class ApiLogAutoDeleteMonitor {
   private startupTimeoutId: NodeJS.Timeout | null = null
   private isRunning = false
   private isProcessing = false
-  private pollIntervalMs = 4 * 60 * 60 * 1000
+  readonly pollIntervalMs = 4 * 60 * 60 * 1000
   private startupDelayMs = 30_000
 
   async start(): Promise<void> {
@@ -56,7 +56,7 @@ class ApiLogAutoDeleteMonitor {
     console.log('[ApiLogAutoDeleteMonitor] Monitor stopped')
   }
 
-  private async cleanupAllAgents(): Promise<void> {
+  async cleanupAllAgents(): Promise<void> {
     if (this.isProcessing) return
     this.isProcessing = true
 
