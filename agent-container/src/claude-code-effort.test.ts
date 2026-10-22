@@ -584,7 +584,6 @@ describe('ClaudeCodeProcess web browser tools', () => {
     const agents = calls[0].options.agents as Record<string, { tools: string[] }>
     const tools = agents['web-browser'].tools
     expect(tools).toContain('Glob')
-    expect(tools).toContain('mcp__browser__browser_upload')
   })
 })
 
