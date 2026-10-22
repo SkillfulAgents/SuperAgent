@@ -1,10 +1,7 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import {
-  containerWidgetRefreshResponseSchema,
-  type ApiAgentWidget,
-  type WidgetSnapshot,
-} from '@shared/lib/widgets/widget-schema'
+import { containerWidgetRefreshResponseSchema, type ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { WidgetRefreshOutcome } from '@shared/lib/widgets/agent-widget-refreshes'
 import { openWidgetRepairSession } from './widget-repair-service'
 import { listWidgetsFromFilesystem } from './widget-service'
 
@@ -23,6 +20,10 @@ import { listWidgetsFromFilesystem } from './widget-service'
  *   - explicit: the user taps refresh on a card
  *
  * There is no timer. A widget nobody looks at is never refreshed.
+ *
+ * What it remembers between calls (which widgets are refreshing, when each
+ * last refreshed, the stale-sweep throttle, the post-run debounce) is the
+ * agent's, kept by its actor (`actor.widgets`).
  *
  * When a refresh comes back with a script failure, `widget-repair-service`
  * opens an automated session asking the agent to fix its own script. Only a
@@ -43,18 +44,12 @@ const POST_RUN_MIN_INTERVAL_MS = 60_000
 
 export type RefreshReason = 'stale' | 'after-run' | 'manual'
 
-export type RefreshOutcome =
-  | { ok: true; snapshot: WidgetSnapshot }
-  | { ok: false; error: string; skipped?: boolean }
-
-const keyOf = (agentSlug: string, widgetSlug: string) => `${agentSlug}::${widgetSlug}`
+export type RefreshOutcome = WidgetRefreshOutcome
 
 class WidgetRefreshService {
-  private inflight = new Map<string, Promise<RefreshOutcome>>()
-  private lastCompletedAt = new Map<string, number>()
-  private lastStaleSweepAt = new Map<string, number>()
-  private postRunTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private unsubscribe: (() => void) | null = null
+  /** Bumped by `stop`: a post-run sweep scheduled before it does not run. */
+  private generation = 0
 
   /**
    * Arm the after-run trigger. Idempotent; called once at route registration.
@@ -76,45 +71,62 @@ class WidgetRefreshService {
   stop(): void {
     this.unsubscribe?.()
     this.unsubscribe = null
-    for (const timer of this.postRunTimers.values()) clearTimeout(timer)
-    this.postRunTimers.clear()
+    this.generation++
   }
 
-  isRefreshing(agentSlug: string, widgetSlug: string): boolean {
-    return this.inflight.has(keyOf(agentSlug, widgetSlug))
+  async isRefreshing(agentSlug: string, widgetSlug: string): Promise<boolean> {
+    return (await this.refreshingSlugs(agentSlug)).includes(widgetSlug)
   }
 
-  refreshingSlugs(agentSlug: string): string[] {
-    const prefix = `${agentSlug}::`
-    return [...this.inflight.keys()]
-      .filter((k) => k.startsWith(prefix))
-      .map((k) => k.slice(prefix.length))
+  refreshingSlugs(agentSlug: string): Promise<string[]> {
+    return agentRegistry.get(agentSlug).widgets.refreshing()
   }
 
   /** Attach live `refreshing` flags to a filesystem listing. */
-  decorate(agentSlug: string, widgets: ApiAgentWidget[]): ApiAgentWidget[] {
-    return widgets.map((w) => ({ ...w, refreshing: this.isRefreshing(agentSlug, w.slug) }))
+  async decorate(agentSlug: string, widgets: ApiAgentWidget[]): Promise<ApiAgentWidget[]> {
+    const refreshing = new Set(await this.refreshingSlugs(agentSlug))
+    return widgets.map((w) => ({ ...w, refreshing: refreshing.has(w.slug) }))
   }
 
   /**
-   * Refresh one widget. Single-flight per widget. With `wake: false` a
-   * sleeping container is left asleep and the call reports `skipped`.
+   * Refresh one widget. Single-flight per widget: a call while a refresh of
+   * the widget is in flight gets that refresh's outcome. With `wake: false`
+   * a sleeping container is left asleep and the call reports `skipped`.
    */
-  refreshWidget(
+  async refreshWidget(
     agentSlug: string,
     widgetSlug: string,
     opts: { wake: boolean; reason: RefreshReason },
   ): Promise<RefreshOutcome> {
-    const key = keyOf(agentSlug, widgetSlug)
-    const existing = this.inflight.get(key)
-    if (existing) return existing
+    const started = await agentRegistry.get(agentSlug).widgets.beginOrJoinRefresh(widgetSlug)
+    return 'outcome' in started ? started.outcome : this.runRefresh(agentSlug, widgetSlug, started.token, opts)
+  }
 
-    const run = this.doRefresh(agentSlug, widgetSlug, opts).finally(() => {
-      if (this.inflight.get(key) === run) this.inflight.delete(key)
-      this.lastCompletedAt.set(key, Date.now())
-    })
-    this.inflight.set(key, run)
-    return run
+  /**
+   * Begin a refresh unless one of the widget is in flight, for a sweep that
+   * does not wait on it. Resolves once it is in flight (so a listing read next
+   * sees it), not when it ends.
+   */
+  private async startRefresh(
+    agentSlug: string,
+    widgetSlug: string,
+    opts: { wake: boolean; reason: RefreshReason },
+  ): Promise<void> {
+    const token = await agentRegistry.get(agentSlug).widgets.beginRefresh(widgetSlug)
+    if (token) void this.runRefresh(agentSlug, widgetSlug, token, opts)
+  }
+
+  /** Run the refresh `token` began and hand its outcome to whoever joined it. Never rejects. */
+  private async runRefresh(
+    agentSlug: string,
+    widgetSlug: string,
+    token: string,
+    opts: { wake: boolean; reason: RefreshReason },
+  ): Promise<RefreshOutcome> {
+    const outcome = await this.doRefresh(agentSlug, widgetSlug, opts)
+      .catch((error: unknown): RefreshOutcome => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+    await agentRegistry.get(agentSlug).widgets.finishRefresh(widgetSlug, token, outcome)
+    return outcome
   }
 
   private async doRefresh(
@@ -186,19 +198,17 @@ class WidgetRefreshService {
     agentSlug: string,
     opts: { wake: boolean; force?: boolean },
   ): Promise<{ refreshing: string[] }> {
-    const now = Date.now()
-    const last = this.lastStaleSweepAt.get(agentSlug) ?? 0
-    if (!opts.force && now - last < STALE_SWEEP_THROTTLE_MS) {
-      return { refreshing: this.refreshingSlugs(agentSlug) }
+    const claimed = await agentRegistry.get(agentSlug).widgets.claimStaleSweep(opts.force ? 0 : STALE_SWEEP_THROTTLE_MS)
+    if (!claimed) {
+      return { refreshing: await this.refreshingSlugs(agentSlug) }
     }
-    this.lastStaleSweepAt.set(agentSlug, now)
 
     const widgets = await listWidgetsFromFilesystem(agentSlug)
     const stale = widgets.filter((w) => w.isStale)
     for (const widget of stale) {
-      void this.refreshWidget(agentSlug, widget.slug, { wake: opts.wake, reason: 'stale' })
+      await this.startRefresh(agentSlug, widget.slug, { wake: opts.wake, reason: 'stale' })
     }
-    return { refreshing: this.refreshingSlugs(agentSlug) }
+    return { refreshing: await this.refreshingSlugs(agentSlug) }
   }
 
   /**
@@ -208,43 +218,45 @@ class WidgetRefreshService {
    * the kind the agent changes in conversation. Never wakes a container.
    */
   schedulePostRun(agentSlug: string): void {
-    const existing = this.postRunTimers.get(agentSlug)
-    if (existing) clearTimeout(existing)
-    this.postRunTimers.set(
-      agentSlug,
-      setTimeout(() => {
-        this.postRunTimers.delete(agentSlug)
-        this.runPostRun(agentSlug).catch((error) => {
-          console.warn(`[WidgetRefresh] post-run sweep for ${agentSlug} failed:`, error)
-        })
-      }, POST_RUN_DEBOUNCE_MS),
-    )
+    // Debounced through the agent: every run that ends takes a stamp, and only
+    // the sweep for the newest one runs.
+    const generation = this.generation
+    const sweep = async () => {
+      const widgets = agentRegistry.get(agentSlug).widgets
+      const [stamp] = await Promise.all([
+        widgets.notePostRun(),
+        new Promise<void>((resolve) => setTimeout(resolve, POST_RUN_DEBOUNCE_MS).unref?.()),
+      ])
+      if (generation !== this.generation || !(await widgets.isLatestPostRun(stamp))) return
+      await this.runPostRun(agentSlug)
+    }
+    sweep().catch((error) => {
+      console.warn(`[WidgetRefresh] post-run sweep for ${agentSlug} failed:`, error)
+    })
   }
 
   async runPostRun(agentSlug: string): Promise<string[]> {
-    if ((await agentRegistry.get(agentSlug).container.status()).status !== 'running') return []
+    const actor = agentRegistry.get(agentSlug)
+    if ((await actor.container.status()).status !== 'running') return []
     const widgets = await listWidgetsFromFilesystem(agentSlug)
+    const refreshedAt = await actor.widgets.refreshedAt()
     const now = Date.now()
     const picked = widgets.filter((w) => {
       if (w.isStale) return true
       if (!w.refreshOnTurnEnd || !(w.hasScript || w.hasHtml)) return false
       // An automation firing every minute must not re-render an opted-in
       // widget each time; a fresh one is left alone inside this window.
-      const completed = this.lastCompletedAt.get(keyOf(agentSlug, w.slug)) ?? 0
-      return now - completed >= POST_RUN_MIN_INTERVAL_MS
+      return now - (refreshedAt[w.slug] ?? 0) >= POST_RUN_MIN_INTERVAL_MS
     })
     for (const widget of picked) {
-      void this.refreshWidget(agentSlug, widget.slug, { wake: false, reason: 'after-run' })
+      await this.startRefresh(agentSlug, widget.slug, { wake: false, reason: 'after-run' })
     }
     return picked.map((w) => w.slug)
   }
 
-  /** Test seam. */
+  /** Test seam: the per-agent memory is the actor's, released by evicting the agent. */
   resetForTests(): void {
     this.stop()
-    this.inflight.clear()
-    this.lastCompletedAt.clear()
-    this.lastStaleSweepAt.clear()
   }
 }
 

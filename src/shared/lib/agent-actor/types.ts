@@ -72,6 +72,9 @@ import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
 import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
+import type { WidgetRefreshOutcome } from '@shared/lib/widgets/agent-widget-refreshes'
+import type { McpProxySession } from '@shared/lib/mcp/agent-mcp-sessions'
+import type { VolumeUploadOutcome } from '@shared/lib/volumes/volume-upload-guard'
 
 /** The agent's directory-name slug. Not the URL `displaySlug`. */
 export type AgentSlug = string
@@ -94,7 +97,20 @@ export interface AgentRegistry {
  * The keys of `AgentActor` that hold op groups, for a transport that wraps
  * them (`serializingActor`). The type test checks the list is complete.
  */
-export const ACTOR_GROUPS = ['container', 'sessions', 'messages', 'inputs', 'usage', 'files', 'memories', 'config'] as const
+export const ACTOR_GROUPS = [
+  'container',
+  'sessions',
+  'messages',
+  'inputs',
+  'usage',
+  'files',
+  'memories',
+  'config',
+  'locks',
+  'widgets',
+  'mcpSessions',
+  'volumeUploads',
+] as const
 
 export interface AgentActor {
   readonly slug: AgentSlug
@@ -108,6 +124,75 @@ export interface AgentActor {
   readonly files: FileOps
   readonly memories: MemoryOps
   readonly config: ConfigOps
+  readonly locks: LockOps
+  readonly widgets: WidgetOps
+  readonly mcpSessions: McpSessionOps
+  readonly volumeUploads: VolumeUploadOps
+}
+
+/**
+ * Named locks over the agent, for host work that must not run twice at once
+ * for it. A key is the caller's own, prefixed with what it guards
+ * (`wake:<taskId>`, `x-agent-invoke:<sessionId>`). Releasing with a token
+ * that no longer holds the lock does nothing. Evicting the agent lets go of
+ * every lock and rejects every `acquire` still waiting.
+ */
+export interface LockOps {
+  /** Take `key` unless it is held: the token that releases it, or null. */
+  tryAcquire(key: string): Promise<string | null>
+  /** Take `key` once every earlier holder and waiter has let it go. */
+  acquire(key: string): Promise<string>
+  release(key: string, token: string): Promise<void>
+}
+
+/**
+ * What the host's widget refresh service remembers about the agent's
+ * widgets (see `AgentWidgetRefreshes`). The service runs the refreshes.
+ */
+export interface WidgetOps {
+  /** Start refreshing a widget unless a refresh of it is in flight: the token that finishes it, or null. */
+  beginRefresh(widgetSlug: string): Promise<string | null>
+  /**
+   * Start refreshing a widget, or join the refresh in flight: the token that
+   * finishes the new one, or the joined one's outcome once it ends. Decided in
+   * one step, so a refresh ending in between cannot make the caller run another.
+   */
+  beginOrJoinRefresh(widgetSlug: string): Promise<{ token: string } | { outcome: WidgetRefreshOutcome }>
+  /** The refresh `token` began is over: hand its outcome to whoever joined it, and note when it ended. */
+  finishRefresh(widgetSlug: string, token: string, outcome: WidgetRefreshOutcome): Promise<void>
+  /** The widgets with a refresh in flight. */
+  refreshing(): Promise<string[]>
+  /** When each widget's last refresh ended, epoch ms by widget slug. */
+  refreshedAt(): Promise<Record<string, number>>
+  /** True, and noted, unless a stale sweep ran within `throttleMs`. */
+  claimStaleSweep(throttleMs: number): Promise<boolean>
+  /** One of the agent's runs ended: the stamp a post-run sweep is due for. */
+  notePostRun(): Promise<number>
+  /** Whether no run has ended since the one `stamp` noted. */
+  isLatestPostRun(stamp: number): Promise<boolean>
+}
+
+/** The MCP sessions the proxy opened on the agent's behalf (see `AgentMcpSessions`). */
+export interface McpSessionOps {
+  /** Open a session for `mcpId`: the id the client sends back. */
+  open(mcpId: string, protocolVersion: string): Promise<string>
+  /** The session `id` if it is this MCP's and still in use; reading it counts as use. */
+  get(mcpId: string, id: string): Promise<McpProxySession | null>
+  /** The upstream session `id` now speaks for (null: the upstream is stateless). */
+  bind(id: string, upstreamSessionId: string | null): Promise<void>
+  /** Forget the upstream session `upstreamSessionId` (one a request found dead); a binding made since is kept. */
+  unbind(id: string, upstreamSessionId: string | null): Promise<void>
+  close(id: string): Promise<void>
+}
+
+/** The agent's volume uploads, as the delete that may follow one needs them (see `VolumeUploadGuard`). */
+export interface VolumeUploadOps {
+  /** An upload of `key` starts: its number, for `end`. */
+  begin(key: string): Promise<number>
+  /** The upload `begin` numbered is over. */
+  end(key: string, upload: number, outcome: VolumeUploadOutcome): Promise<void>
+  /** Whether a delete of `key` may go ahead. A refusal consumes what one unfinished upload left. */
+  allowDelete(key: string): Promise<boolean>
 }
 
 /** The agent's persistent memories. Paths are relative to its memory directory. */
@@ -385,6 +470,15 @@ export interface SessionOps {
    * Attached and busy, the live stream already carries what it needs.
    */
   attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
+
+  /**
+   * The session was opened by a notice, not by a person (voice mode started
+   * from the agent home): it is named from the first message a person sends.
+   * In memory: a restart leaves such a session with its placeholder name.
+   */
+  deferNaming(sessionId: string): Promise<void>
+  /** True once for a session whose naming was deferred: the caller names it now. */
+  takeDeferredNaming(sessionId: string): Promise<boolean>
 }
 
 /** The agent's live state as of one moment (`actor.live()`). */
@@ -547,12 +641,6 @@ export interface DeliverRequest {
   cancelAwaiting?: boolean
   /** Hold the message while the session recovers from a runtime death; the recovery sends it. */
   coalesce?: boolean
-  /**
-   * Refuse to join a running turn: `busy` instead. Decided with the queued
-   * decision, after the attach (which can reveal a running turn). An append
-   * starts no turn, so it is never refused.
-   */
-  ifIdle?: boolean
   /** The `user_message` the session's viewers see, sent once it is known whether the message is queued. */
   echo?: UserMessageEcho
 }
@@ -561,8 +649,6 @@ export type DeliverResult = (
   | { status: 'sent'; queued: boolean }
   /** Held for the recovery to send. */
   | { status: 'coalesced' }
-  /** `ifIdle` and the session was running: nothing was sent. */
-  | { status: 'busy' }
 ) & {
   /** The provider the session's turns run on, once the container resolved it (the credential that served it). */
   provider?: string

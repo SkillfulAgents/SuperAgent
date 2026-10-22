@@ -31,9 +31,12 @@ beforeAll(async () => {
   authModule = await import('@shared/lib/auth')
   const profile = (await import('./profile')).default
   const { defaultCacheControl } = await import('../middleware/default-cache-control')
+  const { apiErrorHandler } = await import('../error-handler')
   app = new Hono()
   app.use('*', defaultCacheControl)
   app.route('/api/profile', profile)
+  // The production handler, not Hono's default: bodyLimit's 413 is thrown.
+  app.onError(apiErrorHandler)
 })
 
 beforeEach(() => {
@@ -113,7 +116,9 @@ describe('profile avatar API', () => {
     const first = await (await upload(signedIn.token!)).json()
     expect((await upload(signedIn.token!, Buffer.from('<svg/>'), 'image/svg+xml')).status).toBe(415)
     expect((await upload(signedIn.token!, Buffer.from('bad png'))).status).toBe(400)
-    expect((await upload(signedIn.token!, Buffer.alloc(1024 * 1024 + 1))).status).toBe(413)
+    const oversized = await upload(signedIn.token!, Buffer.alloc(1024 * 1024 + 1))
+    expect(oversized.status).toBe(413)
+    expect(await oversized.json()).toEqual({ error: 'Payload Too Large' })
     const duplicateHeader = Buffer.concat([png().subarray(0, 33), png().subarray(8)])
     expect((await upload(signedIn.token!, duplicateHeader)).status).toBe(400)
     const interlaced = png()

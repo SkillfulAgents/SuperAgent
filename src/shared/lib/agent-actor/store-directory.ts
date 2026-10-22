@@ -4,7 +4,7 @@
  * Per-agent in-memory state (open user-input requests, parked reviews and
  * re-auth waits, computer-use grants) is a field of the agent's actor. The
  * singletons that used to hold it keyed by slug are routers now: they answer
- * a call that arrives with an id or a slug but no actor handle, and they run
+ * a call that names the agent but holds no actor handle, and they run
  * the process-wide sweeps (reject everything at shutdown, complete every wait
  * on an account). For both they need the actors' stores, and the registry —
  * the one owner of the handles — hands them a directory when it is created.
