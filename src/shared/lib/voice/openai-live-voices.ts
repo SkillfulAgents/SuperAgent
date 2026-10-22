@@ -9,6 +9,7 @@ import type { TtsVoiceInfo } from './tts-preferences'
 export const OPENAI_LIVE_VOICE_IDS = [
   'marin', 'quartz', 'ripple', 'vesper', 'willow', 'stone', 'gleam',
   'meridian', 'bossa', 'tempo', 'beacon', 'delta', 'cinder',
+  'nuri', 'juni', 'flitz', 'brise', 'sillage', 'nira', 'harema', 'shida', 'noeul',
 ] as const
 export type OpenAILiveVoice = typeof OPENAI_LIVE_VOICE_IDS[number]
 export const DEFAULT_OPENAI_LIVE_VOICE: OpenAILiveVoice = 'marin'

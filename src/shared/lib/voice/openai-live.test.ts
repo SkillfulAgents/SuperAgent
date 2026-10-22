@@ -46,6 +46,8 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     // The list the settings UI offers is the provider's own, Marin first as the default.
     expect(provider.getLiveVoices()[0]).toMatchObject({ id: 'marin' })
     expect(provider.getLiveVoices().map(voice => voice.id)).toContain('cinder')
+    expect(provider.getLiveVoices().map(voice => voice.id)).toEqual(expect.arrayContaining(['nuri', 'brise', 'nira', 'harema', 'noeul']))
+    expect(provider.resolveLiveVoice('harema')).toBe('harema')
     expect(provider.resolveLiveVoice()).toBe('marin')
   })
 
