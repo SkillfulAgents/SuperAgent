@@ -19,6 +19,9 @@ export type FileCategory =
   | 'model'
   | 'other'
 
+/** The zip download limit and the per-file unpack limit: 5 MB as the drawer header counts sizes. */
+export const MAX_ZIP_BYTES = 5 * 1024 * 1024
+
 /** The renderer that can show a file in the preview drawer. */
 export type PreviewKind =
   | 'markdown'
@@ -29,6 +32,7 @@ export type PreviewKind =
   | 'video'
   | 'audio'
   | 'pdf'
+  | 'archive'
 
 interface FileTypeGroup {
   category: FileCategory
@@ -105,10 +109,11 @@ const FILE_TYPES: readonly FileTypeGroup[] = [
   { category: 'audio', preview: 'audio', exts: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'] },
   { category: 'audio', exts: ['aif', 'aiff', 'mid', 'midi', 'wma'] },
 
+  { category: 'archive', preview: 'archive', exts: ['zip'] },
   {
     category: 'archive',
     exts: [
-      'zip', 'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm',
+      'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm',
       'apks', 'xapk', 'aab', 'jar',
     ],
   },

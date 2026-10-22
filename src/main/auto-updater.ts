@@ -2,8 +2,10 @@ import { BrowserWindow, ipcMain, app, powerMonitor } from 'electron'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import type { NsisUpdater } from 'electron-updater'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { verifyUpdateSignature } from './update-signature'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -68,6 +70,16 @@ function isChannelFileNotFoundError(err: unknown): boolean {
   if (statusCode === 404) return true
   const message = err instanceof Error ? err.message : String(err)
   return /Cannot find .*latest-mac\.yml.*404/.test(message)
+}
+
+// Node's execFile error keeps exit code / timeout kill only as fields, not in
+// the message, e.g. electron-updater's Windows Get-AuthenticodeSignature check.
+function childProcessErrorDetails(err: unknown): Record<string, unknown> {
+  if (!err || typeof err !== 'object') return {}
+  const { code, killed, signal } = err as { code?: unknown; killed?: unknown; signal?: unknown }
+  return Object.fromEntries(
+    Object.entries({ errorCode: code, killed, signal }).filter(([, v]) => v !== undefined && v !== null),
+  )
 }
 
 function sendStatusToRenderer() {
@@ -318,7 +330,11 @@ export function registerUpdateHandlers() {
     } catch (err) {
       captureException(err, {
         tags: { component: 'auto-updater', operation: 'download' },
-        extra: { currentVersion: app.getVersion(), targetVersion: currentStatus.version },
+        extra: {
+          currentVersion: app.getVersion(),
+          targetVersion: currentStatus.version,
+          ...childProcessErrorDetails(err),
+        },
       })
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
@@ -369,6 +385,12 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       console.log(`[auto-updater] TEST MODE: pretending to be v${fakeVersion}, feed=${cfgPath}`)
     }
 
+    // electron-updater's own Windows signature check gives up after 20s, too
+    // short for slow machines and VDIs (see update-signature.ts).
+    if (process.platform === 'win32') {
+      ;(autoUpdater as NsisUpdater).verifyUpdateCodeSignature = verifyUpdateSignature
+    }
+
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
@@ -417,6 +439,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
             currentVersion: app.getVersion(),
             state: currentStatus.state,
             userVisible: runIsUserVisible,
+            ...childProcessErrorDetails(err),
           },
           level: 'warning',
         })

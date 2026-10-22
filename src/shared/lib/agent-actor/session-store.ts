@@ -14,7 +14,7 @@
  * elsewhere answers with a different directory, and nothing else spells it.
  */
 import type { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
-import type { AgentSlug, ConfigOps, FileOps } from './types'
+import type { AgentSlug, StoreConfigOps, StoreFileOps } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
 
 /**
@@ -26,9 +26,9 @@ export const CLI_TRANSCRIPTS_DIR = '.claude/projects/-workspace'
 export interface SessionStore {
   readonly slug: AgentSlug
   /** The agent's workspace. */
-  readonly files: FileOps
+  readonly files: StoreFileOps
   /** The agent's configuration documents, session metadata among them. */
-  readonly config: ConfigOps
+  readonly config: StoreConfigOps
   /** Workspace path of the directory the CLI writes transcripts to. */
   readonly transcriptsDir: string
   /**

@@ -15,6 +15,10 @@ const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
+const accountProviderState = vi.hoisted(() => ({ name: 'composio' as 'composio' | 'nango' }))
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: accountProviderState.name }),
+}))
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -110,21 +114,8 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }))
 
 vi.mock('./health-monitor', () => ({
@@ -166,7 +157,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
-import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { createFakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 
 describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reserved runtime env vars', () => {
@@ -180,6 +171,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 
     containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
     relayState.available = false
+    accountProviderState.name = 'composio'
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
 
@@ -201,6 +193,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
         SUPERAGENT_HOST_API_URL: 'http://evil.example/api',
         SUPERAGENT_HOST_TOKEN: 'attacker-host-token',
         CONNECTED_ACCOUNTS: '{"gmail":[{"name":"spoof","id":"x"}]}',
+        CONNECTED_ACCOUNT_TOOLKITS: 'attacker-toolkit',
         TZ: 'Antarctica/Troll',
         HOST_PLATFORM: 'spoofed-os',
         CLAUDE_CODE_ATTRIBUTION_HEADER: '1',
@@ -228,6 +221,20 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     expect(envVars.SUPERAGENT_HOST_TOKEN).toBe('real-host-token')
     // No active accounts -> empty object, not the spoofed metadata.
     expect(envVars.CONNECTED_ACCOUNTS).toBe('{}')
+    expect(envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')).toContain('todoist')
+    expect(envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')).not.toContain('attacker-toolkit')
+  })
+
+  it('only injects services supported by the selected account provider', async () => {
+    accountProviderState.name = 'nango'
+    await containerHost.runtime('test-agent').ensureRunning()
+    const toolkits = mockStart.mock.calls[0][0].envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')
+    expect(toolkits).toContain('gmail')
+    expect(toolkits).toContain('github')
+    expect(toolkits).not.toContain('todoist')
+    expect(toolkits).not.toContain('excel')
+    expect(toolkits).not.toContain('twitter')
+    expect(toolkits).not.toContain('attacker-toolkit')
   })
 
   it('keeps computed TZ / HOST_PLATFORM / CLAUDE_CODE_ATTRIBUTION_HEADER', async () => {
@@ -250,6 +257,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 describe('ContainerRuntime webhook relay env', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    accountProviderState.name = 'composio'
     containerHost.dropRuntime('test-agent')
     mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -336,7 +344,7 @@ describe('ContainerHost.watchWebhookRelay', () => {
     relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
     stop()
 
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'webhook_relay_changed',
       status: { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null },
     })

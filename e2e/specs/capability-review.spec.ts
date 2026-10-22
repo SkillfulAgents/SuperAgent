@@ -7,7 +7,7 @@ import { SessionPage } from '../pages/session.page'
  * Allow/review/block launch policies for subagents (Task) and workflows.
  *
  * The mock scenarios stream a `Workflow` / `Task` tool_use through the real
- * MessagePersister, which applies the real policy gate (defaults: subagents
+ * agent's live sessions, which apply the real policy gate (defaults: subagents
  * allow, workflows review) and broadcasts `capability_review_request`. The
  * card's decisions hit the real /capability-review route, which resolves or
  * rejects the mock container's pending input — same wiring as production.

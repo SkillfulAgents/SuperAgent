@@ -1,0 +1,233 @@
+/* ══ Slide to confirm ══════════════════════════════════════
+   A handle crossing a track, and on commit the handle IS the
+   confirmation — it unfurls leftward and fills what it crossed.
+   See slide-to-confirm.tsx for why the right edge stays put.
+
+   ── Bencho's tokens, mapped to this app's ─────────────────
+   The source read five custom properties it did not define. Each is
+   bound here, on the component's own root, to the token this app already
+   uses for the same job — none is a new global:
+
+     --ink / --fill-on     the handle, and the ground it has covered
+                           → hsl(var(--foreground)); the destructive tone
+                             swaps in --destructive, the colour every
+                             delete button here already wears
+     --fill-slab / --card  the track → hsl(var(--muted)), the app's groove
+                           surface (secondary buttons, inputs). Bencho
+                           used its card white; on this app's white
+                           dialog a white track would need its stroke to
+                           exist at all, and muted inverts the same way:
+                           light track with a dark handle in light, dark
+                           track with a light handle in dark
+     --pane-edge           the inset stroke → hsl(var(--border)), always on
+     --font-ui             inherited: the dialog this sits in is already
+                           in the app face (Slussen, via tailwind's
+                           fontFamily.sans on body)
+     the label's 52% mix   → hsl(var(--muted-foreground)), the app's
+                           secondary-text token, which is what that mix
+                           was approximating */
+.sld {
+  --sld-ink: hsl(var(--foreground));
+  --sld-slab: hsl(var(--muted));
+  --sld-edge: hsl(var(--border));
+  --sld-say: hsl(var(--muted-foreground));
+  /* what sits ON the ink: the arrow, the check, the word. The track's
+     colour, so the handle reads as the track inverted. */
+  --sld-on-ink: var(--sld-slab);
+  box-sizing: border-box;
+  font-family: inherit;
+  color: var(--sld-ink);
+}
+
+.sld[data-tone="destructive"] {
+  --sld-ink: hsl(var(--destructive));
+  --sld-on-ink: hsl(var(--destructive-foreground));
+}
+
+.sld-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  /* ── the track is the SLAB, the handle is the INK ─────────
+     It was the other way round — a translucent wash for the track on the
+     reasoning that a groove is darker than what it is cut into. True, and
+     it has nothing to be cut into: this track IS the whole block, so
+     there is no surrounding surface and a 7% wash had no opaque ground
+     under it. On a dark fill that left a near-invisible track with a dark
+     circle sitting on it.
+
+     Slab and ink inverts from one rule: light track with a near-black
+     handle in light, near-black track with a light handle in dark. And
+     on commit the handle fills the track, so the confirmed state is a
+     solid ink pill in both. */
+  background: var(--sld-slab);
+  box-shadow: inset 0 0 0 1px var(--sld-edge);
+  /* the drag is the component; the browser may not take the gesture for
+     panning */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── the ground already covered ─────────────────────────────
+   THE SAME INK AS THE HANDLE, which turns this from a trail into the
+   handle's own body. It was an 8% tint, and a tint is read as a progress
+   bar: a track filling up behind a knob that slides along it. Two objects.
+
+   The geometry was already right for one. This runs from the left pad to
+   `x + GRIP` — the handle's RIGHT edge, not its left — with the handle's
+   own corner radius, so the pair describes a single capsule with a
+   rounded cap at each end and the handle's cap doing the work at the
+   leading edge. Only the colour said otherwise. Matched, there is no seam
+   to find: the dot stretches out of the corner it started in and the far
+   end is still the dot.
+
+   It cannot be the ink at 100% and also sit UNDER the words. */
+.sld-wash {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 4px;
+  background: var(--sld-ink);
+  /* ── above the label, so it WIPES it ─────────────────────
+     Beneath it, the label's remaining ink sat on a surface its own colour
+     and went muddy rather than away — the fade reaches zero at 55% of the
+     travel and the capsule's edge arrives at the first letter around 30%,
+     so there is a stretch where the two overlap. Painted over, the words
+     are covered by the advancing cap instead: they leave under a rounded
+     edge that is the handle's own shape, which reads as the thing eating
+     them rather than as a wipe.
+     The handle is `auto` and later in the DOM, and `auto` loses to any
+     z-index at all, so it needs one of its own. */
+  z-index: 1;
+  pointer-events: none;
+}
+
+.sld-say {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  /* ── CENTRED IN THE PILL, not in the room beside it ──────
+     It was inset by the handle's width, on the reasoning that the words
+     should be centred in the space actually left to them. That is the
+     right rule for a label sharing a row with a control, and the wrong
+     one here: the track IS the object, and a label pushed 24px right of
+     its middle reads as off-centre rather than as considerate — there is
+     nothing for it to be centred against except the pill.
+
+     It costs nothing at rest — the words start well clear of the handle —
+     and the overlap it was avoiding is now the point, since the capsule
+     wipes them as it comes. */
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--sld-say);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.sld-grip {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  padding: 0;
+  border: 0;
+  background: var(--sld-ink);
+  color: var(--sld-on-ink);
+  cursor: grab;
+  /* ── it takes the pointer, and the track still wins ──────
+     It was `none`, so the track owned the gesture outright. The handle
+     has to know when a cursor is ON it to swell, and a press still
+     reaches the track by BUBBLING — the handle is inside it — so nothing
+     about the drag changed. Once the track captures the pointer every
+     later event is retargeted there anyway, which is why a drag that
+     wanders off the handle keeps reporting. */
+  pointer-events: auto;
+  /* the wall it lands against, so the squash compresses toward the end of
+     the track rather than about its middle */
+  transform-origin: 0% 50%;
+  /* it is placed by a transform written every frame, so nothing here may
+     transition `transform` or the two fight every frame */
+  transition: none;
+  /* over the wash, which had to claim a layer to cover the label — see
+     .sld-wash */
+  z-index: 2;
+}
+
+.sld-grip:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.sld-track[data-held] .sld-grip { cursor: grabbing; }
+.sld-track[data-done] .sld-grip { cursor: default; }
+
+/* ── two contents, both ABSOLUTE ────────────────────────────
+   Stacked so neither has to make room for the other and the handle's
+   width is free to be whatever the morph says it is.
+
+   They were one grid cell, and that put the arrow 21.3px right of the
+   handle's centre. "Confirmed" is 59px wide and the resting handle is 42,
+   so the shared track was wider than the box holding it — and an
+   overflowing grid item resolves `center` to `start`, which shoved both
+   to one side.
+
+   Absolute with `inset: 0` has no such rule: each fills the handle and
+   centres its own content, at every width the morph passes through, and
+   neither can size the handle. */
+.sld-arrow,
+.sld-done {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ── AND THE ARROW ANSWERS THE COMMIT, not just x ───────────
+   Read off x alone this faded back IN during the unfurl: committing
+   sends x home to zero, so the arrow reappeared underneath the word it
+   had just been replaced by. The outer .sld-arrow carries the fade along
+   the track; this inner layer is switched by the commit itself, which is
+   the event that actually means the arrow is finished. Nested opacities
+   multiply, which is the product the source computed by hand.
+   On the way back it returns a beat after the word has gone. */
+.sld-arrow-ink {
+  display: flex;
+  opacity: 1;
+  transition: opacity 220ms ease 120ms;
+}
+
+.sld-track[data-done] .sld-arrow-ink {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+/* the word arrives with the width rather than after it */
+.sld-done {
+  opacity: 0;
+  transform: scale(0.7);
+  transition:
+    opacity 160ms cubic-bezier(0.33, 0.55, 0.2, 1),
+    transform 160ms cubic-bezier(0.33, 0.55, 0.2, 1);
+}
+
+.sld-track[data-done] .sld-done {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sld-arrow-ink,
+  .sld-done {
+    transition: none;
+  }
+}

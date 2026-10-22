@@ -3,8 +3,8 @@
  *
  * The grants and the grabbed app live in each agent's actor
  * (`AgentComputerUse`); this singleton dispatches the calls that arrive with
- * a slug — the persister's permission check on a computer-use tool call, the
- * runtime's ungrab when a container stops — to that agent's store. A read for
+ * a slug — the runtime's ungrab when a container stops — to that agent's
+ * store. The agent's own live sessions call its store directly. A read for
  * an agent that has no handle finds nothing in memory; a check loads the
  * agent's persisted grants through its store, as it always did.
  */

@@ -10,6 +10,7 @@
 import { z } from 'zod'
 
 import { normalizeDeniedModels } from '@shared/lib/llm-provider/platform-plan-policy'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 
 export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 
@@ -42,6 +43,12 @@ export const SkillsetIndexAgentSchema = z.object({
   category: z.string().optional(),
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon: z.string().optional(),
+  /**
+   * The template's orb. A colour or shape this build doesn't know (a newer
+   * palette) drops to undefined, so the card falls back to a hashed avatar
+   * rather than the whole template being dropped.
+   */
+  avatar: agentAvatarSchema.optional().catch(undefined),
   tags: z.array(z.string()).optional(),
   /** Services the template connects to; `slug` matches our service-icon set. */
   works_with: z

@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 
 const mocks = vi.hoisted(() => ({
   listWidgets: vi.fn<() => Promise<ApiAgentWidget[]>>(),
   cachedStatus: 'running' as 'running' | 'stopped',
   ensureRunning: vi.fn(),
   clientFetch: vi.fn(),
-  broadcastGlobal: vi.fn(),
-  globalListener: null as ((event: unknown) => void) | null,
+  publishGlobal: vi.fn(),
+  globalListener: null as ((event: GlobalFeedEvent) => void) | null,
   openRepair: vi.fn(async () => ({ started: false, reason: 'cooldown' })),
 }))
 
@@ -27,11 +28,11 @@ vi.mock('@shared/lib/container/container-host', async () => {
     }),
   }
 })
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: (...args: unknown[]) => mocks.broadcastGlobal(...args),
-    addGlobalNotificationClient: (cb: (event: unknown) => void) => {
-      mocks.globalListener = cb
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: {
+    publish: (...args: unknown[]) => mocks.publishGlobal(...args),
+    subscribe: (listener: (event: GlobalFeedEvent) => void) => {
+      mocks.globalListener = listener
       return () => {
         mocks.globalListener = null
       }
@@ -91,7 +92,7 @@ describe('widgetRefreshService', () => {
     mocks.listWidgets.mockReset()
     mocks.ensureRunning.mockReset()
     mocks.clientFetch.mockReset()
-    mocks.broadcastGlobal.mockReset()
+    mocks.publishGlobal.mockReset()
     mocks.openRepair.mockClear()
     mocks.cachedStatus = 'running'
     mocks.ensureRunning.mockResolvedValue({ fetch: mocks.clientFetch })
@@ -111,11 +112,11 @@ describe('widgetRefreshService', () => {
       '/artifacts/macros/widget/refresh',
       expect.objectContaining({ method: 'POST' }),
     )
-    expect(mocks.broadcastGlobal.mock.calls.map((c) => (c[0] as { type: string }).type)).toEqual([
+    expect(mocks.publishGlobal.mock.calls.map((c) => (c[0] as { type: string }).type)).toEqual([
       'widget_refresh_started',
       'widget_snapshot_ready',
     ])
-    expect(mocks.broadcastGlobal.mock.calls[1][0]).toMatchObject({
+    expect(mocks.publishGlobal.mock.calls[1][0]).toMatchObject({
       agentSlug: AGENT,
       widgetSlug: 'macros',
       htmlHash: 'def',
@@ -129,14 +130,14 @@ describe('widgetRefreshService', () => {
     expect(outcome).toEqual({ ok: false, error: 'Agent is not running', skipped: true })
     expect(mocks.ensureRunning).not.toHaveBeenCalled()
     expect(mocks.clientFetch).not.toHaveBeenCalled()
-    expect(mocks.broadcastGlobal).not.toHaveBeenCalled()
+    expect(mocks.publishGlobal).not.toHaveBeenCalled()
   })
 
   it('refreshWidget reports a container failure and broadcasts widget_refresh_failed', async () => {
     mocks.clientFetch.mockResolvedValue(okResponse({ error: 'script exploded' }, 500))
     const outcome = await widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'manual' })
     expect(outcome).toEqual({ ok: false, error: 'script exploded' })
-    expect(mocks.broadcastGlobal.mock.calls.at(-1)?.[0]).toMatchObject({
+    expect(mocks.publishGlobal.mock.calls.at(-1)?.[0]).toMatchObject({
       type: 'widget_refresh_failed',
       widgetSlug: 'macros',
       error: 'script exploded',
@@ -183,8 +184,8 @@ describe('widgetRefreshService', () => {
 
     const first = await widgetRefreshService.refreshStale(AGENT, { wake: true })
     expect(first.refreshing).toEqual(['stale-one'])
-    await flush()
-    expect(mocks.clientFetch).toHaveBeenCalledTimes(1)
+    // The refresh reads the agent through its actor first: across a transport, a few turns later.
+    await vi.waitFor(() => expect(mocks.clientFetch).toHaveBeenCalledTimes(1))
 
     // A second mount moments later reports what is in flight but starts nothing new.
     mocks.listWidgets.mockResolvedValue([widget({ slug: 'another', isStale: true })])
@@ -216,12 +217,12 @@ describe('widgetRefreshService', () => {
     mocks.globalListener!({ type: 'session_complete', agentSlug: AGENT })
     await vi.advanceTimersByTimeAsync(3_500)
 
-    const posted = mocks.clientFetch.mock.calls.map((c) => c[0]).sort()
-    expect(posted).toEqual([
+    // The sweep's reads are the actor's ops: across a transport they land after the clock moved.
+    await vi.waitFor(() => expect(mocks.clientFetch.mock.calls.map((c) => c[0]).sort()).toEqual([
       '/artifacts/every-turn/widget/refresh',
       '/artifacts/scripted-expired/widget/refresh',
       '/artifacts/static-rewritten/widget/refresh',
-    ])
+    ]))
     expect(mocks.ensureRunning).not.toHaveBeenCalled()
   })
 

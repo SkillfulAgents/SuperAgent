@@ -480,18 +480,20 @@ describe('ClaudeCodeProcess agent-browser Bash hook', () => {
     await process.start()
     const hooks = calls[0].options.hooks as {
       PreToolUse: Array<{
-        matcher: string
+        matcher?: string
         hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
       }>
     }
-    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher?.startsWith('^(') && new RegExp(hook.matcher).test('Bash'))
     expect(bashHook).toBeDefined()
 
     const directResult = await bashHook!.hooks[0]({
+      hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'agent-browser open https://example.com' },
     })
     const discoveryResult = await bashHook!.hooks[0]({
+      hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'which agent-browser; agent-browser --help' },
     })
@@ -515,12 +517,13 @@ describe('ClaudeCodeProcess agent-browser Bash hook', () => {
     await process.start()
     const hooks = calls[0].options.hooks as {
       PreToolUse: Array<{
-        matcher: string
+        matcher?: string
         hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
       }>
     }
-    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')!
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher?.startsWith('^(') && new RegExp(hook.matcher).test('Bash'))!
     await expect(bashHook.hooks[0]({
+      hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'rg browser src' },
     })).resolves.toEqual({})

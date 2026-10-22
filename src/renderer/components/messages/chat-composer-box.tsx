@@ -9,11 +9,11 @@ import type {
 import { cn } from '@shared/lib/utils'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { SecretDetectionPrompt } from './secret-detection-prompt'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import type { PotentialSecret } from '@renderer/lib/secret-detection'
 import { MarkdownComposerEditor } from './markdown-composer-editor'
+import type { ChipContext } from './composer-chips'
 
 const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
-const EMPTY_SECURED_SECRETS: SecuredSecret[] = []
 
 /** The composer box: the frame the text editor and its action row sit in. Voice mode draws its own contents in the same frame. */
 export const COMPOSER_BOX_CLASS =
@@ -40,10 +40,8 @@ export const FLOATING_COMPOSER_CLASS =
 interface SecureSecretsProps {
   agentSlug: string
   potentialSecrets?: PotentialSecret[]
-  securedSecrets?: SecuredSecret[]
   onDismiss: (candidate: PotentialSecret) => void
   onSecure: (candidate: PotentialSecret, secret: { key: string; envVar: string }) => void
-  onRemove: (secrets: SecuredSecret[]) => void
 }
 
 interface ChatComposerBoxProps {
@@ -70,6 +68,8 @@ interface ChatComposerBoxProps {
   className?: string
   textareaClassName?: string
   secureSecrets?: SecureSecretsProps
+  /** What the composer knows about its agent, so chips whose referent is gone are flagged. */
+  chipContext?: ChipContext
 }
 
 export function ChatComposerBox({
@@ -96,6 +96,7 @@ export function ChatComposerBox({
   className,
   textareaClassName,
   secureSecrets,
+  chipContext,
 }: ChatComposerBoxProps) {
   const internalEditorRef = useRef<HTMLDivElement | null>(null)
   const setEditorRef = useCallback((node: HTMLDivElement | null) => {
@@ -108,7 +109,6 @@ export function ChatComposerBox({
   }, [textareaRef])
 
   const potentialSecrets = secureSecrets?.potentialSecrets ?? EMPTY_POTENTIAL_SECRETS
-  const securedSecrets = secureSecrets?.securedSecrets ?? EMPTY_SECURED_SECRETS
 
   return (
     <div className={cn(COMPOSER_BOX_CLASS, className)}>
@@ -134,8 +134,7 @@ export function ChatComposerBox({
           enterKeyHint={enterKeyHint}
           className={cn('max-h-[200px]', textareaClassName)}
           potentialSecrets={potentialSecrets}
-          securedSecrets={securedSecrets}
-          onRemoveSecuredSecrets={secureSecrets?.onRemove}
+          chipContext={chipContext}
           onEditorElement={setEditorRef}
         />
       </div>

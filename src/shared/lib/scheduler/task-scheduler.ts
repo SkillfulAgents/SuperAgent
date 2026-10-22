@@ -41,8 +41,9 @@ const WAKE_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000
  * slot; a run whose turn ended with background work still going stays active
  * and keeps it.
  */
-function isRunBusy(actor: AgentActor, sessionId: string): boolean {
-  return actor.sessions.isActive(sessionId) && !actor.sessions.isAwaitingInput(sessionId)
+async function isRunBusy(actor: AgentActor, sessionId: string): Promise<boolean> {
+  const live = await actor.sessions.live(sessionId)
+  return live.isActive && !live.isAwaitingInput
 }
 
 class TaskScheduler {
@@ -215,7 +216,7 @@ class TaskScheduler {
     // Holding leaves nextExecutionAt alone: the task stays due, each poll
     // re-checks, and the first free poll fires once and re-anchors to the next
     // cron boundary. One scalar means at most one pending fire per task.
-    if (task.isRecurring && task.lastSessionId && isRunBusy(actor, task.lastSessionId)) {
+    if (task.isRecurring && task.lastSessionId && await isRunBusy(actor, task.lastSessionId)) {
       console.log(
         `[TaskScheduler] Task ${task.id} held: previous run ${task.lastSessionId} is still busy`
       )
@@ -256,33 +257,28 @@ class TaskScheduler {
       agentPrefs,
       models,
     )
-    const containerSession = await actor.sessions.create({
-      availableEnvVars:
-        availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars:
+          availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+        scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+        automationStatus: 'running',
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task'
-
-    await actor.sessions.register(sessionId, sessionName, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
-      automationStatus: 'running',
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`

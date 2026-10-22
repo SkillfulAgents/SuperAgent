@@ -84,13 +84,13 @@ export type ConfigDoc<K extends ConfigDocId> = (typeof CONFIG_DOCS)[K] extends {
   ? T
   : string
 
-export type ConfigDocErrorCode = 'corrupt' | 'invalid'
+export type ConfigDocErrorCode = 'corrupt' | 'invalid' | 'conflict'
 
 /**
  * A JSON document that cannot be used: `corrupt` when what is stored does not
  * parse or does not fit its schema (a read-modify-write must abort rather than
  * overwrite it), `invalid` when a caller tries to store something that does not
- * fit.
+ * fit, `conflict` when a read-modify-write kept losing to other writers.
  */
 export class ConfigDocError extends Error {
   constructor(
@@ -102,7 +102,9 @@ export class ConfigDocError extends Error {
     super(
       code === 'corrupt'
         ? `Refusing to use corrupt ${docId} document: ${reason}`
-        : `Invalid ${docId} document: ${reason}`,
+        : code === 'conflict'
+          ? `The ${docId} document ${reason}`
+          : `Invalid ${docId} document: ${reason}`,
       options,
     )
     this.name = 'ConfigDocError'

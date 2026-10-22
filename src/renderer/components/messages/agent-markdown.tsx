@@ -5,7 +5,9 @@ import type { Element, ElementContent } from 'hast'
 import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
+import { MENTION_TAG, mentionOf } from '@renderer/lib/rehype-mentions'
 import { CodeCopyButton } from './code-copy-button'
+import { MentionChip } from './mention-chip'
 import { HtmlBlock } from './html-block'
 import { useBlockBreakout } from './use-block-breakout'
 
@@ -57,7 +59,15 @@ function ExpandingTable({ children }: { children: ReactNode }) {
   )
 }
 
+/** A `@Name` that rehypeMentions lifted out of a sent message. */
+function MentionElement({ node, children }: { node?: Element; children?: ReactNode }) {
+  const lifted = mentionOf(node)
+  return lifted ? <MentionChip mention={lifted.mention} agentSlug={lifted.agentSlug} /> : <>{children}</>
+}
+
 const STREAMING_COMPONENTS: Components = {
+  // Element names react-markdown does not know are drawn by name too.
+  ...({ [MENTION_TAG]: MentionElement } as Components),
   // Style code blocks
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ children, className }) => {

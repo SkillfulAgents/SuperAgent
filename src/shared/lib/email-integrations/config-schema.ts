@@ -53,6 +53,8 @@ export type EmailMessage = z.infer<typeof emailMessageSchema>
 export const emailSendSchema = z.object({
   to: z.array(z.string().email()).max(20).optional(), cc: z.array(z.string().email()).max(20).default([]), bcc: z.array(z.string().email()).max(20).default([]),
   subject: z.string().max(998).regex(/^[^\r\n]*$/).optional(), text: z.string().min(1).max(131072),
+  /** Host-rendered alternative to `text`; the agent's own sends are text only. */
+  html: z.string().max(131072).optional(),
   replyToMessageId: z.string().uuid().optional(), replyAll: z.boolean().default(false),
   attachmentIds: z.array(z.string().uuid()).max(10).default([]),
   idempotencyKey: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/, 'Use letters, numbers, dots, underscores, colons or hyphens'),

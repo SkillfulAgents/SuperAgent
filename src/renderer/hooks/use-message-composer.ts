@@ -12,13 +12,13 @@ import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import { chipsToAgentText, silentOpener, type ChipContext } from '@renderer/components/messages/composer-chips'
+import { secretMarker } from '@renderer/components/messages/secret-chip'
 import {
   findPotentialSecrets,
-  replaceSecuredSecrets,
-  secretDisplayText,
   type PotentialSecret,
-  type SecuredSecret,
 } from '@renderer/lib/secret-detection'
+import { useComposerChips } from './use-composer-chips'
 
 interface UseMessageComposerOptions {
   agentSlug: string
@@ -26,8 +26,8 @@ interface UseMessageComposerOptions {
   uploadFile: (args: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => Promise<{ path: string }>
   /** Upload a folder via Electron fs.cp. Caller provides the right endpoint. */
   uploadFolder: (args: { sourcePath: string }) => Promise<{ path: string }>
-  /** Called after uploads complete and content is fully assembled. */
-  onSubmit: (content: string) => Promise<void>
+  /** Called after uploads complete and content is fully assembled. `silent`: it only notifies, and runs no turn. */
+  onSubmit: (content: string, options: { silent: boolean }) => Promise<void>
   /** Additional guard conditions that prevent submission (e.g. isActive, isOffline). */
   submitDisabled?: boolean
   /** When true, keep the message in the input until onSubmit resolves (useful when there's a navigation delay). Defaults to false. */
@@ -36,23 +36,24 @@ interface UseMessageComposerOptions {
   draftKey?: string
   /** One-shot attachment seed, used when moving a draft into a new session. */
   initialAttachments?: Attachment[]
-  /** One-shot secure-pill seed, used when moving a draft into a new session. */
-  initialSecuredSecrets?: SecuredSecret[]
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
+  /**
+   * A draft that opens on a chip whose kind `opensSilently` (a teammate) only
+   * notifies, and the agent does not run: for an existing session. A first
+   * message always runs the agent.
+   */
+  silentSends?: boolean
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
-  const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
-  const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
-  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
-    () => options.initialSecuredSecrets ?? draftSecuredSecrets ?? []
-  )
+  const chips = useComposerChips(agentSlug)
+  const chipContext = chips.context
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -69,10 +70,6 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
     setDraft(message || undefined)
   }, [message, setDraft])
-
-  useEffect(() => {
-    setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
-  }, [securedSecrets, setDraftSecuredSecrets])
 
   // Sync externally-injected drafts (file comments, restored undelivered
   // messages) into the local message.
@@ -112,21 +109,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   ) => {
     setMessage((current) => {
       if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
-      const displayText = secretDisplayText(savedSecret.key)
-      const securedSecret: SecuredSecret = {
-        id: `${candidate.id}:${savedSecret.envVar}`,
-        key: savedSecret.key,
-        envVar: savedSecret.envVar,
-        displayText,
-      }
-      setSecuredSecrets((existing) => [...existing, securedSecret])
-      return `${current.slice(0, candidate.start)}${displayText}${current.slice(candidate.end)}`
+      return `${current.slice(0, candidate.start)}${secretMarker(savedSecret)}${current.slice(candidate.end)}`
     })
-  }, [])
-
-  const removeSecuredSecrets = useCallback((secrets: SecuredSecret[]) => {
-    const secretIds = new Set(secrets.map((secret) => secret.id))
-    setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
   }, [])
 
   // Mount choice dialog state
@@ -143,6 +127,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   }, [])
 
   const attachmentsRef = useRef<Attachment[]>([])
+  const checkingRef = useRef(false)
   const queueRef = useRef<ReturnType<typeof useUploadQueue> | null>(null)
 
   const {
@@ -260,6 +245,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     let content = effectiveMessage.trim()
 
+    // The chips' checks may ask first (access for someone it tags). The draft
+    // stays in the composer meanwhile, so a second Enter is not a second send.
+    if (checkingRef.current) return false
+    const silent = !!silentSends && !!silentOpener(content)
+    let sendContext: ChipContext | null
+    checkingRef.current = true
+    try {
+      sendContext = await chips.check(content, { silent })
+    } finally {
+      checkingRef.current = false
+    }
+    if (!sendContext) return false
+
     if (attachmentsRef.current.some((a) => a.type !== 'mount' && a.error)) {
       setIsUploading(true)
       const { ok } = await queue.retryAndWait()
@@ -313,10 +311,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = replaceSecuredSecrets(content, securedSecrets)
+    const submittedContent = chipsToAgentText(content, sendContext, { silent })
 
     try {
-      await onSubmit(submittedContent)
+      await onSubmit(submittedContent, { silent })
     } catch (error) {
       console.error('Failed to submit:', error)
       if (!keepMessageUntilComplete) {
@@ -331,8 +329,6 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setDraft(undefined)
       clearAttachments()
     }
-    setSecuredSecrets([])
-    setDraftSecuredSecrets(undefined)
     return true
   }
 
@@ -343,10 +339,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     message,
     setMessage,
     potentialSecrets,
-    securedSecrets,
+    chipContext,
+    /** What a chip's check before a send asks, for the composer to render. */
+    chipDialog: chips.dialog,
     dismissPotentialSecret,
     securePotentialSecret,
-    removeSecuredSecrets,
 
     // Attachments
     attachments,

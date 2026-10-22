@@ -33,6 +33,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'SUPERAGENT_AGENT_NAME',
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
+  'CONNECTED_ACCOUNT_TOOLKITS',
   'REMOTE_MCPS',
   // The agent's volumes, mounted by the image
   'SUPERAGENT_VOLUMES',

@@ -76,15 +76,14 @@ async function pendingWakesFor(rows: TodoRow[], readableAgents: ReadonlySet<stri
   return new Map(wakes.map((w) => [wakeKey(w.agentSlug, w.resumeSessionId!), w.nextExecutionAt.getTime()]))
 }
 
-function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: PendingWakes): TodoView {
+async function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: PendingWakes): Promise<TodoView> {
   // Session state is live, not stored. An agent the person can no longer
   // read tells them nothing about its session.
   const actor = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
     ? agentRegistry.get(row.agentSlug)
     : null
-  const session = actor && row.sessionId
-    ? { isActive: actor.sessions.isActive(row.sessionId), isAwaitingInput: actor.sessions.isAwaitingInput(row.sessionId) }
-    : null
+  const live = actor && row.sessionId ? await actor.sessions.live(row.sessionId) : null
+  const session = live ? { isActive: live.isActive, isAwaitingInput: live.isAwaitingInput } : null
   const column = todoColumn(row.status, session)
   return {
     id: row.id,
@@ -103,7 +102,7 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: Pendin
     starting: row.status === 'draft' && startClaimHeld(row),
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
-    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
+    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(await actor.inputs.snapshot(row.sessionId)) : null,
     // Only work that is idle can be sleeping until its wake.
     pendingWakeAt: column === 'has_updates' && row.agentSlug && row.sessionId
       ? wakes.get(wakeKey(row.agentSlug, row.sessionId)) ?? null
@@ -118,7 +117,7 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: Pendin
 
 async function viewOf(c: Context, row: TodoRow): Promise<TodoView> {
   const readable = await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : [])
-  return toView(row, readable, await pendingWakesFor([row], readable))
+  return await toView(row, readable, await pendingWakesFor([row], readable))
 }
 
 async function respond(c: Context, result: TodoWriteResult) {
@@ -145,7 +144,7 @@ todosRouter.get('/', async (c) => {
   const agentSlugs = [...new Set(rows.flatMap((row) => (row.agentSlug ? [row.agentSlug] : [])))]
   const readable = await getReadableAgentIds(c, agentSlugs)
   const wakes = await pendingWakesFor(rows, readable)
-  return c.json({ todos: rows.map((row) => toView(row, readable, wakes)) })
+  return c.json({ todos: await Promise.all(rows.map((row) => toView(row, readable, wakes))) })
 })
 
 // POST /api/todos — a new draft.
@@ -171,7 +170,7 @@ todosRouter.post('/sessions', async (c) => {
   }
   const result = await addSessionTodo(getCurrentUserId(c), input)
   if (!result) return c.json({ error: 'The todo has changed; reload and try again' }, 409)
-  return c.json(toView(result.todo, readable, await pendingWakesFor([result.todo], readable)), result.created ? 201 : 200)
+  return c.json(await toView(result.todo, readable, await pendingWakesFor([result.todo], readable)), result.created ? 201 : 200)
 })
 
 // PATCH /api/todos/:id — edit a draft.

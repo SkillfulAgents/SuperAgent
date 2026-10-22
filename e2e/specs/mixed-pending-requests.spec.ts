@@ -14,7 +14,7 @@ import {
 
 /**
  * Mixed pending requests across BOTH stores in one turn: two container-side
- * input asks (secret + question, persister pendingInputRequests) plus an
+ * input asks (secret + question, the agent's stream request store) plus an
  * agent-scoped proxy review (ReviewManager). No single-store spec can catch a
  * regression where resolving a wait in one store drops the other store's
  * cards or the awaiting status — the exact class of bug behind the recent

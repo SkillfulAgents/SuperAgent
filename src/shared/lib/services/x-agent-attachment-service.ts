@@ -50,31 +50,35 @@ function normalizeSourcePath(rawPath: string): string {
   return path.posix.join(WORKSPACE_ROOT, relative)
 }
 
+/**
+ * The body, failed once it carries more or fewer bytes than its size said.
+ * `failure` is that failure, on this side: whoever reads the body (another
+ * agent's write) reports it in its own terms.
+ */
 function countedBody(
-  body: ReadableStream<Uint8Array> | null,
+  body: ReadableStream<Uint8Array>,
   expectedBytes: number,
   sourcePath: string,
-): ReadableStream<Uint8Array> {
-  if (!body) {
-    if (expectedBytes === 0) return new ReadableStream({ start: (controller) => controller.close() })
-    throw new XAgentAttachmentError(`Attachment response had no body: ${sourcePath}`, 502)
-  }
+): { body: ReadableStream<Uint8Array>; failure: () => XAgentAttachmentError | undefined } {
   let received = 0
-  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      received += chunk.byteLength
-      if (received > expectedBytes || received > MAX_X_AGENT_ATTACHMENT_BYTES) {
-        controller.error(new XAgentAttachmentError(`Attachment changed while being read: ${sourcePath}`, 409))
-        return
-      }
-      controller.enqueue(chunk)
-    },
-    flush() {
-      if (received !== expectedBytes) {
-        throw new XAgentAttachmentError(`Attachment changed while being read: ${sourcePath}`, 409)
-      }
-    },
-  }))
+  let failure: XAgentAttachmentError | undefined
+  const changed = () => (failure = new XAgentAttachmentError(`Attachment changed while being read: ${sourcePath}`, 409))
+  return {
+    body: body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        received += chunk.byteLength
+        if (received > expectedBytes || received > MAX_X_AGENT_ATTACHMENT_BYTES) {
+          controller.error(changed())
+          return
+        }
+        controller.enqueue(chunk)
+      },
+      flush() {
+        if (received !== expectedBytes) throw changed()
+      },
+    })),
+    failure: () => failure,
+  }
 }
 
 /** Preserve typed transfer errors even when a lower-level stream wraps its cause. */
@@ -89,21 +93,32 @@ export function transferError(error: unknown): unknown {
 }
 
 /** Read size and bounded bytes from the same confined open file. */
-export async function openXAgentFile(files: FileOps, filePath: string): Promise<{ sizeBytes: number; body: ReadableStream<Uint8Array> }> {
-  const file = await files.open(filePath, { confined: true })
+export async function openXAgentFile(
+  files: FileOps,
+  filePath: string,
+): Promise<{ sizeBytes: number; body: ReadableStream<Uint8Array>; failure: () => XAgentAttachmentError | undefined }> {
+  let opened: { size: number; stream: ReadableStream<Uint8Array> }
   try {
-    const sizeBytes = await file.size()
-    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) throw new XAgentAttachmentError('File size is unavailable', 502)
-    if (sizeBytes > MAX_X_AGENT_ATTACHMENT_BYTES) throw new XAgentAttachmentError('File exceeds the transfer limit', 413)
-    if (sizeBytes === 0) {
-      await file.close()
-      return { sizeBytes, body: new ReadableStream({ start: (controller) => controller.close() }) }
-    }
-    return { sizeBytes, body: countedBody(file.stream({ start: 0, end: sizeBytes - 1 }), sizeBytes, filePath) }
+    opened = await files.readSized(filePath, { confined: true })
   } catch (error) {
-    await file.close().catch(() => {})
     throw transferError(error)
   }
+  const { size: sizeBytes, stream } = opened
+  try {
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) throw new XAgentAttachmentError('File size is unavailable', 502)
+    if (sizeBytes > MAX_X_AGENT_ATTACHMENT_BYTES) throw new XAgentAttachmentError('File exceeds the transfer limit', 413)
+  } catch (error) {
+    await stream.cancel().catch(() => {})
+    throw error
+  }
+  if (sizeBytes === 0) return { sizeBytes, body: stream, failure: () => undefined }
+  return { sizeBytes, ...countedBody(stream, sizeBytes, filePath) }
+}
+
+/** The stream, failed once the signal aborts: the write it feeds then discards what it staged. */
+function abortable(body: ReadableStream<Uint8Array>, signal: AbortSignal | undefined): ReadableStream<Uint8Array> {
+  if (!signal) return body
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal })
 }
 
 export function normalizeXAgentAttachmentPaths(paths: string[]): string[] {
@@ -129,7 +144,7 @@ export async function transferXAgentAttachments(input: {
   try {
     for (const [index, sourcePath] of sourcePaths.entries()) {
       input.signal?.throwIfAborted()
-      const { sizeBytes, body } = await openXAgentFile(input.sourceFiles, sourcePath)
+      const { sizeBytes, body, failure } = await openXAgentFile(input.sourceFiles, sourcePath)
       totalBytes += sizeBytes
       if (totalBytes > MAX_X_AGENT_ATTACHMENTS_TOTAL_BYTES) {
         await body.cancel()
@@ -138,11 +153,12 @@ export async function transferXAgentAttachments(input: {
       const filename = sanitizeUploadFilename(path.posix.basename(sourcePath))
       const targetPath = `${targetDirectory}/${index}/${filename}`
       try {
-        await input.targetFiles.write(targetPath, body, { confined: true, overwrite: false, signal: input.signal })
+        await input.targetFiles.write(targetPath, abortable(body, input.signal), { confined: true, overwrite: false })
       } catch (error) {
         // A refused destination may not have consumed the source yet.
         if (!body.locked) await body.cancel().catch(() => {})
-        throw error
+        // The source changed under the read: that is the failure, whatever the write made of it.
+        throw failure() ?? error
       }
       attachments.push({ sourcePath, targetPath, sizeBytes })
     }

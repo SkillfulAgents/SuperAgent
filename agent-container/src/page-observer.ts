@@ -59,6 +59,12 @@ export const pageObservationSchema = z.object({
    * ticks a box or toggles a button is an observed change, not silence.
    */
   stateHash: z.number().default(0),
+  /**
+   * Hash of the visible controls' labels (aria-label or text, first 60
+   * chars each): a view swap that keeps the count and the text length —
+   * results page 1 → 2, an SPA tab — changes it.
+   */
+  labelHash: z.number().default(0),
   /** Visible dialogs, alertdialogs, aria-modal containers and open popovers, with accessible names. */
   top: z.array(topLayerEntrySchema).default([]),
   /** Focused element as `role "name"`, or "nothing focused". */
@@ -78,6 +84,21 @@ export const pageObservationSchema = z.object({
   blocker: z.string().default(''),
   /** Chrome net-error code when the document is Chrome's error page, or ''. */
   netError: z.string().default(''),
+  /**
+   * performance.timeOrigin: when this document started loading. Equal on two
+   * reads ⇒ the same document — a URL change between them was a same-document
+   * navigation (pushState, hash), which keeps every ref. 0 when unreadable.
+   */
+  docStart: z.number().default(0),
+  /**
+   * Visible progress indicators: aria-busy, progressbars, spinner/loader/
+   * skeleton boxes. More of them after an action than before means its
+   * result is still on the way (DuckDuckGo's "More results" button turns
+   * into a spinner and the results land a second later).
+   */
+  busy: z.number().default(0),
+  /** The challenge (`blocker`) is a frame over the site, which is still underneath. */
+  blockerOverlay: z.boolean().default(false),
 })
 
 export type PageObservation = z.infer<typeof pageObservationSchema>
@@ -114,6 +135,9 @@ const INTERACTIVE_SELECTOR =
   '[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="tab"],[role="checkbox"],[role="radio"],' +
   '[role="combobox"],[role="textbox"],[role="switch"],[role="slider"],[contenteditable="true"],[tabindex]:not([tabindex="-1"])'
 const TOP_LAYER_SELECTOR = 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]'
+const BUSY_SELECTOR = '[aria-busy="true"],[role="progressbar"],progress,[class*="spinner" i],[class*="loader" i],[class*="loading" i],[class*="skeleton" i],[id*="spinner" i],[id*="loading" i]'
+/** Same-origin frames whose documents the observer also reads (a demo embedded in a docs page). */
+const FRAME_DOCS_MAX = 8
 /** Attributes whose values feed `stateHash` — visible controls only. */
 const STATE_ATTRS = ['checked', 'aria-checked', 'aria-pressed', 'aria-expanded', 'aria-selected', 'aria-disabled', 'disabled', 'open']
 /**
@@ -148,10 +172,23 @@ const BLOCKER_SIGNATURES: Array<[string, string]> = [
   ['Imperva/Incapsula', 'request unsuccessful\\. incapsula incident id|incapsula incident id'],
   ['Akamai', 'access denied.{0,160}permission to access.{0,200}reference #\\d+\\.[0-9a-f]+\\.\\d+'],
   ['Google', 'unusual traffic from your computer network'],
-  ['PerimeterX', 'press (&|and) hold to confirm you are a human|press (&|and) hold the button'],
+  ['PerimeterX', "press (&|and) hold to confirm you(?: are|'re|’re) a human|press (&|and) hold the button"],
   ['CAPTCHA', 'complete the security check to access|please verify you are a human|prove you are human|are you a robot'],
 ]
 const BLOCKER_MAX_CONTROLS = 3
+/**
+ * A challenge served as a frame over a normal page: the site underneath keeps
+ * its controls and its 200, so neither rule above sees it. Counted only when
+ * the vendor's challenge frame is visible and covers most of the viewport —
+ * the overlay, not a widget in a form. (Target, bench SUP-1265: PerimeterX's
+ * "Human verification challenge" frame over the whole page.)
+ */
+const BLOCKER_OVERLAY_FRAMES: Array<[string, string]> = [
+  // Target serves the modal as iframe#px-captcha-modal (fixed, full viewport,
+  // max z-index) with an untitled challenge frame inside (verified live).
+  ['PerimeterX', 'iframe#px-captcha-modal,iframe[title="Human verification challenge"]'],
+]
+const BLOCKER_OVERLAY_COVER = 0.5
 const BLOCKER_STATUSES = [403, 429, 503]
 
 export interface ObserverOptions {
@@ -168,8 +205,8 @@ export function observerScript(opts: ObserverOptions = {}): string {
   const markers = JSON.stringify(BLOCKER_MARKERS)
   return (
     '(function(){' +
-    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:""};' +
-    'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
+    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,labelHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:"",docStart:0,busy:0,blockerOverlay:false};' +
+    'var ws=function(s){return String(s||"").replace(/[\\u200b\\u200c\\u2060\\ufeff]/g,"").replace(/\\s+/g," ").trim()};var body="";' +
     'var hash=function(s){var h=5381;var lim=Math.min(s.length,' + TEXT_HASH_CAP + ');for(var q=0;q<lim;q++){h=((h<<5)+h+s.charCodeAt(q))|0}return h};' +
     // checkVisibility covers visibility:hidden / opacity:0 — how many dropdowns hide
     // their closed state (Wikipedia's Vector menu keeps layout boxes for hidden
@@ -180,11 +217,19 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{o.url=String(location.href||"")}catch(e){}' +
     'try{o.title=ws(document.title).slice(0,200);o.readyState=String(document.readyState||"");o.contentType=String(document.contentType||"")}catch(e){}' +
     'try{var nav=performance.getEntriesByType("navigation")[0];o.httpStatus=(nav&&nav.responseStatus)|0}catch(e){}' +
+    'try{o.docStart=Number(performance.timeOrigin)||0}catch(e){}' +
+    // The documents read for controls, text, live regions and dialogs: the
+    // page's own and its visible same-origin frames' (an action inside an
+    // embedded demo was "none observed" — headlessui.com). A cross-origin
+    // frame cannot be read.
+    'var docs=[document];try{var fr=document.querySelectorAll("iframe");for(var fi=0;fi<fr.length&&docs.length<=' + FRAME_DOCS_MAX + ';fi++){if(!vis(fr[fi]))continue;try{var fd=fr[fi].contentDocument;if(fd&&fd.body)docs.push(fd)}catch(e){}}}catch(e){}' +
+    'var all=function(sel){var r=[];for(var di=0;di<docs.length;di++){try{r=r.concat([].slice.call(docs[di].querySelectorAll(sel)))}catch(e){}}return r};' +
+    'var frameText="";for(var dj=1;dj<docs.length;dj++){try{frameText+=" "+ws(docs[dj].body.innerText)}catch(e){}}' +
     // Text: the whole page for the footer's count; the content region for diffs and the preview.
     'try{body=ws(document.body&&document.body.innerText);o.textChars=body.length}catch(e){}' +
-    'try{var m=document.querySelector("main,[role=main]");var ct=m?ws(m.innerText):body;o.contentChars=ct.length;o.contentHash=hash(ct);o.preview=ct.slice(0,' + previewChars + ')}catch(e){}' +
+    'try{var m=document.querySelector("main,[role=main]");var ct=m?ws(m.innerText):body;o.preview=ct.slice(0,' + previewChars + ');ct+=frameText;o.contentChars=ct.length;o.contentHash=hash(ct)}catch(e){}' +
     // Live regions.
-    'try{var seenL={};var ls=document.querySelectorAll(' + JSON.stringify(LIVE_SELECTOR) + ');' +
+    'try{var seenL={};var ls=all(' + JSON.stringify(LIVE_SELECTOR) + ');' +
     'for(var i=0;i<ls.length&&o.liveRegions.length<' + LIVE_REGION_MAX + ';i++){if(!vis(ls[i]))continue;var s=ws(ls[i].innerText);if(!s||seenL[s])continue;seenL[s]=1;o.liveRegions.push(s.slice(0,' + LIVE_REGION_CHARS + '))}}catch(e){}' +
     // Iframes (offsetParent is fine here: frames are never position:fixed toasts).
     'try{o.iframes=[].slice.call(document.querySelectorAll("iframe")).filter(function(f){return f.offsetParent!==null})' +
@@ -197,24 +242,33 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'var nm=String(f.getAttribute("aria-label")||"");if(!nm){var lb=f.getAttribute("aria-labelledby");if(lb){nm=String(lb).split(/\\s+/).map(function(id){var le=document.getElementById(id);return le?String(le.innerText||le.textContent||""):""}).join(" ").replace(/\\s+/g," ").trim()}}' +
     'if(!nm)nm=String(f.title||"");return{title:nm,host:host,sameOrigin:same}})}catch(e){}' +
     // Interactive census, and the state of every visible control.
-    'var act=null;try{act=document.activeElement}catch(e){}var actIx=-1;' +
-    'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";' +
-    'for(var j=0;j<els.length;j++){var ce=els[j];if(ce===act)actIx=j;if(!vis(ce))continue;o.interactive++;' +
-    'for(var j2=0;j2<sa.length;j2++){var av=ce.getAttribute(sa[j2]);if(av!==null)st+=sa[j2]+"="+av+";"}' +
-    'if(typeof ce.checked==="boolean")st+="c="+(ce.checked?1:0)+";";if(typeof ce.selectedIndex==="number")st+="s="+ce.selectedIndex+";";st+="|"}' +
-    'o.stateHash=hash(st)}catch(e){}' +
+    // Focus inside a same-origin frame is the element in the frame.
+    'var act=null;try{act=document.activeElement;for(var fg=0;act&&act.tagName==="IFRAME"&&fg<4;fg++){var ad=null;try{ad=act.contentDocument}catch(e){}if(!ad)break;act=ad.activeElement}}catch(e){}var actIx=-1;' +
+    // State is recorded only for controls that have some, each with its label:
+    // a link added or removed is a census change, not a state change.
+    'try{var els=all(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";var lbs="";' +
+    'for(var j=0;j<els.length;j++){var ce=els[j];if(ce===act)actIx=j;if(!vis(ce))continue;o.interactive++;var lb1=String(ce.getAttribute("aria-label")||ce.textContent||"").slice(0,60);var cst="";' +
+    'for(var j2=0;j2<sa.length;j2++){var av=ce.getAttribute(sa[j2]);if(av!==null)cst+=sa[j2]+"="+av+";"}' +
+    'if(typeof ce.checked==="boolean")cst+="c="+(ce.checked?1:0)+";";if(typeof ce.selectedIndex==="number")cst+="s="+ce.selectedIndex+";";if(cst)st+=lb1+":"+cst+"|";' +
+    'lbs+=lb1+"|"}' +
+    'o.stateHash=hash(st);o.labelHash=hash(lbs)}catch(e){}' +
+    'try{var bz=all(' + JSON.stringify(BUSY_SELECTOR) + ');for(var bi=0;bi<bz.length;bi++){if(vis(bz[bi]))o.busy++}}catch(e){}' +
     // Top layer.
     'try{var name=function(el){var n=el.getAttribute("aria-label")||"";' +
     'if(!n){var lb=el.getAttribute("aria-labelledby");if(lb){var le=document.getElementById(lb.split(" ")[0]);if(le)n=le.innerText}}' +
     'if(!n){var h=el.querySelector("h1,h2,h3,h4,[role=heading]");if(h)n=h.innerText}' +
     'if(!n)n=el.innerText;return ws(n).slice(0,80)};' +
-    'var tops=[].slice.call(document.querySelectorAll(' + JSON.stringify(TOP_LAYER_SELECTOR) + '));' +
-    'try{tops=tops.concat([].slice.call(document.querySelectorAll(":popover-open")))}catch(e){}' +
-    'var seenT={};for(var k=0;k<tops.length&&o.top.length<6;k++){var el=tops[k];if(!vis(el))continue;' +
+    'var tops=all(' + JSON.stringify(TOP_LAYER_SELECTOR) + ');' +
+    'try{tops=tops.concat(all(":popover-open"))}catch(e){}' +
+    // In the viewport too: an off-canvas drawer with role=dialog is not
+    // open on top (Meta's Ad Library: a "Log in" navigation drawer).
+    'var inView=function(el){try{var r=el.getBoundingClientRect();var w=el.ownerDocument.defaultView||window;return r.width>0&&r.height>0&&r.right>0&&r.bottom>0&&r.left<w.innerWidth&&r.top<w.innerHeight}catch(e){return true}};' +
+    'var floating=function(el){try{if(el.getAttribute("aria-modal")==="true")return true;try{if(el.matches(":modal")||el.matches(":popover-open"))return true}catch(e){}var w=el.ownerDocument.defaultView||window;var p0=w.getComputedStyle(el).position;if(p0==="fixed"||p0==="absolute")return true;for(var a=el.parentElement,i=0;a&&i<4;a=a.parentElement,i++){if(w.getComputedStyle(a).position==="fixed")return true}return false}catch(e){return true}};' +
+    'var seenT={};for(var k=0;k<tops.length&&o.top.length<6;k++){var el=tops[k];if(!vis(el)||!inView(el)||!floating(el))continue;' +
     'var kind=el.getAttribute("role")||(el.tagName==="DIALOG"?"dialog":el.matches(":popover-open")?"popover":"dialog");' +
     'var key=kind+"|"+name(el);if(seenT[key])continue;seenT[key]=1;o.top.push({kind:kind,name:name(el)})}}catch(e){}' +
     // Focus.
-    'try{var a=document.activeElement;if(!a||a===document.body){o.focus="nothing focused"}else{' +
+    'try{var a=act;if(!a||a===document.body||(a.ownerDocument&&a.ownerDocument!==document&&a===a.ownerDocument.body)){o.focus="nothing focused"}else{' +
     'var tag=a.tagName.toLowerCase();var role=a.getAttribute("role");var an=a.getAttribute("aria-label")||(a.labels&&a.labels[0]&&a.labels[0].innerText)||a.getAttribute("placeholder")||a.getAttribute("name")||a.innerText||"";' +
     'var implied={a:"link",input:a.type==="checkbox"||a.type==="radio"||a.type==="submit"||a.type==="button"?a.type:"textbox",select:"combobox",textarea:"textbox"};' +
     'o.focus=(role||implied[tag]||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"");' +
@@ -230,6 +284,8 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{if(document.getElementById("main-frame-error")||/^chrome-error:/.test(o.url)){var em=/\\bERR_[A-Z_]{3,}\\b/.exec(body);o.netError=em?em[0]:"net error"}}catch(e){}' +
     'try{if(/^https?:\\/\\/[^\\/]*google\\.[a-z.]+\\/sorry\\//i.test(o.url))o.blocker="Google";' +
     'if(!o.blocker&&o.interactive<=' + BLOCKER_MAX_CONTROLS + '){var mk=' + markers + ';for(var g0=0;g0<mk.length&&!o.blocker;g0++){try{if(document.querySelector(mk[g0][1]))o.blocker=mk[g0][0]}catch(e){}}}' +
+    'if(!o.blocker){var ov=' + JSON.stringify(BLOCKER_OVERLAY_FRAMES) + ';var vw=(typeof innerWidth==="number"&&innerWidth)||1,vh=(typeof innerHeight==="number"&&innerHeight)||1;for(var g1=0;g1<ov.length&&!o.blocker;g1++){try{var fs=document.querySelectorAll(ov[g1][1]);for(var g2=0;g2<fs.length&&!o.blocker;g2++){if(!vis(fs[g2]))continue;var rr=fs[g2].getBoundingClientRect();' +
+    'var cw=Math.max(0,Math.min(rr.right,vw)-Math.max(rr.left,0)),chh=Math.max(0,Math.min(rr.bottom,vh)-Math.max(rr.top,0));if(cw*chh/(vw*vh)>=' + BLOCKER_OVERLAY_COVER + '){o.blocker=ov[g1][0];o.blockerOverlay=true}}}catch(e){}}}' +
     'if(!o.blocker&&' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
     'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(hay))o.blocker=sg[g][0]}}}catch(e){}' +
     'return JSON.stringify(o)})()'

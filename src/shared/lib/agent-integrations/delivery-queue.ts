@@ -1,4 +1,4 @@
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import { z } from 'zod'
 import { captureException } from '../error-reporting'
 import { InvalidDeliveryEnvelope, parseDeliveryEnvelope } from './delivery-schema'
@@ -165,7 +165,7 @@ export class IntegrationDeliveryQueue {
         return result
       }
       catch (error) {
-        if (error instanceof MessageNotAcceptedError) {
+        if (deliveryFailure(error)?.accepted === false) {
           handedOff = false
           if (!(await this.store.change(row.id, owner, { state: 'preparing' }))) throw new DeliveryCancelled()
         }

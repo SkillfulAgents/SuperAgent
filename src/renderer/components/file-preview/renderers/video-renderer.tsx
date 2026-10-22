@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { Play, Pause, MessageSquarePlus } from 'lucide-react'
+import { Expand, Play, Pause, MessageSquarePlus } from 'lucide-react'
 import { useCommentBox } from '../comments/use-comment-box'
 import { frameSeconds, useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
@@ -21,6 +21,26 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [fullscreenSupported, setFullscreenSupported] = useState(false)
+
+  useEffect(() => {
+    const video = videoRef.current
+    setFullscreenSupported(typeof video?.requestFullscreen === 'function')
+    const updateNativeControls = () => {
+      if (video) video.controls = document.fullscreenElement === video
+    }
+    document.addEventListener('fullscreenchange', updateNativeControls)
+    return () => document.removeEventListener('fullscreenchange', updateNativeControls)
+  }, [])
+
+  const enterFullscreen = useCallback(() => {
+    const video = videoRef.current
+    if (!video || typeof video.requestFullscreen !== 'function') return
+    video.controls = true
+    void video.requestFullscreen().catch(() => {
+      video.controls = false
+    })
+  }, [])
 
   const surface = useMemo(() => ({ time: { media: videoRef, track: trackRef, frame: frameRef } }), [])
   const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, filePath, agentSlug)
@@ -101,7 +121,7 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
         </div>
 
         {/* Transport + add-comment affordance. */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3" data-testid="video-controls">
           <button
             type="button"
             onClick={togglePlay}
@@ -116,17 +136,32 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
           <VolumeControl mediaRef={videoRef} />
-          {enabled && (
-            <button
-              type="button"
-              onClick={() => open()}
-              disabled={isOpen}
-              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
-              data-testid="video-add-comment"
-            >
-              <MessageSquarePlus className="h-3.5 w-3.5" />
-              Add Comment
-            </button>
+          {(fullscreenSupported || enabled) && (
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {fullscreenSupported && (
+                <button
+                  type="button"
+                  onClick={enterFullscreen}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background transition-colors hover:bg-muted"
+                  title="Full screen"
+                  aria-label="Full screen"
+                >
+                  <Expand className="h-4 w-4" />
+                </button>
+              )}
+              {enabled && (
+                <button
+                  type="button"
+                  onClick={() => open()}
+                  disabled={isOpen}
+                  className="flex shrink-0 items-center gap-1 whitespace-nowrap px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
+                  data-testid="video-add-comment"
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5" />
+                  Add Comment
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

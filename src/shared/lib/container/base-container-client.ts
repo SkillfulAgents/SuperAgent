@@ -1,7 +1,6 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { isProviderEnvVar } from '../llm-provider/provider-env'
-import { isQueuedSessionSend } from './session-send-context'
-import { rememberSessionRuntime, type ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import type { ConnectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { prewarmConnectionRuntime, sessionConnectionRuntime } from '@shared/lib/llm-provider/session-connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
@@ -90,6 +89,20 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
 /**
  * Get the PATH environment variable with common binary locations added.
  */
+/**
+ * The session's turns run on this runtime now: its agent keeps the non-secret
+ * facts its errors and usage are read with. Best-effort, after the container
+ * took the session or the message: a failure here must not unsay that.
+ */
+async function recordSessionRuntime(agentId: string, sessionId: string, runtime: ConnectionRuntime): Promise<void> {
+  try {
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    await agentRegistry.get(agentId).sessions.recordRuntime(sessionId, { provider: runtime.provider, modelContextWindows: runtime.modelContextWindows })
+  } catch (error) {
+    console.error(`[ContainerClient] Could not record the runtime of session ${sessionId}:`, error)
+  }
+}
+
 export function getEnhancedPath(): string {
   const currentPath = process.env.PATH || ''
   const platformPaths = COMMON_BINARY_PATHS[process.platform] || []
@@ -1417,7 +1430,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       const session = await response.json()
-      rememberSessionRuntime(this.config.agentId, session.id, llmRuntime)
+      await recordSessionRuntime(this.config.agentId, session.id, llmRuntime)
       return session
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
@@ -1485,7 +1498,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const speed = options?.speed
     // A queued follow-up belongs to the running turn. It must not resolve a
     // deleted connection, rotate credentials, or rebuild the active query.
-    const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
+    const preserveRuntime = options?.preserveRuntime === true
     let llmRuntime: ConnectionRuntime | undefined
     const result: SendMessageResult = {}
     if (!preserveRuntime) {
@@ -1504,7 +1517,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           },
         )
         llmRuntime = await sessionConnectionRuntime(selected, this.config.agentId)
-        rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
+        await recordSessionRuntime(this.config.agentId, sessionId, llmRuntime)
         result.selection = { llmProviderId: selected.llmProviderId, model: selected.model }
         // The container checks its credentials back through llm-runtime/resolve,
         // which serves the STORED binding and refuses another, so a changed
@@ -1811,7 +1824,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         rejectReady(new Error('Session stream closed before initialization'))
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
-        // This allows the message persister to handle the disconnection
+        // This allows the session's LiveSession to handle the disconnection
         const closeMessage: StreamMessage = {
           type: 'connection_closed',
           content: { type: 'connection_closed' },
@@ -1828,7 +1841,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
-      // Notify the callback so the consumer (e.g. MessagePersister) can react to
+      // Notify the callback so the consumer (e.g. LiveSessions) can react to
       // the failed (re)subscribe instead of relying on the `ready` promise —
       // callers that discard `ready` (e.g. reconnect) would otherwise leave a
       // free-floating rejected promise and never learn the session is gone.

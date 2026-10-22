@@ -1,6 +1,6 @@
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import type { SessionMetadata } from '@shared/lib/types/agent'
@@ -16,7 +16,7 @@ import { readWidgetLogTail } from './widget-service'
  * sit there failing silently until a human noticed the error badge. Instead the
  * platform opens an automated session ("your widget script failed, here is the
  * error, fix it"), exactly like a cron run: hidden from the session list,
- * `automationStatus` finalized by the persister, promoted to interactive only
+ * `automationStatus` finalized by its live session, promoted to interactive only
  * if the agent has to ask the user something.
  *
  * The guards matter more than the trigger. A permanently broken widget must
@@ -118,7 +118,8 @@ export async function openWidgetRepairSession(
 ): Promise<RepairOutcome> {
   // The agent is mid-turn: it may be editing this widget right now, and its
   // own refresh_widget call already told it what broke.
-  if (agentRegistry.get(agentSlug).sessions.hasActive() || opening.has(agentSlug)) {
+  // Nothing awaits between the check and the add: one repair opens at a time.
+  if ((await agentRegistry.get(agentSlug).live()).activeSessionIds.length > 0 || opening.has(agentSlug)) {
     return { started: false, reason: 'agent-busy' }
   }
   opening.add(agentSlug)
@@ -175,27 +176,27 @@ async function startRepairSession(
     const models = getEffectiveModels()
     const resolved = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
-    const session = await actor.sessions.create({
-      ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
-      initialMessage: buildPrompt(widgetSlug, error, logTail),
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const session = await actor.sessions.start({
+      create: {
+        ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
+        initialMessage: buildPrompt(widgetSlug, error, logTail),
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: 'Invoked to fix widget',
+      metadata: {
+        isWidgetRepair: true,
+        widgetRepairSlug: widgetSlug,
+        automationStatus: 'running',
+      },
     })
-
-    await actor.sessions.register(session.id, 'Invoked to fix widget', {
-      isWidgetRepair: true,
-      widgetRepairSlug: widgetSlug,
-      automationStatus: 'running',
-    })
-    await actor.sessions.subscribeStream(session.id, session.id)
-    actor.sessions.markActive(session.id)
     // The home entry and inbound history may already be mounted.
-    messagePersister.broadcastGlobal({ type: 'session_updated', agentSlug, sessionId: session.id })
+    globalFeed.publish({ type: 'session_updated', agentSlug, sessionId: session.id })
     console.log(`[WidgetRepair] ${agentSlug}/${widgetSlug}: opened repair session ${session.id}`)
     return { started: true, sessionId: session.id }
   } catch (err) {

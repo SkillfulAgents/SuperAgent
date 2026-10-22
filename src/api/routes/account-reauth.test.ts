@@ -18,19 +18,23 @@ const send = vi.fn()
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => authMode }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => currentUserId }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    syncAgentSessionsAwaiting: vi.fn(), getActiveSessionIdsForAgent: () => activeSessions(),
-    isSessionActive: () => true, getTurnGeneration: () => 3, markSessionInterrupted: vi.fn(),
-    withSessionSend: async (_agent: string, _session: string, _client: unknown, deliver: () => Promise<void>) => deliver(),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    activeIds: () => activeSessions(), isActive: () => true, turnGeneration: () => 3,
+  }),
 }))
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
     attachAgentWorkspaces: () => {},
+    attachAgentSessions: () => {},
+    clearRuntimes: () => {},
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),
+      getHealthWarnings: () => [],
+      isStale: () => false,
+      idleSince: () => null,
+      ensureRunning: async () => {},
       getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
     }),
   },
@@ -39,14 +43,20 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: (...args: unknown[]) => syncEnvironment(...args),
 }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
+// The replacement notice's delivery reads the session; this agent has no files.
+vi.mock('@shared/lib/services/session-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-service')>()),
+  getSessionMetadata: async () => null,
+  updateSessionMetadata: async () => undefined,
+}))
 vi.mock('@shared/lib/platform-attribution', () => ({}))
 vi.mock('@shared/lib/utils/file-storage', () => ({ resolveAgentId: vi.fn() }))
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() }))
 
 import accountReauth from './account-reauth'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }
 let app: Hono<TestEnv>
@@ -93,7 +103,7 @@ beforeEach(() => {
   syncEnvironment.mockReset().mockResolvedValue(true)
   activeSessions.mockReset().mockReturnValue([])
   interrupt.mockReset().mockResolvedValue({ interrupted: true, processKept: true })
-  send.mockReset().mockResolvedValue(undefined)
+  send.mockReset().mockResolvedValue({})
   userInputRequestManager.reset()
   for (const id of ['owner', 'member', 'viewer', 'stranger']) {
     testDb.insert(schema.user).values({ id, name: id, email: `${id}@test.example` }).run()
@@ -123,8 +133,8 @@ beforeEach(() => {
   app.route('/api/agents', accountReauth)
 })
 
-afterEach(() => {
-  accountReauthManager.rejectAll()
+afterEach(async () => {
+  await agentRegistry.evictAll()
   userInputRequestManager.reset()
   sqlite.close()
 })
@@ -138,7 +148,7 @@ describe('account reauthentication replacement', () => {
     expect(interrupt).toHaveBeenCalledWith('running-session', { scope: 'turn' })
     expect(send).toHaveBeenCalledWith('running-session',
       expect.stringContaining('[SYSTEM] Connection to "Slack" was replaced.'),
-      expect.any(String), { shouldQuery: true })
+      expect.any(String), expect.objectContaining({ shouldQuery: true }))
     expect(send.mock.calls[0][1]).toContain('ID: mine.')
   })
 
@@ -149,12 +159,12 @@ describe('account reauthentication replacement', () => {
     const response = await replace(request.id)
 
     expect(response.status).toBe(200)
-    expect(getReplacementAccountId(await request.settled)).toBe('mine')
+    expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mappedAccounts('shared-agent')).toEqual(['mine'])
     expect(mappedAccounts('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.connectedAccounts).where(eq(schema.connectedAccounts.id, 'old')).get()).toEqual(oldRecord)
     expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
-    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts', expect.objectContaining({ slug: 'shared-agent' }))
+    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts', expect.objectContaining({ slug: 'shared-agent' }), undefined)
   })
 
   it.each(['viewer', 'stranger'])('rejects a %s through the real agent ACL check', async (userId) => {
@@ -223,7 +233,7 @@ describe('account reauthentication replacement', () => {
     const request = park()
     const response = await replace(request.id)
     expect(await response.json()).toEqual({ success: true, liveRefresh: false, sessionNotification: false })
-    expect(getReplacementAccountId(await request.settled)).toBe('mine')
+    expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mappedAccounts('shared-agent')).toEqual(['mine'])
   })
 

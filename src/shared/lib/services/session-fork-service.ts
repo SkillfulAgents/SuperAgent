@@ -3,8 +3,9 @@
  *
  * Lives next to register/delete rather than in the route so the rollback
  * (register fails → host delete + container delete) is one call. Kept out of
- * session-service.ts because this path talks to the container and the
- * persister, and session-service is already in that import graph.
+ * session-service.ts because this path talks to the container and the live
+ * sessions through the agent's actor, and session-service is already in that
+ * import graph.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'
@@ -15,7 +16,6 @@ import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
-import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
 
@@ -52,7 +52,7 @@ export async function forkSession(
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
-  if (actor.sessions.isActive(sourceId)) {
+  if ((await actor.sessions.live(sourceId)).isActive) {
     throw new SessionForkFailedError(409, 'Session is currently running')
   }
 
@@ -148,11 +148,7 @@ export async function forkSession(
 async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string, opts: { authors: boolean }): Promise<void> {
   const slug = actor.slug
   if (!opts.authors && !(await hasIntegrationMessages(slug, sourceId))) return
-  const pairs: { newUuid: string; oldUuid: string }[] = []
-  for await (const raw of actor.messages.rawEntries(newId)) {
-    const parsed = forkedUserLineSchema.safeParse(raw)
-    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
-  }
+  const pairs = await actor.messages.forkedUserUuids(newId)
   if (pairs.length === 0) return
 
   const rows = await db

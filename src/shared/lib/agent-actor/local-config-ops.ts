@@ -15,7 +15,7 @@ import * as path from 'path'
 import { withCrossProcessFileLock, withFileLock } from '@shared/lib/utils/file-storage'
 import { CONFIG_DOCS, configDocMode, type ConfigDocId } from './config-schema'
 import { createConfigOps } from './config-ops'
-import type { ConfigOps, FileOps } from './types'
+import type { FileOps, StoreConfigOps } from './types'
 
 export interface LocalConfigOpsDeps {
   files: FileOps
@@ -23,7 +23,7 @@ export interface LocalConfigOpsDeps {
   workspaceHostPath: () => string
 }
 
-export function createLocalConfigOps(deps: LocalConfigOpsDeps): ConfigOps {
+export function createLocalConfigOps(deps: LocalConfigOpsDeps): StoreConfigOps {
   const hostPathOf = (id: ConfigDocId) => path.join(deps.workspaceHostPath(), ...CONFIG_DOCS[id].path.split('/'))
 
   return createConfigOps(deps.files, {

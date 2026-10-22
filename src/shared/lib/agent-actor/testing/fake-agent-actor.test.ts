@@ -5,9 +5,9 @@ import { hostFromManagerMock } from './host-from-manager-mock'
 describe('createFakeAgentActor', () => {
   it('gives every method a mock on first access and keeps it', async () => {
     const actor = createFakeAgentActor('a')
-    await actor.messages.send('s1', 'hi')
-    expect(actor.messages.send).toHaveBeenCalledWith('s1', 'hi')
-    expect(actor.messages.send).toBe(actor.messages.send)
+    await actor.messages.deliver({ sessionId: 's1', content: 'hi' })
+    expect(actor.messages.deliver).toHaveBeenCalledWith({ sessionId: 's1', content: 'hi' })
+    expect(actor.messages.deliver).toBe(actor.messages.deliver)
     expect(actor.sessions.exists).not.toHaveBeenCalled()
   })
 
@@ -35,22 +35,22 @@ describe('createFakeAgentActor', () => {
     await expect(actor.sessions.exists('s1')).resolves.toBe(true)
     expect(actor.inputs.reviews.submit('r1', 'allow')).toBe(true)
     // Sibling groups and untouched methods are still plain mocks.
-    expect(actor.inputs.computerUse.grabbedApp()).toBeUndefined()
+    expect(actor.inputs.computerUse.setGrabbedApp('Calculator')).toBeUndefined()
     expect(actor.inputs.get('r1')).toBeUndefined()
   })
 })
 
 describe('createFakeRegistry', () => {
-  it('hands out one fake per slug and reports only the slugs told to be running', () => {
-    const registry = createFakeRegistry([], { runningSlugs: ['b'] })
+  it('hands out one fake per slug, until it is evicted', async () => {
+    const registry = createFakeRegistry()
     const a = registry.get('a')
     expect(registry.get('a')).toBe(a)
-    expect(registry.peek('c')).toBeUndefined()
-    expect(registry.running().map((actor) => actor.slug)).toEqual(['b'])
+    expect(registry.actors.has('c')).toBe(false)
     expect(registry.fake('a').sessions.list).toBe(registry.get('a').sessions.list)
 
-    registry.evict('a')
-    expect(registry.peek('a')).toBeUndefined()
+    await registry.evict('a')
+    expect(registry.actors.has('a')).toBe(false)
+    expect(registry.get('a')).not.toBe(a)
   })
 })
 

@@ -28,4 +28,6 @@ export interface NotificationEvent {
   actionContext?: Record<string, unknown>
   /** Type-specific extras carried on the client broadcast (taskId, triggerId, …). */
   extra?: Record<string, unknown>
+  /** A targeted notification (a mention): every channel delivers it to this user only. */
+  recipientUserId?: string
 }

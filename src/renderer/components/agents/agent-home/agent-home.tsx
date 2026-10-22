@@ -237,7 +237,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
     initialAttachments: carryover?.attachments,
-    initialSecuredSecrets: carryover?.securedSecrets,
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
@@ -469,6 +468,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 onChoice={composer.mountDialog.onChoice}
                 folderName={composer.mountDialog.folderName}
               />
+              {composer.chipDialog}
               <form
                 onSubmit={composer.handleSubmit}
                 className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
@@ -491,11 +491,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   secureSecrets={{
                     agentSlug: agent.slug,
                     potentialSecrets: composer.potentialSecrets,
-                    securedSecrets: composer.securedSecrets,
                     onDismiss: composer.dismissPotentialSecret,
                     onSecure: composer.securePotentialSecret,
-                    onRemove: composer.removeSecuredSecrets,
                   }}
+                  chipContext={composer.chipContext}
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>

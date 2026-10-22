@@ -1,10 +1,19 @@
 export { MemoryError, MAX_MEMORY_BYTES } from './memory-schema'
-export { agentRegistry, completeMcpReauth } from './registry'
+export {
+  deliveryFailure,
+  startFailure,
+  type DeliveryErrorCode,
+  type DeliveryFailure,
+  type StartErrorCode,
+  type StartFailure,
+} from './delivery-errors'
+export { agentRegistry } from './registry'
 export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './agent-catalog'
 export { identityFromInstructions } from './agent-directories'
 export { copyHostDirIntoWorkspace } from './copy-into-workspace'
 export { CONFIG_DOCS, ConfigDocError, type ConfigDoc, type ConfigDocErrorCode, type ConfigDocId } from './config-schema'
+export { updateConfigDoc } from './update-config-doc'
 // Pure helpers of the fenced transcript modules that routes still need: how a
 // media reference is spelled in a URL, and how session lists are ordered and
 // capped.
@@ -28,6 +37,7 @@ export type {
   AgentActor,
   AgentCatalog,
   AgentIdentityChanges,
+  AgentLiveSummary,
   AgentPlacement,
   AgentRecord,
   AgentRegistry,
@@ -36,6 +46,8 @@ export type {
   ComputerUseOps,
   ConfigOps,
   ContainerOps,
+  DeliverRequest,
+  DeliverResult,
   FileEntry,
   FileKind,
   FileOps,
@@ -48,8 +60,15 @@ export type {
   OpenFile,
   SubagentRef,
   OpenWebSocketInit,
+  WebSocketTarget,
   ReviewOps,
+  SessionLiveState,
   SessionOps,
+  StartSessionRequest,
+  StopSessionOptions,
+  StopSessionResult,
   UsageOps,
+  UserMessageEcho,
   WriteOptions,
 } from './types'
+export type { SessionEvent, WireFrame } from './live/session-channel'

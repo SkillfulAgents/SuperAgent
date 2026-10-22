@@ -2,6 +2,8 @@ import { describeEmailMessage } from './message-display'
 import { emailSessionPolicy } from './definitions'
 export { emailDefinition } from './definitions'
 import { composeEmailReply } from './composition'
+import { emailAnswer, renderRequestEmail, requestQuestions } from './request-email'
+import { resolveAppLinkContext, withSessionUrl } from '../agent-integrations/app-link'
 import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from './directory'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
@@ -69,15 +71,19 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     return true
   }
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<boolean> {
-    if (!context.sessionId || !context.actor.sessions.isAwaitingInput(context.sessionId)) return false
-    const question = context.actor.inputs.open(context.sessionId).find(request => request.kind === 'question')
+    if (!context.sessionId) return false
+    const live = await context.actor.sessions.live(context.sessionId)
+    if (!live.isAwaitingInput) return false
     const message = emailMessageSchema.parse(event.payload)
-    if (question && message.text) {
-      const payload = z.object({ questions: z.array(z.object({ question: z.string() })).length(1) }).safeParse(question.payload)
-      if (payload.success) {
-        await this.emitEvent({ type: 'response', externalId: context.externalId, requestId: question.id, requestKind: 'input', value: { answers: { [payload.data.questions[0].question]: message.text } } })
-        return true
-      }
+    // Only agent users are emailed requests (see deliver), so anyone else's mail is
+    // about something else: it waits behind the request as an ordinary message.
+    const sender = emailAddress(message.from)
+    if (!sender || !(await agentUserEmails(context.integration.agentSlug)).has(sender)) return false
+    const question = live.openRequests.find(request => request.kind === 'question')
+    const questions = question && requestQuestions(question)
+    if (question && questions?.length === 1 && message.text) {
+      await this.emitEvent({ type: 'response', externalId: context.externalId, requestId: question.id, requestKind: 'input', value: { answers: { [questions[0].question]: emailAnswer(questions[0], message.text) } } })
+      return true
     }
     // Email can neither approve nor cancel an outstanding privileged request.
     return true
@@ -101,6 +107,12 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   }
   async send(input: unknown): Promise<EmailMessage> {
     const request = emailSendSchema.parse(input)
+    const { to, cc } = await this.addressed(request)
+    // Resolve reply-all ourselves so the gateway cannot add unchecked recipients.
+    return this.submit({ ...request, to, cc, replyAll: false })
+  }
+  /** A send's To and Cc as the gateway would resolve them, after the current access policy. */
+  private async addressed(request: EmailSend): Promise<{ to: string[]; cc: string[]; members: Set<string> }> {
     const current = await getAgentIntegration(this.record.id)
     if (!current || current.status !== 'active' || !this.isAvailable()) throw new EmailPolicyError('Email integration is not active')
     const config = parseEmailIntegrationConfig(current.config)
@@ -120,8 +132,12 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     const normalizedCc = [...new Set(cc.map(value => emailAddress(value) ?? ''))].filter(value => value !== config.address.toLowerCase() && !to.includes(value))
     const recipients = [...to, ...normalizedCc, ...request.bcc]
     if (!to.length || recipients.length > 20 || recipients.some(value => !recipientAllowed(config, value, members))) throw new EmailPolicyError('One or more recipients are not allowed by this email access level')
-    // Resolve reply-all ourselves so the gateway cannot add unchecked recipients.
-    return this.submit({ ...request, to, cc: normalizedCc, replyAll: false })
+    return { to, cc: normalizedCc, members }
+  }
+  /** The message a reply in this session answers. */
+  private async replyParent(context: IntegrationSessionContext): Promise<string | undefined> {
+    return context.replyTarget?.messageId ?? this.admissions.get(context.externalId)?.message.id
+      ?? (await this.getThread(context.externalId)).findLast(message => message.direction === 'inbound' && message.status !== 'automated')?.id
   }
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] {
     return [
@@ -134,11 +150,19 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
     if (output.type === 'request-opened') {
       if (output.request.autoApproved) return
-      const payload = z.object({ questions: z.array(z.object({ question: z.string() })).length(1) }).safeParse(output.request.payload)
-      const text = output.request.kind === 'question' && payload.success
-        ? payload.data.questions.map(question => question.question).join('\n\n')
-        : 'This conversation needs your attention in the Gamut app. Please open the app to review it. Email replies cannot approve privileged actions.'
-      await this.deliver(context, { type: 'message', text })
+      const parentId = await this.replyParent(context)
+      if (!parentId) return
+      const link = resolveAppLinkContext(context.integration.agentSlug)
+      // The desktop's own scheme is no use in a mail client, which strips or cannot open it.
+      const appUrl = link.isDesktop ? null : withSessionUrl(link, context.sessionId)?.url ?? null
+      const { text, html } = renderRequestEmail(output.request, appUrl)
+      const hash = createHash('sha256').update(JSON.stringify([this.record.id, output.request.id, parentId, text, html])).digest('hex')
+      const request = emailSendSchema.parse({ text, html, replyToMessageId: parentId, idempotencyKey: `request:${hash}` })
+      const { to, cc, members } = await this.addressed(request)
+      // Only the agent's own users are asked by email. A request in anyone
+      // else's thread waits in the app for those users.
+      if (![...to, ...cc].every(address => members.has(address))) return
+      await this.submit({ ...request, to, cc, replyAll: false })
       return
     }
     if (output.type === 'turn-failed') { this.turns.delete(this.turnKey(context)); return }
@@ -169,8 +193,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     // Claim before any asynchronous work so duplicate completion events cannot
     // compose the same buffer twice. Failures use the normal manager error path.
     if (this.turns.get(this.turnKey(context)) === turn) this.turns.delete(this.turnKey(context))
-    const parentId = context.replyTarget?.messageId ?? this.admissions.get(context.externalId)?.message.id
-      ?? (await this.getThread(context.externalId)).findLast(message => message.direction === 'inbound' && message.status !== 'automated')?.id
+    const parentId = await this.replyParent(context)
     if (!parentId) return
     const parts = turn.parts.filter(part => part.trim())
     const hash = createHash('sha256').update(JSON.stringify([this.record.id, context.sessionId, parentId, parts, turn.attachments])).digest('hex')

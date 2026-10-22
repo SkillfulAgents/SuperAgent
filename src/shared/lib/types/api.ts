@@ -42,6 +42,8 @@ export interface ApiAgent {
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** One of its sessions has an unread notification that tags the viewer. */
+  hasUnreadMention?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
@@ -115,6 +117,8 @@ export interface ApiDiscoverableAgent {
   category?: string
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon?: string
+  /** The template's orb, when its skillset names one. */
+  avatar?: AgentAvatar
   tags?: string[]
   /** Services the template connects to; `slug` matches the service-icon set. */
   worksWith?: { type: string; slug: string }[]
@@ -137,6 +141,8 @@ export interface ApiSession {
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** An unread notification that tags the viewer: drawn as an @, not a dot. */
+  hasUnreadMention?: boolean
   lastUsage?: SessionUsage
   // Present when session was created by a scheduled task or webhook trigger
   scheduledTaskId?: string
@@ -452,12 +458,16 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
   sessionId: string
   agentSlug: string
   title: string
   body: string
   isRead: boolean
+  /** Set on a mention: it is this user's alone. */
+  recipientUserId?: string | null
+  /** The message a mention points at. */
+  messageUuid?: string | null
   createdAt: Date
   readAt: Date | null
 }

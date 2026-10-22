@@ -38,7 +38,7 @@ export interface PerfApp {
   profile: SeedProfile
   request(url: string): Promise<Response>
   /** Drop the per-agent session summary caches so the next read is cold. */
-  invalidateSummaryCaches(): void
+  invalidateSummaryCaches(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -63,6 +63,10 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   // seeded agent directories into the catalog table the listing reads.
   const { openDatabase } = await import('@shared/lib/db')
   await openDatabase()
+  // This harness skips the full service startup, but container discovery needs
+  // the same provider registry. Registration is local and stays outside measurements.
+  const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+  registerAllAccountProviders()
   const { Hono: HonoCtor } = await import('hono')
   const agentsRouter = (await import('@/api/routes/agents')).default
   const { agentRegistry } = await import('@shared/lib/agent-actor')
@@ -72,8 +76,8 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
 
   // The summary cache is the actor's: dropping the actor drops it, and the
   // next request builds a fresh handle (no I/O) and a cold cache.
-  const invalidateSummaryCaches = () => {
-    for (const slug of seeded.agentSlugs) agentRegistry.evict(slug)
+  const invalidateSummaryCaches = async () => {
+    await Promise.all(seeded.agentSlugs.map((slug) => agentRegistry.evict(slug)))
   }
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and
@@ -86,7 +90,7 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   if (warmup.status !== 200) {
     throw new Error(`perf harness: warm-up request failed with ${warmup.status}`)
   }
-  invalidateSummaryCaches()
+  await invalidateSummaryCaches()
 
   return {
     app,

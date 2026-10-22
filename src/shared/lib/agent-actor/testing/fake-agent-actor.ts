@@ -8,7 +8,7 @@
  *   const actor = createFakeAgentActor('a', {
  *     sessions: { exists: vi.fn().mockResolvedValue(true) },
  *   })
- *   expect(actor.messages.send).toHaveBeenCalledWith('s1', 'hi')
+ *   expect(actor.messages.deliver).toHaveBeenCalledWith({ sessionId: 's1', content: 'hi' })
  *
  * `createFakeRegistry(actors)` returns an `AgentRegistry` that hands those
  * out and fabricates a fake for any slug it has not seen. Mock the registry
@@ -107,16 +107,11 @@ export function createFakeAgentActor(slug: AgentSlug, overrides: FakeActorOverri
 export interface FakeRegistry extends AgentRegistry {
   /** The fakes handed out so far, by slug. */
   readonly actors: Map<AgentSlug, FakeAgentActor>
-  /** Which slugs `running()` reports; defaults to none. */
-  runningSlugs: AgentSlug[]
   /** The fake for a slug, typed as a fake (creating it if needed). */
   fake(slug: AgentSlug): FakeAgentActor
 }
 
-export function createFakeRegistry(
-  seed: FakeAgentActor[] = [],
-  options: { runningSlugs?: AgentSlug[] } = {},
-): FakeRegistry {
+export function createFakeRegistry(seed: FakeAgentActor[] = []): FakeRegistry {
   const actors = new Map<AgentSlug, FakeAgentActor>(seed.map((actor) => [actor.slug, actor]))
   const fake = (slug: AgentSlug): FakeAgentActor => {
     let actor = actors.get(slug)
@@ -128,15 +123,12 @@ export function createFakeRegistry(
   }
   const registry: FakeRegistry = {
     actors,
-    runningSlugs: options.runningSlugs ?? [],
     fake,
     get: (slug) => fake(slug) as unknown as AgentActor,
-    peek: (slug) => actors.get(slug) as unknown as AgentActor | undefined,
-    running: () => registry.runningSlugs.map((slug) => fake(slug) as unknown as AgentActor),
-    evict: (slug) => {
+    evict: async (slug) => {
       actors.delete(slug)
     },
-    evictAll: () => {
+    evictAll: async () => {
       actors.clear()
     },
   }

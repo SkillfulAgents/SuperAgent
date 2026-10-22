@@ -20,7 +20,8 @@
  * exactly as it was on the partial manager mock — except the runtime's
  * activity clock (`keepAlive`, `noteSessionActivity`, `lastActivityAt`,
  * `idleSince`), which every runtime has and which the actor marks on every
- * session write.
+ * session write, and its cached status (stopped), staleness and (no) health
+ * warnings, which every `actor.live()` reads.
  */
 
 import { ActivityClock } from '@shared/lib/container/activity-clock'
@@ -40,6 +41,7 @@ const PER_AGENT_METHODS = [
   'syncAgentStatus',
   'getHealthWarnings',
   'isStale',
+  'markStale',
   'keepAlive',
   'noteSessionActivity',
   'lastActivityAt',
@@ -93,12 +95,16 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
     // the actor makes marks it; a manager-shaped mock predates the clock, so
     // the runtime gets a real one unless the mock spells its own.
     const activity = new ActivityClock()
+    let stale = false
     runtime = {
       slug,
       hasClient: () => true,
       isStopping: () => false,
       isStarting: () => false,
-      isStale: () => false,
+      isStale: () => stale,
+      markStale: () => { stale = true },
+      getHealthWarnings: () => [],
+      getCachedInfo: () => ({ status: 'stopped', port: null }),
       keepAlive: () => activity.keepAlive(),
       noteSessionActivity: (at?: number) => activity.sessionActivity(at),
       lastActivityAt: () => activity.lastActivityAt(),
@@ -135,6 +141,7 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   // The registry attaches the agents' workspaces when it is created; a mock
   // host has no runtimes that would read them, so it only has to accept them.
   if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
+  if (typeof host.attachAgentSessions !== 'function') host.attachAgentSessions = () => {}
   // A mock host has no alarms to re-arm; it only has to accept the call.
   if (typeof host.rearmIdleAlarms !== 'function') host.rearmIdleAlarms = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.

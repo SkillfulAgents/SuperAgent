@@ -2,7 +2,7 @@
  * Tool definition registry.
  *
  * Maps tool names to their definitions. Usable from both backend
- * (MessagePersister, AgentIntegrationManager) and renderer.
+ * (the agents' live sessions, AgentIntegrationManager) and renderer.
  */
 
 import type { AnyRequestDefinition, RequestDefinition } from './requests/definition'
@@ -39,6 +39,8 @@ import {
   browserOpenDef,
   browserCloseDef,
   browserSnapshotDef,
+  browserReadDef,
+  browserCaptureTrafficDef,
   browserClickDef,
   browserFillDef,
   browserScrollDef,
@@ -123,6 +125,8 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_open': browserOpenDef,
   'mcp__browser__browser_close': browserCloseDef,
   'mcp__browser__browser_snapshot': browserSnapshotDef,
+  'mcp__browser__browser_read': browserReadDef,
+  'mcp__browser__browser_capture_traffic': browserCaptureTrafficDef,
   'mcp__browser__browser_click': browserClickDef,
   'mcp__browser__browser_fill': browserFillDef,
   'mcp__browser__browser_scroll': browserScrollDef,

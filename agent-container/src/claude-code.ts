@@ -26,6 +26,7 @@ import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
+import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
@@ -90,14 +91,6 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 // already awaits.
 const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
 const REMOTE_MCP_READY_POLL_MS = 250;
-
-export const AGENT_BROWSER_BASH_WARNING =
-  'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
-
-export function startsWithAgentBrowserCommand(command: unknown): boolean {
-  if (typeof command !== 'string') return false;
-  return /^(?:agent-browser|which\s+agent-browser)(?=$|[\s;&|])/.test(command.trimStart());
-}
 
 // Default values for system-prompt template vars when the host env is unset.
 // Mirror values the host (base-container-client.ts) sets, so out-of-host runs
@@ -613,6 +606,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   // session-manager persists them via the 'capability-grant' event), or the
   // host's grant record diverges and a gated launch hangs with no card.
   private sessionCapabilityGrants: Set<Capability>;
+  // Per process, so shown hints are tracked per session, not per container.
+  private readonly hintHooks = createHintHookMatchers(builtinHints, () => this.userMessageCount);
   // Kept so the system prompt can be regenerated when a capability block
   // boundary flips mid-session (the prompt gates delegation sections on it).
   private availableEnvVars: string[] | undefined;
@@ -654,6 +649,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   // cold process restarts it itself, with the runtime the host resolved for
   // that send, so a pre-resume must never start a second restart beside it.
   private sendsInFlight = 0;
+  // A hooked file's content as each in-flight Write/Edit found it (null when
+  // absent), keyed by tool use, for the file hooks that act on the change.
+  private fileChangeSnapshots = new Map<string, string | null>();
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
   // Late-join replay state. A turn can complete before the host's WebSocket
@@ -1203,7 +1201,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).
         // server.ts announces this capability on WebSocket connect — keep the two
-        // in sync. See message-persister.ts.
+        // in sync. See the host's live-session.ts.
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         // The id of the session this process IS, inherited by every Bash
         // child. /opt/gamut/bin/list-sessions.py and read-session.py use it
@@ -1388,8 +1386,10 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          ...this.hintHooks.UserPromptSubmit,
         ],
         PreToolUse: [
+          ...this.hintHooks.PreToolUse,
           {
             matcher: 'mcp__user-input__.*',
             hooks: [
@@ -1413,21 +1413,6 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
           },
           {
-            matcher: 'Bash',
-            hooks: [
-              async (input) => {
-                const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
-                if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse' as const,
-                    additionalContext: AGENT_BROWSER_BASH_WARNING,
-                  },
-                };
-              },
-            ],
-          },
-          {
             // Launch-policy gate for subagents/workflows — see
             // createCapabilityGateHook for why this is a hook and not
             // canUseTool.
@@ -1444,7 +1429,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                   this.emit('capability-grant', { capability });
                 },
                 onReviewCancelled: (cancelledToolUseId, capability) => {
-                  // Same relay as SDK frames (persister → SSE → renderer),
+                  // Same relay as SDK frames (live session → SSE → renderer),
                   // so the host closes the orphaned approval card.
                   this.emit('message', {
                     type: 'capability_review_cancelled',
@@ -1495,8 +1480,30 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (filePath) await this.snapshotForChangeHooks(toolUseId, filePath);
+                return {};
+              },
+            ],
+          },
+        ],
+        PostToolUseFailure: [
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) this.fileChangeSnapshots.delete(toolUseId);
+                return {};
+              },
+            ],
+          },
         ],
         PostToolUse: [
+          ...this.hintHooks.PostToolUse,
           {
             matcher: 'Bash',
             hooks: [
@@ -1550,6 +1557,18 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (!filePath) return {};
+                const warnings = await this.runChangeHooks(toolUseId, filePath);
+                if (warnings.length === 0) return {};
+                return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: warnings.join('\n\n') } };
+              },
+            ],
+          },
         ],
       },
       // Object form with `snapshot: false`: SDK 0.3.267+ records a custom
@@ -1561,6 +1580,28 @@ export class ClaudeCodeProcess extends EventEmitter {
       // on every launch or those refreshes are silently ignored.
       systemPrompt: { type: 'custom', prompt: this.systemPrompt, snapshot: false },
     };
+  }
+
+  /** Before a Write/Edit: remember the file as it is, if a file hook acts on its changes. */
+  private async snapshotForChangeHooks(toolUseId: string | undefined, filePath: string): Promise<void> {
+    if (!toolUseId || !fileHooks.some((hook) => hook.onChange && hook.matches(filePath))) return;
+    this.fileChangeSnapshots.set(toolUseId, await fs.promises.readFile(filePath, 'utf-8').catch(() => null));
+  }
+
+  /** After a Write/Edit landed: run the change hooks against the snapshot, returning their warnings. */
+  private async runChangeHooks(toolUseId: string | undefined, filePath: string): Promise<string[]> {
+    if (!toolUseId || !this.fileChangeSnapshots.has(toolUseId)) return [];
+    const before = this.fileChangeSnapshots.get(toolUseId) ?? null;
+    this.fileChangeSnapshots.delete(toolUseId);
+    const after = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    if (after === null) return [];
+    const warnings: string[] = [];
+    for (const hook of fileHooks) {
+      if (!hook.onChange || !hook.matches(filePath)) continue;
+      const { warning } = hook.onChange(filePath, before, after);
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
   }
 
   /**
@@ -1723,7 +1764,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           } else {
             userError = errorMsg || 'An unexpected error occurred';
           }
-          // Emit synthetic result so downstream (WebSocket → message-persister → UI)
+          // Emit synthetic result so downstream (WebSocket → host's live session → UI)
           // knows the query failed and can transition to error state
           const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
           this.emit('message', {
@@ -2405,7 +2446,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return { promise, cancel: () => cleanup() };
   }
 
-  // Downstream (persister → SSE → renderer) learns each dead uuid through the
+  // Downstream (live session → SSE → renderer) learns each dead uuid through the
   // exact same pipeline as real SDK frames and can rescue the message text
   // deterministically instead of racing a refetch.
   private emitDiscarded(uuid: string): void {

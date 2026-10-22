@@ -119,7 +119,8 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
           active ? 'max-w-[64px] opacity-100' : 'max-w-0 opacity-0'
         )}
       >
-        <MiniWaveform analyserRef={voiceInput.analyserRef} color="currentColor" {...config.waveform} />
+        {/* Mounted only while engaged: its draw loop requests a frame every refresh for as long as it exists. */}
+        {active && <MiniWaveform analyserRef={voiceInput.analyserRef} color="currentColor" {...config.waveform} />}
       </span>
       {busy ? (
         <Loader2 className="h-4 w-4 shrink-0 animate-spin" />

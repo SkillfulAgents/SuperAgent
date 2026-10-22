@@ -49,7 +49,7 @@ describe('session create + send — small profile', () => {
     turn!.end()
     turns.delete(sessionId)
     const { agentRegistry } = await import('@shared/lib/agent-actor')
-    await expect.poll(() => agentRegistry.get(slug).sessions.isActive(sessionId)).toBe(false)
+    await expect.poll(async () => (await agentRegistry.get(slug).sessions.live(sessionId)).isActive).toBe(false)
     // Whatever settling writes (activity, usage) lands before the next measurement.
     await new Promise((resolve) => setTimeout(resolve, 200))
   }

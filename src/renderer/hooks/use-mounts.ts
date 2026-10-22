@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -58,6 +58,7 @@ export function useAddMount() {
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
       queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 }
@@ -76,6 +77,7 @@ export function useRemoveMount() {
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
       queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
       queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 }
@@ -95,6 +97,7 @@ export function useSetMountReadOnly() {
     onSuccess: () => {
       // Bare prefix - see useAddMount.
       queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 }
@@ -112,18 +115,11 @@ export function useVolumesManager(agentSlug: string) {
   const addMount = useAddMount()
   const removeMount = useRemoveMount()
   const setMountReadOnly = useSetMountReadOnly()
-  const [pendingRestart, setPendingRestart] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
-  const [restartError, setRestartError] = useState<string | null>(null)
   const [operationError, setOperationError] = useState<string | null>(null)
 
-  // A stopped agent picks up mount changes on next start — no restart needed.
-  useEffect(() => {
-    if (!isAgentRunning && pendingRestart) {
-      setPendingRestart(false)
-      setRestartError(null)
-    }
-  }, [isAgentRunning, pendingRestart])
+  // The host marks a running agent stale on a drive change, and a stop clears it.
+  const pendingRestart = isAgentRunning && agent?.stale === true
 
   const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')
@@ -133,7 +129,6 @@ export function useVolumesManager(agentSlug: string) {
     // Create + attach through one atomic API operation. Let the dialog surface
     // errors and retain the form so retrying cannot leave an unused definition.
     await addMount.mutateAsync({ agentSlug, ...validatedSource, name, visibility })
-    if (isAgentRunning) setPendingRestart(true)
   }
 
   const handleAttach = async (volumeId: string) => {
@@ -141,7 +136,6 @@ export function useVolumesManager(agentSlug: string) {
     try {
       setOperationError(null)
       await addMount.mutateAsync({ agentSlug, volumeId })
-      if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : 'Failed to add drive')
     }
@@ -152,7 +146,6 @@ export function useVolumesManager(agentSlug: string) {
     try {
       setOperationError(null)
       await removeMount.mutateAsync({ agentSlug, mountId })
-      if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : 'Failed to remove drive')
     }
@@ -163,7 +156,6 @@ export function useVolumesManager(agentSlug: string) {
     try {
       setOperationError(null)
       await setMountReadOnly.mutateAsync({ agentSlug, mountId, readOnly })
-      if (isAgentRunning) setPendingRestart(true)
     } catch (error) {
       setOperationError(error instanceof Error ? error.message : 'Failed to update drive')
     }
@@ -171,19 +163,18 @@ export function useVolumesManager(agentSlug: string) {
 
   const handleRestart = async () => {
     setIsRestarting(true)
-    setRestartError(null)
+    setOperationError(null)
     try {
       const stopRes = await apiFetch(`/api/agents/${agentSlug}/stop`, { method: 'POST' })
       if (!stopRes.ok) throw new Error(await parseErrorMessage(stopRes, 'Failed to stop agent'))
       const startRes = await apiFetch(`/api/agents/${agentSlug}/start`, { method: 'POST' })
       if (!startRes.ok) throw new Error(await parseErrorMessage(startRes, 'Failed to start agent'))
-      setPendingRestart(false)
       refetch()
     } catch (error) {
-      // Keep the banner up so the user can retry; surface the error to the caller.
+      // Shown outside the prompt: a stop that went through has already hidden it.
       const message = error instanceof Error ? error.message : 'Failed to restart agent'
       console.error('Failed to restart agent:', error)
-      setRestartError(message)
+      setOperationError(message)
     } finally {
       setIsRestarting(false)
     }
@@ -198,7 +189,6 @@ export function useVolumesManager(agentSlug: string) {
     canCreateMount,
     pendingRestart,
     isRestarting,
-    restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
     isUpdatingMount: setMountReadOnly.isPending,

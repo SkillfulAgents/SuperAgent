@@ -498,11 +498,11 @@
     "cacheRead": 0.03
   },
   "deepseek-v4.1-flash": {
-    "input": 0.22,
-    "output": 0.66,
-    "cacheCreation": 0.22,
-    "cacheCreation1h": 0.44,
-    "cacheRead": 0.007
+    "input": 0.3,
+    "output": 1.2,
+    "cacheCreation": 0.3,
+    "cacheCreation1h": 0.6,
+    "cacheRead": 0.006
   },
   "glm-5.2": {
     "input": 1.2,

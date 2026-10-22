@@ -96,7 +96,7 @@ export class WorkflowJournalTailer {
         })
       }
     } catch {
-      // A tailer must never throw into its `void pollOnce()` caller (the persister).
+      // A tailer must never throw into its `void pollOnce()` callers (its timer, start, stop).
     } finally {
       this.polling = false
     }

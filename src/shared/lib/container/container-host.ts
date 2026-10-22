@@ -11,6 +11,7 @@
  */
 import { ContainerRuntime, type RuntimeHost } from './container-runtime'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
+import type { AgentSessionsAccess } from './agent-sessions-access'
 import {
   checkAllRunnersAvailability,
   checkImageExists,
@@ -30,7 +31,7 @@ import {
 } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
-import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import path from 'path'
@@ -67,6 +68,18 @@ export class ContainerHost {
     this.agentWorkspaces = access
   }
 
+  /** The agents' live sessions, attached by the agent registry when it is created. */
+  private agentSessions: AgentSessionsAccess | null = null
+
+  /**
+   * Give runtimes the way to their agents' live sessions. Called once by the
+   * agent registry; before that (only in a test without a registry) a runtime
+   * sees no live sessions.
+   */
+  attachAgentSessions(access: AgentSessionsAccess | null): void {
+    this.agentSessions = access
+  }
+
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
 
@@ -82,6 +95,9 @@ export class ContainerHost {
       // Getters, so what is attached after the first runtime exists still applies.
       get agentWorkspaces() {
         return self.agentWorkspaces
+      },
+      get agentSessions() {
+        return self.agentSessions
       },
       get onBeforeContainerStop() {
         return self.onBeforeContainerStop
@@ -191,7 +207,7 @@ export class ContainerHost {
    */
   watchWebhookRelay(relay: WebhookRelayService): () => void {
     return watchWebhookRelay(relay, {
-      broadcast: (status) => messagePersister.broadcastGlobal({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
+      broadcast: (status) => globalFeed.publish({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
       reconcileAgents: (available) => this.reconcileWebhookRelay(available),
     })
   }
@@ -202,17 +218,6 @@ export class ContainerHost {
    */
   async initializeAgents(agentSlugs: string[]): Promise<void> {
     console.log(`[ContainerHost] Initializing ${agentSlugs.length} agents...`)
-
-    // Register callback so message-persister can request container stops on fatal errors (e.g., OOM)
-    messagePersister.setStopContainerCallback((agentSlug) => {
-      console.log(`[ContainerHost] Stopping container for ${agentSlug} due to fatal error`)
-      this.runtime(agentSlug).stopContainer().catch((err) => {
-        console.error(`[ContainerHost] Failed to stop container for ${agentSlug}:`, err)
-      })
-    })
-    messagePersister.setUnexpectedDeathCallback((agentSlug, sessionId) => {
-      this.runtime(agentSlug).handleUnexpectedDeath(sessionId ? [sessionId] : undefined)
-    })
 
     // Create clients for all agents (this registers them for sync)
     for (const slug of agentSlugs) {
@@ -380,8 +385,8 @@ export class ContainerHost {
     for (const otherId of this.getRunningAgentIds()) {
       if (otherId === slug) continue
       this.runtime(otherId).markAsStopped()
-      messagePersister.markAllSessionsInactiveForAgent(otherId, { settleRecovering: true })
-      messagePersister.broadcastGlobal({
+      this.runtime(otherId).sessions().markAllInactive({ settleRecovering: true })
+      globalFeed.publish({
         type: 'agent_status_changed',
         agentSlug: otherId,
         status: 'stopped',
@@ -389,7 +394,7 @@ export class ContainerHost {
     }
 
     // Alert the user that we had to kill the VM
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'system_alert',
       level: 'warning',
       title: 'Container runtime restarting',
@@ -463,7 +468,7 @@ export class ContainerHost {
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'runtime_readiness_changed',
       readiness,
     })

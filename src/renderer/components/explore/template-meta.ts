@@ -1,149 +1,33 @@
-import {
-  Apple,
-  BadgeDollarSign,
-  Bot,
-  BookOpen,
-  Calculator,
-  CalendarCheck,
-  Code2,
-  FileText,
-  House,
-  Inbox,
-  LifeBuoy,
-  ListChecks,
-  Mail,
-  Megaphone,
-  MessagesSquare,
-  Mic,
-  PenLine,
-  Plane,
-  Presentation,
-  Search,
-  SearchCheck,
-  ShieldCheck,
-  ShoppingCart,
-  Sparkles,
-  Target,
-  UserSearch,
-  Video,
-  WandSparkles,
-  Workflow,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react'
+import { BookOpen, Code2, FileText, type LucideIcon } from 'lucide-react'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
+import { DEFAULT_ORBS } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { avatarSource, type AvatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
+import { ORB_SHAPES } from '@renderer/components/agents/agent-avatar/orb-shapes'
 
 /**
  * Presentation helpers for marketplace templates.
  *
  * Everything here maps or formats data the skillset repo's `index.json`
- * actually provides — name, description, category, icon, tags, connections,
+ * actually provides — name, description, category, tags, connections,
  * developer, and the long-form details markdown. Nothing is invented: run
  * cost and suggested models used to be mocked here and were removed rather
  * than shown as fact.
  */
 
-// ── Icons ────────────────────────────────────────────────────────────────────
+// ── Avatars ──────────────────────────────────────────────────────────────────
 
 /**
- * The kebab-case icon names the public skillset uses, mapped to their lucide
- * components. Listed explicitly rather than resolved dynamically so the bundle
- * only carries the icons we actually render.
+ * A template's orb: the `avatar` its skillset names, or — for a skillset that
+ * names none — a colour from the default palette and a shape, each hashed from
+ * the template name, so a template always looks the same. The public skillset
+ * seeds its avatars from this same hash. The index's `icon` is no longer drawn.
  */
-const ICONS_BY_NAME: Record<string, LucideIcon> = {
-  apple: Apple,
-  'badge-dollar-sign': BadgeDollarSign,
-  'book-open': BookOpen,
-  calculator: Calculator,
-  'calendar-check': CalendarCheck,
-  'code-2': Code2,
-  house: House,
-  inbox: Inbox,
-  'life-buoy': LifeBuoy,
-  'list-checks': ListChecks,
-  mail: Mail,
-  megaphone: Megaphone,
-  'messages-square': MessagesSquare,
-  mic: Mic,
-  'pen-line': PenLine,
-  plane: Plane,
-  presentation: Presentation,
-  search: Search,
-  'search-check': SearchCheck,
-  'shield-check': ShieldCheck,
-  'shopping-cart': ShoppingCart,
-  sparkles: Sparkles,
-  target: Target,
-  'user-search': UserSearch,
-  video: Video,
-  'wand-sparkles': WandSparkles,
-  workflow: Workflow,
-}
-
-/** Anything the index names but we don't bundle falls back to a generic glyph. */
-const FALLBACK_ICONS: LucideIcon[] = [Bot, Sparkles, Workflow, Zap]
-
-export function getTemplateIcon(template: ApiDiscoverableAgent): LucideIcon {
-  const named = template.icon ? ICONS_BY_NAME[template.icon] : undefined
-  if (named) return named
-  return FALLBACK_ICONS[hashString(template.name) % FALLBACK_ICONS.length]
-}
-
-// ── Accent colors ────────────────────────────────────────────────────────────
-
-/** Palette keys for the icon glyph (see ACCENT_CLASSES). */
-export type AccentColor =
-  | 'orange'
-  | 'salmon'
-  | 'yellow'
-  | 'green'
-  | 'teal'
-  | 'blue'
-  | 'violet'
-  | 'pink'
-
-/**
- * Glyph colors, from the reference palette's hues extended to eight. Built on
- * Tailwind's 600 ramp rather than raw hex so the set stays balanced and the
- * dark-mode variants come along for free.
- *
- * 600 is deliberate: the 500s carry slightly more chroma but drop under 3:1
- * against the grey tile for yellow (1.97), green (2.09), teal (2.28) and
- * orange (2.57), which reads as washed out rather than vivid. 600 is the most
- * saturated step that still clears the 3:1 graphics threshold everywhere.
- * Class strings are written out in full so Tailwind's scanner keeps them.
- */
-const ACCENT_CLASSES: Record<AccentColor, string> = {
-  orange: 'text-orange-600 dark:text-orange-400',
-  salmon: 'text-rose-600 dark:text-rose-400',
-  yellow: 'text-amber-600 dark:text-amber-400',
-  green: 'text-green-600 dark:text-green-400',
-  teal: 'text-teal-600 dark:text-teal-400',
-  blue: 'text-blue-600 dark:text-blue-400',
-  violet: 'text-violet-600 dark:text-violet-400',
-  pink: 'text-fuchsia-600 dark:text-fuchsia-400',
-}
-
-/**
- * The same hues as a wash for the hero band: a strong corner fading to nothing
- * so the grey underneath still reads as the base. Written out in full so
- * Tailwind's scanner keeps them.
- */
-const ACCENT_GRADIENTS: Record<AccentColor, string> = {
-  orange: 'from-orange-400/30 via-orange-300/10 to-transparent',
-  salmon: 'from-rose-400/30 via-rose-300/10 to-transparent',
-  yellow: 'from-amber-400/30 via-amber-300/10 to-transparent',
-  green: 'from-green-400/30 via-green-300/10 to-transparent',
-  teal: 'from-teal-400/30 via-teal-300/10 to-transparent',
-  blue: 'from-blue-400/30 via-blue-300/10 to-transparent',
-  violet: 'from-violet-400/30 via-violet-300/10 to-transparent',
-  pink: 'from-fuchsia-400/30 via-fuchsia-300/10 to-transparent',
-}
-
-const ACCENT_COLOR_KEYS = Object.keys(ACCENT_CLASSES) as AccentColor[]
-
-function accentKey(name: string): AccentColor {
-  return ACCENT_COLOR_KEYS[hashString(name) % ACCENT_COLOR_KEYS.length]
+export function getTemplateAvatar(template: ApiDiscoverableAgent): AvatarSource {
+  if (template.avatar) return avatarSource(template.avatar)
+  return {
+    orb: DEFAULT_ORBS[hashString(template.name) % DEFAULT_ORBS.length],
+    shape: ORB_SHAPES[hashString(`${template.name}:shape`) % ORB_SHAPES.length],
+  }
 }
 
 /**
@@ -160,15 +44,14 @@ function hashString(value: string): number {
   return hash >>> 0
 }
 
-/** The glyph color for a template, keyed off its name so a given template
- *  always draws the same color. */
-export function getTemplateAccent(name: string): string {
-  return ACCENT_CLASSES[accentKey(name)]
-}
-
-/** The hero wash in the template's own accent hue — same key as the glyph. */
-export function getTemplateGradient(name: string): string {
-  return ACCENT_GRADIENTS[accentKey(name)]
+/**
+ * The hero wash in the template's orb colours: the rim strong in one corner,
+ * through the core, fading to nothing so the grey underneath still reads as
+ * the base. Alpha is appended as hex — 30% (4D) and 10% (1A).
+ */
+export function getTemplateGradient(template: ApiDiscoverableAgent): string {
+  const { orb } = getTemplateAvatar(template)
+  return `linear-gradient(to top left, ${orb.rim}4D, ${orb.core}1A, transparent)`
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────

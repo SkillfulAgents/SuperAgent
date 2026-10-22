@@ -390,7 +390,7 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       supportsImageInput: true,
       contextWindow: 1_040_000,
-      pricing: { inputPerMtok: 0.22, outputPerMtok: 0.66, cacheReadPerMtok: 0.007 },
+      pricing: { inputPerMtok: 0.3, outputPerMtok: 1.2, cacheReadPerMtok: 0.006 },
     })
     expect(catalog.find((m) => m.id === 'deepseek-v4.1-flash')!.supportedSpeeds).toBeUndefined()
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.

@@ -71,8 +71,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('not-automation')),
 }))
 
-// Mock settings. The capability + script-type reads belong to the persister's
-// request path, which the wire-contract suite below drives for real.
+// Mock settings. The capability + script-type reads belong to the live
+// sessions' request path, which the wire-contract suite below drives for real.
 const mockAgentCapabilities: Record<'subagents' | 'workflows', 'allow' | 'review' | 'block'> = {
   subagents: 'allow',
   workflows: 'allow',
@@ -98,7 +98,7 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn().mockResolvedValue([]),
 }))
 
-// Use the real messagePersister — it handles the complex stream→SSE transformation
+// Use the real live sessions — they handle the complex stream→SSE transformation
 
 // Mock telegram connector to return our MockChatAgentIntegration. Keep the REAL
 // statics: the manager resolves the connector CLASS through this module, so
@@ -341,12 +341,13 @@ describe('Chat integration E2E', () => {
       // The user's message was carried into the fresh session as its first message.
       expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Still there?')
 
-      // The dead row is archived; a fresh non-archived row now serves this chat.
-      const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
-      const dead = rows.find((r) => r.sessionId === deadSessionId)
-      const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
-      expect(dead?.archivedAt).toBeTruthy()
-      expect(fresh).toBeDefined()
+      // The dead row is archived; a fresh non-archived row now serves this chat,
+      // written once the new session is registered, after its create.
+      await vi.waitFor(async () => {
+        const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
+        expect(rows.find((r) => r.sessionId === deadSessionId)?.archivedAt).toBeTruthy()
+        expect(rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)).toBeDefined()
+      })
     })
 
     it('answers a reply to an agent-initiated message whose session the container never had', async () => {
@@ -547,13 +548,13 @@ describe('Chat integration E2E', () => {
   // Every other chat test around user-input requests hands processSSEEvent a
   // hand-built event and asserts what the connector does with it — which stays
   // green even if the host stops emitting the event entirely. These rows drive
-  // a REAL tool_use through the REAL MessagePersister and assert on the card
+  // a REAL tool_use through the agent's REAL LiveSessions and assert on the card
   // that comes out the far end of the chat manager. If the registry stops
   // registering a kind, stops broadcasting it, or maps it to the wrong card,
   // exactly one row goes red and it names the kind.
   // ────────────────────────────────────────────────────────────────────
 
-  describe('unified wire contract (persister → registry → chat card)', () => {
+  describe('unified wire contract (live sessions → registry → chat card)', () => {
     interface WireRow {
       kind: string
       trigger: string

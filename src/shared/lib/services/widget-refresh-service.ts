@@ -1,5 +1,5 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import {
   containerWidgetRefreshResponseSchema,
   type ApiAgentWidget,
@@ -58,18 +58,17 @@ class WidgetRefreshService {
 
   /**
    * Arm the after-run trigger. Idempotent; called once at route registration.
-   * Listens to the persister's global stream rather than being called from
-   * finalizeIdle so container-manager ↔ persister imports stay acyclic.
+   * Listens to the global feed for a session going idle, so nothing on the
+   * session path has to know widgets exist.
    */
   start(): void {
     if (this.unsubscribe) return
-    // Route modules arm this at import time; route tests replace the persister
-    // with partial doubles that have no global stream, and must still load.
-    if (typeof messagePersister.addGlobalNotificationClient !== 'function') return
-    this.unsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
-      const data = event as { type?: unknown; agentSlug?: unknown }
-      if (data?.type === 'session_idle' && typeof data.agentSlug === 'string') {
-        this.schedulePostRun(data.agentSlug)
+    // Route modules arm this at import time; route tests replace the feed
+    // with partial doubles that cannot be subscribed to, and must still load.
+    if (typeof globalFeed.subscribe !== 'function') return
+    this.unsubscribe = globalFeed.subscribe((event) => {
+      if (event.type === 'session_idle' && typeof event.agentSlug === 'string') {
+        this.schedulePostRun(event.agentSlug)
       }
     })
   }
@@ -123,10 +122,10 @@ class WidgetRefreshService {
     widgetSlug: string,
     opts: { wake: boolean; reason: RefreshReason },
   ): Promise<RefreshOutcome> {
-    if (!opts.wake && agentRegistry.get(agentSlug).container.status().status !== 'running') {
+    if (!opts.wake && (await agentRegistry.get(agentSlug).container.status()).status !== 'running') {
       return { ok: false, error: 'Agent is not running', skipped: true }
     }
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'widget_refresh_started',
       agentSlug,
       widgetSlug,
@@ -148,7 +147,7 @@ class WidgetRefreshService {
       const snapshot = containerWidgetRefreshResponseSchema.parse(await response.json())
       // The container also posts widget-snapshot-ready; this covers the mock
       // runtime and any container old enough not to. The handler is idempotent.
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'widget_snapshot_ready',
         agentSlug,
         widgetSlug,
@@ -168,7 +167,7 @@ class WidgetRefreshService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[WidgetRefresh] ${agentSlug}/${widgetSlug} (${opts.reason}) failed: ${message}`)
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'widget_refresh_failed',
         agentSlug,
         widgetSlug,
@@ -223,7 +222,7 @@ class WidgetRefreshService {
   }
 
   async runPostRun(agentSlug: string): Promise<string[]> {
-    if (agentRegistry.get(agentSlug).container.status().status !== 'running') return []
+    if ((await agentRegistry.get(agentSlug).container.status()).status !== 'running') return []
     const widgets = await listWidgetsFromFilesystem(agentSlug)
     const now = Date.now()
     const picked = widgets.filter((w) => {

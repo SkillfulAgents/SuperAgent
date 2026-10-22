@@ -211,6 +211,16 @@ describe('NotificationsView', () => {
     expect(screen.getByLabelText('Unread')).toBeTruthy()
   })
 
+  it('marks an unread mention with an @ instead of the dot', () => {
+    mockNotificationsData = {
+      items: [makeNotification({ id: '1', type: 'session_mention', title: 'Dana Lee mentioned you' })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByLabelText('mentioned you')).toBeTruthy()
+    expect(screen.queryByLabelText('Unread')).toBeNull()
+  })
+
   it('does not show unread indicator for read notifications', () => {
     mockNotificationsData = {
       items: [makeNotification({ id: '1', isRead: true })],

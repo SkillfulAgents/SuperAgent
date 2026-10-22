@@ -12,8 +12,9 @@
  * Chrome's own target list (`/json`, `Target.getTargets`) carries the address
  * bar's URL. The agent-browser daemon's tab list sometimes does too, but only
  * until the tab is switched away from and back — then it reads chrome-error://
- * as well (both verified in the container image). The daemon's tabs carry no
- * target id, so the error tab is paired with its target by elimination.
+ * as well (both verified in the container image). Since agent-browser 0.34
+ * the daemon's tabs carry their CDP target id, which pairs the error tab with
+ * its target directly; without one, it is paired by elimination.
  */
 
 export function isChromeErrorUrl(url: string): boolean {
@@ -45,13 +46,17 @@ export async function resolveErrorPageUrl(
  * no single answer — null.
  */
 export async function activeTabAddress(
-  tabs: Array<{ url: string; active: boolean }>,
-  targets: () => Promise<Array<{ url: string }>>,
+  tabs: Array<{ url: string; active: boolean; targetId?: string }>,
+  targets: () => Promise<Array<{ url: string; id?: string }>>,
   urlsMatch: (left: string, right: string) => boolean,
 ): Promise<string | null> {
   const active = tabs.find(t => t.active)
   if (!active) return null
   if (!isChromeErrorUrl(active.url)) return active.url
+  if (active.targetId) {
+    const own = (await targets()).find(t => t.id === active.targetId)
+    if (own) return isChromeErrorUrl(own.url) ? null : own.url
+  }
   if (tabs.filter(t => isChromeErrorUrl(t.url)).length !== 1) return null
   const left = [...await targets()]
   if (left.length !== tabs.length) return null

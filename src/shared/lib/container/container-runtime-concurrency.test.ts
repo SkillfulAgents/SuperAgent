@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -93,23 +96,6 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
-}))
-
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
 }))
 
 vi.mock('./health-monitor', () => ({

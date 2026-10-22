@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import { AgentInputRequests } from './agent-input-requests'
+import { AgentInputRequests, CLAIM_LEASE_MS } from './agent-input-requests'
 import { UserInputRequestManager } from './request-manager'
 import type { PendingUserInputRequestInput } from './request-schema'
 
@@ -70,8 +70,7 @@ describe('UserInputRequestManager', () => {
       // The real registration must replace the stub — and emit the 'created'
       // transition, because the stub's was filtered off the wire, so this is
       // the first event clients can actually render.
-      const transitions: Array<{ type: string; payload: unknown }> = []
-      manager.onTransition((t) => transitions.push({ type: t.type, payload: t.request.payload }))
+      const reported = vi.spyOn(manager, 'report')
 
       manager.register(secretRequest({ payload: { recovered: true } }))
       const upgraded = manager.register(
@@ -81,8 +80,9 @@ describe('UserInputRequestManager', () => {
       expect((upgraded!.payload as { secretName?: string }).secretName).toBe('API_KEY')
       expect((upgraded!.payload as { recovered?: boolean }).recovered).toBeUndefined()
       expect(manager.stats.open).toBe(1)
+      const transitions = reported.mock.calls.map(([t]) => t)
       expect(transitions.map((t) => t.type)).toEqual(['created', 'created'])
-      expect((transitions[1].payload as { secretName?: string }).secretName).toBe('API_KEY')
+      expect((transitions[1].request.payload as { secretName?: string }).secretName).toBe('API_KEY')
     })
 
     it('never downgrades: a recovered synthetic cannot replace a real entry', () => {
@@ -94,12 +94,11 @@ describe('UserInputRequestManager', () => {
     })
 
     it('a second recovered synthetic does not re-emit over an existing one', () => {
-      const transitions: string[] = []
-      manager.onTransition((t) => transitions.push(t.type))
+      const reported = vi.spyOn(manager, 'report')
       const first = manager.register(secretRequest({ payload: { recovered: true } }))
       const second = manager.register(secretRequest({ payload: { recovered: true } }))
       expect(second).toBe(first)
-      expect(transitions).toEqual(['created'])
+      expect(reported.mock.calls.map(([t]) => t.type)).toEqual(['created'])
     })
 
     it('drops a malformed envelope without throwing (shadow mode must never break delivery)', () => {
@@ -299,10 +298,9 @@ describe('UserInputRequestManager', () => {
     })
   })
 
-  describe('transition listeners (unified wire feed)', () => {
-    it('emits exactly one created per accepted registration and one resolved per settlement', () => {
-      const transitions: Array<{ type: string; id: string; outcome?: string }> = []
-      manager.onTransition((t) => transitions.push({ type: t.type, id: t.request.id, outcome: t.outcome }))
+  describe('transitions reported by the stores (the unified wire feed)', () => {
+    it('reports exactly one created per accepted registration and one resolved per settlement', () => {
+      const reported = vi.spyOn(manager, 'report')
 
       manager.register(secretRequest())
       // First-delivery-wins duplicate must NOT re-emit.
@@ -311,52 +309,46 @@ describe('UserInputRequestManager', () => {
       // Idempotent resolve of an unknown id must not emit.
       manager.resolve('tool-1', 'answered')
 
-      expect(transitions).toEqual([
+      expect(reported.mock.calls.map(([t]) => ({ type: t.type, id: t.request.id, outcome: t.outcome }))).toEqual([
         { type: 'created', id: 'tool-1', outcome: undefined },
         { type: 'resolved', id: 'tool-1', outcome: 'answered' },
       ])
     })
 
-    it('a malformed registration emits nothing', () => {
+    it('a malformed registration reports nothing', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
-      const transitions: string[] = []
-      manager.onTransition((t) => transitions.push(t.type))
+      const reported = vi.spyOn(manager, 'report')
       manager.register({ id: '', kind: 'secret', scope: {}, blocking: true, payload: {} } as PendingUserInputRequestInput)
-      expect(transitions).toEqual([])
+      expect(reported).not.toHaveBeenCalled()
     })
 
-    it('store-scoped clears emit resolved with the boundary outcome', () => {
-      const outcomes: Array<{ id: string; outcome?: string }> = []
-      manager.onTransition((t) => {
-        if (t.type === 'resolved') outcomes.push({ id: t.request.id, outcome: t.outcome })
-      })
+    it('store-scoped clears report resolved with the boundary outcome', () => {
+      const reported = vi.spyOn(manager, 'report')
       manager.register(secretRequest({ id: 'clear-1' }))
       manager.register(secretRequest({ id: 'clear-2' }))
       manager.clearSessionStreamRequests('agent-a', 'session-1', 'superseded')
+      const outcomes = reported.mock.calls
+        .map(([t]) => t)
+        .filter((t) => t.type === 'resolved')
+        .map((t) => ({ id: t.request.id, outcome: t.outcome }))
       expect(outcomes).toEqual([
         { id: 'clear-1', outcome: 'superseded' },
         { id: 'clear-2', outcome: 'superseded' },
       ])
     })
 
-    it('a throwing listener is swallowed and does not break the mutation or other listeners', () => {
+    it('a throwing sink is swallowed by the store and does not break the mutation', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
-      const seen: string[] = []
-      manager.onTransition(() => {
-        throw new Error('listener boom')
+      const store = new AgentInputRequests('agent-a', {
+        report: () => {
+          throw new Error('sink boom')
+        },
       })
-      manager.onTransition((t) => seen.push(t.type))
-      const stored = manager.register(secretRequest())
+      const stored = store.register(secretRequest())
       expect(stored).not.toBeNull()
-      expect(seen).toEqual(['created'])
-    })
-
-    it('unsubscribe stops delivery', () => {
-      const seen: string[] = []
-      const unsubscribe = manager.onTransition((t) => seen.push(t.type))
-      unsubscribe()
-      manager.register(secretRequest())
-      expect(seen).toEqual([])
+      expect(store.getOpenRequest('tool-1')).not.toBeNull()
+      expect(store.resolve('tool-1', 'answered')).not.toBeNull()
+      expect(store.getOpenRequest('tool-1')).toBeNull()
     })
   })
 
@@ -435,7 +427,7 @@ describe('UserInputRequestManager', () => {
       const first = manager.claimRequest('tool-1')
       const second = manager.claimRequest('tool-1')
 
-      expect(first?.id).toBe('tool-1')
+      expect(first?.request.id).toBe('tool-1')
       // The whole point: two deciders that both read an open request would both
       // act on it. Exactly one may win.
       expect(second).toBeNull()
@@ -464,20 +456,49 @@ describe('UserInputRequestManager', () => {
 
     it('releaseClaim makes it claimable again — a bailed decision must not strand it', () => {
       manager.register(secretRequest())
+      const claim = manager.claimRequest('tool-1')!
+
+      manager.releaseClaim('tool-1', claim.token)
+
+      expect(manager.claimRequest('tool-1')?.request.id).toBe('tool-1')
+    })
+
+    it('releaseClaim with another holder\'s token leaves the claim held', () => {
+      manager.register(secretRequest())
       manager.claimRequest('tool-1')
 
-      manager.releaseClaim('tool-1')
+      manager.releaseClaim('tool-1', 'not-the-token')
 
-      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.claimRequest('tool-1')).toBeNull()
+    })
+
+    it('a claim nobody gives back lapses with its lease, and its late release frees nothing', () => {
+      vi.useFakeTimers()
+      try {
+        manager.register(secretRequest())
+        const lost = manager.claimRequest('tool-1')!
+        vi.advanceTimersByTime(CLAIM_LEASE_MS - 1)
+        expect(manager.claimRequest('tool-1')).toBeNull()
+
+        vi.advanceTimersByTime(1)
+        const next = manager.claimRequest('tool-1')!
+        expect(next.request.id).toBe('tool-1')
+
+        // The first holder comes back late: the request stays the second's.
+        manager.releaseClaim('tool-1', lost.token)
+        expect(manager.claimRequest('tool-1')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('releaseClaim on an unknown or already-settled id is a no-op', () => {
       manager.register(secretRequest())
-      manager.claimRequest('tool-1')
+      const claim = manager.claimRequest('tool-1')!
       manager.resolve('tool-1', 'answered')
 
-      expect(() => manager.releaseClaim('tool-1')).not.toThrow()
-      expect(() => manager.releaseClaim('never-existed')).not.toThrow()
+      expect(() => manager.releaseClaim('tool-1', claim.token)).not.toThrow()
+      expect(() => manager.releaseClaim('never-existed', claim.token)).not.toThrow()
       expect(manager.stats.claimed).toBe(0)
     })
 
@@ -491,7 +512,7 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats.claimed).toBe(0)
 
       manager.register(secretRequest())
-      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.claimRequest('tool-1')?.request.id).toBe('tool-1')
     })
 
     it('reset clears claims', () => {
@@ -507,7 +528,7 @@ describe('UserInputRequestManager', () => {
       manager.register(secretRequest())
       expect(agents.peek('agent-a')!.getOpenRequest('tool-1')?.id).toBe('tool-1')
       expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
-      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.claimRequest('tool-1')?.request.id).toBe('tool-1')
       expect(manager.resolve('tool-1', 'answered')?.id).toBe('tool-1')
       expect(manager.getOpenRequest('tool-1')).toBeNull()
       expect(manager.getRecentResolution('tool-1')?.outcome).toBe('answered')
@@ -535,8 +556,8 @@ describe('UserInputRequestManager', () => {
 
       expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
       expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
-      expect(manager.claimRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
-      expect(manager.claimRequest('tool-1', 'agent-a')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.claimRequest('tool-1', 'agent-b')?.request.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('tool-1', 'agent-a')?.request.scope.agentSlug).toBe('agent-a')
       expect(manager.enrichOpenRequestPayload('tool-1', 'secret', { note: 1 }, 'agent-b')).toBe(true)
       expect(manager.getOpenRequest('tool-1', 'agent-a')?.payload).not.toHaveProperty('note')
 
@@ -554,16 +575,14 @@ describe('UserInputRequestManager', () => {
       manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
       manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
       manager.register(secretRequest({ id: 'tool-2', scope: { agentSlug: 'agent-b', sessionId: 's' } }))
-      const transitions: string[] = []
-      const stop = manager.onTransition((t) => transitions.push(t.type))
+      const reported = vi.spyOn(manager, 'report')
 
       // What a registry rebuilt over surviving state does: attach the same
       // stores to the router again. Nothing was created, so nothing is
       // announced, and the index answers as it did before.
       manager.attachAgents(agents)
-      stop()
 
-      expect(transitions).toEqual([])
+      expect(reported).not.toHaveBeenCalled()
       expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
       expect(manager.getOpenRequest('tool-2')?.scope.agentSlug).toBe('agent-b')
       expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')

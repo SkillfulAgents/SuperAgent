@@ -39,6 +39,20 @@ export async function resolveConnectionRuntimeInherit(
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
+/**
+ * A session send's provider check, made before the session's stored binding
+ * is known: whether the caller may bind `llmProviderId` only because the
+ * session already holds it (another member's personal connection). The
+ * delivery then refuses it unless the session still does. Throws when the
+ * connection does not exist.
+ */
+export async function connectionNeedsAttachment(llmProviderId: string | null | undefined): Promise<boolean> {
+  if (!llmProviderId) return false
+  const row = await getConnection(llmProviderId)
+  if (!row) throw new LlmProviderNotFoundError()
+  return !canSelectConnection(row, { userId: getRequestUserId() ?? null, admin: false })
+}
+
 export async function assertConnectionSelectionAccess(
   llmProviderId: string | null | undefined,
   currentId?: string | null
@@ -114,70 +128,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
 }
 export type ConnectionRuntime = Awaited<ReturnType<typeof connectionRuntime>>
 
-const sessionRuntimes = new Map<string, ConnectionRuntime>()
-export function rememberSessionRuntime(
-  agentId: string,
-  sessionId: string,
-  runtime: ConnectionRuntime
-): void {
-  // Retain only non-secret execution facts for presentation/accounting.
-  sessionRuntimes.set(`${agentId}:${sessionId}`, { ...runtime, env: {}, proxy: undefined })
-  if (sessionRuntimes.size > 500) sessionRuntimes.delete(sessionRuntimes.keys().next().value!)
-}
-export function sessionRuntime(agentId: string, sessionId: string): ConnectionRuntime | undefined {
-  return sessionRuntimes.get(`${agentId}:${sessionId}`)
-}
-
-const selectionTurns = new Map<string, Promise<unknown>>()
-export async function withSessionSelection<T>(
-  agentId: string,
-  sessionId: string,
-  work: () => Promise<T>
-): Promise<T> {
-  const key = `${agentId}:${sessionId}`
-  const previous = selectionTurns.get(key) ?? Promise.resolve()
-  // Counted inside the chain, so the next queued turn always sees this one finished.
-  const current = previous.catch(() => undefined).then(work).finally(() => countFinishedSelectionTurn(key))
-  selectionTurns.set(key, current)
-  try {
-    return await current
-  } finally {
-    if (selectionTurns.get(key) === current) selectionTurns.delete(key)
-  }
-}
-
-// How many selection turns each session has finished, so metadata read before
-// a turn can be checked for one that may have written since. Bounded; a
-// forgotten count makes every outstanding mark stale rather than current.
-const FINISHED_SELECTION_TURNS_KEPT = 10_000
-const finishedSelectionTurns = new Map<string, number>()
-let forgottenSelectionTurns = 0
-
-function countFinishedSelectionTurn(key: string): void {
-  finishedSelectionTurns.set(key, (finishedSelectionTurns.get(key) ?? 0) + 1)
-  if (finishedSelectionTurns.size > FINISHED_SELECTION_TURNS_KEPT) {
-    finishedSelectionTurns.delete(finishedSelectionTurns.keys().next().value!)
-    forgottenSelectionTurns++
-  }
-}
-
-export interface SessionSelectionMark {
-  readonly key: string
-  readonly finished: number
-  readonly forgotten: number
-}
-
-/**
- * Taken before reading a session's metadata that is used again inside a later
- * {@link withSessionSelection} turn: {@link selectionUnchangedSince} then says
- * whether that read is still as fresh as one made in the turn.
- */
-export function markSessionSelection(agentId: string, sessionId: string): SessionSelectionMark {
-  const key = `${agentId}:${sessionId}`
-  return { key, finished: finishedSelectionTurns.get(key) ?? 0, forgotten: forgottenSelectionTurns }
-}
-
-/** No selection turn of the session has finished since `mark` was taken. */
-export function selectionUnchangedSince(mark: SessionSelectionMark): boolean {
-  return forgottenSelectionTurns === mark.forgotten && (finishedSelectionTurns.get(mark.key) ?? 0) === mark.finished
+export function credentialSource(provider: string | undefined): string {
+  if (!provider) return 'unknown'
+  return provider === 'platform' ? 'platform' : `byo:${provider}`
 }

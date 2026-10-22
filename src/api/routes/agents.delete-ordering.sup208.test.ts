@@ -151,17 +151,6 @@ vi.mock('@shared/lib/config/settings', () => ({
 // --- remaining imports pulled in by the agents router -----------------------
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(), broadcastSessionUpdate: vi.fn(), persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(), isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false), hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false), isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(), unsubscribeFromSession: vi.fn(), markSessionActive: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   countActiveTriggersPerAccount: vi.fn().mockResolvedValue({}),
   listWebhookTriggers: vi.fn(), listActiveWebhookTriggers: vi.fn(), listCancelledWebhookTriggers: vi.fn(),
@@ -203,6 +192,8 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
 }))
 

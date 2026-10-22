@@ -212,8 +212,11 @@ export const CHECKS = [
       }
       const request = await awaitRegistryKind(ctx, 'question')
       // Each button carries its answer, so a click resolves on any connection, even after a restart.
+      // The question is the registry's, as the model worded it ("Pick a color?" is the same ask).
+      const question = request.payload?.questions?.[0]?.question
+      if (!/pick a color/i.test(question ?? '')) throw new Error(`Unexpected question in the registry: ${JSON.stringify(question)}`)
       const answers = buttonValues(card).map((value) => { try { return JSON.parse(value) } catch { return null } })
-      const carried = answers.map((answer) => answer?.t === request.id && answer?.n === 1 && answer?.q === 'Pick a color' ? answer.a : null)
+      const carried = answers.map((answer) => answer?.t === request.id && answer?.n === 1 && answer?.q === question ? answer.a : null)
       if (carried.join() !== labels.join()) {
         throw new Error(`Button values must carry request ${request.id}'s question and their own label: ${JSON.stringify(answers)}`)
       }

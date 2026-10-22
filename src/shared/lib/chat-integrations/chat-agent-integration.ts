@@ -342,11 +342,14 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (!context.sessionId) return false
     const message = incomingMessageSchema.parse(event.payload)
     const { actor } = context
+    const { sessionId } = context
     return consumeOrCancelAwaitingInput({
-      sessionId: context.sessionId, agentSlug: context.integration.agentSlug, chatId: context.externalId,
-      messageText: input.text, answerText: message.text, hasFiles: !!message.files?.length,
-      persister: { isSessionAwaitingInput: (_slug, id) => actor.sessions.isAwaitingInput(id), cancelAwaitingInput: (_slug, id) => actor.inputs.cancelAwaiting(id) },
-      registry: { getOpenRequestsForSession: (_slug, id) => actor.inputs.open(id) }, connector: this,
+      chatId: context.externalId, messageText: input.text, answerText: message.text, hasFiles: !!message.files?.length,
+      session: {
+        live: () => actor.sessions.live(sessionId),
+        cancelAwaiting: () => actor.inputs.cancelAwaiting(sessionId),
+      },
+      connector: this,
     })
   }
 
@@ -385,6 +388,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     await processSSEEvent(state, output.event, chatSettings(context.integration).showToolCalls, context.sessionId ?? '')
   }
 
+  // The working indicator is armed from what the session is doing.
+  override readonly observesActivity = true
   observeSession(context: IntegrationSessionContext): void {
     if (!context.sessionId) return
     const state = this.deliveryState(context)

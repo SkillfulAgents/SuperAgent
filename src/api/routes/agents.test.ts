@@ -5,7 +5,7 @@ vi.mock('@shared/lib/services/agent-members-service', () => ({
   changeMemberRole: (...args: unknown[]) => mockChangeMemberRole(...args),
   removeMember: (...args: unknown[]) => mockRemoveMember(...args),
 }))
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
 // The last-owner guards live in agent-members-service (real-database tests
 // there); the routes only map its outcome to a status and a message.
@@ -20,6 +20,9 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
+import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
+import type { WireFrame } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -220,7 +223,10 @@ const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
 const mockClientWarmSession = vi.fn()
+// The container's view of a session, which an uncertain send asks for. Unknown unless a test says.
+const mockClientGetSession = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
+const mockRestartContainer = vi.fn()
 // The actor reaches the client through getClient after start(), so the
 // create-session fake lives here rather than on ensureRunning's resolved value.
 const mockClientCreateSession = vi.fn()
@@ -237,11 +243,13 @@ vi.mock('@shared/lib/container/container-host', async () => {
       forkSession: (...args: unknown[]) => mockForkSession(...args),
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
+      getSession: (...args: unknown[]) => mockClientGetSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
     ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
     getCachedInfo: () => mockGetCachedInfo(),
+    restartContainer: (...args: unknown[]) => mockRestartContainer(...args),
     removeClient: vi.fn(),
     clearClients: vi.fn(),
     keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
@@ -252,41 +260,85 @@ vi.mock('@shared/lib/container/container-host', async () => {
   return { containerHost: host }
 })
 
-// Message persister
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    broadcastSessionUpdate: vi.fn(),
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false),
-    recoverSessionAwaitingInput: vi.fn(),
-    getActiveSessionIdsForAgent: vi.fn(() => [] as string[]),
-    hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
-    unsubscribeFromSession: vi.fn(),
-    promoteAutomatedSession: vi.fn(async (_slug: string, _sessionId: string, metadata?: unknown) => metadata ?? null),
-    coalesceIfRecovering: vi.fn(() => false),
-    dropCoalescedUserMessage: vi.fn(() => false),
-    markSessionActive: vi.fn(),
-    markSessionIdle: vi.fn(),
-    markSessionProvisionallyActive: vi.fn(),
-    markSessionInterrupted: vi.fn(),
-    getTurnGeneration: vi.fn(() => 0),
-    isSessionWaitingBackground: vi.fn(() => false),
-    hasOnlyUntrackedBackgroundWork: vi.fn(() => false),
-    cancelAwaitingInput: vi.fn(),
-    completeInputRequest: vi.fn(),
-    completeCapabilityReview: vi.fn(),
-    clearPendingComputerUseRequest: vi.fn(),
-    grantSessionCapability: vi.fn(),
-    getSettledInputRequests: vi.fn(() => new Map()),
-    broadcastSessionEvent: vi.fn(),
-  },
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }))
+
+// Live sessions — every agent's `LiveSessions` is a double answering from these
+// mocks, each called with the agent's slug and then the method's own arguments;
+// a method not listed answers as an agent with nothing live.
+type LiveAnswer<K extends keyof LiveSessionsAnswers> = NonNullable<LiveSessionsAnswers[K]>
+const mockLiveSessions = vi.hoisted(() => {
+  const isActive = vi.fn<LiveAnswer<'isActive'>>(() => false)
+  const isAwaitingInput = vi.fn<LiveAnswer<'isAwaitingInput'>>(() => false)
+  const activeIds = vi.fn<LiveAnswer<'activeIds'>>(() => [])
+  const settledRequests = vi.fn<LiveAnswer<'settledRequests'>>(() => new Map())
+  const recoverAwaitingInput = vi.fn<LiveAnswer<'recoverAwaitingInput'>>()
+  const markActive = vi.fn<LiveAnswer<'markActive'>>()
+  const rollbackSend = vi.fn<(slug: string, sessionId: string) => void>()
+  // A session's deliveries run one at a time, as the live sessions run them.
+  const turns = new Map<string, Promise<unknown>>()
+  const inDeliveryTurn = vi.fn((slug: string, sessionId: string, work: () => Promise<unknown>) => {
+    const key = `${slug}:${sessionId}`
+    const turn = (turns.get(key) ?? Promise.resolve()).catch(() => {}).then(work)
+    turns.set(key, turn)
+    return turn
+  }) as unknown as ReturnType<typeof vi.fn<LiveAnswer<'inDeliveryTurn'>>>
+  return {
+  emit: vi.fn<LiveAnswer<'emit'>>(),
+  isActive,
+  isAwaitingInput,
+  recoverAwaitingInput,
+  // The live sessions' own step (LiveSessions.reconcileTranscript), over this
+  // double's answers: the routes' recovery is what these tests drive.
+  reconcileTranscript: vi.fn<LiveAnswer<'reconcileTranscript'>>((slug, sessionId, toolCalls) => {
+    const decided = settledRequests(slug, sessionId)
+    const settled = Object.fromEntries(toolCalls.flatMap(({ toolUseId }) => {
+      const outcome = decided.get(toolUseId)
+      return outcome === undefined ? [] : [[toolUseId, outcome]]
+    }))
+    const undecided = toolCalls.filter((call) => call.awaitsInput && settled[call.toolUseId] === undefined)
+    if (isActive(slug, sessionId) && undecided.length > 0) {
+      recoverAwaitingInput(slug, sessionId, undecided.map(({ toolUseId, toolName }) => ({ toolUseId, toolName })))
+    }
+    return { settled }
+  }),
+  activeIds,
+  // The active sessions this double calls awaiting, unless a test says which.
+  awaitingIds: vi.fn<LiveAnswer<'awaitingIds'>>((slug) => activeIds(slug).filter((id) => isAwaitingInput(slug, id))),
+  hasActive: vi.fn<LiveAnswer<'hasActive'>>(() => false),
+  hasAwaitingInput: vi.fn<LiveAnswer<'hasAwaitingInput'>>(() => false),
+  // Every session's stream is already attached unless a test says otherwise.
+  isSubscribed: vi.fn<LiveAnswer<'isSubscribed'>>(() => true),
+  subscribe: vi.fn<LiveAnswer<'subscribe'>>(async () => {}),
+  unsubscribe: vi.fn<LiveAnswer<'unsubscribe'>>(),
+  promoteAutomated: vi.fn<LiveAnswer<'promoteAutomated'>>(async (_slug, _sessionId, metadata) => metadata ?? null),
+  coalesceIfRecovering: vi.fn<LiveAnswer<'coalesceIfRecovering'>>(() => false),
+  dropCoalesced: vi.fn<LiveAnswer<'dropCoalesced'>>(() => false),
+  markActive,
+  inDeliveryTurn,
+  // A send's mark: queued when the session is already active; its rollback is recorded.
+  markSending: vi.fn<LiveAnswer<'markSending'>>((slug, sessionId) => {
+    const queued = isActive(slug, sessionId)
+    markActive(slug, sessionId)
+    return { queued, rollback: () => rollbackSend(slug, sessionId) }
+  }),
+  rollbackSend,
+  markInterrupted: vi.fn<LiveAnswer<'markInterrupted'>>(),
+  hasOnlyUntrackedBackgroundWork: vi.fn<LiveAnswer<'hasOnlyUntrackedBackgroundWork'>>(() => false),
+  cancelAwaitingInput: vi.fn<LiveAnswer<'cancelAwaitingInput'>>(async () => {}),
+  completeRequest: vi.fn<LiveAnswer<'completeRequest'>>(),
+  completeCapabilityReview: vi.fn<LiveAnswer<'completeCapabilityReview'>>(),
+  clearComputerUseRequest: vi.fn<LiveAnswer<'clearComputerUseRequest'>>(),
+  grantCapability: vi.fn<LiveAnswer<'grantCapability'>>(),
+  settledRequests,
+  }
+})
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(mockLiveSessions),
+}))
+/** The nudge a route emits into a session after changing its metadata. */
+const SESSION_UPDATED = { type: 'session_updated' }
 
 // --------------------------------------------------------------------------
 // DB mock — This is the most complex mock because agents.ts uses:
@@ -391,9 +443,11 @@ import { getUserSummaries, userExists } from '@shared/lib/services/user-profile-
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
+const mockDeleteAuthor = vi.fn().mockResolvedValue(undefined)
 vi.mock('./message-author', () => ({
   insertMessageAuthorBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
   insertMessageAuthorsBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
+  deleteMessageAuthorBestEffort: (...a: unknown[]) => mockDeleteAuthor(...a),
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
@@ -471,6 +525,15 @@ vi.mock('@shared/lib/utils/path-safety', async (importOriginal) => {
 })
 
 const mockLoadSessionUsageTotals = vi.fn()
+vi.mock('@shared/lib/services/mount-service', () => ({
+  getMountsWithHealth: vi.fn(async () => []),
+  addMount: vi.fn(),
+  attachMount: vi.fn(async () => ({ id: 'm1', volumeId: 'v1', volumeName: 'code' })),
+  removeMount: vi.fn(async () => true),
+  setMountReadOnly: vi.fn(async () => true),
+  volumeSummary: () => ({ type: 'local', name: 'code' }),
+}))
+
 vi.mock('@shared/lib/services/usage-service', () => ({
   loadSessionUsageTotals: (...args: unknown[]) => mockLoadSessionUsageTotals(...args),
 }))
@@ -543,8 +606,11 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
+  deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
 }))
 
 vi.mock('@shared/lib/services/session-unread-service', () => ({
@@ -763,17 +829,21 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
-import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
+import { countMembersWithMinRole, listAgentMembers } from '@shared/lib/services/agent-members-service'
+import { removeMount } from '@shared/lib/services/mount-service'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { localHostPort } from '@shared/lib/host/local-host-port'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
@@ -795,7 +865,7 @@ function createApp() {
 beforeEach(async () => {
   // Fresh actor handles: the file operations cache the workspace root's real
   // path per handle, and these tests script realpath answers per test.
-  agentRegistry.evictAll()
+  await agentRegistry.evictAll()
   vi.mocked(getUserSummaries).mockResolvedValue(new Map())
   vi.mocked(userExists).mockResolvedValue(true)
   mockAuthorizedAgentRole = 'owner'
@@ -1466,6 +1536,220 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'authorized-agent' }), 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
+
+  describe('teardown', () => {
+    const STREAM_URL = 'http://localhost/api/agents/authorized-agent/sessions/new-session/stream'
+    // The actor's side of the wire: what it has sent, and whether the route let it go.
+    let frames: ReadableStreamDefaultController<WireFrame>
+    let cancel: ReturnType<typeof vi.fn<() => void>>
+    // Held as the spy itself: reading it back off the actor gives what a caller reaches, not the spy.
+    let follow: MockInstance
+
+    /** Hono's StreamingApi abort semantics: `abort()` sets the flag, then runs each listener once; `onAbort` never replays. */
+    function fakeSSEStream() {
+      const listeners: Array<() => void> = []
+      const stream = {
+        aborted: false,
+        writeSSE: vi.fn(async (_message: { data: string; event?: string }) => undefined),
+        onAbort: vi.fn((listener: () => void) => {
+          listeners.push(listener)
+        }),
+        abort: vi.fn(() => {
+          if (stream.aborted) return
+          stream.aborted = true
+          listeners.forEach((listener) => listener())
+        }),
+      }
+      return stream
+    }
+    type FakeSSEStream = ReturnType<typeof fakeSSEStream>
+
+    /** Open the stream; the route's stream callback runs against `stream`, and its promise is returned (boxed, so awaiting this does not await it). */
+    async function openStream(
+      stream: FakeSSEStream,
+      signal?: AbortSignal,
+      headers?: Record<string, string>,
+    ): Promise<{ handlerPromise: Promise<void> }> {
+      let handlerPromise: Promise<void> | undefined
+      mockStreamSSE.mockImplementationOnce((...args: unknown[]) => {
+        const handler = args[1] as (value: FakeSSEStream) => Promise<void>
+        handlerPromise = handler(stream)
+        return new Response(null, { status: 200 })
+      })
+      const res = await app.request(STREAM_URL, { method: 'GET', signal, headers })
+      expect(res.status).toBe(200)
+      expect(handlerPromise).toBeDefined()
+      return { handlerPromise: handlerPromise! }
+    }
+
+    async function settles(promise: Promise<unknown>, ms = 25): Promise<boolean> {
+      return Promise.race([
+        promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), ms)),
+      ])
+    }
+
+    /** The stream is set up and waiting for the client to leave. */
+    async function waitingForClient(handlerPromise: Promise<void>, stream: FakeSSEStream): Promise<void> {
+      await vi.waitFor(() => expect(stream.writeSSE).toHaveBeenCalled())
+      expect(await settles(handlerPromise)).toBe(false)
+      expect(cancel).not.toHaveBeenCalled()
+    }
+
+    function expectReleased() {
+      expect(follow).toHaveBeenCalledOnce()
+      expect(cancel).toHaveBeenCalledOnce()
+    }
+
+    beforeEach(() => {
+      const actor = agentRegistry.get('authorized-agent')
+      cancel = vi.fn()
+      // The actor catches the viewer up with its snapshot frame, then attaches.
+      follow = vi.spyOn(actor.messages, 'follow').mockImplementation(async () => new ReadableStream<WireFrame>({
+        start(controller) {
+          frames = controller
+          controller.enqueue({ id: 'e:0', data: '{"type":"connected"}' })
+        },
+        cancel,
+      }))
+    })
+
+    it('lets go of the actor stream when the client disconnects', async () => {
+      const controller = new AbortController()
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream, controller.signal)
+      await waitingForClient(handlerPromise, stream)
+
+      // The hangup as @hono/node-server reports it under a piped body: the
+      // stream aborts, and the request signal aborts too.
+      stream.abort()
+      controller.abort()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('lets it go when the request signal alone reports the hangup', async () => {
+      const controller = new AbortController()
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream, controller.signal)
+      await waitingForClient(handlerPromise, stream)
+
+      controller.abort()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expect(stream.aborted).toBe(true)
+      expectReleased()
+    })
+
+    it('lets it go when the stream had already aborted as its callback started', async () => {
+      const stream = fakeSSEStream()
+      stream.abort()
+
+      const { handlerPromise } = await openStream(stream)
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('lets it go when the client aborts during the initial connection write', async () => {
+      const stream = fakeSSEStream()
+      stream.writeSSE.mockImplementationOnce(async () => {
+        stream.abort()
+      })
+
+      const { handlerPromise } = await openStream(stream)
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('lets it go when the hangup lands while a write waits for a reader that never comes', async () => {
+      const controller = new AbortController()
+      const stream = fakeSSEStream()
+      // A body @hono/node-server never piped: the write waits until the stream aborts.
+      stream.writeSSE.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+        stream.onAbort(() => resolve(undefined))
+      }))
+
+      const { handlerPromise } = await openStream(stream, controller.signal)
+      expect(await settles(handlerPromise)).toBe(false)
+      controller.abort()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expectReleased()
+    })
+
+    it('sets nothing up for a client that left before the stream started', async () => {
+      const controller = new AbortController()
+      // The hangup lands during the route's own await, before streamSSE runs
+      // its callback: hono's stream never hears of it, only the request signal.
+      vi.mocked(sessionIsKnown).mockImplementationOnce(async () => {
+        controller.abort()
+        return true
+      })
+      const stream = fakeSSEStream()
+
+      const { handlerPromise } = await openStream(stream, controller.signal)
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expect(follow).not.toHaveBeenCalled()
+      expect(stream.writeSSE).not.toHaveBeenCalled()
+    })
+
+    it('ends the response when the actor ends the stream, after the frames it sent', async () => {
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream)
+      await waitingForClient(handlerPromise, stream)
+
+      // A viewer too far behind is cut off: the browser reconnects with its last id.
+      frames.enqueue({ id: 'e:1', data: '{"type":"stream_delta"}' })
+      frames.close()
+
+      expect(await settles(handlerPromise)).toBe(true)
+      expect(stream.writeSSE).toHaveBeenLastCalledWith({ id: 'e:1', data: '{"type":"stream_delta"}', event: 'message' })
+    })
+
+    it('writes each frame only once the one before it is written', async () => {
+      const stream = fakeSSEStream()
+      let written!: () => void
+      stream.writeSSE.mockImplementationOnce(() => new Promise<undefined>((resolve) => { written = () => resolve(undefined) }))
+      const { handlerPromise } = await openStream(stream)
+      await vi.waitFor(() => expect(stream.writeSSE).toHaveBeenCalledOnce())
+
+      frames.enqueue({ id: 'e:1', data: '{"type":"stream_delta"}' })
+      expect(await settles(handlerPromise)).toBe(false)
+      expect(stream.writeSSE).toHaveBeenCalledOnce()
+
+      written()
+      await vi.waitFor(() => expect(stream.writeSSE).toHaveBeenCalledTimes(2))
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
+    })
+
+    it('forwards the actor\'s frames with their ids, resuming after the Last-Event-ID the browser sent back', async () => {
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream, undefined, { 'Last-Event-ID': 'e:41' })
+      await waitingForClient(handlerPromise, stream)
+
+      expect(follow)
+        .toHaveBeenCalledWith('new-session', { after: 'e:41' })
+      expect(stream.writeSSE).toHaveBeenCalledWith({ id: 'e:0', data: '{"type":"connected"}', event: 'message' })
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
+    })
+
+    it('starts a viewer that sent no Last-Event-ID from a snapshot', async () => {
+      const stream = fakeSSEStream()
+      const { handlerPromise } = await openStream(stream)
+      await waitingForClient(handlerPromise, stream)
+
+      expect(follow)
+        .toHaveBeenCalledWith('new-session', { after: undefined })
+      stream.abort()
+      expect(await settles(handlerPromise)).toBe(true)
+    })
+  })
 })
 
 // ============================================================================
@@ -1805,8 +2089,11 @@ describe('agent startup — POST /:id/start', () => {
             outgoing.write('{"sessionId":')
             outgoing.end('"session-1"}')
           } else {
-            outgoing.write('{"sessionId":"session-1","padding":"')
-            outgoing.write('x'.repeat(20_000))
+            const head = '{"sessionId":"session-1","padding":"'
+            outgoing.write(head)
+            // A declared body sends exactly its declared length (more would be a
+            // malformed request the HTTP parser refuses, however slow /start is).
+            outgoing.write('x'.repeat(kind === 'oversized declared' ? 20_000 - head.length : 20_000))
             // Do not end the request: oversized input must not hold /start
             // open, and cancelling its stream must not destroy the response.
           }
@@ -1835,7 +2122,7 @@ describe('POST /api/agents/generate-name', () => {
     vi.clearAllMocks()
     app = createApp()
     mockLlmMessagesCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Generated Agent Name' }],
+      content: [{ type: 'text', text: 'Lead Finder\nFinds and qualifies sales leads.' }],
     })
   })
 
@@ -1845,9 +2132,24 @@ describe('POST /api/agents/generate-name', () => {
     })
 
     expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({ name: 'Generated Agent Name' })
+    await expect(res.json()).resolves.toEqual({
+      name: 'Lead Finder',
+      description: 'Finds and qualifies sales leads.',
+    })
     expect(mockAgentExists).not.toHaveBeenCalledWith('generate-name')
     expect(mockLlmMessagesCreate).toHaveBeenCalled()
+  })
+
+  it('returns only the name when the model gives one line', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({
+      content: [{ type: 'text', text: 'Lead Finder' }],
+    })
+
+    const res = await postJson(app, '/api/agents/generate-name', {
+      prompt: 'Build a lead generation agent',
+    })
+
+    await expect(res.json()).resolves.toEqual({ name: 'Lead Finder' })
   })
 })
 
@@ -3949,7 +4251,9 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  it('moves the assembled chunked upload from the host temp file into the workspace', async () => {
+  // The rename is the shortcut of a workspace on this machine; across a wire the
+  // file streams in (copy-into-workspace.test.ts).
+  it.skipIf(underActorTransport)('moves the assembled chunked upload from the host temp file into the workspace', async () => {
     const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
     mockFsRename.mockResolvedValue(undefined)
@@ -4009,7 +4313,9 @@ describe('folder upload — POST /:id/upload-folder', () => {
     mockCreateReadStream.mockReset()
   })
 
-  it('copies folder to workspace uploads directory', async () => {
+  // The exclusive copy is the shortcut of a workspace on this machine; across a
+  // wire the files stream in (copy-into-workspace.test.ts).
+  it.skipIf(underActorTransport)('copies folder to workspace uploads directory', async () => {
     mockFsStat.mockResolvedValue({ isDirectory: () => true, isFile: () => false, size: 0 })
     mockFsReaddir
       .mockResolvedValueOnce([dirent('README.md', 'file'), dirent('src', 'directory'), dirent('linked', 'symlink')])
@@ -4205,7 +4511,10 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       expect(res.status).toBe(404)
       expect(await res.json()).toEqual({ code: 'llm_provider_not_found', error: 'LLM provider not found' })
       expect(mockSendMessage).not.toHaveBeenCalled()
-      expect(mockDbInsertValues).not.toHaveBeenCalled()
+      // Nothing it wrote is left: another member's connection is refused in
+      // the delivery's turn, and the attribution row goes with it.
+      const recorded = mockDbInsertValues.mock.calls.map(([row]) => (row as { id: string }).id)
+      expect(mockDeleteAuthor.mock.calls.map(([id]) => id)).toEqual(recorded)
     } finally {
       lookup.mockRestore()
     }
@@ -4228,8 +4537,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       model: 'claude-haiku-4-5',
     })
-    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', SESSION_UPDATED)
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'session_updated',
       sessionId: 'sess-1',
       agentSlug: 'test-agent',
@@ -4246,9 +4555,9 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true })
     // No turn starts, so the session must not be left looking busy, and an
     // append is never "queued" behind one: the agent reads it with its next turn.
-    expect(messagePersister.isSessionActive).not.toHaveBeenCalled()
-    expect(messagePersister.markSessionActive).not.toHaveBeenCalled()
-    expect(messagePersister.cancelAwaitingInput).not.toHaveBeenCalled()
+    expect(mockLiveSessions.isActive).not.toHaveBeenCalled()
+    expect(mockLiveSessions.markActive).not.toHaveBeenCalled()
+    expect(mockLiveSessions.cancelAwaitingInput).not.toHaveBeenCalled()
     expect(updateSessionMetadata).not.toHaveBeenCalled()
   })
 
@@ -4263,8 +4572,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     expect(getSessionMetadata).toHaveBeenCalledTimes(1)
     expect(updateSessionMetadata).not.toHaveBeenCalled()
-    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
-    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), SESSION_UPDATED)
+    expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 
   it('broadcasts when any one option differs from the stored metadata', async () => {
@@ -4286,8 +4595,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-haiku-4-5',
       effort: 'high',
     })
-    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', SESSION_UPDATED)
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'session_updated',
       sessionId: 'sess-1',
       agentSlug: 'test-agent',
@@ -4331,8 +4640,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     // The dispatch guard runs first so a message sent during an open request
     // (e.g. AskUserQuestion) cancels it instead of deadlocking behind it.
-    expect(messagePersister.cancelAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1')
-    const cancelOrder = vi.mocked(messagePersister.cancelAwaitingInput).mock.invocationCallOrder[0]
+    expect(mockLiveSessions.cancelAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1')
+    const cancelOrder = mockLiveSessions.cancelAwaitingInput.mock.invocationCallOrder[0]
     const sendOrder = mockSendMessage.mock.invocationCallOrder[0]
     expect(cancelOrder).toBeLessThan(sendOrder)
   })
@@ -4340,13 +4649,13 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
   it('awaits automated-session promotion before forwarding the human message', async () => {
     mockIsAuthMode.mockReturnValue(false)
     let finishPromotion!: () => void
-    vi.mocked(messagePersister.promoteAutomatedSession).mockImplementationOnce(
+    mockLiveSessions.promoteAutomated.mockImplementationOnce(
       () => new Promise((resolve) => { finishPromotion = () => resolve(null) }),
     )
 
     const response = postJson(app, URL, { content: 'take it from here' })
     await vi.waitFor(() => {
-      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1', null)
+      expect(mockLiveSessions.promoteAutomated).toHaveBeenCalledWith('test-agent', 'sess-1', null)
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
 
@@ -4367,7 +4676,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     // The container interprets a changed effort/model as interrupt/restart of
     // the in-flight query — the server must not forward them on queued sends,
     // regardless of what the (possibly stale) client included.
-    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+    mockLiveSessions.isActive.mockReturnValueOnce(true)
 
     const res = await postJson(app, URL, {
       content: 'hello',
@@ -4379,7 +4688,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(body.queued).toBe(true)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), sent({ preserveRuntime: true }))
     expect(updateSessionMetadata).not.toHaveBeenCalled()
-    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), SESSION_UPDATED)
   })
 
   describe('session metadata cost of one send (with a default connection)', () => {
@@ -4408,14 +4717,14 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       const res = await postJson(app, URL, { content: 'again', effort: 'low' })
       expect(res.status).toBe(201)
       expect(getSessionMetadata).toHaveBeenCalledTimes(1)
-      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('test-agent', 'sess-1', stored)
+      expect(mockLiveSessions.promoteAutomated).toHaveBeenCalledWith('test-agent', 'sess-1', stored)
       expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'again', expect.any(String), {
         effort: 'low',
         sessionMetadata: stored,
         metadataUpdates: { effort: 'low' },
       })
       expect(updateSessionMetadata).not.toHaveBeenCalled()
-      expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+      expect(mockLiveSessions.emit).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), SESSION_UPDATED)
     })
 
     it('writes once, after the POST, when only a per-send field changed', async () => {
@@ -4437,7 +4746,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       })
       expect(mockSendMessage.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(updateSessionMetadata).mock.invocationCallOrder[0])
       // The alert claim is not a runtime selection: no composer refresh.
-      expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+      expect(mockLiveSessions.emit).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), SESSION_UPDATED)
     })
 
     it('leaves nothing to write once the client stored a changed binding with the send’s fields', async () => {
@@ -4453,30 +4762,29 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       expect(getSessionMetadata).toHaveBeenCalledTimes(1)
       expect(updateSessionMetadata).not.toHaveBeenCalled()
       // Peers still learn the selection moved.
-      expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
+      expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', SESSION_UPDATED)
     })
 
-    it('reads again in its selection turn when another send of the session finished after its read', async () => {
+    it('reads in its own delivery turn, after the send ahead of it stored its selection', async () => {
       const first = { ...bound, effort: 'low' as const }
-      const staleRead = { ...bound, effort: 'low' as const }
       const afterFirst = { model: 'model-b', llmProviderId: 'conn-1', effort: 'low' as const }
       vi.mocked(getSessionMetadata)
         .mockResolvedValueOnce(first)
-        .mockResolvedValueOnce(staleRead)
         .mockResolvedValueOnce(afterFirst)
       let releaseFirst!: () => void
       mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({}) }))
 
       const firstSend = postJson(app, URL, { content: 'first', model: 'model-b' })
       await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
-      // The second send reads while the first is still in its selection turn.
+      // The second send waits for the first's turn: it has read nothing yet.
       const secondSend = postJson(app, URL, { content: 'second' })
-      await vi.waitFor(() => expect(getSessionMetadata).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(mockLiveSessions.inDeliveryTurn).toHaveBeenCalledTimes(2))
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1)
       releaseFirst()
       expect((await firstSend).status).toBe(201)
       expect((await secondSend).status).toBe(201)
 
-      expect(getSessionMetadata).toHaveBeenCalledTimes(3)
+      expect(getSessionMetadata).toHaveBeenCalledTimes(2)
       expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'second', expect.any(String), expect.objectContaining({
         sessionMetadata: afterFirst,
       }))
@@ -4514,7 +4822,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     beforeEach(async () => {
       vi.mocked(sessionExists).mockResolvedValue(false)
       vi.mocked(sessionIsKnown).mockResolvedValue(true)
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      mockLiveSessions.isActive.mockReturnValue(true)
     })
 
     it('answers an empty page on the paginated path', async () => {
@@ -4532,7 +4840,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     })
 
     it('still 404s once the session is no longer live (the retention-deleted case)', async () => {
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      mockLiveSessions.isActive.mockReturnValue(false)
       const res = await getReq(app, `${URL}?limit=50`)
       expect(res.status).toBe(404)
     })
@@ -4852,6 +5160,113 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     })
   })
 
+  describe('max_bytes', () => {
+    const pageOpts = () => vi.mocked(getSessionMessagesPage).mock.calls[0]![2]
+
+    beforeEach(() => {
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages: [], anchor: null })
+    })
+
+    // Every client that predates the parameter (old iOS builds, old web
+    // bundles) must get exactly the call it got before: no budget passed, so
+    // the reader applies its own default window.
+    it('passes no byte budget when the request has none', async () => {
+      const res = await getReq(app, `${URL}?limit=300&media=ref`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toEqual({ limit: 300, cursor: undefined, signal: expect.any(AbortSignal), media: 'ref' })
+      expect(pageOpts()).not.toHaveProperty('byteBudget')
+
+      vi.mocked(getSessionMessagesPage).mockClear()
+      await getReq(app, `${URL}?limit=200&cursor=m1&media=ref`)
+      expect(pageOpts()).not.toHaveProperty('byteBudget')
+    })
+
+    it('forwards max_bytes as the byte budget of the trailing page', async () => {
+      const res = await getReq(app, `${URL}?limit=300&media=ref&max_bytes=524288`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toEqual({
+        limit: 300,
+        cursor: undefined,
+        signal: expect.any(AbortSignal),
+        media: 'ref',
+        byteBudget: 524288,
+      })
+    })
+
+    it('forwards max_bytes on an older page, alongside the older-page limit cap', async () => {
+      process.env.MESSAGES_PAGE_OLDER_LIMIT = '80'
+      const res = await getReq(app, `${URL}?limit=200&cursor=m1&max_bytes=1048576`)
+      expect(res.status).toBe(200)
+      expect(pageOpts()).toMatchObject({ limit: 80, cursor: 'm1', byteBudget: 1048576 })
+    })
+
+    it('clamps max_bytes into [64 KiB, 4 MiB]', async () => {
+      const cases: [string, number][] = [
+        ['1', 64 * 1024],
+        ['65535', 64 * 1024],
+        ['65536', 64 * 1024],
+        ['300000', 300000],
+        ['4194304', 4 * 1024 * 1024],
+        ['4194305', 4 * 1024 * 1024],
+        ['99999999999', 4 * 1024 * 1024],
+      ]
+      for (const [raw, budget] of cases) {
+        vi.mocked(getSessionMessagesPage).mockClear()
+        const res = await getReq(app, `${URL}?limit=10&max_bytes=${raw}`)
+        expect(res.status, raw).toBe(200)
+        expect(pageOpts().byteBudget, raw).toBe(budget)
+      }
+    })
+
+    it('rejects a malformed max_bytes instead of guessing', async () => {
+      for (const raw of ['', 'abc', '0', '-1', '1.5', 'Infinity', '1e400']) {
+        const res = await getReq(app, `${URL}?limit=10&max_bytes=${encodeURIComponent(raw)}`)
+        expect(res.status, raw).toBe(400)
+      }
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+      expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+    })
+
+    it('honors max_bytes on its own, as a bounded trailing page', async () => {
+      // Otherwise asking for a bounded response quietly returns the whole
+      // transcript from the unpaginated read.
+      const res = await getReq(app, `${URL}?max_bytes=524288`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ messages: [], nextCursor: null })
+      expect(pageOpts()).toMatchObject({ limit: 300, cursor: undefined, byteBudget: 524288 })
+      expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+    })
+
+    it('ignores max_bytes on a forward delta, which the live turn already bounds', async () => {
+      const res = await getReq(app, `${URL}?limit=300&after=m1&media=ref&max_bytes=65536`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ messages: [], anchor: null })
+      expect(getSessionMessagesDelta).toHaveBeenCalledWith(
+        expect.objectContaining({ slug: 'test-agent' }),
+        'sess-1',
+        { after: 'm1', signal: expect.any(AbortSignal), media: 'ref' },
+      )
+      expect(vi.mocked(getSessionMessagesDelta).mock.calls[0]![2]).not.toHaveProperty('byteBudget')
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+
+    it('still validates max_bytes on a forward delta', async () => {
+      const res = await getReq(app, `${URL}?after=m1&max_bytes=abc`)
+      expect(res.status).toBe(400)
+      expect(getSessionMessagesDelta).not.toHaveBeenCalled()
+    })
+
+    it('leaves the unpaginated read untouched', async () => {
+      vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+      mockTransformMessages.mockReturnValue([])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+  })
+
   // The renderer aborts superseded refetches (SSE burst throttling); the route
   // must honor that server-side. Without it every abandoned request still runs
   // the full read/parse/serialize pipeline — orphaned jobs accumulate at the
@@ -4954,8 +5369,8 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
       // annotation walks the items first and throws. Either way the client
       // must not receive a 200 it cannot parse — that is what this pins.
       mockIsAuthMode.mockReturnValue(false)
-      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(new Map())
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      mockLiveSessions.settledRequests.mockReturnValue(new Map())
+      mockLiveSessions.isActive.mockReturnValue(false)
       vi.mocked(getSessionMessagesPage).mockResolvedValue({
         messages: [
           undefined,
@@ -5080,7 +5495,7 @@ describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => 
       ],
       anchor: 'm4',
     })
-    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+    mockLiveSessions.settledRequests.mockReturnValue(
       new Map([['tool-1', 'answered']])
     )
 
@@ -5539,7 +5954,7 @@ describe('browser credential broker routes', () => {
     const [resolvePath, resolveOptions] = mockContainerFetch.mock.calls[2]
     expect(resolvePath).toBe('/inputs/tool-credential/resolve')
     expect(JSON.parse(resolveOptions.body)).toEqual({ value: 'credentials_filled' })
-    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-credential', 'answered', )
+    expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-credential', 'answered', )
   })
 
   it('claims the request before retrieval so a concurrent Done cannot settle it', async () => {
@@ -5583,7 +5998,7 @@ describe('browser credential broker routes', () => {
 
     releaseContext(new Response(JSON.stringify({ url: 'https://example.com/login' }), { status: 200 }))
     expect((await filling).status).toBe(200)
-    expect(messagePersister.completeInputRequest).toHaveBeenCalledTimes(1)
+    expect(mockLiveSessions.completeRequest).toHaveBeenCalledTimes(1)
   })
 
   it('returns a no-store manual copy fallback when no password field can be reached', async () => {
@@ -5619,8 +6034,8 @@ describe('browser credential broker routes', () => {
       },
     })
     const reclaimed = userInputRequestManager.claimRequest('tool-credential')
-    expect(reclaimed?.id).toBe('tool-credential')
-    userInputRequestManager.releaseClaim('tool-credential')
+    expect(reclaimed?.request.id).toBe('tool-credential')
+    userInputRequestManager.releaseClaim('tool-credential', reclaimed!.token)
   })
 
   it('does not disclose credentials when the page origin changes', async () => {
@@ -5793,7 +6208,20 @@ describe('decision routes settle their request immediately', () => {
     parkOpen(body.toolUseId as string, kind)
     const res = await postJson(app, url, body)
     expect(res.status).toBe(200)
-    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
+    expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
+  })
+
+  it('answers 409 to a decision whose request another decision settled between its gate and its claim', async () => {
+    parkOpen('tool-dec-11', 'browser_input')
+    // The gate saw it open; the other decision lands before this one claims.
+    vi.spyOn(agentRegistry.get('test-agent').inputs, 'claim').mockImplementationOnce(async (id) => {
+      userInputRequestManager.resolve(id, 'answered', 'test-agent')
+      return userInputRequestManager.claimRequest(id, 'test-agent')
+    })
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-11' })
+    expect(res.status).toBe(409)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 
   it('a failed container reject does NOT settle the request', async () => {
@@ -5807,7 +6235,7 @@ describe('decision routes settle their request immediately', () => {
       decline: true,
     })
     expect(res.status).toBe(500)
-    expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+    expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
   })
 })
 
@@ -5923,7 +6351,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       expect(res.status).toBe(200)
       expect(await res.json()).toMatchObject({ success: true, alreadySettled: true })
       expect(mockContainerFetch).not.toHaveBeenCalled()
-      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+      expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
     },
   )
 
@@ -5966,7 +6394,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     })
     expect(res.status).toBe(404)
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+    expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
   })
 
   it("a request parked in a DIFFERENT session is not decidable through this session's route", async () => {
@@ -5980,18 +6408,17 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 
-  it('the internal _auto session bypasses the session-scope check', async () => {
-    // Auto-execute paths post to /sessions/_auto/... while the request is
-    // scoped to the real session that streamed it.
+  it('_auto is an ordinary session id: it cannot decide another session\'s request', async () => {
+    // Auto-approved runs no longer loop back through this route, so nothing
+    // waives the session check any more.
     parkOpen('tool-gate-auto', 'computer_use', 'sess-real')
     const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
       toolUseId: 'tool-gate-auto',
       decline: true,
     })
-    expect(res.status).toBe(200)
-    const json = (await res.json()) as Record<string, unknown>
-    expect(json.alreadySettled).toBeUndefined()
-    expect(mockContainerFetch).toHaveBeenCalled()
+    expect(res.status).toBe(404)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(userInputRequestManager.getOpenRequest('tool-gate-auto')).not.toBeNull()
   })
 
   it.each(GATE_CASES)(
@@ -6011,13 +6438,13 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ success: true, alreadySettled: true })
       expect(mockContainerFetch).not.toHaveBeenCalled()
-      expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
+      expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
       // Still open — a rejected probe must not settle what it could not decide.
       expect(userInputRequestManager.getOpenRequest(body.toolUseId as string)).not.toBeNull()
     },
   )
 
-  it('the internal _auto session waives the session check ONLY, never the agent check', async () => {
+  it('_auto cannot decide another agent\'s request either', async () => {
     parkOpen('tool-gate-auto-x', 'computer_use', 'sess-real', {}, 'victim-agent')
     const res = await postJson(app, '/api/agents/test-agent/sessions/_auto/computer-use', {
       toolUseId: 'tool-gate-auto-x',
@@ -6194,7 +6621,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
   })
 
   it('re-establishes the missed blocking requests of the trailing turn for an active session', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockLiveSessions.isActive.mockReturnValue(true)
     mockTransformMessages.mockReturnValue([
       { id: 'm1', type: 'user', content: { text: 'go' }, toolCalls: [], createdAt: new Date() },
       {
@@ -6216,11 +6643,11 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(200)
-    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }], )
+    expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }], )
   })
 
   it('a trailing QUEUED user message does not end the turn scan', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockLiveSessions.isActive.mockReturnValue(true)
     mockTransformMessages.mockReturnValue([
       {
         id: 'm1',
@@ -6234,11 +6661,11 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
     ])
 
     await getReq(app, URL)
-    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }], )
+    expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }], )
   })
 
   it('does not recover when a later user message started a fresh turn', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockLiveSessions.isActive.mockReturnValue(true)
     mockTransformMessages.mockReturnValue([
       {
         id: 'm1',
@@ -6252,7 +6679,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
     ])
 
     await getReq(app, URL)
-    expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    expect(mockLiveSessions.recoverAwaitingInput).not.toHaveBeenCalled()
   })
 
   it('a decision-settled request is stamped resolved and excluded from recovery', async () => {
@@ -6260,8 +6687,8 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
     // last one settles — the declined call still looks unresolved here.
     // Without the stamp, a reload resurrects its card (history fallback) and
     // recovery re-asserts awaiting for a request nothing can answer anymore.
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+    mockLiveSessions.isActive.mockReturnValue(true)
+    mockLiveSessions.settledRequests.mockReturnValue(
       new Map([['tool-declined', 'declined']]),
     )
     mockTransformMessages.mockReturnValue([
@@ -6287,11 +6714,11 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
       'User declined the request',
     )
     expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
-    expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }], )
+    expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }], )
   })
 
   it('does not recover for an inactive session', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    mockLiveSessions.isActive.mockReturnValue(false)
     mockTransformMessages.mockReturnValue([
       {
         id: 'm1',
@@ -6303,7 +6730,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
     ])
 
     await getReq(app, URL)
-    expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    expect(mockLiveSessions.recoverAwaitingInput).not.toHaveBeenCalled()
   })
 
   // Everything above drives the unpaginated branch, which is no longer the one
@@ -6327,12 +6754,12 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
       // these are left as carries into the describes below. Put the session
       // back to idle with nothing settled rather than leaking this block's
       // "active session with a declined request" into unrelated tests.
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
-      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(new Map())
+      mockLiveSessions.isActive.mockReturnValue(false)
+      mockLiveSessions.settledRequests.mockReturnValue(new Map())
     })
 
     it('re-establishes the missed blocking requests of the trailing turn', async () => {
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      mockLiveSessions.isActive.mockReturnValue(true)
       pageOf([
         { id: 'm1', type: 'user', content: { text: 'go' }, toolCalls: [], createdAt: new Date() },
         {
@@ -6350,11 +6777,11 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
 
       const res = await getReq(app, `${URL}?limit=50`)
       expect(res.status).toBe(200)
-      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }], )
+      expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }], )
     })
 
     it('a trailing QUEUED user message does not end the turn scan', async () => {
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      mockLiveSessions.isActive.mockReturnValue(true)
       pageOf([
         {
           id: 'm1',
@@ -6367,11 +6794,11 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
       ])
 
       await getReq(app, `${URL}?limit=50`)
-      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }], )
+      expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }], )
     })
 
     it('does not recover when a later user message started a fresh turn', async () => {
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      mockLiveSessions.isActive.mockReturnValue(true)
       pageOf([
         {
           id: 'm1',
@@ -6384,11 +6811,11 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
       ])
 
       await getReq(app, `${URL}?limit=50`)
-      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+      expect(mockLiveSessions.recoverAwaitingInput).not.toHaveBeenCalled()
     })
 
     it('does not recover for an inactive session', async () => {
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      mockLiveSessions.isActive.mockReturnValue(false)
       pageOf([
         {
           id: 'm1',
@@ -6400,12 +6827,12 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
       ])
 
       await getReq(app, `${URL}?limit=50`)
-      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+      expect(mockLiveSessions.recoverAwaitingInput).not.toHaveBeenCalled()
     })
 
     it('stamps a settled request into the streamed body before the first byte', async () => {
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      mockLiveSessions.isActive.mockReturnValue(true)
+      mockLiveSessions.settledRequests.mockReturnValue(
         new Map([['tool-declined', 'declined']]),
       )
       pageOf([
@@ -6434,13 +6861,13 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
         'User declined the request',
       )
       expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
-      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }], )
+      expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }], )
     })
 
     it('recovers from a forward-delta window too', async () => {
       // A live session refetches as deltas, so this is the path a missed ask
       // actually arrives on once the page has loaded.
-      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      mockLiveSessions.isActive.mockReturnValue(true)
       vi.mocked(getSessionMessagesDelta).mockResolvedValue({
         messages: [
           {
@@ -6456,7 +6883,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
 
       const res = await getReq(app, `${URL}?after=m1`)
       expect(res.status).toBe(200)
-      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }], )
+      expect(mockLiveSessions.recoverAwaitingInput).toHaveBeenCalledWith('test-agent', 'sess-1', [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }], )
     })
   })
 })
@@ -6483,7 +6910,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello everyone' })
     expect(res.status).toBe(201)
 
-    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', {
       type: 'user_message',
       content: 'hello everyone',
       sender: { id: 'test-user-id', name: 'Test User', image: null },
@@ -6494,12 +6921,12 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
 
   it('broadcasts queued=true when the session is already active (mid-turn send)', async () => {
     mockIsAuthMode.mockReturnValue(true)
-    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+    mockLiveSessions.isActive.mockReturnValueOnce(true)
 
     const res = await postJson(app, URL, { content: 'queued message' })
     expect(res.status).toBe(201)
 
-    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('test-agent', 'sess-1', expect.objectContaining({
+    expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', expect.objectContaining({
       type: 'user_message',
       queued: true,
     }))
@@ -6508,13 +6935,13 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
   it('coalesces a user message during recovery and does not send to the container', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
-    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+    mockLiveSessions.coalesceIfRecovering.mockReturnValueOnce(true)
 
     const res = await postJson(app, URL, { content: 'keep going' })
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(mockLiveSessions.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
       uuid: expect.any(String),
       text: '\\[Test User]: keep going',
     })
@@ -6524,11 +6951,11 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
   it('a transcript-only append coalesced during recovery is remembered as one, attributed like a live append', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
-    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+    mockLiveSessions.coalesceIfRecovering.mockReturnValueOnce(true)
 
     const res = await postJson(app, URL, { content: 'note', shouldQuery: false })
     expect(res.status).toBe(201)
-    expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(mockLiveSessions.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
       uuid: expect.any(String),
       text: '\\[Test User]: note',
       shouldQuery: false,
@@ -6551,7 +6978,94 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(201)
 
-    expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalled()
+  })
+})
+
+describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sessions', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+  const mike = { kind: 'user' as const, id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }
+  const member = (id: string, name: string) => ({ id, name, email: `${id}@acme.com`, image: null, role: 'user' as const })
+  let triggerSessionMention: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User'), member('mike-id', 'Mike Smith')])
+    mockSendMessage.mockResolvedValue({})
+    triggerSessionMention = vi.spyOn(notificationManager, 'triggerSessionMention').mockResolvedValue()
+  })
+
+  afterEach(() => triggerSessionMention.mockRestore())
+
+  it('a message that opens on a teammate joins the transcript without a turn, and notifies them', async () => {
+    const content = appendMentions('@Mike Smith look at this', [mike], { silent: true })
+    const res = await postJson(app, URL, { content, model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    const { uuid } = await res.json()
+
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', content, uuid, { shouldQuery: false, preserveRuntime: true })
+    expect(mockLiveSessions.markActive).not.toHaveBeenCalled()
+    expect(triggerSessionMention).toHaveBeenCalledWith({
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+      messageUuid: uuid,
+      recipientUserId: 'mike-id',
+      senderName: 'Test User',
+      text: '@Mike Smith look at this',
+    })
+  })
+
+  it('a mid-message mention runs the agent as usual, and notifies the teammate', async () => {
+    const content = appendMentions('ping @Mike Smith when you are done', [mike])
+    const res = await postJson(app, URL, { content })
+    expect(res.status).toBe(201)
+
+    const [, sentText, , options] = mockSendMessage.mock.calls[0]
+    expect(sentText).toBe(content)
+    expect(options).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 'mike-id' }))
+  })
+
+  it('refuses a teammate who cannot open the agent, before anything is written', async () => {
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User')])
+    const res = await postJson(app, URL, { content: appendMentions('@Mike Smith look', [mike], { silent: true }) })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe("Mike Smith can't open this agent. Share it with them first.")
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalled()
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('never notifies the sender, so tagging only yourself is an ordinary turn', async () => {
+    const me = { kind: 'user' as const, id: 'test-user-id', name: 'Test User' }
+    const res = await postJson(app, URL, { content: appendMentions('@Test User remember this', [me], { silent: true }) })
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage.mock.calls[0][3]).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('has no teammates to tag outside auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    const res = await postJson(app, URL, { content: appendMentions('@Mike Smith look', [mike], { silent: true }) })
+    expect(res.status).toBe(201)
+
+    expect(listAgentMembers).not.toHaveBeenCalled()
+    expect(mockSendMessage.mock.calls[0][3]).not.toHaveProperty('shouldQuery', false)
+    expect(triggerSessionMention).not.toHaveBeenCalled()
+  })
+
+  it('a first message refuses a teammate without access, before the session exists', async () => {
+    vi.mocked(listAgentMembers).mockResolvedValue([member('test-user-id', 'Test User')])
+    const res = await postJson(app, '/api/agents/test-agent/sessions', { message: appendMentions('ask @Mike Smith', [mike]) })
+
+    expect(res.status).toBe(400)
+    expect(mockClientCreateSession).not.toHaveBeenCalled()
   })
 })
 
@@ -6563,13 +7077,10 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
       cause: new ProviderReconnectRequiredError(new CredentialRefreshError(401).message),
     })
 
-  const undoFreshTurn = vi.fn()
-
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getAgentRecord).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
-    vi.mocked(messagePersister.markSessionProvisionallyActive).mockReturnValue(undoFreshTurn)
   })
 
   it('undoes a fresh turn so the retry is not treated as queued', async () => {
@@ -6578,8 +7089,8 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(424)
     expect(await res.json()).toMatchObject({ code: 'provider_reconnect_required' })
-    expect(messagePersister.markSessionProvisionallyActive).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+    expect(mockLiveSessions.markSending).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledExactlyOnceWith('test-agent', 'sess-1')
   })
 
   it('tells the client when to retry a temporary refresh outage', async () => {
@@ -6591,18 +7102,37 @@ describe('rejected send — POST /:id/sessions/:sessionId/messages', () => {
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(503)
     expect(res.headers.get('Retry-After')).toBe('30')
-    expect(undoFreshTurn).toHaveBeenCalledTimes(1)
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledTimes(1)
   })
 
-  it('leaves a running turn active when a queued follow-up is rejected', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+  it('takes back only a rejected queued follow-up, not the running turn', async () => {
+    mockLiveSessions.isActive.mockReturnValueOnce(true)
     mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container unavailable'))
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(500)
-    expect(messagePersister.markSessionActive).toHaveBeenCalledWith('test-agent', 'sess-1')
-    expect(messagePersister.markSessionProvisionallyActive).not.toHaveBeenCalled()
-    expect(undoFreshTurn).not.toHaveBeenCalled()
+    // The mark knew it was queued: its rollback withdraws the message and
+    // leaves the turn it joined running (see the live sessions' send tests).
+    expect(mockLiveSessions.markSending.mock.results[0].value).toMatchObject({ queued: true })
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the mark of a send that may have reached a running session', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('Failed to send message - request timed out.'))
+    mockClientGetSession.mockResolvedValueOnce({ id: 'sess-1', isRunning: true })
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(500)
+    expect(mockLiveSessions.rollbackSend).not.toHaveBeenCalled()
+  })
+
+  it('takes back the mark of an uncertain send once the container says the session is not running', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('Failed to send message - request timed out.'))
+    mockClientGetSession.mockResolvedValueOnce({ id: 'sess-1', isRunning: false })
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(500)
+    expect(mockLiveSessions.rollbackSend).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -6610,11 +7140,14 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
   let app: ReturnType<typeof createApp>
   const UUID = '123e4567-e89b-12d3-a456-426614174000'
   const URL = `/api/agents/test-agent/sessions/sess-1/queued-messages/${UUID}`
+  let withdrawSessionMentions: ReturnType<typeof vi.spyOn>
 
   beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
+    withdrawSessionMentions = vi.spyOn(notificationManager, 'withdrawSessionMentions').mockResolvedValue()
   })
+  afterEach(() => withdrawSessionMentions.mockRestore())
 
   it('forwards to the container and returns cancelled: true', async () => {
     mockCancelQueuedMessage.mockResolvedValue(true)
@@ -6623,6 +7156,18 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: true })
     expect(mockCancelQueuedMessage).toHaveBeenCalledWith('sess-1', UUID)
+    expect(withdrawSessionMentions).toHaveBeenCalledWith(UUID)
+  })
+
+  it('reports the cancel even when its mentions cannot be withdrawn', async () => {
+    mockCancelQueuedMessage.mockResolvedValue(true)
+    withdrawSessionMentions.mockRejectedValueOnce(new Error('db down'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: true })
+    consoleError.mockRestore()
   })
 
   it('returns cancelled: false when the message was already picked up', async () => {
@@ -6631,6 +7176,7 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     const res = await deleteReq(app, URL)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: false })
+    expect(withdrawSessionMentions).not.toHaveBeenCalled()
   })
 
   it('rejects a malformed uuid with 400 without calling the container', async () => {
@@ -6640,13 +7186,14 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
   })
 
   it('cancels a coalesced recovery message without calling the container', async () => {
-    vi.mocked(messagePersister.dropCoalescedUserMessage).mockReturnValueOnce(true)
+    mockLiveSessions.dropCoalesced.mockReturnValueOnce(true)
 
     const res = await deleteReq(app, URL)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ cancelled: true })
-    expect(messagePersister.dropCoalescedUserMessage).toHaveBeenCalledWith('test-agent', 'sess-1', UUID)
+    expect(mockLiveSessions.dropCoalesced).toHaveBeenCalledWith('test-agent', 'sess-1', UUID)
     expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+    expect(withdrawSessionMentions).toHaveBeenCalledWith(UUID)
   })
 })
 
@@ -6665,7 +7212,7 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
     const res = await postJson(app, URL, {})
     expect(res.status).toBe(200)
 
-    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(mockLiveSessions.emit).toHaveBeenCalledWith('test-agent', 'sess-1', {
       type: 'user_typing',
       sender: { id: 'test-user-id', name: 'Test User', image: null },
     })
@@ -6677,7 +7224,7 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
     const res = await postJson(app, URL, {})
     expect(res.status).toBe(200)
 
-    expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+    expect(mockLiveSessions.emit).not.toHaveBeenCalled()
   })
 })
 
@@ -6769,12 +7316,8 @@ describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
         lastActivityAt: new Date('2026-08-21T10:05:00.000Z'),
       },
     ])
-    vi.mocked(messagePersister.isSessionActive).mockImplementation(
-      (_agentSlug: string, sessionId: string) => sessionId === 'running-session',
-    )
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
-      (_agentSlug: string, sessionId: string) => sessionId === 'legacy-session',
-    )
+    mockLiveSessions.activeIds.mockReturnValueOnce(['running-session'])
+    mockLiveSessions.awaitingIds.mockReturnValueOnce(['legacy-session'])
 
     const res = await getReq(createApp(), URL)
 
@@ -6837,11 +7380,11 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(sessionExists).mockResolvedValue(true)
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map())
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([])
-    vi.mocked(messagePersister.hasActiveSessionsForAgent).mockReturnValue(false)
-    vi.mocked(messagePersister.hasSessionsAwaitingInputForAgent).mockReturnValue(false)
+    mockLiveSessions.isActive.mockReturnValue(false)
+    mockLiveSessions.isAwaitingInput.mockReturnValue(false)
+    mockLiveSessions.activeIds.mockReturnValue([])
+    mockLiveSessions.hasActive.mockReturnValue(false)
+    mockLiveSessions.hasAwaitingInput.mockReturnValue(false)
     mockGetPendingReviewsForAgent.mockReturnValue([])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [],
@@ -6874,15 +7417,15 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
       ['agent-1', new Set(['settled-visible'])],
     ]))
-    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+    mockLiveSessions.isActive.mockImplementation(
       (_agentSlug: string, id: string) => id === 'settled-visible',
     )
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+    mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'settled-visible',
     )
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent)
+    mockLiveSessions.activeIds
       .mockReturnValue(['settled-visible'])
-    vi.mocked(messagePersister.hasSessionsAwaitingInputForAgent).mockReturnValue(true)
+    mockLiveSessions.hasAwaitingInput.mockReturnValue(true)
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [{
         id: 'message-2',
@@ -6953,7 +7496,7 @@ describe('GET /api/agents (enriched summary)', () => {
       ],
       nextCursor: null,
     })
-    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValueOnce(
+    mockLiveSessions.settledRequests.mockReturnValueOnce(
       new Map([['tool-1', 'answered']])
     )
 
@@ -6966,7 +7509,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body[0].latestVisibleSession.messageTail.messages[0].toolCalls[0].result)
       .toBe('User provided input')
-    expect(messagePersister.getSettledInputRequests).toHaveBeenCalledWith('agent-1', 'latest-visible')
+    expect(mockLiveSessions.settledRequests).toHaveBeenCalledWith('agent-1', 'latest-visible')
   })
 
   it('reports unread and pending attention on an older visible session', async () => {
@@ -6978,10 +7521,10 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
       ['agent-1', new Set(['older-visible'])],
     ]))
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+    mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'older-visible',
     )
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent)
+    mockLiveSessions.activeIds
       .mockReturnValue(['older-visible'])
 
     const res = await getReq(
@@ -7015,10 +7558,10 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
       ['agent-1', new Set(['hidden-scheduled'])],
     ]))
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+    mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'hidden-scheduled',
     )
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent)
+    mockLiveSessions.activeIds
       .mockReturnValue(['hidden-scheduled'])
     expect(userInputRequestManager.register({
       id: 'hidden-request',
@@ -7187,10 +7730,12 @@ describe('GET /api/agents (enriched summary)', () => {
     })
   })
 
-  it('treats an unattributable positive pending-input aggregate as outside', async () => {
+  it('counts a waiting session the visible list does not know as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
-    vi.mocked(messagePersister.hasSessionsAwaitingInputForAgent).mockReturnValue(true)
+    // Not confirmed hidden, so not safe to ignore: iOS opens the latest session
+    // directly on false/false.
+    mockLiveSessions.awaitingIds.mockReturnValueOnce(['unlisted-session'])
 
     const res = await getReq(
       app,
@@ -7497,20 +8042,20 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0]).not.toHaveProperty('autoDeleteInactiveDays')
   })
 
-  it('detects active sessions via messagePersister', async () => {
+  it('detects active sessions through the agent\'s live sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
       sessionIds: ['sess-active'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockLiveSessions.activeIds.mockReturnValue(['sess-active'])
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
     expect(body[0].hasActiveSessions).toBe(true)
-    expect(messagePersister.isSessionActive).toHaveBeenCalledWith('agent-1', 'sess-active')
+    expect(mockLiveSessions.activeIds).toHaveBeenCalledWith('agent-1')
   })
 
   it('detects sessions awaiting input', async () => {
@@ -7520,7 +8065,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(true)
+    mockLiveSessions.awaitingIds.mockReturnValueOnce(['sess-waiting'])
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -7541,6 +8086,25 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+    expect(body[0].hasUnreadMention).toBe(false)
+  })
+
+  it('raises hasUnreadMention when the unread one tags the viewer (auth mode)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadMentionsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(getUnreadMentionsByAgents).toHaveBeenCalledWith(['agent-1'], 'test-user-id')
+    expect(body[0].hasUnreadMention).toBe(true)
   })
 
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
@@ -7632,9 +8196,9 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    // Session is active but messagePersister doesn't know about the proxy review
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
+    // Session is active but its live sessions don't know about the proxy review
+    mockLiveSessions.activeIds.mockReturnValue(['sess-active'])
+    mockLiveSessions.isAwaitingInput.mockReturnValue(false)
     // Agent has pending proxy reviews
     mockGetPendingReviewsForAgent.mockReturnValue([
       { id: 'review-1', agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} },
@@ -7655,8 +8219,8 @@ describe('GET /api/agents (enriched summary)', () => {
       lastActivityAt: new Date(),
     })
     // Session is NOT active — reviews were triggered by a non-session flow (e.g. dashboard startup)
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
+    mockLiveSessions.isActive.mockReturnValue(false)
+    mockLiveSessions.isAwaitingInput.mockReturnValue(false)
     mockGetPendingReviewsForAgent.mockReturnValue([
       { id: 'review-1', agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} },
     ])
@@ -9244,6 +9808,17 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     mockFsReadFile.mockReset()
   })
 
+  it('names a session from what was written, not the block that lists who it tags', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Launch Plan Review' }] })
+    const message = appendMentions('ask @Billing Agent about the launch plan', [{ kind: 'agent', slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }])
+
+    expect((await postJson(app, SESSIONS_URL, { message })).status).toBe(201)
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Launch Plan Review'))
+    const prompt = String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)
+    expect(prompt).toContain('ask @Billing Agent about the launch plan')
+    expect(prompt).not.toContain('[Mentioned:]')
+  })
+
   it('a session opened by a system notice is named by the first message a person sends, not the notice', async () => {
     mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Weather Chat' }] })
 
@@ -9522,16 +10097,16 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
   })
 
   it('includes active, awaiting, and unread sessions but no ordinary settled/read session', async () => {
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([
+    mockLiveSessions.activeIds.mockReturnValue([
       's-live',
       's-awaiting',
       's-both',
     ])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-both', 's-unread']))
-    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+    mockLiveSessions.isActive.mockImplementation(
       (_agentSlug: string, id: string) => id === 's-live' || id === 's-awaiting' || id === 's-both',
     )
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+    mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 's-awaiting',
     )
     vi.mocked(listSessionsByIds).mockImplementation(async (_slug, ids) =>
@@ -9555,7 +10130,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
       sessionInfo('s-idle-newest', '2026-01-02T12:00:00Z'),
       sessionInfo('s-live-older', '2026-01-02T09:00:00Z'),
     ])
-    vi.mocked(messagePersister.isSessionActive).mockImplementation((_agentSlug: string, id: string) => id === 's-live-older')
+    mockLiveSessions.activeIds.mockReturnValue(['s-live-older'])
 
     const res = await getReq(app, `${NOTABLE_URL}&limit=1`)
     const body = await res.json()
@@ -9564,13 +10139,13 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
   })
 
   it('composes notable filtering, requested activity ordering, and limit in that order', async () => {
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue(['s-live-older'])
+    mockLiveSessions.activeIds.mockReturnValue(['s-live-older'])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-unread-newer']))
     vi.mocked(listSessionsByIds).mockResolvedValue([
       sessionInfo('s-live-older', '2026-01-02T09:00:00Z'),
       sessionInfo('s-unread-newer', '2026-01-02T12:00:00Z'),
     ])
-    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+    mockLiveSessions.isActive.mockImplementation(
       (_agentSlug: string, id: string) => id === 's-live-older',
     )
 
@@ -9616,16 +10191,16 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     expect(body[1].hasUnreadNotifications).toBe(true)
   })
 
-  it('reports the persister awaiting status per session verbatim', async () => {
+  it('reports the live sessions\' awaiting status per session verbatim', async () => {
     vi.mocked(listSessionsByIds).mockResolvedValue([
       sessionInfo('s-live', '2026-01-02T10:00:00Z'),
       sessionInfo('s-idle', '2026-01-02T11:00:00Z'),
     ])
-    vi.mocked(messagePersister.isSessionActive).mockImplementation((_agentSlug: string, id: string) => id === 's-live')
-    // Agent-level reviews are already folded into the persister's derived
+    mockLiveSessions.activeIds.mockReturnValue(['s-live'])
+    // Agent-level reviews are already folded into the live sessions' derived
     // awaiting projection (they flag every active session of the agent) —
     // the route adds no special-case of its own anymore.
-    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+    mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 's-live',
     )
 
@@ -9745,6 +10320,20 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     expect(body[0].hasUnreadNotifications).toBe(true)
   })
 
+  it("marks a session where the viewer was mentioned, in both session lists", async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+      { id: 'sess-1', agentSlug: 'test-agent', name: 'One', createdAt: new Date(), lastActivityAt: new Date() },
+      { id: 'sess-2', agentSlug: 'test-agent', name: 'Two', createdAt: new Date(), lastActivityAt: new Date() },
+    ])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['sess-1', 'sess-2']))
+    vi.mocked(getSessionIdsWithUnreadMentions).mockResolvedValue(new Set(['sess-1']))
+
+    const body = await (await getReq(app, '/api/agents/test-agent/sessions')).json()
+    expect(body.map((session: { hasUnreadMention: boolean }) => session.hasUnreadMention)).toEqual([true, false])
+    expect(getSessionIdsWithUnreadMentions).toHaveBeenCalledWith('test-agent', 'test-user-id')
+  })
+
   // Marks are per-user, so the projections must ask for the acting user's —
   // otherwise one person's reminder would raise a dot on everyone's sidebar.
   it('scopes the session-list projection to the acting user', async () => {
@@ -9765,7 +10354,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
 
   it('pulls a marked-unread session into the notable fast path', async () => {
     vi.mocked(listSessionsByIds).mockResolvedValue([])
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([])
+    mockLiveSessions.activeIds.mockReturnValue([])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set())
     vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set(['sess-marked']))
 
@@ -9806,7 +10395,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     } as any)
     vi.mocked(registerSession).mockResolvedValue(undefined)
     vi.mocked(deleteSession).mockResolvedValue(true)
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    mockLiveSessions.isActive.mockReturnValue(false)
     mockForkSession.mockResolvedValue({ id: 'fork-1' })
     mockClientDeleteSession.mockResolvedValue(true)
     mockFsExistsSync.mockReturnValue(false)
@@ -9825,7 +10414,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
   })
 
   it('409s while the source is active', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    mockLiveSessions.isActive.mockReturnValue(true)
     const res = await fork()
     expect(res.status).toBe(409)
     expect(mockForkSession).not.toHaveBeenCalled()
@@ -10067,7 +10656,7 @@ describe('session existence guards read metadata, not the transcript', () => {
 describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-use', () => {
   // "Allow once" posts grantType:'once', which the route records as a
   // use_host_shell grant before executing. checkPermission treats ANY live
-  // grant as granted, and the persister auto-executes the agent's next
+  // grant as granted, and the live sessions auto-execute the agent's next
   // request_script_run on that basis — so if the route never consumes the
   // once-grant after the run it authorized, "Allow once" silently behaves
   // like "always allow" for the rest of the process lifetime.
@@ -10127,7 +10716,7 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
 
     expect(res.status).toBe(200)
     expect(mockExec).toHaveBeenCalledTimes(1)
-    expect(messagePersister.completeInputRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-once-1', 'answered', )
+    expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-once-1', 'answered', )
 
     // The next request_script_run must prompt again, not auto-execute.
     expect(
@@ -10145,6 +10734,126 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
   })
 })
 
+describe('run-script and computer-use decisions run through the actor', () => {
+  // Both routes hand an approval to the agent's actor, which claims the
+  // request, does the agent's bookkeeping, and has the host do the machine
+  // work. The same path runs a request a held grant already covers, so a
+  // decision and an auto-run (or two clicks) can never drive the machine twice.
+  let app: ReturnType<typeof createApp>
+  const CU_URL = '/api/agents/test-agent/sessions/sess-1/computer-use'
+  const SCRIPT_URL = '/api/agents/test-agent/sessions/sess-1/run-script'
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
+    mockContainerFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    userInputRequestManager.reset()
+  })
+
+  function park(id: string, kind: 'computer_use' | 'script_run') {
+    userInputRequestManager.register({
+      id,
+      kind,
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    })
+  }
+
+  /** The machine as the host reports it; any other call fails the test. */
+  function machine(answers: { permissions?: unknown; output?: string; error?: Error }) {
+    return vi.spyOn(localHostPort, 'call').mockImplementation((async (name: string) => {
+      if (name === 'computerUsePermissions') return answers.permissions ?? null
+      if (name === 'computerUse') {
+        if (answers.error) throw answers.error
+        return answers.output ?? ''
+      }
+      throw new Error(`unexpected host call ${name}`)
+    }) as typeof localHostPort.call)
+  }
+
+  it('computer-use: runs the approved command on the host, delivers its output and records the grant', async () => {
+    const host = machine({ output: 'Calculator, Finder' })
+    park('cu-ok', 'computer_use')
+
+    const res = await postJson(app, CU_URL, {
+      toolUseId: 'cu-ok', method: 'apps', params: {}, permissionLevel: 'list_apps_windows', grantType: 'timed',
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true })
+    expect(host).toHaveBeenCalledWith('computerUse', { method: 'apps', params: {} })
+    expect(mockContainerFetch).toHaveBeenCalledWith('/inputs/cu-ok/resolve', expect.objectContaining({
+      body: JSON.stringify({ value: 'Calculator, Finder' }),
+    }))
+    expect(mockLiveSessions.clearComputerUseRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'cu-ok', 'answered')
+    expect(computerUsePermissionManager.checkPermission('test-agent', 'list_apps_windows')).toBe('granted')
+  })
+
+  it('computer-use: answers 428 with the permissions, runs nothing and leaves the request open', async () => {
+    const permissions = { accessibility: false, screen_recording: true }
+    const host = machine({ permissions })
+    park('cu-perm', 'computer_use')
+
+    const res = await postJson(app, CU_URL, { toolUseId: 'cu-perm', method: 'apps', params: {} })
+
+    expect(res.status).toBe(428)
+    expect(await res.json()).toEqual({ success: false, missingPermissions: permissions })
+    expect(host).not.toHaveBeenCalledWith('computerUse', expect.anything())
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(await agentRegistry.get('test-agent').inputs.get('cu-perm')).not.toBeNull()
+  })
+
+  it('computer-use: a failed command fails the agent\'s call, and the approval still answers 200', async () => {
+    machine({ error: new Error('window not found') })
+    park('cu-fail', 'computer_use')
+
+    const res = await postJson(app, CU_URL, { toolUseId: 'cu-fail', method: 'click', params: { ref: '@b1' } })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, error: 'window not found' })
+    expect(mockContainerFetch).toHaveBeenCalledWith('/inputs/cu-fail/reject', expect.objectContaining({
+      body: JSON.stringify({ reason: 'Error executing click: window not found' }),
+    }))
+    expect(mockLiveSessions.clearComputerUseRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'cu-fail', 'invalidated')
+  })
+
+  it.each([
+    { label: 'computer-use approval', url: CU_URL, kind: 'computer_use' as const, body: { method: 'apps', params: {} } },
+    { label: 'computer-use decline', url: CU_URL, kind: 'computer_use' as const, body: { decline: true } },
+    { label: 'run-script approval', url: SCRIPT_URL, kind: 'script_run' as const, body: { script: 'echo hi', scriptType: 'shell' } },
+    { label: 'run-script decline', url: SCRIPT_URL, kind: 'script_run' as const, body: { decline: true } },
+  ])('$label while another decision holds the request answers 409 and touches nothing', async ({ url, kind, body }) => {
+    const host = machine({})
+    park('held', kind)
+    await agentRegistry.get('test-agent').inputs.claim('held')
+
+    const res = await postJson(app, url, { toolUseId: 'held', ...body })
+
+    expect(res.status).toBe(409)
+    expect(host).not.toHaveBeenCalled()
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(await agentRegistry.get('test-agent').inputs.get('held')).not.toBeNull()
+  })
+
+  it('run-script: a malformed approval records no grant', async () => {
+    park('sr-bad', 'script_run')
+    const res = await postJson(app, SCRIPT_URL, { toolUseId: 'sr-bad', scriptType: 'shell', grantType: 'always' })
+    expect(res.status).toBe(400)
+    expect(computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell')).toBe('prompt_needed')
+  })
+})
+
 // ============================================================================
 // Cross-agent session scoping
 // ============================================================================
@@ -10153,7 +10862,7 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
  * Session-scoped routes authorize the AGENT in the URL, never the session id in
  * it. Most siblings are safe by construction because they build a filesystem
  * path from `agentSlug + sessionId`, so a foreign id is simply a miss — but the
- * routes that reach the message persister are not: it is a process-global
+ * routes that reached the old message persister were not: it was a process-global
  * registry keyed by session id ALONE, with no agent dimension. Without an
  * explicit ownership gate, a caller holding a role on agent A can pass agent B's
  * session id and drive B's live session: wipe its streaming state, broadcast a
@@ -10214,8 +10923,8 @@ describe('cross-agent session scoping', () => {
       const res = await app.request(url(VICTIM_SESSION, '/messages'))
 
       expect(res.status).toBe(404)
-      expect(messagePersister.getSettledInputRequests).not.toHaveBeenCalled()
-      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+      expect(mockLiveSessions.settledRequests).not.toHaveBeenCalled()
+      expect(mockLiveSessions.recoverAwaitingInput).not.toHaveBeenCalled()
     })
 
     it('reads this agent’s own session even when another agent uses the same id', async () => {
@@ -10223,7 +10932,7 @@ describe('cross-agent session scoping', () => {
       // session, and every registry the read then reaches is keyed by agent
       // AND session — so it resolves inside this agent's own namespace and the
       // other agent's session is untouched. Proven end to end, against real
-      // routes and a real persister, in session-scope.integration.test.ts
+      // routes and real live sessions, in session-scope.integration.test.ts
       // ("a forged transcript does not buy access…").
       vi.mocked(sessionIsKnown).mockResolvedValue(true)
       vi.mocked(sessionExists).mockResolvedValue(true)
@@ -10231,7 +10940,7 @@ describe('cross-agent session scoping', () => {
       const res = await app.request(url(VICTIM_SESSION, '/messages'))
 
       expect(res.status).toBe(200)
-      expect(messagePersister.getSettledInputRequests).toHaveBeenCalledWith(
+      expect(mockLiveSessions.settledRequests).toHaveBeenCalledWith(
         ATTACKER,
         VICTIM_SESSION,
       )
@@ -10243,7 +10952,7 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(404)
-      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markInterrupted).not.toHaveBeenCalled()
       expect(mockInterruptSession).not.toHaveBeenCalled()
     })
 
@@ -10255,7 +10964,7 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(404)
-      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markInterrupted).not.toHaveBeenCalled()
     })
 
     it('404s on a foreign session even when the container call throws', async () => {
@@ -10267,21 +10976,21 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(VICTIM_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(404)
-      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markInterrupted).not.toHaveBeenCalled()
     })
 
     it('404s on a session id that escapes the agent’s session directory', async () => {
       const res = await postJson(app, url('..%2F..%2Fvictim', '/interrupt'), {})
 
       expect(res.status).toBe(404)
-      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markInterrupted).not.toHaveBeenCalled()
     })
 
     it('still interrupts the caller’s own session', async () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(200)
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnGenerationBefore: 0 })
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnGenerationBefore: 0 })
     })
 
     it('still marks the caller’s own session interrupted when the container throws', async () => {
@@ -10290,7 +10999,8 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(200)
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+      // No outcome to report: the session is marked stopped as it stands.
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
     })
 
     it('stops only the turn by default, sparing background tasks', async () => {
@@ -10298,7 +11008,7 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(200)
       expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'turn' })
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnGenerationBefore: 0 })
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnGenerationBefore: 0 })
       await expect(res.json()).resolves.toMatchObject({ success: true, processKept: true })
     })
 
@@ -10309,7 +11019,7 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(200)
       expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'all' })
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
     })
 
     it('drops background-task state when a turn stop had to restart the process', async () => {
@@ -10320,7 +11030,7 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
 
       expect(res.status).toBe(200)
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
       await expect(res.json()).resolves.toMatchObject({ processKept: false })
     })
 
@@ -10329,20 +11039,20 @@ describe('cross-agent session scoping', () => {
       // registered (a task a subagent launched). A turn stop keeps the
       // process and the task, and there is no row to stop the task from —
       // so the route stops everything, without offering a choice.
-      vi.mocked(messagePersister.hasOnlyUntrackedBackgroundWork).mockReturnValue(true)
+      mockLiveSessions.hasOnlyUntrackedBackgroundWork.mockReturnValue(true)
       mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: false })
 
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
 
       expect(res.status).toBe(200)
-      expect(messagePersister.hasOnlyUntrackedBackgroundWork).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+      expect(mockLiveSessions.hasOnlyUntrackedBackgroundWork).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
       expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'all' })
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
+      expect(mockLiveSessions.markInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
       await expect(res.json()).resolves.toMatchObject({ success: true, processKept: false })
     })
 
     it('keeps a turn stop as a turn stop while the open background work is tracked', async () => {
-      vi.mocked(messagePersister.hasOnlyUntrackedBackgroundWork).mockReturnValue(false)
+      mockLiveSessions.hasOnlyUntrackedBackgroundWork.mockReturnValue(false)
 
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
 
@@ -10355,7 +11065,7 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(400)
       expect(mockInterruptSession).not.toHaveBeenCalled()
-      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markInterrupted).not.toHaveBeenCalled()
     })
   })
 
@@ -10421,7 +11131,7 @@ describe('cross-agent session scoping', () => {
       const res = await deleteReq(app, url(VICTIM_SESSION, `/queued-messages/${UUID}`))
 
       expect(res.status).toBe(404)
-      expect(messagePersister.dropCoalescedUserMessage).not.toHaveBeenCalled()
+      expect(mockLiveSessions.dropCoalesced).not.toHaveBeenCalled()
       expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
     })
 
@@ -10440,10 +11150,10 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(VICTIM_SESSION, '/messages'), { content: 'hi' })
 
       expect(res.status).toBe(404)
-      expect(messagePersister.cancelAwaitingInput).not.toHaveBeenCalled()
-      expect(messagePersister.markSessionActive).not.toHaveBeenCalled()
-      expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
-      expect(messagePersister.subscribeToSession).not.toHaveBeenCalled()
+      expect(mockLiveSessions.cancelAwaitingInput).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markActive).not.toHaveBeenCalled()
+      expect(mockLiveSessions.emit).not.toHaveBeenCalled()
+      expect(mockLiveSessions.subscribe).not.toHaveBeenCalled()
       expect(mockSendMessage).not.toHaveBeenCalled()
     })
 
@@ -10460,14 +11170,14 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(VICTIM_SESSION, '/typing'), {})
 
       expect(res.status).toBe(404)
-      expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+      expect(mockLiveSessions.emit).not.toHaveBeenCalled()
     })
 
     it('still broadcasts typing for the caller’s own session', async () => {
       const res = await postJson(app, url(OWN_SESSION, '/typing'), {})
 
       expect(res.status).toBe(200)
-      expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, expect.objectContaining({ type: 'user_typing' }), )
+      expect(mockLiveSessions.emit).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, expect.objectContaining({ type: 'user_typing' }), )
     })
   })
 
@@ -10484,8 +11194,8 @@ describe('cross-agent session scoping', () => {
         scope: 'session',
       })
 
-      expect(messagePersister.grantSessionCapability).not.toHaveBeenCalled()
-      expect(messagePersister.completeCapabilityReview).not.toHaveBeenCalled()
+      expect(mockLiveSessions.grantCapability).not.toHaveBeenCalled()
+      expect(mockLiveSessions.completeCapabilityReview).not.toHaveBeenCalled()
     })
 
     it('never resolves a foreign session’s review card when declining', async () => {
@@ -10495,7 +11205,7 @@ describe('cross-agent session scoping', () => {
         decline: true,
       })
 
-      expect(messagePersister.completeCapabilityReview).not.toHaveBeenCalled()
+      expect(mockLiveSessions.completeCapabilityReview).not.toHaveBeenCalled()
     })
   })
 
@@ -10506,16 +11216,16 @@ describe('cross-agent session scoping', () => {
         decline: true,
       })
 
-      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+      expect(mockLiveSessions.markInterrupted).not.toHaveBeenCalled()
     })
   })
 
   describe('DELETE /sessions/:sessionId', () => {
-    it('404s on a foreign session without unsubscribing its persister', async () => {
+    it('404s on a foreign session without unsubscribing its live session', async () => {
       const res = await deleteReq(app, url(VICTIM_SESSION))
 
       expect(res.status).toBe(404)
-      expect(messagePersister.unsubscribeFromSession).not.toHaveBeenCalled()
+      expect(mockLiveSessions.unsubscribe).not.toHaveBeenCalled()
     })
 
     it('still deletes an owned metadata-only entry without createdAt', async () => {
@@ -10526,7 +11236,7 @@ describe('cross-agent session scoping', () => {
       const res = await deleteReq(app, url(OWN_SESSION))
 
       expect(res.status).toBe(204)
-      expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+      expect(mockLiveSessions.unsubscribe).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
       expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: ATTACKER }), OWN_SESSION)
     })
   })
@@ -10550,7 +11260,7 @@ describe('PUT /api/agents/:id/avatar', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(avatar)
     expect(updateAgentAvatar).toHaveBeenCalledWith('test-agent', avatar)
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
   })
 
   it.each([
@@ -10568,6 +11278,41 @@ describe('PUT /api/agents/:id/avatar', () => {
     })
     expect(response.status).toBe(400)
     expect(updateAgentAvatar).not.toHaveBeenCalled()
-    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    expect(globalFeed.publish).not.toHaveBeenCalled()
+  })
+})
+
+describe('drive changes on a running agent', () => {
+  const changes = [
+    ['attach', (app: Hono, slug: string, restart?: boolean) => postJson(app, `/api/agents/${slug}/mounts`, { volumeId: 'v1', ...(restart ? { restart } : {}) })],
+    ['read-only toggle', (app: Hono, slug: string) => patchJson(app, `/api/agents/${slug}/mounts/m1`, { readOnly: true })],
+    ['remove', (app: Hono, slug: string, restart?: boolean) => deleteReq(app, `/api/agents/${slug}/mounts/m1${restart ? '?restart=true' : ''}`)],
+  ] as const
+
+  beforeEach(() => mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 }))
+
+  it.each(changes)('%s marks a running agent stale', async (name, change) => {
+    const slug = `drives-running-${name}`
+    expect((await change(createApp(), slug)).ok).toBe(true)
+    expect((await agentRegistry.get(slug).live()).container.stale).toBe(true)
+  })
+
+  it.each(changes)('%s leaves a stopped agent unmarked', async (name, change) => {
+    mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: 0 })
+    const slug = `drives-stopped-${name}`
+    expect((await change(createApp(), slug)).ok).toBe(true)
+    expect((await agentRegistry.get(slug).live()).container.stale).toBe(false)
+  })
+
+  it('restarts instead of marking when the change asks for a restart', async () => {
+    expect((await changes[0][1](createApp(), 'drives-restart', true)).ok).toBe(true)
+    expect(mockRestartContainer).toHaveBeenCalledOnce()
+    expect((await agentRegistry.get('drives-restart').live()).container.stale).toBe(false)
+  })
+
+  it('answers 404 to removing a drive the agent has no own copy of, and leaves it unmarked', async () => {
+    vi.mocked(removeMount).mockResolvedValueOnce(false)
+    expect((await changes[2][1](createApp(), 'drives-global')).status).toBe(404)
+    expect((await agentRegistry.get('drives-global').live()).container.stale).toBe(false)
   })
 })

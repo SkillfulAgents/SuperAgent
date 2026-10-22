@@ -126,6 +126,33 @@ jobs:
       - name: Run the libsql must-pass list
         run: npm run test:libsql
 
+  # The same unit tests with every agent actor behind the serializing test
+  # transport, as a caller across a wire would reach it (SUP-1253). Every file
+  # runs but the few in scripts/actor-transport-exceptions.txt, a list that
+  # only shrinks.
+  unit-tests-actor-transport:
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the unit tests through the actor transport
+        run: npm run test:actor-transport
+
   # Builds both shipped targets and verifies every bare import in the emitted
   # bundles is reachable from the production dependency closure, and that no
   # direct production dependency goes unused. The packaging workflows
@@ -418,7 +445,7 @@ jobs:
           retention-days: 7
 
   e2e-auth-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -521,7 +548,7 @@ jobs:
         run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
 
   e2e-a11y-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6

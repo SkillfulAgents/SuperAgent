@@ -234,7 +234,6 @@ const client = new Anthropic();
 
 // Non-streaming
 const message = await client.messages.create({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Summarize this data.' }]
 });
@@ -242,7 +241,6 @@ console.log(message.content[0].text);
 
 // Streaming
 const stream = client.messages.stream({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Write a report.' }]
 });
@@ -251,7 +249,7 @@ stream.on('text', (delta, fullText) => {
 });
 ```
 
-Default model: `claude-sonnet-4-6`. Use `claude-haiku-4-5` for fast/cheap tasks, `claude-opus-4-7` for complex reasoning.
+Leave out `model`: the request then uses the user's configured model for their provider. Pass `model` only when the user asks for a specific one.
 Rate limited to 100 req/min. This is the full Anthropic JS SDK (lazy-loaded) — all features including tool use, vision, and extended thinking work. Search for examples online. Full documentation is in `/opt/gamut/plugin/skills/dashboards/LLM_API.md`.
 
 ### Session Dispatch

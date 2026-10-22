@@ -48,6 +48,7 @@ import {
   providerForConnection,
   deleteConnection,
   setGlobalSelection,
+  compareAndSetGlobalDefault,
   resolveExecutionSelection,
   resolveHelperSelection,
   resolveSelectionHierarchy,
@@ -58,7 +59,9 @@ import {
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
 import { syncProviderSettings, ensureManagedPlatformConnection } from './connection-settings'
-import { connectionRuntime, withSessionSelection } from './connection-runtime'
+import { connectionNeedsAttachment, connectionRuntime } from './connection-runtime'
+import { runWithRequestUser } from '../platform-attribution/request-context'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 
 let handle: TestDatabase
 const admin = { userId: null, admin: true }
@@ -162,6 +165,41 @@ describe('LLM connections', () => {
     expect(storedSelection('a', null)).toBeNull()
     expect(storedSelection('a')).toEqual({ llmProviderId: 'imported', model: 'a' })
   })
+  it('restores a global default only when neither the default nor the summarizer changed since the write', async () => {
+    const first = await add('First')
+    const second = await add('Second')
+    const third = await add('Third')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    const previous = { defaultSelection: { llmProviderId: first, model: 'a' }, summarizerSelection: null }
+    const written = await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+    expect(written).toEqual({ before: previous, after: { defaultSelection: { llmProviderId: second, model: 'a' }, summarizerSelection: null } })
+    await expect(compareAndSetGlobalDefault(written.after, written.before)).resolves.toBe(true)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: first, model: 'a' })
+    expect(state.settings.llmSummarizer).toBeNull()
+
+    const rewritten = await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+    await setGlobalSelection('summarizer', { llmProviderId: third, model: 'a' })
+    await expect(compareAndSetGlobalDefault(rewritten.after, rewritten.before)).resolves.toBe(false)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: second, model: 'a' })
+    expect(state.settings.llmSummarizer).toEqual({ llmProviderId: third, model: 'a' })
+  })
+
+  it('captures rollback state after earlier queued edits to the summarizer', async () => {
+    const first = await add('First')
+    const second = await add('Second')
+    const helper = await add('Helper')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    const summarizer = { llmProviderId: helper, model: 'a' }
+    const [, changed] = await Promise.all([
+      setGlobalSelection('summarizer', summarizer),
+      setGlobalSelection('default', { llmProviderId: second, model: 'a' }),
+    ])
+    expect(changed.before).toEqual({ defaultSelection: { llmProviderId: first, model: 'a' }, summarizerSelection: summarizer })
+    await expect(compareAndSetGlobalDefault(changed.after, changed.before)).resolves.toBe(true)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: first, model: 'a' })
+    expect(state.settings.llmSummarizer).toEqual(summarizer)
+  })
+
   it('rejects personal defaults and only exposes another owner through the attached session', async () => {
     await state
       .db!.insert(user)
@@ -288,26 +326,18 @@ it('uses session connection overrides and falls back to its main model when remo
   })
 })
 
-it('serializes edits for one session without serializing independent sessions', async () => {
-  const order: string[] = []
-  let release!: () => void
-  const first = withSessionSelection('agent', 'session', async () => {
-    order.push('first')
-    await new Promise<void>((resolve) => {
-      release = resolve
-    })
-    order.push('first-done')
-  })
-  const second = withSessionSelection('agent', 'session', async () => {
-    order.push('second')
-  })
-  await withSessionSelection('agent', 'other-session', async () => {
-    order.push('independent')
-  })
-  expect(order).toEqual(['first', 'independent'])
-  release()
-  await Promise.all([first, second])
-  expect(order).toEqual(['first', 'independent', 'first-done', 'second'])
+it('lets a session send bind another member\'s connection only while the session holds it', async () => {
+  await state
+    .db!.insert(user)
+    .values({ id: 'alice', name: 'Alice', email: 'alice@example.com' })
+    .run()
+  const personal = await add('Personal', 'alice')
+  const shared = await add('Shared')
+  expect(await connectionNeedsAttachment(undefined)).toBe(false)
+  expect(await runWithRequestUser('bob', () => connectionNeedsAttachment(shared))).toBe(false)
+  expect(await runWithRequestUser('alice', () => connectionNeedsAttachment(personal))).toBe(false)
+  expect(await runWithRequestUser('bob', () => connectionNeedsAttachment(personal))).toBe(true)
+  await expect(connectionNeedsAttachment('missing')).rejects.toThrow(LlmProviderNotFoundError)
 })
 
 it('migrates version pins in SQL and old file selections before applying strict membership', async () => {

@@ -34,9 +34,6 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: async () => ({ defaultApiPolicy: 'review', defaultMcpPolicy: 'review' }),
 }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { syncAgentSessionsAwaiting: vi.fn() },
-}))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 vi.mock('@shared/lib/platform-attribution', () => ({
@@ -133,7 +130,7 @@ async function proxyGet(accountId: string, host: string, pathAndQuery: string, o
     const [review] = userInputRequestManager.getAgentScopedRequests(AGENT)
     if (review) {
       reviewed = true
-      agentRegistry.get(AGENT).inputs.reviews.submit(review.id, onReview)
+      await agentRegistry.get(AGENT).inputs.reviews.submit(review.id, onReview)
     }
     await new Promise((resolve) => setTimeout(resolve, 10))
   }

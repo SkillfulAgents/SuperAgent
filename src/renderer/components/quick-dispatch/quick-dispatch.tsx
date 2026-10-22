@@ -384,6 +384,7 @@ export function QuickDispatch() {
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
+      {composer.chipDialog}
       <form onSubmit={composer.handleSubmit}>
         {/* Input row — large, borderless, full-width like Raycast's search
             field. File drops are handled at the panel root (any file dragged
@@ -402,6 +403,9 @@ export function QuickDispatch() {
             value={composer.message}
             onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
+            chipContext={composer.chipContext}
+            // The launcher grows its own inline menus; a picker would open outside the window.
+            pickers={false}
             placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
             minRows={1}

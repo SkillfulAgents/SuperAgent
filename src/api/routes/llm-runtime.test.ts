@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   db: null as TestDatabase['db'] | null,
   settings: {} as AppSettings,
   currentId: '',
+  recordRuntime: vi.fn(async (_sessionId: string, _runtime: unknown) => {}),
 }))
 vi.mock('@shared/lib/db', () => ({
   get db() {
@@ -42,6 +43,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
       sessions: {
         isKnown: async (id: string) => id === 'own-session',
         metadata: async () => ({ model: 'model', llmProviderId: state.currentId }),
+        recordRuntime: state.recordRuntime,
       },
       config: { get: async () => ({}) },
     }),
@@ -49,7 +51,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 import routes from './llm-runtime'
 import { saveConnection, setGlobalSelection, resolveConnectionSelection } from '@shared/lib/llm-provider/connections'
-import { sessionRuntime, connectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { connectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 let handle: TestDatabase
 const app = new Hono().route('/runtime', routes)
@@ -97,7 +99,8 @@ it('scopes resolution to the authenticated agent session and rejects arbitrary a
     model: 'model',
     env: { ANTHROPIC_AUTH_TOKEN: 'static-key' },
   })
-  expect(sessionRuntime('alpha', 'own-session')?.env).toEqual({})
+  // The session's agent keeps only the runtime's non-secret facts.
+  expect(state.recordRuntime).toHaveBeenLastCalledWith('own-session', { provider: expect.any(String), modelContextWindows: expect.any(Object) })
 })
 
 
@@ -119,7 +122,7 @@ it('returns access-only proxy credentials and keeps them out of presentation met
   const body = await response.json()
   expect(body.proxy).toMatchObject({ adapter: 'grok', format: 'responses', credential: { accessToken: 'private-access' } })
   expect(JSON.stringify(body)).not.toContain('never-container-refresh')
-  expect(JSON.stringify(sessionRuntime('alpha', 'own-session'))).not.toContain('private-access')
+  expect(JSON.stringify(state.recordRuntime.mock.calls.at(-1))).not.toContain('private-access')
   expect((await request('resolve', { sessionId: 'own-session', llmProviderId: 'another-account', rejectedGeneration: 0 })).status).toBe(409)
 })
 

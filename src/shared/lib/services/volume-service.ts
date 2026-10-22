@@ -63,7 +63,7 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   const now = new Date()
   return {
     id: randomUUID(), userId, name: volumeNameSchema.parse(input.name ?? prepared.name),
-    type: prepared.type, config: JSON.stringify(config), createdAt: now, updatedAt: now,
+    type: prepared.type, config: JSON.stringify(config), globalAccess: null, createdAt: now, updatedAt: now,
   }
 }
 
@@ -87,6 +87,7 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
       userId: volume.userId,
       canManage: volume.userId === null ? viewer.admin : volume.userId === viewer.userId,
       attachmentCount,
+      globalAccess: volume.globalAccess,
     }
   }))
   return summaries.filter(row => row !== null)
@@ -96,14 +97,19 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
   const input = updateVolumeSchema.parse(raw)
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
   const userId = input.visibility === undefined ? undefined : ownerFor(input.visibility, viewer)
-  // Evaluate attachment state with the write, including races with attachment.
-  const result = await db.update(volumeDefinitions).set({ name: input.name, userId, updatedAt: new Date() })
+  if (input.global && typeof userId === 'string') throw new VolumeError('Only public drives can be global', 400)
+  // Evaluate attachment and global state with the write, including races with attachment.
+  const result = await db.update(volumeDefinitions).set({ name: input.name, userId, globalAccess: input.global, updatedAt: new Date() })
     .where(and(ownership, userId === undefined ? undefined : or(
       userId === null ? isNull(volumeDefinitions.userId) : eq(volumeDefinitions.userId, userId),
       notExists(db.select({ id: agentVolumes.id }).from(agentVolumes).where(eq(agentVolumes.volumeId, id))),
-    ))).run()
+    ), input.global && userId === undefined ? isNull(volumeDefinitions.userId) : undefined,
+    typeof userId === 'string' ? isNull(volumeDefinitions.globalAccess) : undefined)).run()
   if (changesOf(result) > 0) return
-  if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
+  const existing = await db.select({ userId: volumeDefinitions.userId, globalAccess: volumeDefinitions.globalAccess }).from(volumeDefinitions).where(ownership).get()
+  if (existing) {
+    if (input.global && existing.userId !== null) throw new VolumeError('Only public drives can be global', 400)
+    if (typeof userId === 'string' && existing.globalAccess) throw new VolumeError('Turn off global before changing access', 409)
     throw new VolumeError('Remove this drive from all agents before changing its access', 409)
   }
   throw new VolumeError('Drive not found', 404)

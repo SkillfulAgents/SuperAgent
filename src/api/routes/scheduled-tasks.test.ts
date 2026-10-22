@@ -30,7 +30,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 }))
 
 const mockGetSessionsByScheduledTask = vi.fn()
-const mockRegisterSession = vi.fn()
+const mockRegisterSession = vi.fn(async (..._args: unknown[]) => {})
 const mockUpdateSessionMetadata = vi.fn()
 const mockGetSessionMetadata = vi.fn((..._args: unknown[]) => Promise.resolve({ name: 'Sleeping session' }))
 
@@ -79,20 +79,24 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-const mockMessagePersister = vi.hoisted(() => ({
-  withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
-  isSessionActive: vi.fn(),
-  subscribeToSession: vi.fn(),
-  markSessionActive: vi.fn(),
-  markSessionIdle: vi.fn(),
+const mockLiveSessions = vi.hoisted(() => ({
+  isActive: vi.fn(),
+  activeIds: vi.fn((_agentSlug: string): string[] => []),
+  subscribe: vi.fn(async (..._args: unknown[]) => {}),
+  markActive: vi.fn(),
+  markIdle: vi.fn(),
   isSubscribed: vi.fn(() => false),
   cancelAwaitingInput: vi.fn(() => Promise.resolve()),
-  broadcastGlobal: vi.fn(),
-  broadcastSessionUpdate: vi.fn(),
+  emit: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: mockMessagePersister,
+const mockPublishGlobal = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: mockPublishGlobal, subscribe: () => () => {} },
+}))
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(mockLiveSessions),
 }))
 
 const mockGetEffectiveModels = vi.fn()
@@ -210,7 +214,8 @@ describe('scheduled-tasks route', () => {
       { id: 'session-active', name: 'Active session' },
       { id: 'session-idle', name: 'Idle session' },
     ])
-    mockMessagePersister.isSessionActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
+    mockLiveSessions.isActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
+    mockLiveSessions.activeIds.mockReturnValue(['session-active'])
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -231,7 +236,7 @@ describe('scheduled-tasks route', () => {
     mockUpdateTaskName.mockResolvedValue(true)
   })
 
-  it('returns task sessions with live activity from the message persister', async () => {
+  it("returns task sessions with live activity from the agent's live sessions", async () => {
     const res = await app.request('http://localhost/api/scheduled-tasks/task-1/sessions')
 
     expect(res.status).toBe(200)
@@ -262,19 +267,20 @@ describe('scheduled-tasks route', () => {
       dashboardBuilderModel: undefined,
       effort: 'low',
     })
-    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report')
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', {
-      isScheduledExecution: true,
-      scheduledTaskId: 'task-1',
-      scheduledTaskName: 'Daily report',
-    })
-    expect(mockMessagePersister.subscribeToSession).toHaveBeenCalledWith(
+    // Registered as a scheduled execution in one write, then attached with that metadata.
+    const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report' }
+    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report', registered)
+    expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()
+    expect(mockLiveSessions.subscribe).toHaveBeenCalledWith(
       'agent-one',
       'container-session-1',
       { createSession: mockCreateSession },
       'container-session-1',
+      registered,
+      // Frames wait for the registration, so a run that settles at once finds its status.
+      { holdFramesUntil: expect.any(Promise) },
     )
-    expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
+    expect(mockLiveSessions.markActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })
@@ -305,7 +311,11 @@ describe('scheduled-tasks route', () => {
       model: 'custom-model',
       effort: 'high',
     }))
-    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Scheduled Task (Run Now)')
+    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Scheduled Task (Run Now)', {
+      isScheduledExecution: true,
+      scheduledTaskId: 'task-1',
+      scheduledTaskName: undefined,
+    })
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
   })
@@ -329,7 +339,7 @@ describe('scheduled-tasks route', () => {
 
     it('run-now resumes the target session instead of creating a new one', async () => {
       task = createWakeTask()
-      const mockSendMessage = vi.fn()
+      const mockSendMessage = vi.fn(async (_sessionId: string, _content: string, _uuid?: string, _options?: unknown) => ({}))
       mockEnsureRunning.mockResolvedValue({
         createSession: mockCreateSession,
         sendMessage: mockSendMessage,
@@ -351,7 +361,8 @@ describe('scheduled-tasks route', () => {
       expect(sessionId).toBe('sleeping-session-1')
       expect(content.startsWith('[SYSTEM] ')).toBe(true)
       expect(content).toContain('Check whether Dana replied')
-      expect(options).toEqual({ shouldQuery: true })
+      expect(options).toMatchObject({ shouldQuery: true })
+      expect(options).not.toHaveProperty('preserveRuntime')
 
       expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
         expect.objectContaining({ slug: 'agent-one' }),
@@ -361,7 +372,7 @@ describe('scheduled-tasks route', () => {
         })
       )
       expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'sleeping-session-1')
-      expect(mockMessagePersister.broadcastGlobal).toHaveBeenCalledWith(
+      expect(mockPublishGlobal).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'session_updated', sessionId: 'sleeping-session-1' })
       )
     })
@@ -375,7 +386,7 @@ describe('scheduled-tasks route', () => {
       })
 
       expect(res.status).toBe(204)
-      expect(mockMessagePersister.broadcastGlobal).toHaveBeenCalledWith(
+      expect(mockPublishGlobal).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'session_updated', sessionId: 'sleeping-session-1' })
       )
     })
@@ -389,7 +400,7 @@ describe('scheduled-tasks route', () => {
       })
 
       expect(res.status).toBe(204)
-      expect(mockMessagePersister.broadcastGlobal).not.toHaveBeenCalledWith(
+      expect(mockPublishGlobal).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'session_updated' })
       )
     })

@@ -205,7 +205,7 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
 
 export type ScriptType = 'applescript' | 'shell' | 'powershell'
 
-/** Script types supported on each host platform. Used for validation in both message-persister and the run-script API endpoint. */
+/** Script types supported on each host platform. Used for validation in both the live sessions' tool calls and the run-script API endpoint. */
 export const VALID_SCRIPT_TYPES: Record<string, ScriptType[]> = {
   darwin: ['applescript', 'shell'],
   linux: ['shell'],
