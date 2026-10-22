@@ -98,34 +98,35 @@ class WidgetRefreshService {
     widgetSlug: string,
     opts: { wake: boolean; reason: RefreshReason },
   ): Promise<RefreshOutcome> {
-    const run = await this.startRefresh(agentSlug, widgetSlug, opts)
-    if (run) return run.outcome
-    const joined = await agentRegistry.get(agentSlug).widgets.joinRefresh(widgetSlug)
-    // The refresh in flight ended between the two calls: start one of our own.
-    return joined ?? this.refreshWidget(agentSlug, widgetSlug, opts)
+    const started = await agentRegistry.get(agentSlug).widgets.beginOrJoinRefresh(widgetSlug)
+    return 'outcome' in started ? started.outcome : this.runRefresh(agentSlug, widgetSlug, started.token, opts)
   }
 
   /**
-   * Begin a refresh unless one of the widget is in flight. Resolves once it
-   * is in flight (so a listing read next sees it), not when it ends: the
-   * refresh's outcome is the returned `outcome`, or null when it was already
-   * running.
+   * Begin a refresh unless one of the widget is in flight, for a sweep that
+   * does not wait on it. Resolves once it is in flight (so a listing read next
+   * sees it), not when it ends.
    */
   private async startRefresh(
     agentSlug: string,
     widgetSlug: string,
     opts: { wake: boolean; reason: RefreshReason },
-  ): Promise<{ outcome: Promise<RefreshOutcome> } | null> {
-    const widgets = agentRegistry.get(agentSlug).widgets
-    const token = await widgets.beginRefresh(widgetSlug)
-    if (!token) return null
-    const outcome = this.doRefresh(agentSlug, widgetSlug, opts)
+  ): Promise<void> {
+    const token = await agentRegistry.get(agentSlug).widgets.beginRefresh(widgetSlug)
+    if (token) void this.runRefresh(agentSlug, widgetSlug, token, opts)
+  }
+
+  /** Run the refresh `token` began and hand its outcome to whoever joined it. Never rejects. */
+  private async runRefresh(
+    agentSlug: string,
+    widgetSlug: string,
+    token: string,
+    opts: { wake: boolean; reason: RefreshReason },
+  ): Promise<RefreshOutcome> {
+    const outcome = await this.doRefresh(agentSlug, widgetSlug, opts)
       .catch((error: unknown): RefreshOutcome => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
-      .then(async (result) => {
-        await widgets.finishRefresh(widgetSlug, token, result)
-        return result
-      })
-    return { outcome }
+    await agentRegistry.get(agentSlug).widgets.finishRefresh(widgetSlug, token, outcome)
+    return outcome
   }
 
   private async doRefresh(

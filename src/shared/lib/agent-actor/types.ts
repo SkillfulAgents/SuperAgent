@@ -152,10 +152,14 @@ export interface LockOps {
 export interface WidgetOps {
   /** Start refreshing a widget unless a refresh of it is in flight: the token that finishes it, or null. */
   beginRefresh(widgetSlug: string): Promise<string | null>
+  /**
+   * Start refreshing a widget, or join the refresh in flight: the token that
+   * finishes the new one, or the joined one's outcome once it ends. Decided in
+   * one step, so a refresh ending in between cannot make the caller run another.
+   */
+  beginOrJoinRefresh(widgetSlug: string): Promise<{ token: string } | { outcome: WidgetRefreshOutcome }>
   /** The refresh `token` began is over: hand its outcome to whoever joined it, and note when it ended. */
   finishRefresh(widgetSlug: string, token: string, outcome: WidgetRefreshOutcome): Promise<void>
-  /** How the refresh in flight ends; null when none is in flight. */
-  joinRefresh(widgetSlug: string): Promise<WidgetRefreshOutcome | null>
   /** The widgets with a refresh in flight. */
   refreshing(): Promise<string[]>
   /** When each widget's last refresh ended, epoch ms by widget slug. */
@@ -176,8 +180,8 @@ export interface McpSessionOps {
   get(mcpId: string, id: string): Promise<McpProxySession | null>
   /** The upstream session `id` now speaks for (null: the upstream is stateless). */
   bind(id: string, upstreamSessionId: string | null): Promise<void>
-  /** Forget the upstream session: the next request initializes a new one. */
-  unbind(id: string): Promise<void>
+  /** Forget the upstream session `upstreamSessionId` (one a request found dead); a binding made since is kept. */
+  unbind(id: string, upstreamSessionId: string | null): Promise<void>
   close(id: string): Promise<void>
 }
 

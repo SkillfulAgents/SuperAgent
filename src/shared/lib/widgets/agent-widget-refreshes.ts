@@ -24,6 +24,7 @@ export class AgentWidgetRefreshes {
   private finishedAt = new Map<string, number>()
   private staleSweepAt = 0
   private runsEnded = 0
+  private disposed = false
 
   /** Start refreshing a widget unless a refresh of it is in flight: the token that finishes it, or null. */
   begin(widgetSlug: string): string | null {
@@ -42,11 +43,15 @@ export class AgentWidgetRefreshes {
     for (const join of refresh.joiners) join(outcome)
   }
 
-  /** How the refresh in flight ends; null when none is in flight. */
-  join(widgetSlug: string): Promise<WidgetRefreshOutcome | null> {
+  /**
+   * Start refreshing a widget, or join the refresh in flight: the token that
+   * finishes the new one, or the joined one's outcome once it ends. One step,
+   * so a refresh ending in between cannot make the caller start another.
+   */
+  beginOrJoin(widgetSlug: string): Promise<{ token: string } | { outcome: WidgetRefreshOutcome }> {
     const refresh = this.inFlight.get(widgetSlug)
-    if (!refresh) return Promise.resolve(null)
-    return new Promise((resolve) => refresh.joiners.push(resolve))
+    if (refresh) return new Promise((resolve) => refresh.joiners.push((outcome) => resolve({ outcome })))
+    return Promise.resolve({ token: this.begin(widgetSlug)! })
   }
 
   /** The widgets with a refresh in flight. */
@@ -71,13 +76,14 @@ export class AgentWidgetRefreshes {
     return ++this.runsEnded
   }
 
-  /** Whether no run has ended since the one `stamp` noted. */
+  /** Whether no run has ended since the one `stamp` noted (never, once the agent is gone). */
   isLatestPostRun(stamp: number): boolean {
-    return stamp === this.runsEnded
+    return !this.disposed && stamp === this.runsEnded
   }
 
   /** The agent is gone: whoever joined a refresh hears it will not end here. */
   dispose(): void {
+    this.disposed = true
     const gone: WidgetRefreshOutcome = { ok: false, error: 'The agent is no longer held by this process' }
     for (const refresh of this.inFlight.values()) {
       for (const join of refresh.joiners) join(gone)

@@ -55,10 +55,13 @@ export class AgentMcpSessions {
     entry.lastUsedAt = now
   }
 
-  /** Forget the upstream session: the next request initializes a new one. */
-  unbind(id: string): void {
+  /**
+   * Forget the upstream session `upstreamSessionId`, the one a request found
+   * dead: the next request initializes a new one. A binding made since is kept.
+   */
+  unbind(id: string, upstreamSessionId: string | null): void {
     const entry = this.sessions.get(id)
-    if (entry) entry.upstreamSessionId = undefined
+    if (entry && entry.upstreamSessionId === upstreamSessionId) entry.upstreamSessionId = undefined
   }
 
   close(id: string): void {

@@ -11,15 +11,26 @@ describe('AgentWidgetRefreshes', () => {
     expect(refreshes.begin('weather')).not.toBeNull()
     expect(refreshes.refreshing().sort()).toEqual(['macros', 'weather'])
 
-    const joined = refreshes.join('macros')
+    const joined = refreshes.beginOrJoin('macros')
     refreshes.finish('macros', 'not-the-token', failed)
     expect(refreshes.refreshing()).toContain('macros')
     refreshes.finish('macros', token, failed, 1_000)
 
-    await expect(joined).resolves.toEqual(failed)
+    await expect(joined).resolves.toEqual({ outcome: failed })
     expect(refreshes.refreshing()).toEqual(['weather'])
     expect(refreshes.refreshedAt()).toEqual({ macros: 1_000 })
-    await expect(refreshes.join('macros')).resolves.toBeNull()
+  })
+
+  it('beginOrJoin starts a refresh when none is in flight, and the next caller joins it', async () => {
+    const refreshes = new AgentWidgetRefreshes()
+    const started = await refreshes.beginOrJoin('macros')
+    expect(started).toEqual({ token: expect.any(String) })
+    expect(refreshes.refreshing()).toEqual(['macros'])
+    const joined = refreshes.beginOrJoin('macros')
+    refreshes.finish('macros', (started as { token: string }).token, failed)
+    await expect(joined).resolves.toEqual({ outcome: failed })
+    // Over: the next caller starts afresh.
+    await expect(refreshes.beginOrJoin('macros')).resolves.toEqual({ token: expect.any(String) })
   })
 
   it('a stale sweep runs at most once per throttle window', () => {
@@ -45,10 +56,13 @@ describe('AgentWidgetRefreshes', () => {
     const token = refreshes.begin('macros')!
     refreshes.finish('macros', token, failed)
     refreshes.begin('macros')
-    const joined = refreshes.join('macros')
+    const joined = refreshes.beginOrJoin('macros')
+    const stamp = refreshes.notePostRun()
     refreshes.dispose()
-    await expect(joined).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/no longer held/) })
+    await expect(joined).resolves.toMatchObject({ outcome: { ok: false, error: expect.stringMatching(/no longer held/) } })
     expect(refreshes.refreshing()).toEqual([])
     expect(refreshes.refreshedAt()).toEqual({})
+    // A post-run sweep scheduled before the agent went is not due any more.
+    expect(refreshes.isLatestPostRun(stamp)).toBe(false)
   })
 })

@@ -483,8 +483,8 @@ function createWidgetOps(state: AgentState): WidgetOps {
   const refreshes = state.widgetRefreshes
   return {
     beginRefresh: async (widgetSlug) => refreshes.begin(widgetSlug),
+    beginOrJoinRefresh: (widgetSlug) => refreshes.beginOrJoin(widgetSlug),
     finishRefresh: async (widgetSlug, token, outcome) => refreshes.finish(widgetSlug, token, outcome),
-    joinRefresh: (widgetSlug) => refreshes.join(widgetSlug),
     refreshing: async () => refreshes.refreshing(),
     refreshedAt: async () => refreshes.refreshedAt(),
     claimStaleSweep: async (throttleMs) => refreshes.claimStaleSweep(throttleMs),
@@ -499,7 +499,7 @@ function createMcpSessionOps(state: AgentState): McpSessionOps {
     open: async (mcpId, protocolVersion) => sessions.open(mcpId, protocolVersion),
     get: async (mcpId, id) => sessions.get(mcpId, id),
     bind: async (id, upstreamSessionId) => sessions.bind(id, upstreamSessionId),
-    unbind: async (id) => sessions.unbind(id),
+    unbind: async (id, upstreamSessionId) => sessions.unbind(id, upstreamSessionId),
     close: async (id) => sessions.close(id),
   }
 }

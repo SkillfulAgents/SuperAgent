@@ -180,6 +180,24 @@ describe('widgetRefreshService', () => {
     expect(await widgetRefreshService.isRefreshing(AGENT, 'macros')).toBe(false)
   })
 
+  it('a call arriving while a refresh completes joins it instead of running the script again', async () => {
+    // The second caller asks in the window between the container answering
+    // and the refresh being recorded as over: start-or-join is one step.
+    let second: Promise<unknown> | undefined
+    mocks.publishGlobal.mockImplementation((event: { type: string }) => {
+      if (event.type === 'widget_snapshot_ready' && !second) {
+        queueMicrotask(() => {
+          second = widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'manual' })
+        })
+      }
+    })
+    mocks.clientFetch.mockImplementation(async () => okResponse(snapshot()))
+    const first = await widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'stale' })
+    await vi.waitFor(() => expect(second).toBeDefined())
+    expect(await second).toEqual(first)
+    expect(mocks.clientFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('refreshStale starts only stale widgets and throttles repeat sweeps', async () => {
     mocks.listWidgets.mockResolvedValue([
       widget({ slug: 'stale-one', isStale: true }),

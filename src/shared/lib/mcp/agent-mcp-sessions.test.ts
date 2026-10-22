@@ -16,11 +16,23 @@ describe('AgentMcpSessions', () => {
     // A stateless upstream binds to null: bound, with no id to send.
     sessions.bind(id, null, 4)
     expect(sessions.get('mcp-1', id, 5)?.upstreamSessionId).toBeNull()
-    sessions.unbind(id)
+    sessions.unbind(id, null)
     expect(sessions.get('mcp-1', id, 6)?.upstreamSessionId).toBeUndefined()
 
     sessions.close(id)
     expect(sessions.get('mcp-1', id, 7)).toBeNull()
+  })
+
+  it('unbinding forgets only the upstream session the request found dead, never a newer binding', () => {
+    const sessions = new AgentMcpSessions()
+    const id = sessions.open('mcp-1', 'v', 0)
+    sessions.bind(id, 'upstream-1', 1)
+    // Another request reconnected meanwhile and bound a fresh upstream session.
+    sessions.bind(id, 'upstream-2', 2)
+    sessions.unbind(id, 'upstream-1')
+    expect(sessions.get('mcp-1', id, 3)?.upstreamSessionId).toBe('upstream-2')
+    sessions.unbind(id, 'upstream-2')
+    expect(sessions.get('mcp-1', id, 4)?.upstreamSessionId).toBeUndefined()
   })
 
   it('a session unused for a day expires; using it keeps it', () => {
