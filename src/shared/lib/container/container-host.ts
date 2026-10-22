@@ -39,13 +39,13 @@ import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
-const STATUS_SYNC_INTERVAL_MS = parseInt(
+export const STATUS_SYNC_INTERVAL_MS = parseInt(
   process.env.CONTAINER_STATUS_SYNC_INTERVAL_SECONDS || '300',
   10
 ) * 1000
 
 /** Interval for health monitoring (in ms). Default: 30 seconds */
-const HEALTH_CHECK_INTERVAL_MS = parseInt(
+export const HEALTH_CHECK_INTERVAL_MS = parseInt(
   process.env.CONTAINER_HEALTH_CHECK_INTERVAL_SECONDS || '30',
   10
 ) * 1000
@@ -326,7 +326,7 @@ export class ContainerHost {
   /**
    * Run health checks on all running containers.
    */
-  private async runHealthChecks(): Promise<void> {
+  async runHealthChecks(): Promise<void> {
     const runningIds = this.getRunningAgentIds()
     if (runningIds.length === 0) return
 
