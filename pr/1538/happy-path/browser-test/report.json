@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA agent can successfully open a browser, navigate to example.com, and report the page title as \"Example Domain\" in the response.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut home page showing \"Your Agents\" with the test agents listed in the sidebar.",
+    "Step 2: Clicked on \"QA-20261022-011605-1ual\" agent in the sidebar — Successfully navigated to the agent configuration page, displaying agent settings and a message input interface.",
+    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent, creating a new session titled \"Browser Page Title Check\" with status showing \"working\".",
+    "Step 4: Waited for the agent response (up to 3 minutes) — Agent completed the task in approximately 8 seconds, transitioning from \"working\" to \"idle\" status.",
+    "Step 5: Verified the response mentions \"Example Domain\" and took a screenshot — The agent responded with: \"The page title is \\\"Example Domain\\\". The page loaded normally, and the browser is still open in case you want to do anything else there.\" The live browser preview also displayed the Example Domain page, and the response metadata showed 2 tool calls and 116,724 tokens used."
+  ],
+  "bugs": [],
+  "durationMs": 106977,
+  "sessionId": "242b0af1-85ad-4baa-a234-5ccaed378993",
+  "cost": {
+    "inputTokens": 446,
+    "outputTokens": 11654,
+    "cacheCreationTokens": 81097,
+    "cacheReadTokens": 1372569,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.297344
+  }
+}
