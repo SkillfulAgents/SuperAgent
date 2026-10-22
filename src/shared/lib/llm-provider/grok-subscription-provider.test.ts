@@ -8,6 +8,11 @@ const reply = { id: 'r', status: 'completed', output: [{ id: 'm', type: 'message
 function provider(resolveCredential = vi.fn().mockResolvedValue(credential)) {
   return new GrokSubscriptionLlmProvider({ apiKeys: {}, env: {}, oauth: credential, resolveCredential })
 }
+it('drops the API long-context price warning for subscription models', () => {
+  const models = provider().getBuiltinCatalog()
+  expect(models.length).toBeGreaterThan(0)
+  expect(models.every(model => model.longContextPriceCliff === undefined)).toBe(true)
+})
 it('issues an access-only Responses proxy descriptor', async () => {
   const config = await provider().getContainerProxyConfig()
   expect(config).toMatchObject({ adapter: 'grok', format: 'responses', headers: GROK_CLIENT_HEADERS, credential: { accessToken: 'old' } })
