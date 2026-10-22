@@ -81,7 +81,12 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         }
 
         console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
-        const upstream = actor.container.openWebSocket('/browser/stream')
+        // The canvas width comes with the connection: messages sent before upstream opens are dropped.
+        // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
+        const width = new URL(request.url || '', 'http://localhost').searchParams.get('width')
+        const upstream = actor.container.openWebSocket('/browser/stream', {
+          search: width && /^\d+$/.test(width) ? `?width=${width}` : '',
+        })
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)

@@ -17,8 +17,8 @@ export interface FrameSink {
 }
 
 export const WEBSOCKET_OPEN = 1
-/** Unsent bytes on a client socket beyond which new screencast frames are held (about two 720p JPEGs). */
-export const MAX_BUFFERED_FRAME_BYTES = 512 * 1024
+/** Unsent bytes on a client socket beyond which new screencast frames are held (about two 2560 px wide JPEGs). */
+export const MAX_BUFFERED_FRAME_BYTES = 2 * 1024 * 1024
 /** How often a held frame is retried while the socket drains. */
 export const FRAME_DRAIN_POLL_MS = 50
 

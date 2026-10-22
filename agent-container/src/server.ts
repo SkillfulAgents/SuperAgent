@@ -50,7 +50,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
-import { screencastSize } from './screencast-size';
+import { clampViewerWidth, jpegWidth, sameFrameWidth, screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -2274,7 +2274,10 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
       return;
     }
 
+    // The viewer's canvas width rides on the URL so the first screencast already has the right size.
+    const viewerWidth = clampViewerWidth(url.searchParams.get('width'));
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      if (viewerWidth !== undefined) viewerWidths.set(ws, viewerWidth);
       handleBrowserStreamConnection(ws);
     });
     return;
@@ -2477,6 +2480,8 @@ let cdpScreencast: {
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
   screencastStarted: boolean;
+  /** Pixel width of the last frame sent, to tell whether a new width cap can change frames. */
+  lastFrameWidth?: number;
 } | null = null;
 
 /** Canvas width in device pixels each viewer last reported. */
@@ -2484,12 +2489,15 @@ const viewerWidths = new WeakMap<WebSocket, number>();
 
 /** CDP can't resize a running screencast, so a new viewer width restarts it. */
 function setViewerWidth(ws: WebSocket, value: unknown): void {
-  const width = Math.round(Number(value));
-  if (!(width > 0) || width === viewerWidths.get(ws)) return;
+  const width = clampViewerWidth(value);
+  const previous = viewerWidths.get(ws);
+  if (width === undefined || width === previous) return;
   viewerWidths.set(ws, width);
   const state = cdpScreencast;
   // Not started yet (e.g. a remote session still attaching): startScreencast reads the width.
   if (!state || state.clientWs !== ws || !state.screencastStarted || state.cdpWs.readyState !== WebSocket.OPEN) return;
+  // Chrome only scales down: a restart that can't change the frames would just pause the preview.
+  if (previous !== undefined && sameFrameWidth(previous, width, state.lastFrameWidth)) return;
   state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
   startScreencast(state);
 }
@@ -2920,7 +2928,9 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
               deviceHeight: meta.deviceHeight,
             }));
           }
-          clientWs.send(Buffer.from(msg.params.data, 'base64'));
+          const frame = Buffer.from(msg.params.data, 'base64');
+          state.lastFrameWidth = jpegWidth(frame);
+          clientWs.send(frame);
         }
       } else if (msg.method === 'Page.frameStartedLoading' || msg.method === 'Page.frameStoppedLoading') {
         // Only forward loading state for the main frame — subframes (ads,

@@ -16,8 +16,14 @@ const RECONNECT_BASE_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 8000
 const MAX_FAILED_RECONNECTS = 5
 
-const VIEWPORT_WIDTH_STEP = 64
+// Resend only after a real change: Chrome's rounding nudges the card width by a few px per frame size.
+const VIEWPORT_WIDTH_HYSTERESIS = 32
 const VIEWPORT_DEBOUNCE_MS = 200
+
+function canvasDeviceWidth(canvas: HTMLCanvasElement | null): number | undefined {
+  const width = Math.round((canvas?.getBoundingClientRect().width ?? 0) * window.devicePixelRatio)
+  return width > 0 ? width : undefined
+}
 
 interface UseBrowserStreamOptions {
   agentSlug: string
@@ -55,6 +61,9 @@ export function useBrowserStream({
   const [autoFollow, setAutoFollow] = useState(true)
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
+
+  /** Canvas width last given to the current socket, in device pixels. */
+  const sentWidthRef = useRef<number | undefined>(undefined)
 
   // Lifecycle refs for cleanup
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -157,7 +166,10 @@ export function useBrowserStream({
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream`
+    // The width goes on the URL: the first screencast is sized right, and nothing is lost while the proxy connects upstream.
+    sentWidthRef.current = canvasDeviceWidth(canvasRef.current)
+    const widthQuery = sentWidthRef.current ? `?width=${sentWidthRef.current}` : ''
+    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream${widthQuery}`
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
@@ -296,7 +308,7 @@ export function useBrowserStream({
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId, canvasRef])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {
@@ -351,29 +363,45 @@ export function useBrowserStream({
     []
   )
 
-  // Tell the container the canvas width in device pixels so it never streams wider frames.
-  // Re-runs on each connect: the first observation reports the size to the new socket.
+  // Tell the container when the canvas width changes, so it never streams wider frames than shown.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!connected || !canvas || typeof ResizeObserver === 'undefined') return
     let timer: ReturnType<typeof setTimeout> | undefined
-    const observer = new ResizeObserver(([entry]) => {
-      const devicePixels = entry.devicePixelContentBoxSize?.[0]?.inlineSize
-        ?? entry.contentRect.width * window.devicePixelRatio
-      // Steps of 64 px so dragging a panel edge doesn't restart the screencast every pixel.
-      const width = Math.ceil(devicePixels / VIEWPORT_WIDTH_STEP) * VIEWPORT_WIDTH_STEP
+    const report = (devicePixels: number) => {
+      const width = Math.round(devicePixels)
+      const sent = sentWidthRef.current
+      if (sent !== undefined && Math.abs(width - sent) < VIEWPORT_WIDTH_HYSTERESIS) return
       if (timer) clearTimeout(timer)
-      timer = setTimeout(() => sendMessage({ type: 'viewport', width }), VIEWPORT_DEBOUNCE_MS)
+      timer = setTimeout(() => {
+        sentWidthRef.current = width
+        sendMessage({ type: 'viewport', width })
+      }, VIEWPORT_DEBOUNCE_MS)
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      report(entry.devicePixelContentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width * window.devicePixelRatio)
     })
+    let pixelRatioQuery: MediaQueryList | undefined
+    const onPixelRatioChange = () => {
+      report(canvas.getBoundingClientRect().width * window.devicePixelRatio)
+      watchPixelRatio()
+    }
+    const watchPixelRatio = () => {
+      pixelRatioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      pixelRatioQuery.addEventListener('change', onPixelRatioChange, { once: true })
+    }
     try {
       // This box also fires when the window moves to a screen with another pixel ratio.
       observer.observe(canvas, { box: 'device-pixel-content-box' })
     } catch {
-      observer.observe(canvas) // Safari has no device-pixel-content-box
+      // Safari has no device-pixel-content-box, and the CSS box doesn't change on a pixel-ratio move.
+      observer.observe(canvas)
+      watchPixelRatio()
     }
     return () => {
       if (timer) clearTimeout(timer)
       observer.disconnect()
+      pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
     }
   }, [connected, canvasRef, sendMessage])
 

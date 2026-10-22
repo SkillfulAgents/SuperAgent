@@ -422,6 +422,7 @@ describe('useBrowserStream viewport width', () => {
     FakeWebSocket.instances = []
     observed = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('devicePixelRatio', 2)
     vi.stubGlobal('ResizeObserver', class {
       constructor(private callback: (entries: object[]) => void) {}
       observe(target: Element, options?: ResizeObserverOptions) {
@@ -429,7 +430,7 @@ describe('useBrowserStream viewport width', () => {
       }
       disconnect() {}
     })
-    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.useFakeTimers()
   })
 
   afterEach(() => {
@@ -437,25 +438,47 @@ describe('useBrowserStream viewport width', () => {
     vi.unstubAllGlobals()
   })
 
-  it('reports the canvas width in device pixels once the socket opens, and again when it changes', async () => {
-    const canvasRef = { current: document.createElement('canvas') }
-    renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+  function canvasOfCssWidth(width: number) {
+    const canvas = document.createElement('canvas')
+    canvas.getBoundingClientRect = () => ({ width }) as DOMRect
+    return { current: canvas }
+  }
+
+  const resize = (devicePixels: number) =>
+    observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: devicePixels }], contentRect: { width: devicePixels / 2 } })
+
+  it('puts the canvas width in device pixels on the stream URL', async () => {
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasOfCssWidth(420.5))))
+    await settle()
+    expect(new URL(FakeWebSocket.instances[0].url).search).toBe('?width=841')
+    hook.unmount()
+  })
+
+  it('reports only width changes past the hysteresis, with the exact width', async () => {
+    const canvasRef = canvasOfCssWidth(420.5)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
     await settle()
     const ws = FakeWebSocket.instances[0]
-    expect(observed).toHaveLength(0)
-
     act(() => ws.completeHandshake())
     expect(observed[0].target).toBe(canvasRef.current)
     expect(observed[0].options).toEqual({ box: 'device-pixel-content-box' })
 
-    // 420 CSS px on a 2x screen = 840 device px, rounded up to a 64 px step.
-    act(() => observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: 840 }], contentRect: { width: 420 } }))
-    act(() => observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: 846 }], contentRect: { width: 423 } }))
+    // The first observation and small rounding nudges match the width already on the URL.
+    act(() => resize(841))
+    act(() => resize(846))
+    act(() => resize(838))
     act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toEqual([{ type: 'viewport', width: 896 }])
+    expect(ws.sent).toEqual([])
 
-    act(() => observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: 3400 }], contentRect: { width: 1700 } }))
+    // A drag sends once, after it settles.
+    act(() => resize(1000))
+    act(() => resize(1200))
     act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent.at(-1)).toEqual({ type: 'viewport', width: 3456 })
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 1200 }])
+
+    act(() => resize(1210))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toHaveLength(1)
+    hook.unmount()
   })
 })
