@@ -15,6 +15,10 @@ const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
+const accountProviderState = vi.hoisted(() => ({ name: 'composio' as 'composio' | 'nango' }))
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: accountProviderState.name }),
+}))
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -167,6 +171,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 
     containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
     relayState.available = false
+    accountProviderState.name = 'composio'
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
 
@@ -188,6 +193,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
         SUPERAGENT_HOST_API_URL: 'http://evil.example/api',
         SUPERAGENT_HOST_TOKEN: 'attacker-host-token',
         CONNECTED_ACCOUNTS: '{"gmail":[{"name":"spoof","id":"x"}]}',
+        CONNECTED_ACCOUNT_TOOLKITS: 'attacker-toolkit',
         TZ: 'Antarctica/Troll',
         HOST_PLATFORM: 'spoofed-os',
         CLAUDE_CODE_ATTRIBUTION_HEADER: '1',
@@ -215,6 +221,20 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     expect(envVars.SUPERAGENT_HOST_TOKEN).toBe('real-host-token')
     // No active accounts -> empty object, not the spoofed metadata.
     expect(envVars.CONNECTED_ACCOUNTS).toBe('{}')
+    expect(envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')).toContain('todoist')
+    expect(envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')).not.toContain('attacker-toolkit')
+  })
+
+  it('only injects services supported by the selected account provider', async () => {
+    accountProviderState.name = 'nango'
+    await containerHost.runtime('test-agent').ensureRunning()
+    const toolkits = mockStart.mock.calls[0][0].envVars.CONNECTED_ACCOUNT_TOOLKITS.split(',')
+    expect(toolkits).toContain('gmail')
+    expect(toolkits).toContain('github')
+    expect(toolkits).not.toContain('todoist')
+    expect(toolkits).not.toContain('excel')
+    expect(toolkits).not.toContain('twitter')
+    expect(toolkits).not.toContain('attacker-toolkit')
   })
 
   it('keeps computed TZ / HOST_PLATFORM / CLAUDE_CODE_ATTRIBUTION_HEADER', async () => {
@@ -237,6 +257,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 describe('ContainerRuntime webhook relay env', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    accountProviderState.name = 'composio'
     containerHost.dropRuntime('test-agent')
     mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')

@@ -63,6 +63,10 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   // seeded agent directories into the catalog table the listing reads.
   const { openDatabase } = await import('@shared/lib/db')
   await openDatabase()
+  // This harness skips the full service startup, but container discovery needs
+  // the same provider registry. Registration is local and stays outside measurements.
+  const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+  registerAllAccountProviders()
   const { Hono: HonoCtor } = await import('hono')
   const agentsRouter = (await import('@/api/routes/agents')).default
   const { agentRegistry } = await import('@shared/lib/agent-actor')
