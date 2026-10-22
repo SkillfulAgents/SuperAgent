@@ -195,47 +195,10 @@ jobs:
           node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
           echo "build.publish.channel set to $UPDATE_CHANNEL"
 
-      # electron-builder's temporary-keychain path passes the .p12 import password
-      # to `security set-key-partition-list -k`, which needs the *keychain* password.
-      # Older macOS builds tolerated the mismatch; the macOS 26.6 runner image
-      # (20260831+) rejects it and the build dies before signing. Upstream fix
-      # (electron-userland/electron-builder#10066, PR #10101) is not released on
-      # 26.x yet, so build the keychain here and hand it over via CSC_KEYCHAIN.
-      # electron-builder only honours CSC_KEYCHAIN when CSC_LINK is unset, so
-      # CSC_LINK/CSC_KEY_PASSWORD must NOT be passed to the build step.
-      - name: Set up signing keychain
+      - name: Build and sign macOS app
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/signing.keychain"
-          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
-          CERT="$RUNNER_TEMP/signing.p12"
-          case "$CSC_LINK" in
-            https://*) curl -fsSL "$CSC_LINK" -o "$CERT" ;;
-            *) printf '%s' "$CSC_LINK" | sed -E 's/^data:[^,]*;base64,//' | base64 --decode > "$CERT" ;;
-          esac
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          # No auto-lock timeout: notarization can run for a long time.
-          security set-keychain-settings "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$CERT" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/productbuild
-          security set-key-partition-list -S apple-tool:,apple: -s \
-            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
-          rm -f "$CERT"
-          # Put the new keychain (plus electron-builder's bundled Apple root/
-          # intermediate certs, which its own keychain path also adds) on the
-          # search list so codesign can build the certificate chain.
-          security list-keychains -d user -s "$KEYCHAIN" \
-            "$PWD/node_modules/app-builder-lib/certs/root_certs.keychain" \
-            $(security list-keychains -d user | tr -d '"')
-          security find-identity -v -p codesigning "$KEYCHAIN"
-          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
-
-      - name: Build and sign macOS app
-        env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -245,20 +208,41 @@ jobs:
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
         run: npm run dist:mac
 
+      # Electron 44+ needs macOS 13, and the packaged app says so
+      # (LSMinimumSystemVersion), but the feed has to say it too or the updater
+      # installs a build that macOS 12 then refuses to open. electron-updater
+      # compares the field against os.release(), the Darwin kernel version, so
+      # macOS 13 is 22.0.0 ("13.0" is not semver and is ignored). electron-builder
+      # has no option for it (electron-userland/electron-builder#8569).
+      - name: Pin the macOS floor in the update feed
+        run: |
+          node -e "
+            const fs = require('fs'), yaml = require('js-yaml')
+            const feeds = fs.readdirSync('release').filter((f) => f.endsWith('-mac.yml'))
+            if (feeds.length === 0) throw new Error('no *-mac.yml feed in release/')
+            for (const f of feeds) {
+              const path = 'release/' + f
+              const info = yaml.load(fs.readFileSync(path, 'utf8'))
+              info.minimumSystemVersion = '22.0.0'
+              fs.writeFileSync(path, yaml.dump(info, { lineWidth: -1 }))
+              console.log(path + ': minimumSystemVersion=' + info.minimumSystemVersion)
+            }
+          "
+
       - name: Enforce release artifact size limit
         shell: bash
         run: |
-          # Wrangler (Cloudflare R2 feed upload) rejects single objects over
-          # 300 MiB. Fail here, in the build job, rather than discovering it
-          # after the GitHub release is already published.
-          limit=$((280 * 1024 * 1024))
+          # A size budget, not a platform limit: the R2 feed upload is multipart
+          # and GitHub release assets go to 2 GiB. It catches an installer that
+          # balloons unnoticed (the Windows one carries both x64 and arm64).
+          limit=$((400 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
             size=$(wc -c < "$f")
             printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
             if [ "$size" -gt "$limit" ]; then
-              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
               bad=1
             fi
           done
@@ -275,12 +259,6 @@ jobs:
             release/*.yaml
             release/*.blockmap
           retention-days: 5
-
-      - name: Remove signing keychain
-        if: always()
-        run: |
-          # create-keychain writes <name>-db on modern macOS, so don't test the path.
-          [ -z "${CSC_KEYCHAIN:-}" ] || security delete-keychain "$CSC_KEYCHAIN" || true
 
   # Build Windows Electron app
   build-win:
@@ -332,17 +310,17 @@ jobs:
       - name: Enforce release artifact size limit
         shell: bash
         run: |
-          # Wrangler (Cloudflare R2 feed upload) rejects single objects over
-          # 300 MiB. Fail here, in the build job, rather than discovering it
-          # after the GitHub release is already published.
-          limit=$((280 * 1024 * 1024))
+          # A size budget, not a platform limit: the R2 feed upload is multipart
+          # and GitHub release assets go to 2 GiB. It catches an installer that
+          # balloons unnoticed (the Windows one carries both x64 and arm64).
+          limit=$((400 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
             size=$(wc -c < "$f")
             printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
             if [ "$size" -gt "$limit" ]; then
-              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
               bad=1
             fi
           done
@@ -410,15 +388,31 @@ jobs:
       # (not even latest.yml) reached R2, and continue-on-error hid it — the
       # generic feed silently stopped updating. Binaries go first and the feed
       # metadata (latest*.yml) last, so R2 never advertises a version whose
-      # binaries are missing. Skipped if the Cloudflare credentials aren't
-      # configured. Uses the same CLOUDFLARE_API_TOKEN as the gamut-releases
-      # Worker deploy — no separate R2 S3 keys to manage.
+      # binaries are missing. Skipped if the Cloudflare account isn't configured.
+      #
+      # Uploads go through R2's S3 API, where the AWS CLI splits large files
+      # into multipart uploads: wrangler's `r2 object put` refuses anything over
+      # 300 MiB, and the Windows installer (x64 + arm64 in one exe) passed that
+      # with Electron 45. The S3 API takes its own keys — an R2 API token with
+      # Object Read & Write on gamut-releases — not CLOUDFLARE_API_TOKEN.
       - name: Upload release feed to Cloudflare R2
         if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # Newer AWS CLIs attach checksums to every request by default; only
+          # send them where the S3 API requires them.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
+          # Missing keys must fail the job: a silently skipped upload is how the
+          # feed went stale before (see above).
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not set; the R2 feed would not get this release."
+            exit 1
+          fi
+          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
           shopt -s nullglob
           failed=()
           binaries=()
@@ -437,7 +431,7 @@ jobs:
             local f="$1" name
             name="$(basename "$f")"
             echo "→ R2: $name ($(( $(wc -c < "$f") / 1048576 )) MiB)"
-            if ! npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote; then
+            if ! aws s3 cp "$f" "s3://gamut-releases/$name" --endpoint-url "$endpoint" --only-show-errors; then
               echo "::error::R2 upload failed for $name"
               failed+=("$name")
             fi
