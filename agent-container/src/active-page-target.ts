@@ -6,6 +6,8 @@ export interface PageTargetCandidate {
 export interface BrowserTabCandidate {
   url: string;
   active: boolean;
+  /** CDP target id, when the daemon reports it (agent-browser 0.34+). */
+  targetId?: string;
 }
 
 export interface ActivePageTargetSelectionOptions {
@@ -39,6 +41,12 @@ export function selectActivePageTarget<T extends PageTargetCandidate>(
 
   const activeDaemonTab = daemonTabs.find((tab) => tab.active);
   if (activeDaemonTab) {
+    // The target id names the tab exactly; the URL is ambiguous when two tabs
+    // share one and stale when the daemon has not seen a navigation.
+    const byId = activeDaemonTab.targetId
+      ? targets.find((target) => target.id === activeDaemonTab.targetId)
+      : undefined;
+    if (byId) return byId;
     const daemonTarget = targets.find((target) => urlsMatch(target.url, activeDaemonTab.url));
     if (daemonTarget) return daemonTarget;
   }

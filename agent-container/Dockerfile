@@ -101,7 +101,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # headless_shell — so only the shell is installed (--only-shell). The full
 # chromium build was ~640MB of never-launched weight.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser@0.27.2 && \
+# The npm package ships the CLI for every platform (~100MB); its postinstall
+# links agent-browser straight to this machine's binary, so the others are
+# dead weight. Pruned only when the link is that direct one.
+RUN npm install -g agent-browser@0.39.1 && \
+    keep="$(readlink -f "$(command -v agent-browser)")" && \
+    case "$keep" in \
+      */agent-browser-linux-*) \
+        for f in "$(npm root -g)"/agent-browser/bin/agent-browser-*; do \
+          [ "$(readlink -f "$f")" = "$keep" ] || rm -f "$f"; \
+        done ;; \
+    esac && \
+    agent-browser --version && \
     npx playwright install chromium --only-shell && \
     chmod -R o+rx /opt/playwright-browsers && \
     rm -rf /root/.npm
@@ -258,6 +269,15 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
+# agent-browser 0.33.1+ shuts its daemon (and Chrome) down after an hour
+# without a command. The browser's lifecycle is ours (browser_open/close, the
+# session lock, the live view), so never time out.
+ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0
+# agent-browser 0.36+ enables WebMCP (site-registered tools) and announces
+# page tools in the output of whatever command runs next — an observer eval
+# included. Off until the harness supports it (SUP-1265 §9); execBrowser also
+# strips any announcement that gets through.
+ENV AGENT_BROWSER_NO_WEBMCP=1
 ENV DISABLE_AUTOUPDATER=1
 # Keep bun's package cache on the persistent workspace mount. The default
 # ($HOME/.bun/install/cache) lives in the container's writable layer, which is

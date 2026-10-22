@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { canonicalizeTargetPath } from '@shared/lib/proxy/target-path'
 
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -114,6 +115,29 @@ describe('ProxyReviewRequestItem "always" policy routing', () => {
     expect(screen.queryByTestId('proxy-review-allow-label-destructive')).not.toBeInTheDocument()
     await user.click(await screen.findByTestId('proxy-review-allow-label-read'))
     expect(sentBody()).toMatchObject({ decision: 'allow', scope: '*read', reviewType: 'api' })
+  })
+
+  it.each([
+    ['POST', 'v4/spreadsheets/id:batchUpdate', 'write'],
+    ['POST', "v4/spreadsheets/id/values/'October%2F2026'!A1:B2:append", 'write'],
+    ['GET', "v4/spreadsheets/id/values/'October%2F2026'!A1:B2", 'read'],
+  ])('offers and saves the Sheets %s %s %s group', async (method, path, label) => {
+    const target = canonicalizeTargetPath(`sheets.googleapis.com/${path}`, 'sheets.googleapis.com')
+    if (!target.ok) throw new Error(target.error)
+    const match = matchScopes('googlesheets', method, target.path)
+    const user = userEvent.setup()
+    renderCard({
+      toolkit: 'googlesheets',
+      method,
+      targetPath: target.path,
+      matchedScopes: match.scopes,
+      scopeDescriptions: match.descriptions,
+      endpointDescription: match.endpointDescription,
+    })
+    await user.click(screen.getByTestId('proxy-review-always-allow-btn'))
+    expect(screen.queryByTestId('proxy-review-allow-label-destructive')).not.toBeInTheDocument()
+    await user.click(await screen.findByTestId(`proxy-review-allow-label-${label}`))
+    expect(sentBody()).toMatchObject({ decision: 'allow', scope: `*${label}`, reviewType: 'api' })
   })
 
   it('sends the stamped api type even when the path looks like a tool call', async () => {

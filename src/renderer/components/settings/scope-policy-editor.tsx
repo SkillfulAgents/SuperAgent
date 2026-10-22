@@ -35,6 +35,7 @@ import {
   CollapsibleTrigger,
 } from '@renderer/components/ui/collapsible'
 import { cn } from '@shared/lib/utils/cn'
+import { getProvider } from '@shared/lib/account-providers/service-catalog'
 
 type PolicyDecision = 'allow' | 'review' | 'block' | 'default'
 
@@ -494,7 +495,8 @@ export function ScopePolicyEditorBody({
       <div className="flex-1 overflow-y-auto min-h-0">
         {allScopes.length === 0 ? (
           <p className="text-sm text-muted-foreground py-4 text-center">
-            No scopes defined for this API.
+            Detailed permission rules are not available for this service. Requests
+            follow the account default, or your global API policy.
           </p>
         ) : filteredPolicies.length === 0 ? (
           <p className="text-sm text-muted-foreground py-4 text-center">
@@ -587,7 +589,9 @@ export function ScopePolicyEditorBody({
           16px rhythm as the list's divide-y hairlines */}
       <div className="-mt-3 flex items-center justify-between gap-3 border-t border-border/50 py-3.5 pl-3 pr-2">
         <span className="text-[11px] text-muted-foreground truncate min-w-0">
-          Fallback for scopes without a per-scope or risk-level policy
+          {allScopes.length === 0
+            ? 'Account default policy'
+            : 'Fallback for scopes without a per-scope or risk-level policy'}
         </span>
         <div className="shrink-0">
           <PolicyDecisionToggle
@@ -690,23 +694,21 @@ export function ScopePolicyEditor({
   onOpenChange,
   header,
 }: ScopePolicyEditorProps) {
+  const displayName = getProvider(toolkit)?.displayName ?? toolkit
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* No visible dialog title or X — the section label carries the title and
           Cancel handles dismissal. The sr-only title keeps the dialog labeled
           for screen readers. */}
       <DialogContent hideClose className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
-        <DialogTitle className="sr-only">Agent permissions for {toolkit}</DialogTitle>
-        <DialogDescription className="sr-only">Configure per-scope access policies for {toolkit}</DialogDescription>
+        <DialogTitle className="sr-only">Agent permissions for {displayName}</DialogTitle>
+        <DialogDescription className="sr-only">Configure per-scope access policies for {displayName}</DialogDescription>
         {header && <DialogHeader>{header}</DialogHeader>}
         <ScopePolicySection
           accountId={accountId}
           toolkit={toolkit}
-          title={
-            <>
-              Agent permissions for <span className="capitalize">{toolkit}</span>
-            </>
-          }
+          title={`Agent permissions for ${displayName}`}
           className={cn('flex-1 min-h-0 mb-6', header ? 'mt-5' : 'mt-1')}
           onSaved={() => onOpenChange(false)}
           onCancel={() => onOpenChange(false)}

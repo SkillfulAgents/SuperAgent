@@ -309,7 +309,7 @@ describe('MarkdownComposerEditor', () => {
     await user.type(editor, '![[alt](https://example.com/image.png)')
     await user.type(editor, ' - item')
 
-    expect(editor.querySelector('img')).toHaveAttribute('src', 'https://example.com/image.png')
+    expect(editor.querySelector('img[src]')).toHaveAttribute('src', 'https://example.com/image.png')
     expect(editor.querySelector('ul')).not.toBeInTheDocument()
     expect(editor).toHaveTextContent('- item')
   })
@@ -451,7 +451,7 @@ describe('MarkdownComposerEditor chips', () => {
     render(<ControlledEditor initialValue={`![a ${marker} b](img.png)`} />)
     const editor = screen.getByTestId('markdown-editor')
 
-    expect(editor.querySelector('img')).toHaveAttribute('alt', `a ${marker} b`)
+    expect(editor.querySelector('img[src="img.png"]')).toHaveAttribute('alt', `a ${marker} b`)
     expect(setMarkdownComposerSelection(editor, 1)).toBe(true)
     await userEvent.setup().keyboard('x')
     expect(screen.getByTestId('markdown-value').textContent).toBe('x![a \\[\\[secret:API_KEY|My%20Key\\]\\] b](img.png)')
