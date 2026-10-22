@@ -206,7 +206,7 @@ export function NotificationsTab() {
         <Alert variant="destructive">
           <TriangleAlert className="h-4 w-4" />
           <AlertDescription className="flex items-center justify-between gap-4">
-            <span>macOS is blocking Gamut notifications. Turn them on in System Settings.</span>
+            <span>Notifications for Gamut are turned off in System Settings.</span>
             <Button
               size="sm"
               variant="outline"
