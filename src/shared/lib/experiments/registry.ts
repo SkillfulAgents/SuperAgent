@@ -17,4 +17,9 @@ export const EXPERIMENTS = [
     name: 'Todo board',
     description: 'Adds Todo to the sidebar: a board where you write down tasks, hand them to agents, and follow what is working, what needs your input, and what is done.',
   },
+  {
+    id: 'team-brain',
+    name: 'Team Brain',
+    description: 'Adds Team Brain to the sidebar: a shared wiki an agent builds from your Slack, Notion, Drive and more, mounted as a drive on every agent. Prototype: the landing page and set-up modal only; nothing is created yet.',
+  },
 ] as const satisfies readonly ExperimentDefinition[]

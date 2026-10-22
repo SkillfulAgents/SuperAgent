@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -149,6 +149,8 @@ import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
+/** Same for Team Brain: the badge invites a first look, then goes away. */
+const TEAM_BRAIN_SEEN_KEY = 'team-brain.seen'
 
 function VersionBehindDot({
   wayBehind,
@@ -850,6 +852,33 @@ function TodoMenuButton() {
   )
 }
 
+/**
+ * Team Brain (the `team-brain` experiment). The row carries Explore's "New"
+ * badge until the page has been opened once.
+ */
+function TeamBrainMenuButton() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const visited = pathname === '/team-brain'
+  const [seen] = useState(() => localStorage.getItem(TEAM_BRAIN_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (visited) localStorage.setItem(TEAM_BRAIN_SEEN_KEY, '1')
+  }, [visited])
+
+  return (
+    <SidebarMenuButton asChild data-testid="team-brain-button" isActive={visited}>
+      <AppLink to="/team-brain">
+        <Brain className="h-4 w-4" />
+        <span>Team Brain</span>
+        {!seen && (
+          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+            New
+          </span>
+        )}
+      </AppLink>
+    </SidebarMenuButton>
+  )
+}
+
 const userMenuItemClassName =
   'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
 
@@ -1050,6 +1079,7 @@ export function AppSidebar() {
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
+  const teamBrainEnabled = useExperiment('team-brain')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
   // Sticky across reloads, and read once at mount so the badge doesn't vanish
   // out from under the pointer mid-click.
@@ -1724,6 +1754,11 @@ export function AppSidebar() {
                 {todoBoardEnabled && (
                   <SidebarMenuItem>
                     <TodoMenuButton />
+                  </SidebarMenuItem>
+                )}
+                {teamBrainEnabled && (
+                  <SidebarMenuItem>
+                    <TeamBrainMenuButton />
                   </SidebarMenuItem>
                 )}
                 {hasMarketplace && (
