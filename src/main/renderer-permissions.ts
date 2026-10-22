@@ -2,7 +2,6 @@
 // and Electron routes element.requestFullscreen() through this check too.
 const ALLOWED_PERMISSIONS = new Set([
   'media',
-  'audioCapture',
   'mediaKeySystem',
   'clipboard-read',
   'clipboard-sanitized-write',
