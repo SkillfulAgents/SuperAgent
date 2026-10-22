@@ -147,6 +147,57 @@ JS
   test "$(ts-node --skip-project --compiler-options '{"module":"CommonJS"}' typescript-probe.ts)" = 42
   check node-typescript
 
+  # A quick agent script normally has no tsconfig. Explicit compiler options
+  # hide ts-node's broken defaults with newer global TypeScript versions.
+  # Use a fresh /tmp directory so workspace project settings cannot mask it.
+  (
+    plain_ts_dir=$(mktemp -d /tmp/gamut-plain-ts-node-XXXXXX)
+    trap 'rm -rf "$plain_ts_dir"' EXIT
+    cd "$plain_ts_dir"
+    for parent in /tmp /; do
+      test ! -e "$parent/tsconfig.json"
+      test ! -e "$parent/package.json"
+    done
+    printf 'const answer: number = 42; console.log(answer)\n' > script.ts
+    test "$(ts-node script.ts)" = 42
+    check ts-node-script
+
+    cat > require.ts <<'TS'
+const fs = require('node:fs')
+const answer: number = 42
+fs.writeFileSync('require-ran.txt', String(answer))
+console.log(answer)
+TS
+    test "$(ts-node require.ts)" = 42
+    test "$(cat require-ran.txt)" = 42
+    check ts-node-require
+
+    # An enum requires real TypeScript compilation; Node's native stripping
+    # must not accidentally make an import-only fixture appear to work.
+    cat > import-enum.ts <<'TS'
+import { writeFileSync } from 'node:fs'
+enum Answer { Value = 42 }
+writeFileSync('import-ran.txt', String(Answer.Value))
+console.log(Answer.Value)
+TS
+    test "$(ts-node import-enum.ts)" = 42
+    test "$(cat import-ran.txt)" = 42
+    check ts-node-import-enum
+
+    cat > type-error.ts <<'TS'
+require('node:fs').writeFileSync('type-error-ran.txt', 'unexpected execution')
+const answer: number = 'not a number'
+console.log(answer)
+TS
+    if ts-node type-error.ts >type-error.log 2>&1; then
+      echo 'ts-node accepted a TypeScript type error' >&2
+      exit 1
+    fi
+    grep -q TS2322 type-error.log
+    test ! -e type-error-ran.txt
+    check ts-node-type-errors
+  )
+
   mkdir -p bun-project fixture-lib
   printf '{"name":"fixture-lib","version":"1.0.0","main":"index.js"}\n' > fixture-lib/package.json
   printf 'module.exports = { answer: 42 }\n' > fixture-lib/index.js
