@@ -90,7 +90,12 @@ export type HarEntry = Har['log']['entries'][number]
 // --- Redaction -----------------------------------------------------------------
 
 function redactNameValues<T extends { name: string; value: string }>(items: T[], all = false): T[] {
-  return items.map(i => (all || shouldRedact(i.name, i.value)) && i.value ? { ...i, value: REDACTED } : i)
+  return items.map(i => {
+    if ((all || shouldRedact(i.name, i.value)) && i.value) return { ...i, value: REDACTED }
+    // A header whose value is a URL (Referer, Location) carries that URL's
+    // query string — the same tokens request.url had redacted.
+    return /^https?:\/\//i.test(i.value.trim()) ? { ...i, value: redactUrl(i.value) } : i
+  })
 }
 
 /** In URLs the placeholder is unbracketed so it survives percent-encoding readably. */
@@ -109,6 +114,25 @@ export function redactUrl(raw: string): string {
 }
 
 /**
+ * JSON with numbers kept as the page wrote them. JSON.parse rounds an integer
+ * past 2^53 (12345678901234567890 → 12345678901234567000), and a body file is
+ * what a script copies ids from; while parsed, such a number stands in as a
+ * marked string carrying its source text (Node 21+ hands revivers the source).
+ */
+const NUM_MARK = '\u2063num:'
+type SourceReviver = (key: string, value: unknown, context?: { source?: string }) => unknown
+export function parseJsonLossless(text: string): unknown {
+  const reviver: SourceReviver = (_key, value, context) =>
+    typeof value === 'number' && context?.source !== undefined && String(value) !== context.source ? `${NUM_MARK}${context.source}` : value
+  return (JSON.parse as (text: string, reviver: SourceReviver) => unknown)(text, reviver)
+}
+export function stringifyJsonLossless(value: unknown, indent?: number): string {
+  return JSON.stringify(value, null, indent).replace(/"\u2063num:([-+0-9.eE]+)"/g, '$1')
+}
+/** The source text of a marked number, else the value. */
+const unmark = (v: unknown): unknown => (typeof v === 'string' && v.startsWith(NUM_MARK) ? v.slice(NUM_MARK.length) : v)
+
+/**
  * JSON values under sensitive keys replaced, recursively; strings scanned for
  * JWTs. `changed.n` counts replacements, so an untouched body can be kept as
  * the page sent it (re-serializing loses big-integer ids and inflates sizes).
@@ -123,7 +147,7 @@ export function redactJsonValue(v: unknown, changed: { n: number } = { n: 0 }): 
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v)) {
-      if (val !== null && typeof val !== 'object' && shouldRedact(k, val)) { out[k] = REDACTED; changed.n++ } else out[k] = redactJsonValue(val, changed)
+      if (val !== null && typeof val !== 'object' && shouldRedact(k, unmark(val))) { out[k] = REDACTED; changed.n++ } else out[k] = redactJsonValue(val, changed)
     }
     return out
   }
@@ -136,8 +160,8 @@ export function redactBody(text: string, mimeType = ''): string {
   if (/json/i.test(mimeType) || /^[[{]/.test(trimmed)) {
     try {
       const changed = { n: 0 }
-      const redacted = redactJsonValue(JSON.parse(trimmed), changed)
-      return changed.n > 0 ? JSON.stringify(redacted) : text
+      const redacted = redactJsonValue(parseJsonLossless(trimmed), changed)
+      return changed.n > 0 ? stringifyJsonLossless(redacted) : text
     } catch { /* not JSON after all */ }
   }
   if (/x-www-form-urlencoded/i.test(mimeType)) {
@@ -146,7 +170,30 @@ export function redactBody(text: string, mimeType = ''): string {
     for (const [k, v] of [...p]) if (shouldRedact(k, v)) { p.set(k, REDACTED); n++ }
     return n > 0 ? p.toString() : text
   }
+  if (/multipart\/form-data/i.test(mimeType) || /^--\S+\r?\n/.test(text)) return redactMultipart(text, mimeType)
   return text.replace(JWT, REDACTED)
+}
+
+/**
+ * A multipart/form-data body with each field's value checked by its name
+ * (csrf_token, password, access_token…) and scanned for JWTs. A body whose
+ * parts cannot be found is not kept: it may hold anything.
+ */
+function redactMultipart(text: string, mimeType: string): string {
+  const boundary = /boundary="?([^";]+)"?/i.exec(mimeType)?.[1] ?? /^--(\S+)\r?\n/.exec(text)?.[1]
+  if (!boundary || !text.includes(`--${boundary}`)) return '[multipart body left out: its parts could not be read for redaction]'
+  const parts = text.split(`--${boundary}`)
+  return parts.map(part => {
+    const split = /\r?\n\r?\n/.exec(part)
+    if (!split) return part
+    const head = part.slice(0, split.index)
+    const value = part.slice(split.index + split[0].length)
+    const name = /name="([^"]*)"/i.exec(head)?.[1]
+    if (name !== undefined && !/filename=/i.test(head) && shouldRedact(name, value.replace(/\r?\n$/, ''))) {
+      return `${head}${split[0]}${REDACTED}${/\r?\n$/.exec(value)?.[0] ?? ''}`
+    }
+    return `${head}${split[0]}${value.replace(JWT, REDACTED)}`
+  }).join(`--${boundary}`)
 }
 
 function capText(text: string): string {
@@ -363,7 +410,7 @@ export function requestFileName(bodyFile: string): string {
 
 /** A body for reading: JSON pretty-printed (one 50 KB line defeats Read), anything else as is. */
 export function readableBody(text: string): string {
-  try { return JSON.stringify(JSON.parse(text), null, 2) } catch { return text }
+  try { return stringifyJsonLossless(parseJsonLossless(text), 2) } catch { return text }
 }
 
 /** File name for a capture: the caller's label (sanitised) or a timestamp. */

@@ -118,7 +118,7 @@ export function readerScript(): string {
     'var cardSigs=new Map();' +
     'try{groups.forEach(function(m,p){var ok={};var any=false;for(var g in m){if(m[g].length>=3&&multi(m[g][0])){ok[g]=1;any=true}}if(!any)return;cardSigs.set(p,ok);markUp(p)})}catch(x){}' +
     'var vis=function(el){return shown(el)&&!hidden.has(el)};' +
-    'var plain=function(el){return !deep.has(el)&&!el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
+    'var plain=function(el){return el.tagName!=="SLOT"&&!deep.has(el)&&!el.querySelector(STRUCT)&&!el.querySelector(SPECIAL)};' +
     // The rendered children: a shadow root's for its host, the assigned nodes for a slot.
     'var kids=function(el){if(el.shadowRoot)return el.shadowRoot.childNodes;if(el.tagName==="SLOT"&&el.assignedNodes){var a=el.assignedNodes({flatten:true});if(a.length)return a}return el.childNodes};' +
     // A field whose text is painted transparent is a code editor's input layer, not a value.
@@ -127,7 +127,7 @@ export function readerScript(): string {
     // Rows of one table share the cells a rowspan carries down.
     'var spans=new Map();' +
     'var CTRL="select,input,textarea,[role=checkbox],[role=radio],[role=switch],svg[aria-label],[role=img][aria-label],img[alt]";' +
-    'var cellText=function(c){if(c.querySelector(CTRL)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join("").split("\\n").map(function(l){return l.replace(/^\\s*(#{1,6}|-)\\s+/,"")}).join(" "));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
+    'var cellText=function(c){if(c.querySelector(CTRL)||deep.has(c)){var keep=out;out=[];var ck=kids(c);for(var q=0;q<ck.length;q++)walk(ck[q],0);var w=ws(out.join("").split("\\n").map(function(l){return l.replace(/^\\s*(#{1,6}|-)\\s+/,"")}).join(" "));out=keep;return w}var t=ws(c.innerText);var lis=c.querySelectorAll("li");if(lis.length>1){var li=[].slice.call(lis).filter(vis).map(function(l){return ws(l.innerText)}).filter(Boolean);if(li.join("").replace(/\\s/g,"")===t.replace(/\\s/g,""))return li.join(" · ")}return t};' +
     'var SEP="\\n\\n---\\n\\n";' +
     'var walk=function(node,depth){if(full)return;' +
     'if(node.nodeType===3){var t=String(node.nodeValue||"").replace(zw,"").replace(/\\s+/g," ");if(t.trim())push(t);else if(t)push(" ");return}' +

@@ -151,6 +151,56 @@ describe('redactEntry', () => {
   })
 })
 
+describe('PR review: secrets in other places, numbers as written', () => {
+  it('redacts tokens in URL-valued headers (Referer, Location) like the request URL', () => {
+    const e = harSchema.parse({
+      log: {
+        entries: [{
+          request: {
+            method: 'GET', url: 'https://a.com/api/me?token=abcdef0123456789abcdef',
+            headers: [{ name: 'Referer', value: 'https://a.com/app?token=abcdef0123456789abcdef&tab=2' }, { name: 'Accept', value: 'application/json' }],
+            cookies: [], queryString: [],
+          },
+          response: {
+            status: 302, headers: [{ name: 'Location', value: 'https://a.com/cb?access_token=s3cr3t-value&state=x' }],
+            cookies: [], content: { mimeType: 'text/plain', text: '' }, redirectURL: 'https://a.com/cb?access_token=s3cr3t-value&state=x',
+          },
+        }],
+      },
+    })
+    const r = redactEntry(e.log.entries[0])
+    expect(r.request.headers[0].value).toBe('https://a.com/app?token=REDACTED&tab=2')
+    expect(r.request.headers[1].value).toBe('application/json')
+    expect(r.response.headers[0].value).toBe('https://a.com/cb?access_token=REDACTED&state=x')
+    expect(JSON.stringify(r)).not.toContain('abcdef0123456789abcdef')
+    expect(JSON.stringify(r)).not.toContain('s3cr3t-value')
+  })
+
+  it('redacts multipart form fields by name, keeps the rest, and leaves out a body it cannot read', () => {
+    const body = '--XyZ\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\nq8Zr2LmN4pVx7TbK\r\n' +
+      '--XyZ\r\nContent-Disposition: form-data; name="comment"\r\n\r\nhello\r\n' +
+      '--XyZ\r\nContent-Disposition: form-data; name="password"\r\n\r\nhunter2\r\n--XyZ--\r\n'
+    const r = redactBody(body, 'multipart/form-data; boundary=XyZ')
+    expect(r).not.toContain('q8Zr2LmN4pVx7TbK')
+    expect(r).not.toContain('hunter2')
+    expect(r).toContain(`name="csrf_token"\r\n\r\n${REDACTED}\r\n`)
+    expect(r).toContain('name="comment"\r\n\r\nhello\r\n')
+    expect(r.endsWith('--XyZ--\r\n')).toBe(true)
+    // Detected without a mime type too.
+    expect(redactBody(body)).not.toContain('hunter2')
+    expect(redactBody('garbled', 'multipart/form-data; boundary=Nope')).toBe('[multipart body left out: its parts could not be read for redaction]')
+  })
+
+  it('keeps integers past 2^53 as written, in body files and in redacted bodies', () => {
+    const json = '{"id":12345678901234567890,"price":1.50,"items":[{"sku":98765432109876543210}]}'
+    expect(readableBody(json)).toContain('"id": 12345678901234567890')
+    expect(readableBody(json)).toContain('"price": 1.50')
+    expect(readableBody(json)).toContain('"sku": 98765432109876543210')
+    const redacted = redactBody('{"id":12345678901234567890,"password":"p"}', 'application/json')
+    expect(redacted).toBe(`{"id":12345678901234567890,"password":"${REDACTED}"}`)
+  })
+})
+
 describe('isApiLike / summarizeEndpoints', () => {
   it('counts data responses and script-fetched non-page types; leaves pages, assets and telemetry out', () => {
     expect(isApiLike(entry())).toBe(true)
