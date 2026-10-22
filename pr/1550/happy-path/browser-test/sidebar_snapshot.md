@@ -1,0 +1,128 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e33]:
+            - link "Discover New Agents New" [ref=e34] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e35]
+              - generic [ref=e38]: Discover New Agents
+              - generic [ref=e39]: New
+          - listitem [ref=e40]:
+            - button "New Agent" [ref=e41] [cursor=pointer]:
+              - img [ref=e42]
+              - generic [ref=e43]: New Agent
+        - list [ref=e46]:
+          - listitem [ref=e108]:
+            - button "Your Agents" [ref=e109] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e110]:
+                - generic [ref=e111]: Your Agents
+                - img [ref=e113]
+            - button "New agent in Your Agents" [ref=e115] [cursor=pointer]:
+              - img [ref=e116]
+            - list [ref=e118]:
+              - button "QA-20261022-190307-0t95 Last run never Open QA-20261022-190307-0t95 New session with QA-20261022-190307-0t95" [ref=e119] [cursor=pointer]:
+                - generic [ref=e120]:
+                  - link "QA-20261022-190307-0t95 Last run never" [ref=e121]:
+                    - /url: /agents/qa-20261022-190307-0t95-n2bfhws65m
+                    - generic [ref=e122]: QA-20261022-190307-0t95
+                    - generic [ref=e123]: Last run never
+                  - generic [ref=e124]:
+                    - link "Open QA-20261022-190307-0t95" [ref=e125]:
+                      - /url: /agents/qa-20261022-190307-0t95-n2bfhws65m
+                      - img "idle" [ref=e126]:
+                        - img [ref=e127]
+                    - link "New session with QA-20261022-190307-0t95" [ref=e136]:
+                      - /url: /agents/qa-20261022-190307-0t95-n2bfhws65m/sessions/new
+                      - img [ref=e137]
+              - button "QA-20261022-190304-y6om Last run less than a minute ago Open QA-20261022-190304-y6om New session with QA-20261022-190304-y6om Expand" [ref=e140] [cursor=pointer]:
+                - generic [ref=e141]:
+                  - link "QA-20261022-190304-y6om Last run less than a minute ago" [ref=e142]:
+                    - /url: /agents/qa-20261022-190304-y6om-8oiwdeomso
+                    - generic [ref=e143]: QA-20261022-190304-y6om
+                    - generic [ref=e144]: Last run less than a minute ago
+                  - generic [ref=e145]:
+                    - link "Open QA-20261022-190304-y6om" [ref=e146]:
+                      - /url: /agents/qa-20261022-190304-y6om-8oiwdeomso
+                      - img "idle" [ref=e147]:
+                        - img [ref=e148]
+                    - link "New session with QA-20261022-190304-y6om" [ref=e157]:
+                      - /url: /agents/qa-20261022-190304-y6om-8oiwdeomso/sessions/new
+                      - img [ref=e158]
+                  - button "Expand" [ref=e161]:
+                    - img [ref=e172]
+          - status [ref=e174]
+          - listitem [ref=e175]:
+            - button "Add section" [ref=e176] [cursor=pointer]:
+              - img [ref=e178]
+              - generic [ref=e179]: Add section
+      - generic [ref=e57]:
+        - button "Settings" [ref=e58] [cursor=pointer]:
+          - img [ref=e59]
+          - generic [ref=e62]: Settings
+        - button "0.5.47" [ref=e63] [cursor=pointer]:
+          - generic [ref=e64]: 0.5.47
+      - button "Toggle Sidebar" [ref=e65]
+    - main [ref=e66]:
+      - generic [ref=e67]:
+        - generic [ref=e68]:
+          - button "Toggle Sidebar" [ref=e69] [cursor=pointer]:
+            - img
+            - generic [ref=e70]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e72] [cursor=pointer]:
+            - img [ref=e73]
+            - generic [ref=e76]: Search agents and sessions...
+            - generic [ref=e77]: Ctrl+K
+          - generic [ref=e78]:
+            - button "Card view" [pressed] [ref=e79] [cursor=pointer]:
+              - img [ref=e80]
+            - button "Graph view" [ref=e85] [cursor=pointer]:
+              - img [ref=e86]
+        - generic [ref=e95]:
+          - generic [ref=e96]:
+            - heading "Your Agents" [level=2] [ref=e97]
+            - generic [ref=e98]:
+              - button "New Agent" [ref=e99] [cursor=pointer]:
+                - img
+                - text: New Agent
+              - button "Home options" [ref=e100] [cursor=pointer]:
+                - img [ref=e101]
+          - generic [ref=e180]:
+            - generic [ref=e183]:
+              - link "Open QA-20261022-190307-0t95" [ref=e184] [cursor=pointer]:
+                - /url: /agents/qa-20261022-190307-0t95-n2bfhws65m
+              - generic [ref=e186]:
+                - generic [ref=e187]: Idle
+                - button "Stop agent" [ref=e188] [cursor=pointer]:
+                  - img [ref=e189]
+              - generic:
+                - generic:
+                  - generic: QA-20261022-190307-0t95
+                  - generic: Last run never
+            - generic [ref=e198]:
+              - link "Open QA-20261022-190304-y6om" [ref=e199] [cursor=pointer]:
+                - /url: /agents/qa-20261022-190304-y6om-8oiwdeomso
+              - generic [ref=e201]:
+                - generic [ref=e202]: Idle
+                - button "Stop agent" [ref=e203] [cursor=pointer]:
+                  - img [ref=e204]
+              - generic:
+                - generic:
+                  - generic: QA-20261022-190304-y6om
+                  - generic: Last run less than a minute ago
+  - region "Notifications alt+T"

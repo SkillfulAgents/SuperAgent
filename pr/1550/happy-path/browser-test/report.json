@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can open a browser, navigate to example.com, retrieve the page title \"Example Domain\", and return the response with correct information about the page load status.",
+  "reason": "Agent successfully opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and closed browser as requested.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut application home page with list of available agents.",
-    "Step 2: Found and clicked on \"QA-20261022-180719-l1n9\" agent in sidebar — Agent page opened successfully, displaying the agent configuration view with message input field ready.",
-    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was sent successfully, and the agent started working on the task.",
-    "Step 4: Waited up to 3 minutes for response — Agent completed processing within approximately 9 seconds as shown in the interface (displayed as \"Worked for 9s\").",
-    "Step 5: Verified response mentions \"Example Domain\" — Agent's response clearly stated: \"The page title is \"Example Domain\". https://example.com loaded normally (HTTP 200), and I closed the browser afterward.\" The response successfully confirms the page title matches the expected \"Example Domain\" text."
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing \"Your Agents\" section with two agents listed.",
+    "Step 2: Found and clicked \"QA-20261022-190307-0t95\" agent in sidebar — Successfully navigated to the agent page (URL: http://localhost:47891/agents/qa-20261022-190307-0t95-n2bfhws65m).",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message successfully entered into the chat input field.",
+    "Step 4: Sent message by clicking send button — Message sent successfully, creating a new session with URL containing session ID (ff1dde4f-d4d6-493c-815d-d8c5468ccc33).",
+    "Step 5: Waited for agent response — Agent completed work in 10 seconds, using 3 tool calls (ToolSearch, Open Browser, Close Browser) and 155,527 tokens.",
+    "Step 6: Verified response contains \"Example Domain\" — Response clearly states: 'The page title is \"Example Domain\". The page loaded normally, and I've closed the browser.' Page content confirmed to contain \"Example Domain\".",
+    "Step 7: Viewed tool call details — All 3 tool calls executed successfully with green checkmarks: ToolSearch ✓, Open Browser (https://example.com) ✓, Close Browser ✓."
   ],
   "bugs": [],
-  "durationMs": 72944,
-  "sessionId": "3bcb6ac8-d90c-4c56-955a-4c60fc93648e",
+  "durationMs": 243166,
+  "sessionId": "8f237137-1126-4880-be16-3c2e15b0476c",
   "cost": {
-    "inputTokens": 410,
-    "outputTokens": 10812,
-    "cacheCreationTokens": 86477,
-    "cacheReadTokens": 1241645,
+    "inputTokens": 872,
+    "outputTokens": 26184,
+    "cacheCreationTokens": 98104,
+    "cacheReadTokens": 2848866,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.286731
+    "totalCostUsd": 0.539309
   }
 }
