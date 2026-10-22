@@ -4883,6 +4883,31 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     }
   })
 
+  it('keeps the copy of the provider that produced an error after the session switches provider', async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const { getLlmProvider } = await import('@shared/lib/llm-provider')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(null)
+    const current = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({
+      provider: getLlmProvider('codex-subscription'),
+    } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ errorProviders: { 'error-1': 'claude-subscription' } } as never)
+      mockTransformMessages.mockReturnValue([
+        { id: 'error-1', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+        { id: 'error-2', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+      ])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      const [recorded, unrecorded] = await res.json()
+      expect(recorded.errorPresentation.message).toContain('claude setup-token')
+      expect(unrecorded.errorPresentation.message).toContain('Codex sign-in expired')
+    } finally {
+      lookup.mockRestore()
+      current.mockRestore()
+    }
+  })
+
   it.each([null, 'deleted-account'])('falls back from a cleared or deleted session binding (%s)', async llmProviderId => {
     const connections = await import('@shared/lib/llm-provider/connections')
     const { getLlmProvider } = await import('@shared/lib/llm-provider')

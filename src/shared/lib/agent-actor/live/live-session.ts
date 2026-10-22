@@ -34,7 +34,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { finalizeAutomationStatus, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { finalizeAutomationStatus, recordErrorProvider, updateSessionMetadata } from '@shared/lib/services/session-service'
 import {
   recordProvisionalSessionActivity,
   recordSessionActivity,
@@ -1020,6 +1020,12 @@ export class LiveSession {
     }
     if (content.error) {
       this.lastApiErrorCode = content.error
+      const provider = this.ctx.modelRuntime()?.provider
+      if (provider && typeof content.uuid === 'string' && content.uuid) {
+        recordErrorProvider(this.ctx.store, this.ctx.sessionId, content.uuid, provider).catch((error) => {
+          console.error('[LiveSession] Failed to record error provider:', error)
+        })
+      }
       // Style what already streamed as a provider error at once, without
       // waiting for the transcript refetch: the code alone if text streamed,
       // the text with it otherwise.

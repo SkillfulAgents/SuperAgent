@@ -2202,13 +2202,13 @@ const messagesListQuerySchema = z
   .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
 
 // Presentation is derived fresh per response (not persisted), so provider copy
-// changes and provider switches apply to history retroactively.
+// changes apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
   if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
   const runtimeProvider = (await agentRegistry.get(agentSlug).sessions.live(sessionId)).runtime?.provider
   let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
+  const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
   if (!provider) {
-    const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     // Resolve the saved account even if its selected model has since retired.
     const id = storedSelection(metadata?.model, metadata?.llmProviderId)?.llmProviderId
     const connection = id ? await getConnection(id) : null
@@ -2217,8 +2217,10 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
     if (!item || item.type !== 'assistant' || !item.apiError) continue
+    // An error keeps the copy of the provider that produced it.
+    const recorded = metadata?.errorProviders?.[item.id]
     item.errorPresentation =
-      provider.presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+      (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
   }
 }
 

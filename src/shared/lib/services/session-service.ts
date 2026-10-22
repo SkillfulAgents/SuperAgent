@@ -24,6 +24,7 @@ import {
   streamLines,
 } from '@shared/lib/agent-actor/jsonl-files'
 import { MESSAGES_PAGE_MAX_BYTES } from '@shared/lib/messages-page'
+import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { parseJsonl, parseJsonlLine } from '@shared/lib/utils/file-storage'
@@ -231,6 +232,19 @@ export async function updateSessionMetadata(
     }
   })
   return previous
+}
+
+export async function recordErrorProvider(
+  store: SessionStore,
+  sessionId: string,
+  messageId: string,
+  provider: LlmProviderId,
+): Promise<void> {
+  await mutateSessionMetadata(store, (metadata) => {
+    const previous = metadata[sessionId]
+    if (previous?.errorProviders?.[messageId] === provider) return false
+    metadata[sessionId] = { ...previous, errorProviders: { ...previous?.errorProviders, [messageId]: provider } }
+  })
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
