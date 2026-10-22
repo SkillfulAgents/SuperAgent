@@ -1,6 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import { Brain, Folder, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
+import { Switch } from '@renderer/components/ui/switch'
+import { useUser } from '@renderer/context/user-context'
+import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
+import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
+import { volumeDetailsSchema, type VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
+import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -53,9 +59,19 @@ const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
  *
  * It asks what a form asks best (where it lives, what each agent may do, how
  * often it syncs), then hands over to `onStartChat`: a chat with Team Brain
- * for the team's context.
+ * for the team's context. Saving the drive on step 01 calls `onPrepare`.
  */
-export function TeamBrainOnboarding({ open, onStartChat }: { open: boolean; onStartChat: () => void }) {
+export function TeamBrainOnboarding({
+  open,
+  onPrepare,
+  onStartChat,
+  onCancel,
+}: {
+  open: boolean
+  onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<void>
+  onStartChat: () => Promise<void>
+  onCancel: () => void
+}) {
   const tb = useTeamBrain()
   const steps = TEAM_BRAIN_STEPS
   const index = Math.max(steps.indexOf(tb.state.step), 0)
@@ -116,8 +132,8 @@ export function TeamBrainOnboarding({ open, onStartChat }: { open: boolean; onSt
             >
               <X className="size-4" aria-hidden="true" />
             </button>
-            {step === 'location' && <LocationStep tb={tb} nav={nav} />}
-            {step === 'agents' && <AgentsStep nav={nav} />}
+            {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} />}
+            {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
             {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
             {step === 'intake' && <IntakeStep nav={nav} onStart={onStartChat} />}
           </section>
@@ -129,12 +145,12 @@ export function TeamBrainOnboarding({ open, onStartChat }: { open: boolean; onSt
           <AlertDialogHeader>
             <AlertDialogTitle>Stop setting up Team Brain?</AlertDialogTitle>
             <AlertDialogDescription>
-              Nothing has been created yet. Your choices will be forgotten; you can start again any time.
+              {tb.state.prepared ? 'The Team Brain agent and drive made so far will be removed.' : 'Nothing has been created yet.'} Your choices will be forgotten; you can start again any time.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep going</AlertDialogCancel>
-            <AlertDialogAction onClick={tb.cancelSetup} data-testid="team-brain-cancel-confirm">Stop set-up</AlertDialogAction>
+            <AlertDialogAction onClick={onCancel} data-testid="team-brain-cancel-confirm">Stop set-up</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -198,34 +214,114 @@ function StepPanel({
 
 // ── 01 Where it lives ────────────────────────────────────────────────────────
 
-function LocationStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
-  const [pending, setPending] = useState(false)
+/** Choosing a home opens that drive's own set-up in place of the cards; saving it prepares Team Brain there. */
+function LocationStep({
+  tb,
+  nav,
+  onPrepare,
+}: {
+  tb: TeamBrainStore
+  nav: StepNav
+  onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<void>
+}) {
+  const { isAuthMode, isAdmin } = useUser()
+  const [setup, setSetup] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
+
+  const choose = async (id: TeamBrainLocationId) => {
+    const definition = Object.values(volumeSetupRegistry).find((d) => d.type === id)
+    if (!definition) return
+    setError(null)
+    try {
+      const config = definition.begin ? await definition.begin() : undefined
+      if (config !== null) setSetup({ definition, config })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not select this source')
+    }
+  }
+
+  const save = async (config: unknown, values: VolumeDetails) => {
+    if (!setup || isSaving) return
+    setError(null)
+    const details = volumeDetailsSchema.safeParse(values)
+    if (!details.success) { setError(details.error.issues[0].message); return }
+    setIsSaving(true)
+    try {
+      await onPrepare(parseVolumeSource(setup.definition, config), details.data)
+      tb.setLocation(setup.definition.type)
+      setSetup(null)
+      nav.next()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not set up this drive')
+    } finally { setIsSaving(false) }
+  }
+
+  if (setup) {
+    const Setup = setup.definition.Setup
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6 pt-11 sm:px-[52px]" data-testid="team-brain-drive-setup">
+        <Setup
+          initialConfig={setup.config}
+          // Only a drive everyone can add can go to every agent.
+          initialDetails={{ name: 'Team Brain', visibility: isAuthMode && !isAdmin ? 'private' : 'public' }}
+          onSubmit={save}
+          onBack={() => { setSetup(null); setError(null) }}
+          onCancel={() => { setSetup(null); setError(null) }}
+          isSaving={isSaving}
+          error={error}
+          clearError={() => setError(null)}
+          attachToAgent
+        />
+      </div>
+    )
+  }
+
   return (
     <StepPanel
       title="Choose where Team Brain knowledge is stored"
       subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
-      next={{ label: nav.nextLabel, disabled: !tb.state.location || pending, onClick: nav.next }}
+      next={{ label: nav.nextLabel, disabled: !tb.state.prepared, onClick: nav.next }}
     >
-      <LocationChoices value={tb.state.location} onChoose={tb.setLocation} onPendingChange={setPending} only={LOCATIONS} />
+      <LocationChoices value={tb.state.location} onChoose={(id) => void choose(id)} only={LOCATIONS} />
+      {error && <p role="alert" className="mt-4 text-[13px] text-destructive">{error}</p>}
     </StepPanel>
   )
 }
 
 // ── 02 Agents ───────────────────────────────────────────────────────────────
 
-function AgentsStep({ nav }: { nav: StepNav }) {
-  const { data: agents = [] } = useAgents()
+/** Every agent (a global drive, as in Settings → Drives), or the agents switched on below. */
+function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
+  const { data = [] } = useAgents()
+  const agents = data.filter((agent) => agent.slug !== tb.state.prepared?.agentSlug)
+  const canGoGlobal = !!tb.state.prepared?.isPublic
   return (
     <StepPanel
       title="Give your agents access to Team Brain"
-      subtitle="Reading gives an agent your team’s context; writing lets it add what it learns. You can change this later."
+      subtitle="Each agent reads your team’s context and can message Team Brain to add what it learns. You can change this later."
       back={nav.back}
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
+      <div className="flex items-center gap-3 pb-3" data-testid="team-brain-every-agent">
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-medium">Every agent</span>
+          <span className="block text-[12px] text-muted-foreground">
+            {canGoGlobal ? 'Includes agents you make later.' : 'Only a drive everyone can add can go to every agent.'}
+          </span>
+        </span>
+        <Switch
+          checked={tb.state.everyAgent}
+          disabled={!canGoGlobal}
+          onCheckedChange={tb.setEveryAgent}
+          aria-label="Every agent"
+          data-testid="team-brain-every-agent-switch"
+        />
+      </div>
       {agents.length > 0 ? (
-        <AgentAccessList agents={agents} className="border-y" />
+        <AgentAccessList agents={agents} everyAgent={tb.state.everyAgent} className="border-y" />
       ) : (
-        <p className="text-[13px] text-muted-foreground">No agents yet. New agents get Team Brain automatically, to read and write.</p>
+        <p className="text-[13px] text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
       )}
     </StepPanel>
   )
@@ -301,13 +397,18 @@ const INTAKE_STAGES: { title: string; detail: string; Preview: () => ReactNode }
   { title: 'Approve and launch', detail: 'Review the structure it proposes, then launch it to your agents.', Preview: TreePreview },
 ]
 
-function IntakeStep({ nav, onStart }: { nav: StepNav; onStart: () => void }) {
+function IntakeStep({ nav, onStart }: { nav: StepNav; onStart: () => Promise<void> }) {
+  const [starting, setStarting] = useState(false)
+  const start = async () => {
+    setStarting(true)
+    try { await onStart() } finally { setStarting(false) }
+  }
   return (
     <StepPanel
       title="Chat with Team Brain to share your team’s context"
       subtitle="It all happens in one conversation, and you can ask it anything along the way."
       back={nav.back}
-      next={{ label: 'Start chat', onClick: onStart, testId: 'team-brain-start-chat' }}
+      next={{ label: 'Start chat', onClick: () => void start(), disabled: starting, testId: 'team-brain-start-chat' }}
     >
       <ol className="space-y-3" aria-label="What happens next">
         {INTAKE_STAGES.map(({ title, detail, Preview }, i) => (

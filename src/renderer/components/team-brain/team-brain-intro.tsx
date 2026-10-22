@@ -16,9 +16,10 @@ function dotFade(fadeStart: number, end: number) {
 /**
  * The page before anyone has opted in. One calm screen: the picture, a line
  * on what it is, one button. Someone arriving from the sidebar should get it
- * at a glance and know what they are turning on.
+ * at a glance and know what they are turning on. Without `onStart` (a
+ * member, not an admin) it says to ask an admin.
  */
-export function TeamBrainIntro({ onStart }: { onStart: () => void }) {
+export function TeamBrainIntro({ onStart }: { onStart?: () => void }) {
   // Where the picture ends and its folder fade begins, in the scrolling page's coordinates.
   const pictureRef = useRef<HTMLDivElement>(null)
   const [fade, setFade] = useState<{ start: number; end: number } | null>(null)
@@ -68,9 +69,13 @@ export function TeamBrainIntro({ onStart }: { onStart: () => void }) {
         </p>
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-          <Button size="lg" onClick={onStart} data-testid="team-brain-start" className="bg-brand text-white shadow-md hover:bg-brand/90">
-            Set up Team Brain
-          </Button>
+          {onStart ? (
+            <Button size="lg" onClick={onStart} data-testid="team-brain-start" className="bg-brand text-white shadow-md hover:bg-brand/90">
+              Set up Team Brain
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground" data-testid="team-brain-ask-admin">Ask an admin to set up Team Brain.</p>
+          )}
         </div>
       </section>
     </div>

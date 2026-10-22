@@ -10,6 +10,7 @@ import type {
 } from './settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from './capability-policy-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
+import { teamBrainRecordSchema } from './team-brain-schema'
 import { validateFaviconDataUrl } from './favicon'
 import { isValidAccelerator } from './shortcuts'
 import {
@@ -210,6 +211,7 @@ export const generalSettingsPatchSchema = z.object({
   enableToolSearch: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
   globalInstructions: globalInstructionsSchema,
+  teamBrain: teamBrainRecordSchema,
 }).partial().strict()
 
 /** The complete, allowlisted patch accepted by PUT /api/settings. */
@@ -491,6 +493,7 @@ export const generalSettingsComponent = {
         patch.globalInstructions !== undefined
           ? patch.globalInstructions
           : before.globalInstructions,
+      teamBrain: patch.teamBrain !== undefined ? patch.teamBrain : before.teamBrain,
     }
   },
 
@@ -524,6 +527,7 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     enableToolSearch: patch.enableToolSearch,
     agentCapabilities: patch.agentCapabilities,
     globalInstructions: patch.globalInstructions,
+    teamBrain: patch.teamBrain,
   }
 }
 

@@ -1,8 +1,8 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import {
   TEAM_BRAIN_INITIAL_STATE,
-  type TeamBrainAgentAccess,
   type TeamBrainLocationId,
+  type TeamBrainPrepared,
   type TeamBrainSchedule,
   type TeamBrainState,
   type TeamBrainStep,
@@ -53,20 +53,31 @@ export function resetTeamBrainState() {
   write(TEAM_BRAIN_INITIAL_STATE)
 }
 
-/** What an agent may do with Team Brain. Everyone reads and writes until set otherwise. */
-export function agentAccessOf(state: TeamBrainState, agentSlug: string): TeamBrainAgentAccess {
-  return state.agentAccess[agentSlug] ?? 'both'
+/** Whether an agent uses Team Brain. Every agent does until turned off. */
+export function usesTeamBrain(state: TeamBrainState, agentSlug: string): boolean {
+  return state.agents[agentSlug] ?? true
+}
+
+/** The agent set-up created but the record does not mark yet, which the agent lists leave out. */
+export function usePreparedTeamBrainSlug(): string | undefined {
+  const select = () => read().prepared?.agentSlug ?? read().installing ?? undefined
+  return useSyncExternalStore(subscribe, select, select)
 }
 
 export interface TeamBrainActions {
   /** Opt in: open the set-up modal at its first step, nothing preselected. */
   start(): void
-  /** Leave set-up. Nothing is kept. */
+  /** Leave set-up. Nothing is kept; the caller discards what was prepared. */
   cancelSetup(): void
   goToStep(step: TeamBrainStep): void
   setLocation(id: TeamBrainLocationId): void
+  setPrepared(prepared: TeamBrainPrepared | null): void
+  setInstalling(agentSlug: string | null): void
+  /** Start chat closes the modal while the prepared agent launches; a failed launch reopens it. */
+  setLaunching(launching: boolean): void
   setSchedule(schedule: TeamBrainSchedule): void
-  setAgentAccess(agentSlug: string, access: TeamBrainAgentAccess): void
+  setUsesTeamBrain(agentSlug: string, on: boolean): void
+  setEveryAgent(on: boolean): void
 }
 
 export interface TeamBrainStore extends TeamBrainActions {
@@ -75,12 +86,16 @@ export interface TeamBrainStore extends TeamBrainActions {
 }
 
 const actions: TeamBrainActions = {
-  start: () => patch({ status: 'onboarding', step: 'location', location: null }),
+  start: () => patch({ status: 'onboarding', step: 'location', location: null, prepared: null }),
   cancelSetup: () => write(TEAM_BRAIN_INITIAL_STATE),
   goToStep: (step) => patch({ step }),
   setLocation: (location) => patch({ location }),
+  setPrepared: (prepared) => patch({ prepared, installing: null, ...(prepared?.isPublic ? {} : { everyAgent: false }) }),
+  setInstalling: (installing) => patch({ installing }),
+  setLaunching: (launching) => patch({ status: launching ? 'launching' : 'onboarding' }),
   setSchedule: (schedule) => patch({ schedule }),
-  setAgentAccess: (agentSlug, access) => patch({ agentAccess: { ...read().agentAccess, [agentSlug]: access } }),
+  setUsesTeamBrain: (agentSlug, on) => patch({ agents: { ...read().agents, [agentSlug]: on } }),
+  setEveryAgent: (everyAgent) => patch({ everyAgent }),
 }
 
 export function useTeamBrain(): TeamBrainStore {

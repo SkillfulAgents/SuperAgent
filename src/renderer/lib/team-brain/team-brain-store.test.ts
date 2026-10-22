@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { agentAccessOf, getTeamBrainState, resetTeamBrainState, setTeamBrainState, useTeamBrain } from './team-brain-store'
+import { usesTeamBrain, getTeamBrainState, resetTeamBrainState, setTeamBrainState, useTeamBrain } from './team-brain-store'
 import { TEAM_BRAIN_INITIAL_STATE } from './team-brain-schema'
 
 beforeEach(() => resetTeamBrainState())
@@ -25,19 +25,19 @@ describe('useTeamBrain', () => {
       result.current.start()
       result.current.setLocation('dropbox')
       result.current.goToStep('agents')
-      result.current.setAgentAccess('writer', 'read')
+      result.current.setUsesTeamBrain('writer', false)
       result.current.setSchedule('weekly')
     })
     expect(result.current.state).toMatchObject({ location: 'dropbox', step: 'agents', schedule: 'weekly' })
-    expect(agentAccessOf(result.current.state, 'writer')).toBe('read')
+    expect(usesTeamBrain(result.current.state, 'writer')).toBe(false)
 
     act(() => result.current.cancelSetup())
     expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
   })
 
-  it('lets every agent read and write until told otherwise', () => {
-    setTeamBrainState({ ...TEAM_BRAIN_INITIAL_STATE, agentAccess: { planner: 'none' } })
-    expect(agentAccessOf(getTeamBrainState(), 'writer')).toBe('both')
-    expect(agentAccessOf(getTeamBrainState(), 'planner')).toBe('none')
+  it('gives every agent Team Brain until turned off', () => {
+    setTeamBrainState({ ...TEAM_BRAIN_INITIAL_STATE, agents: { planner: false } })
+    expect(usesTeamBrain(getTeamBrainState(), 'writer')).toBe(true)
+    expect(usesTeamBrain(getTeamBrainState(), 'planner')).toBe(false)
   })
 })

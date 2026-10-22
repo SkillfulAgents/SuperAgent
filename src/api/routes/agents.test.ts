@@ -710,6 +710,7 @@ const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
   app: { configuredPasswordManagers: ['apple-passwords'] },
 })))
 vi.mock('@shared/lib/config/settings', () => ({
+  getTeamBrain: () => null,
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),

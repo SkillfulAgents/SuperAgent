@@ -5,11 +5,10 @@ import type { VolumeSettingsInput } from '@renderer/hooks/use-volume-definitions
 import { Button } from '@renderer/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { volumeDetailsSchema, type VolumeDetails } from './volume-details-schema'
 import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
 import { volumeSetupRegistry } from './volume-setup-registry'
-import type { VolumeSetupDefinition } from './volume-setup'
+import { parseVolumeSource, type VolumeSetupDefinition } from './volume-setup'
 
 interface VolumeSettingsDialogProps {
   volume?: VolumeDefinitionSummary
@@ -48,7 +47,7 @@ export function VolumeSettingsDialog({ volume, attachToAgent = false, onSave, on
     if (!parsedDetails.success) { setError(parsedDetails.error.issues[0].message); return }
     setIsSaving(true)
     try {
-      const source = selected ? volumeConfigSchema.parse({ type: selected.definition.type, config: selected.definition.configSchema.parse(config) }) : undefined
+      const source = selected ? parseVolumeSource(selected.definition, config) : undefined
       await onSave({ ...parsedDetails.data, ...(source ? { source } : {}) })
       onClose()
     } catch (err) {

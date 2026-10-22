@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from 'react'
 import { CalendarDays, Clock, Sunrise, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId, type TeamBrainSchedule } from '@renderer/lib/team-brain/team-brain-schema'
@@ -10,9 +9,6 @@ import { TEAM_BRAIN_LOCATIONS, teamBrainLocation, type TeamBrainLocation } from 
  * syncs, as choice cards. Both set-up modals ask them; the agent-led one
  * offers fewer homes.
  */
-
-/** Mock timing for a storage choice that has to connect first. Short enough to watch, long enough to read. */
-const CONNECT_MS = 700
 
 export const SECTION_LABEL = 'text-[14px] text-foreground'
 /** A choice card: hairline border, brand border when chosen. */
@@ -62,58 +58,32 @@ export function RadioDot({ checked }: { checked: boolean }) {
   )
 }
 
-export function Spinner() {
-  return <span aria-hidden="true" className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-foreground/15 border-t-foreground" />
-}
-
 export function Recommended() {
   return <span className="shrink-0 rounded-[5px] bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand">Recommended</span>
 }
 
 /**
  * Where Team Brain lives: Gamut-hosted on top, then the storage it can use,
- * or just the homes in `only`, in that order. A storage choice connects first
- * (a beat in the mock); `onChoose` fires once it has, and `onPendingChange`
- * reports the wait.
+ * or just the homes in `only`, in that order.
  */
 export function LocationChoices({
   value,
   onChoose,
-  onPendingChange,
   disabled,
   only,
 }: {
   value: TeamBrainLocationId | null
   onChoose: (id: TeamBrainLocationId) => void
-  onPendingChange?: (pending: boolean) => void
   disabled?: boolean
   only?: readonly TeamBrainLocationId[]
 }) {
-  const [pending, setPending] = useState<TeamBrainLocationId | null>(null)
-  const [connected, setConnected] = useState<Set<TeamBrainLocationId>>(() => new Set(value ? [value] : []))
-  const timer = useRef<ReturnType<typeof setTimeout>>()
-  useEffect(() => () => clearTimeout(timer.current), [])
-
   const choose = (location: TeamBrainLocation) => {
-    if (disabled || pending || !location.isAvailable()) return
-    if (location.connects && !connected.has(location.id)) {
-      // The real flow opens the drive's own sign-in or key form; the mock takes a beat.
-      setPending(location.id)
-      onPendingChange?.(true)
-      timer.current = setTimeout(() => {
-        setPending(null)
-        onPendingChange?.(false)
-        setConnected((prev) => new Set(prev).add(location.id))
-        onChoose(location.id)
-      }, CONNECT_MS)
-      return
-    }
+    if (disabled || !location.isAvailable()) return
     onChoose(location.id)
   }
 
   const hosted = only ? [] : TEAM_BRAIN_LOCATIONS.filter((l) => l.group === 'hosted')
   const storage = only ? only.map(teamBrainLocation) : TEAM_BRAIN_LOCATIONS.filter((l) => l.group === 'storage')
-  const selected = value ? teamBrainLocation(value) : null
 
   return (
     <>
@@ -171,23 +141,16 @@ export function LocationChoices({
             >
               <span className="flex w-full items-start justify-between">
                 <Icon className="size-6" />
-                {pending === location.id ? <Spinner /> : <RadioDot checked={on} />}
+                <RadioDot checked={on} />
               </span>
               <span className="block text-[14px]/5 font-medium">
                 {location.name}
                 {!available && <span className="block text-[12px] font-normal text-muted-foreground">Desktop app only</span>}
-                {pending === location.id && <span className="block text-[12px] font-normal text-muted-foreground">Connecting</span>}
               </span>
             </button>
           )
         })}
       </div>
-
-      {selected && selected.group === 'storage' && storage.includes(selected) && (
-        <p className="mt-4 text-[13px] text-muted-foreground" data-testid="team-brain-location-detail">
-          Creates <span className="whitespace-nowrap font-mono text-[12px] text-foreground/80">{selected.target}</span>
-        </p>
-      )}
     </>
   )
 }
