@@ -18,7 +18,9 @@
  *
  * Attaching a rejection handler or a cleanup to a promise that already exists
  * is not new work and stays allowed: `pending.catch(() => {})`,
- * `this.check.finally(clear)`. Its owner awaits it or tracks it.
+ * `this.check.finally(clear)`. Its owner awaits it or tracks it. A handler
+ * that itself returns a promise (`pending.catch(async () => …)`) is work
+ * again: if it rejects, nothing handles that.
  * `@typescript-eslint/no-floating-promises` still requires those to be
  * handled.
  *
@@ -48,24 +50,26 @@ function unwrap(node) {
   }
 }
 
-/** `x.<name>(…)`, with `name` returned, or null. */
+/** `x.<name>(…)`, with `name`, `x` and the arguments returned, or null. */
 function promiseMethod(node) {
   if (node.type !== 'CallExpression') return null
   const callee = unwrap(node.callee)
   if (callee.type !== 'MemberExpression' || callee.computed || callee.property.type !== 'Identifier') return null
   const name = callee.property.name
-  return name === 'then' || HANDLERS.has(name) ? { name, object: unwrap(callee.object) } : null
+  return name === 'then' || HANDLERS.has(name) ? { name, object: unwrap(callee.object), args: node.arguments } : null
 }
 
 /**
  * Whether a promise-valued statement starts work: the chain under its
  * `.then()`/`.catch()`/`.finally()` links begins with anything other than a
- * reference to an existing promise, or one of the links is `.then()`.
+ * reference to an existing promise, one of the links is `.then()`, or a
+ * handler returns a promise (`.catch(async () => …)`), whose rejection
+ * nothing handles.
  */
-function startsWork(node) {
+function startsWork(node, returnsPromise) {
   let current = unwrap(node)
   for (let link = promiseMethod(current); link; link = promiseMethod(current)) {
-    if (!HANDLERS.has(link.name)) return true
+    if (!HANDLERS.has(link.name) || link.args.some(returnsPromise)) return true
     current = link.object
   }
   return !(current.type === 'Identifier' || current.type === 'MemberExpression' || current.type === 'ThisExpression')
@@ -78,6 +82,11 @@ function isThenable(checker, type) {
   const declaration = then.valueDeclaration || (then.declarations && then.declarations[0])
   if (!declaration) return false
   return checker.getTypeOfSymbolAtLocation(then, declaration).getCallSignatures().length > 0
+}
+
+/** A function whose call can return a promise. */
+function returnsThenable(checker, type) {
+  return type.getCallSignatures().some((signature) => isThenable(checker, signature.getReturnType()))
 }
 
 module.exports = {
@@ -118,7 +127,7 @@ module.exports = {
         ) {
           return
         }
-        if (!startsWork(expression)) return
+        if (!startsWork(expression, (handler) => returnsThenable(checker, typeOf(handler)))) return
         if (isThenable(checker, typeOf(node.expression))) context.report({ node, messageId: 'floating' })
       },
     }

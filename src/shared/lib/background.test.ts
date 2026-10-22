@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setFlagsFromString } from 'v8'
+import { runInNewContext } from 'vm'
 
 const captureException = vi.hoisted(() => vi.fn())
 vi.mock('./error-reporting', () => ({ captureException }))
@@ -95,5 +97,22 @@ describe('background', () => {
     second.resolve()
     await settling
     expect(done).toEqual(['first', 'second'])
+  })
+
+  it('stops waiting for work that can never settle once it is collected', async () => {
+    setFlagsFromString('--expose-gc')
+    const gc = runInNewContext('gc') as () => void
+    // Started where nothing keeps it: nothing is left that could resolve it.
+    ;(() => background(new Promise<void>(() => {}), { name: 'test.never' }))()
+
+    let settled = false
+    const settling = backgroundSettled().then(() => { settled = true })
+    for (let attempt = 0; attempt < 50 && !settled; attempt++) {
+      gc()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    expect(backgroundInFlight()).toEqual([])
+    expect(settled).toBe(true)
+    await settling
   })
 })

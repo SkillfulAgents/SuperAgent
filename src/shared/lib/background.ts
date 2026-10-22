@@ -23,7 +23,15 @@ interface Entry {
 // it, like a promise waiting on a stream that closed without aborting) is
 // collected as it was after `void`, instead of being pinned here forever.
 const inFlight = new Set<Entry>()
-const collected = new FinalizationRegistry<Entry>((entry) => { inFlight.delete(entry) })
+const collected = new FinalizationRegistry<Entry>(leave)
+// Woken whenever an entry leaves, by settling or by being collected.
+const waiters = new Set<() => void>()
+
+function leave(entry: Entry): void {
+  if (!inFlight.delete(entry)) return
+  for (const wake of waiters) wake()
+  waiters.clear()
+}
 
 export function background(work: PromiseLike<unknown> | (() => PromiseLike<unknown>), options: { name: string }): void {
   const { name } = options
@@ -34,8 +42,8 @@ export function background(work: PromiseLike<unknown> | (() => PromiseLike<unkno
     started = Promise.reject(error)
   }
   const settle = () => {
-    inFlight.delete(entry)
     collected.unregister(entry)
+    leave(entry)
   }
   const tracked = Promise.resolve(started).then(settle, (error: unknown) => {
     settle()
@@ -67,9 +75,16 @@ export function backgroundInFlight(): string[] {
   return pending().map((entry) => entry.name)
 }
 
-/** Resolves once nothing is in flight, including work started while it waits. */
+function anyPending(): boolean {
+  for (const entry of inFlight) if (entry.work.deref()) return true
+  return false
+}
+
+/**
+ * Resolves once nothing is in flight, including work started while it waits.
+ * It never holds the work itself, so work that can never settle is collected
+ * and stops counting.
+ */
 export async function backgroundSettled(): Promise<void> {
-  for (let live = pending(); live.length > 0; live = pending()) {
-    await Promise.allSettled(live.map((entry) => entry.work))
-  }
+  while (anyPending()) await new Promise<void>((resolve) => waiters.add(resolve))
 }

@@ -53,6 +53,7 @@ ruleTester.run('no-floating-work', rule as unknown as Parameters<RuleTester['run
     // A handler or cleanup attached to a promise that already exists.
     at('pending.catch(() => {})'),
     at('holder.check.catch(() => {}).finally(() => {})'),
+    at('pending.catch((error: unknown) => console.error(error))'),
     // Not a promise.
     at('void sync()'),
     at('sync()'),
@@ -73,6 +74,11 @@ ruleTester.run('no-floating-work', rule as unknown as Parameters<RuleTester['run
     { ...at('holder.reader?.cancel().catch(() => {})'), errors: [floating] },
     { ...at('Promise.resolve(work()).catch(() => {})'), errors: [floating] },
     { ...at("import('./file').catch(() => {})"), errors: [floating] },
+    // A handler that returns a promise is work of its own: its rejection is unhandled.
+    { ...at('pending.catch(async () => { await work() })'), errors: [floating] },
+    { ...at('pending.catch(() => work())'), errors: [floating] },
+    { ...at('holder.check.finally(async () => { await work() })'), errors: [floating] },
+    { ...at('holder.check.catch(() => {}).finally(() => work())'), errors: [floating] },
     // A .then() continuation is new work, even on an existing promise.
     { ...at('pending.then(() => work(), () => {})'), errors: [floating] },
     { ...at('function f(ok: boolean) { ok && work().catch(() => {}) }'), errors: [floating] },
