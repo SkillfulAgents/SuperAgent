@@ -40,20 +40,30 @@ Use a clean output directory per run. Docker access, browser sandbox permissions
 and outbound access to the selected model and public PyPI are required.
 
 The default exact version assertions are Node 22.23.4, Python 3.11.17, uv 0.13.5,
-Bun 1.4.3, rclone 1.75.2, global TypeScript 5.5.4, and ts-node 10.9.2. Override them with
+Bun 1.4.3, rclone 1.75.2, global TypeScript 5.9.3, and ts-node 10.9.2. Override them with
 `--node`, `--python`, `--uv`, `--bun`, `--rclone`, `--typescript`, and `--ts-node`
 when intentionally testing another candidate. `--timeout-ms` sets the per-phase
 timeout (default ten minutes), not the total run duration.
 
-The global compiler is ts-node's fallback for quick scripts without a project
-configuration. TypeScript 5.9.3 can silently skip such scripts with ts-node 10.9.2,
-so it stays on 5.5.4 independently of the app/agent build compiler. The smoke test
-runs plain `ts-node file.ts` without flags or configuration, verifies stdout and
-file side effects for scripts, CommonJS require and imports with an enum, and
-checks that a type error fails before execution. Project-local compilers remain
+The global tools use an isolated, locked installation in
+`/opt/gamut/runtime-tools`. Its scoped npm override selects
+`@tsconfig/node16@16.1.9` for ts-node, correcting the old implicit default's
+`module: Node16` / `moduleResolution: node` mismatch. This allows TypeScript
+5.9.3 to execute quick scripts in both normal and `--transpile-only` modes.
+The override is outside ts-node's declared dependency range and should be
+reviewed when upgrading ts-node. No environment variable or wrapper forces
+compiler options onto configured projects; project-local compilers remain
 available to projects that explicitly install them.
-The pin covers normal typechecked execution; unconfigured `--transpile-only`
-still needs compatible module/module-resolution settings to avoid TS5109.
+
+The smoke test runs plain `ts-node file.ts` without flags or configuration,
+verifies stdout and file side effects for scripts, CommonJS require and imports
+with an enum, and checks that a type error fails before execution. It also
+covers unconfigured `--transpile-only` and explicit project configurations.
+When overriding module settings on the CLI, specify a compatible pair, e.g.
+`--transpile-only --compiler-options '{"module":"CommonJS","moduleResolution":"node"}'`.
+Overriding only `module` retains Node16 resolution and is rejected in
+transpile-only mode. These checks cover ordinary ts-node execution, not a
+comprehensive native ESM-loader compatibility suite.
 
 ## What it proves
 

@@ -148,7 +148,7 @@ JS
   check node-typescript
 
   # A quick agent script normally has no tsconfig. Explicit compiler options
-  # hide ts-node's broken defaults with newer global TypeScript versions.
+  # would hide a regression in the runtime bundle's corrected Node16 defaults.
   # Use a fresh /tmp directory so workspace project settings cannot mask it.
   (
     plain_ts_dir=$(mktemp -d /tmp/gamut-plain-ts-node-XXXXXX)
@@ -196,6 +196,93 @@ TS
     grep -q TS2322 type-error.log
     test ! -e type-error-ran.txt
     check ts-node-type-errors
+
+    rm require-ran.txt import-ran.txt
+    test "$(ts-node --transpile-only script.ts)" = 42
+    test "$(ts-node --transpile-only require.ts)" = 42
+    test "$(cat require-ran.txt)" = 42
+    test "$(ts-node --transpile-only import-enum.ts)" = 42
+    test "$(cat import-ran.txt)" = 42
+    check ts-node-transpile-only
+
+    runtime_tools_root=/opt/gamut/runtime-tools
+    global_modules=$(npm root -g)
+    for directory in /opt /opt/gamut "$runtime_tools_root" "$runtime_tools_root/node_modules"; do
+      test "$(stat -c %u "$directory")" = 0
+      test ! -w "$directory"
+    done
+    for binary in tsc tsserver ts-node ts-node-cwd ts-node-esm ts-node-script ts-node-transpile-only ts-script; do
+      binary_target=$(readlink -f "$(command -v "$binary")")
+      case "$binary_target" in "$runtime_tools_root"/node_modules/*) ;; *) exit 1 ;; esac
+      test -x "$binary_target"
+      test "$(stat -c %u "$binary_target")" = 0
+      test ! -w "$binary_target"
+    done
+    for package in typescript ts-node; do
+      test "$(readlink -f "$global_modules/$package")" = "$runtime_tools_root/node_modules/$package"
+    done
+    test "$(ts-node-script script.ts)" = 42
+    test "$(ts-node-cwd script.ts)" = 42
+    test "$(ts-node-transpile-only import-enum.ts)" = 42
+    check ts-node-installation
+
+    rm import-ran.txt
+    test "$(node --require "$global_modules/ts-node/register" import-enum.ts)" = 42
+    test "$(cat import-ran.txt)" = 42
+    check ts-node-register
+
+    # A real project supplies its own config and Node types. The bundled
+    # fallback must not override either CommonJS/node10 or NodeNext settings.
+    mkdir -p configured-project/node_modules/@types
+    ln -s "$runtime_tools_root/node_modules/@types/node" configured-project/node_modules/@types/node
+    cp import-enum.ts configured-project/probe.ts
+    cat > configured-project/tsconfig.json <<'JSON'
+{"compilerOptions":{"module":"CommonJS","moduleResolution":"node","target":"ES2021","strict":true}}
+JSON
+    node - "$global_modules/ts-node" "$PWD/configured-project" <<'JS'
+const assert = require('node:assert/strict')
+const service = require(process.argv[2]).create({ cwd: process.argv[3], projectSearchDir: process.argv[3] })
+assert.equal(service.config.options.module, service.ts.ModuleKind.CommonJS)
+assert.equal(service.config.options.moduleResolution, service.ts.ModuleResolutionKind.NodeJs)
+assert.equal(service.config.options.target, service.ts.ScriptTarget.ES2021)
+assert.equal(service.config.options.strict, true)
+JS
+    test "$(cd configured-project && ts-node probe.ts)" = 42
+    test "$(cd configured-project && ts-node --transpile-only probe.ts)" = 42
+    test "$(ts-node --transpile-only --compiler-options '{"module":"CommonJS","moduleResolution":"node"}' import-enum.ts)" = 42
+    check ts-node-project-commonjs
+
+    cat > configured-project/tsconfig.json <<'JSON'
+{"compilerOptions":{"module":"NodeNext","moduleResolution":"NodeNext","target":"ES2021","strict":true}}
+JSON
+    node - "$global_modules/ts-node" "$PWD/configured-project" <<'JS'
+const assert = require('node:assert/strict')
+const service = require(process.argv[2]).create({ cwd: process.argv[3], projectSearchDir: process.argv[3] })
+assert.equal(service.config.options.module, service.ts.ModuleKind.NodeNext)
+assert.equal(service.config.options.moduleResolution, service.ts.ModuleResolutionKind.NodeNext)
+JS
+    test "$(cd configured-project && ts-node probe.ts)" = 42
+    test "$(cd configured-project && ts-node --transpile-only probe.ts)" = 42
+    check ts-node-project-nodenext
+
+    # Prove project-local compiler selection without downloading a second
+    # compiler: a local adapter records loading and forwards to the real bundle.
+    mkdir -p compiler-project/node_modules/typescript compiler-project/node_modules/@types
+    ln -s "$runtime_tools_root/node_modules/@types/node" compiler-project/node_modules/@types/node
+    cp import-enum.ts compiler-project/probe.ts
+    cat > compiler-project/node_modules/typescript/index.js <<'JS'
+require('node:fs').writeFileSync(require('node:path').join(__dirname, '../../compiler-selected.txt'), 'selected')
+module.exports = require('/opt/gamut/runtime-tools/node_modules/typescript')
+JS
+    test "$(cd compiler-project && ts-node probe.ts)" = 42
+    test "$(cat compiler-project/compiler-selected.txt)" = selected
+    node - "$global_modules/ts-node" "$PWD/compiler-project" <<'JS'
+const assert = require('node:assert/strict')
+const service = require(process.argv[2]).create({ cwd: process.argv[3], projectSearchDir: process.argv[3] })
+assert.equal(service.compilerPath, require.resolve(process.argv[3] + '/node_modules/typescript'))
+assert.equal(service.ts.version, require('/opt/gamut/runtime-tools/node_modules/typescript').version)
+JS
+    check ts-node-project-compiler
   )
 
   mkdir -p bun-project fixture-lib

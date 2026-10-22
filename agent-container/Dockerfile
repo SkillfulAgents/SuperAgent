@@ -85,13 +85,22 @@ RUN UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin \
 # Ubuntu's default. The managed 3.11 tree is root-owned, including for the
 # isolated FUSE helper; the distro binary remains at /usr/bin/python3.10.
 
-# Install TypeScript and ts-node globally. npm's download cache must be
-# flushed in the SAME layer — anything left in /root/.npm ships in the image
-# (and, being pre-compressed tarballs, doesn't even gzip away on the wire).
-# ts-node 10.9.2 silently skips tsconfig-less scripts with TypeScript 5.9.3.
-# Keep its global fallback on 5.5.4; projects can supply their own compiler.
-# The app/agent build compiler is installed separately in the builder stage.
-RUN npm install -g typescript@5.5.4 ts-node@10.9.2 && rm -rf /root/.npm
+# Lock the agent's TypeScript tools separately from the app/build dependencies.
+# ts-node 10.9.2's old Node16 default pairs module=Node16 with moduleResolution=node;
+# the scoped @tsconfig/node16 override fixes scripts without a tsconfig on TS 5.9.
+# Project configs and project-local compilers still take precedence normally.
+# Keep global CLI and npm-root module paths without changing NODE_PATH. Clear
+# npm's cache in this layer so downloaded tarballs do not ship in the image.
+COPY runtime-tools/package.json runtime-tools/package-lock.json /opt/gamut/runtime-tools/
+RUN npm ci --prefix /opt/gamut/runtime-tools --omit=dev --ignore-scripts && \
+    global_root="$(npm root -g)" && prefix="$(npm prefix -g)" && \
+    mkdir -p "$global_root" && \
+    ln -s /opt/gamut/runtime-tools/node_modules/typescript "$global_root/typescript" && \
+    ln -s /opt/gamut/runtime-tools/node_modules/ts-node "$global_root/ts-node" && \
+    for tool in tsc tsserver ts-node ts-node-cwd ts-node-esm ts-node-script ts-node-transpile-only ts-script; do \
+      ln -s "/opt/gamut/runtime-tools/node_modules/.bin/$tool" "$prefix/bin/$tool" || exit 1; \
+    done && \
+    rm -rf /root/.npm
 
 # Install Bun (for running dashboard servers)
 # Install as root then copy binary to /usr/local/bin so the claude user can access it
