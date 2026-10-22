@@ -1,16 +1,16 @@
-import type { IncomingMessage } from 'http'
 import { and, eq } from 'drizzle-orm'
 
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import { type AgentRole, ROLE_HIERARCHY } from '@shared/lib/types/agent'
+import type { AgentSocketRequest } from './agent-socket'
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
 /** Authenticate an upgrade request, which bypasses Hono's HTTP middleware. */
 export async function authenticateAgentWebSocket(
-  request: IncomingMessage,
+  request: AgentSocketRequest,
   agentSlug: string,
   minRole: AgentRole,
 ): Promise<boolean> {
@@ -18,7 +18,7 @@ export async function authenticateAgentWebSocket(
     // The Electron API binds beyond loopback so containers can reach it. Do not
     // let another machine on that interface upgrade into an agent endpoint.
     if (process.type === 'browser') {
-      const addr = request.socket?.remoteAddress
+      const addr = request.remoteAddress
       if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
     }
     return true
@@ -28,11 +28,7 @@ export async function authenticateAgentWebSocket(
     // Lazy import avoids pulling Better Auth's ESM graph into desktop startup.
     const { getAuth } = await import('@shared/lib/auth/index')
     const auth = getAuth()
-    const headers = new Headers()
-    for (const [key, value] of Object.entries(request.headers)) {
-      if (value) headers.set(key, Array.isArray(value) ? value[0] : value)
-    }
-
+    const { headers } = request
     const session = await auth.api.getSession({ headers })
     if (!session?.user) {
       // The meeting bot's page watches its own agent's browser stream; it may not steer it.
