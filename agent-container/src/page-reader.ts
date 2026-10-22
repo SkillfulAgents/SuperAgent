@@ -126,10 +126,12 @@ export function readerScript(): string {
     // Text in the composed tree: through shadow roots and the nodes assigned to
     // slots, which innerText and textContent do not reach (a web component's
     // <h1><slot></slot></h1>), hidden boxes left out, a box (not inline text)
-    // set apart by spaces as the page lays it out ("Releases" beside its "43").
+    // set apart by spaces as the page lays it out ("Releases" beside its "43");
+    // in code (`code`), a block-level box is a line of its own.
     'var composed=function(el){return !!el.querySelector("slot")||deep.has(el)};' +
     'var flatText=function(el,code){var s="";var go=function(n){if(n.nodeType===3){s+=n.nodeValue;return}if(n.nodeType!==1||hidden.has(n))return;var t=String(n.tagName).toUpperCase();if(SKIP.test(t))return;' +
-    'var d2="";try{d2=getComputedStyle(n).display}catch(e){}if(!shown(n)&&d2!=="contents")return;if(t==="BR"){s+="\\n";return}var gap=!code&&d2!=="inline"&&d2!=="contents"?" ":"";s+=gap;var k=kids(n);for(var i=0;i<k.length;i++)go(k[i]);s+=gap};var k0=kids(el);for(var j=0;j<k0.length;j++)go(k0[j]);return s.replace(zw,"")};' +
+    'var d2="";try{d2=getComputedStyle(n).display}catch(e){}if(!shown(n)&&d2!=="contents")return;if(t==="BR"){s+="\\n";return}var gap="";if(code){if(/^(block|flex|grid|list-item|table|table-row|flow-root)$/.test(d2))gap="\\n"}else if(d2!=="inline"&&d2!=="contents")gap=" ";' +
+    'var brk=function(){if(gap==="\\n"){if(s&&s.charAt(s.length-1)!=="\\n")s+="\\n"}else s+=gap};brk();var k=kids(n);for(var i=0;i<k.length;i++)go(k[i]);brk()};var k0=kids(el);for(var j=0;j<k0.length;j++)go(k0[j]);return s.replace(zw,"")};' +
     'var bigAlts=[];' +
     // Rows of one table share the cells a rowspan carries down.
     'var spans=new Map();' +
