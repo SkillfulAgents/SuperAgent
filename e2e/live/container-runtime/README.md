@@ -89,10 +89,8 @@ and a browser WebSocket with text/binary frames, subprotocol and close-code
 preservation. The fixture also verifies that the host credential header never
 reaches the dashboard. Its server and files are removed by the existing agent
 cleanup, and the schema-validated proof records both image IDs and the results.
-The memories route currently returns 500 for malformed JSON because its error
-handler replaces the parser's 400 response; valid JSON that fails the schema
-returns 400. Both behaviors were verified with the old dependencies and are
-asserted explicitly here. Incremental SSE uses a release barrier after receiving
+The memories route answers both malformed JSON and valid JSON that fails the
+schema with 400; both statuses are asserted explicitly here. Incremental SSE uses a release barrier after receiving
 the complete first event, so it does not depend on network chunk boundaries or
 a fixed delay between events.
 
