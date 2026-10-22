@@ -3,7 +3,7 @@ import path from 'path'
 import type { KoffiFunc } from 'koffi'
 import type { SpotlightDomain, SpotlightItem } from './spotlight-items'
 
-/** Built by scripts/build-macos-bridges.sh from native/macos/SpotlightBridge.swift. */
+/** Built by scripts/build-spotlight-bridge.sh from native/macos/SpotlightBridge.swift. */
 export const SPOTLIGHT_BRIDGE_FILE = 'libSpotlightBridge.dylib'
 
 /** One batch of writes, applied in order: domain deletes, id deletes, upserts. */
@@ -19,7 +19,7 @@ export interface SpotlightIndex {
 
 /**
  * The app's Spotlight index, or null when the bridge was never built (a dev
- * checkout without `npm run build:macos-bridges`) or will not load.
+ * checkout without `npm run build:spotlight-bridge`) or will not load.
  *
  * Loaded into this process on purpose: Spotlight files items under the bundle
  * identifier of the process that indexes them, so a helper binary would index

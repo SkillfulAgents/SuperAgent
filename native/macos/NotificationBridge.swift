@@ -1,5 +1,5 @@
 // The app's macOS notification permission, for the Electron main process.
-// Built into libNotificationBridge.dylib by scripts/build-macos-bridges.sh and
+// Built into libNotificationBridge.dylib by scripts/build-spotlight-bridge.sh and
 // called through koffi (src/main/notification-authorization.ts).
 //
 // It has to run inside the app's own process: UNUserNotificationCenter answers

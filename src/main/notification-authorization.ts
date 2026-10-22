@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import type { KoffiFunc } from 'koffi'
 
-/** Built by scripts/build-macos-bridges.sh from native/macos/NotificationBridge.swift. */
+/** Built by scripts/build-spotlight-bridge.sh from native/macos/NotificationBridge.swift. */
 const NOTIFICATION_BRIDGE_FILE = 'libNotificationBridge.dylib'
 
 function notificationBridgePath(): string {

@@ -1,5 +1,5 @@
 // The app's entries in macOS Spotlight (Core Spotlight), for the Electron main
-// process. Built into libSpotlightBridge.dylib by scripts/build-macos-bridges.sh
+// process. Built into libSpotlightBridge.dylib by scripts/build-spotlight-bridge.sh
 // and called through koffi (src/main/spotlight/spotlight-bridge.ts).
 //
 // It has to run inside the app's own process: Spotlight files every item under
