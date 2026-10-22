@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { imageIdSchema, transportProofSchema } from './http-transport-schema'
 
 export const optionsSchema = z.object({
   baseUrl: z.string().url().refine(value => {
@@ -8,6 +9,10 @@ export const optionsSchema = z.object({
   image: z.string().min(1),
   model: z.string().min(1),
   providerId: z.string().min(1),
+  transport: z.boolean().default(false),
+  appContainer: z.string().min(1).optional(),
+  appImageId: imageIdSchema.optional(),
+  agentImageId: imageIdSchema.optional(),
   output: z.string().min(1),
   timeoutMs: z.coerce.number().int().min(30_000).max(1_800_000),
   expected: z.object({
@@ -96,5 +101,6 @@ export const proofSchema = z.object({
     })).length(8),
   }),
   streamEventCounts: z.record(z.string(), z.number().int().nonnegative()),
+  transport: transportProofSchema.optional(),
   durationMs: z.number().int().positive(),
 })

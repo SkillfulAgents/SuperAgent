@@ -45,6 +45,37 @@ Bun 1.4.3, rclone 1.75.2, TypeScript 5.9.3, and ts-node 10.9.2. Override them wi
 when intentionally testing another candidate. `--timeout-ms` sets the per-phase
 timeout (default ten minutes), not the total run duration.
 
+## HTTP transport upgrades
+
+Use `--transport=true` against the **production Docker app**, whose Node adapter
+is part of the candidate. The Vite dev server has its own adapter dependency and
+does not prove the production adapter upgrade. Also pass `--app-container`,
+`--app-image-id=sha256:...`, and `--agent-image-id=sha256:...` with the exact image
+IDs from the candidate builds. For example, add these flags to the command above:
+
+```text
+--transport=true --app-container=http-transport-refresh-app
+--app-image-id=sha256:APP_IMAGE_ID --agent-image-id=sha256:AGENT_IMAGE_ID
+```
+
+The optional checks verify Hono 4.13.13 and `@hono/node-server` 2.1.5 installed in
+both images, plus app `@hono/zod-validator` 0.9.1. A temporary static nonce file
+binds the tested URL to the inspected app container and is removed immediately.
+A deterministic Bun dashboard
+fixture in the test agent exercises multipart upload/download with encoded
+filenames, HEAD and byte ranges, malformed JSON validation, chunked proxy bodies,
+methods/query strings, incremental SSE and cancellation through both proxy hops,
+and a browser WebSocket with text/binary frames, subprotocol and close-code
+preservation. The fixture also verifies that the host credential header never
+reaches the dashboard. Its server and files are removed by the existing agent
+cleanup, and the schema-validated proof records both image IDs and the results.
+The memories route currently returns 500 for malformed JSON because its error
+handler replaces the parser's 400 response; valid JSON that fails the schema
+returns 400. Both behaviors were verified with the old dependencies and are
+asserted explicitly here. Incremental SSE uses a release barrier after receiving
+the complete first event, so it does not depend on network chunk boundaries or
+a fixed delay between events.
+
 ## What it proves
 
 - The app launches the selected real image. The runner records its immutable

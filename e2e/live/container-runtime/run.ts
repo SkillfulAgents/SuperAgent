@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { chromium, expect, type Browser, type Page } from '@playwright/test'
 import { z } from 'zod'
 import { SessionPage } from '../../pages/session.page'
+import { runHttpTransport } from './http-transport'
 import {
   agentSchema, artifactManifestSchema, containerIdentitySchema, eventSchema, messagesSchema,
   optionsSchema, projectPythonSchema, proofSchema, receiptSchema, sessionSchema, sessionStateSchema,
@@ -26,6 +27,10 @@ const options = optionsSchema.parse({
   image: args.image ?? 'superagent-container:runtime-refresh',
   model: args.model ?? process.env.CONTAINER_SMOKE_MODEL ?? 'claude-haiku-5-5',
   providerId: args.provider ?? process.env.CONTAINER_SMOKE_PROVIDER_ID,
+  transport: args.transport !== undefined && args.transport !== 'false',
+  appContainer: args['app-container'],
+  appImageId: args['app-image-id'],
+  agentImageId: args['agent-image-id'],
   output: path.resolve(args.output ?? `/tmp/container-refresh/runtime-proof-${Date.now()}`),
   timeoutMs: args['timeout-ms'] ?? 600_000,
   expected: {
@@ -234,6 +239,10 @@ async function main() {
   let completedProof: z.infer<typeof proofSchema> | undefined
   let executionError: unknown
   try {
+    if (options.transport) {
+      assert(options.appContainer && options.appImageId && options.agentImageId,
+        '--transport requires --app-container, --app-image-id and --agent-image-id')
+    }
     await request('/api/settings') // Check readiness without reading or logging settings.
     slug = agentSchema.parse(await json('/api/agents', 'POST', { name: `Runtime smoke ${runId.slice(0, 8)}` })).slug
     // Prewarming also resolves agent defaults; keep it on the selected scratch
@@ -333,6 +342,10 @@ async function main() {
     await page.screenshot({ path: path.join(options.output, 'restart-ready.png'), fullPage: true })
     const pythonStreamCounts = z.record(z.string(), z.number().int().nonnegative()).parse(await page.evaluate(() => window.containerRuntimeProbeCounts))
     const artifact = await artifactScenario(slug, page, sessionRoutes)
+    const transport = options.transport ? await runHttpTransport({
+      base, slug, container, output: options.output, runId, page,
+      appContainer: options.appContainer!, appImageId: options.appImageId!, agentImageId: options.agentImageId!,
+    }) : undefined
     const streamEventCounts = z.record(z.string(), z.number().int().nonnegative()).parse(await page.evaluate(() => window.containerRuntimeProbeCounts))
     for (const [type, count] of Object.entries(pythonStreamCounts)) streamEventCounts[type] = (streamEventCounts[type] ?? 0) + count
     for (const type of Object.keys(streamEventCounts)) eventSchema.parse({ type })
@@ -350,7 +363,7 @@ async function main() {
         bashCallsAfterRestart: resumedCalls.filter(call => call.isError === false).length,
         pythonBefore, pythonAfter,
       },
-      artifact, streamEventCounts, durationMs: Date.now() - startedAt,
+      artifact, transport, streamEventCounts, durationMs: Date.now() - startedAt,
     })
   } catch (error) {
     await page?.screenshot({ path: path.join(options.output, 'failure.png'), fullPage: true }).catch(() => {})
@@ -379,7 +392,7 @@ async function main() {
   assert(completedProof, 'Validation did not produce proof')
   const proof = proofSchema.parse({ ...completedProof, durationMs: Date.now() - startedAt })
   await writeFile(path.join(options.output, 'proof.json'), JSON.stringify(proof, null, 2), { mode: 0o600 })
-  console.log(`[runtime-smoke] PASS: ${proof.tools.reduce((sum, item) => sum + item.checks.length, 0)} deterministic checks, real-agent Python project/resume, Bun dashboard/widget, cleanup; evidence ${options.output}`)
+  console.log(`[runtime-smoke] PASS: ${proof.tools.reduce((sum, item) => sum + item.checks.length, 0)} deterministic checks${proof.transport ? `, ${proof.transport.checks.length} HTTP transport checks` : ''}, real-agent Python project/resume, Bun dashboard/widget, cleanup; evidence ${options.output}`)
 }
 
 main().catch(error => {
