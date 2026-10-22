@@ -33,7 +33,7 @@ import {
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-errors'
-import type { DeliverResult, FileOps } from '@shared/lib/agent-actor/types'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { ContainerSession } from '@shared/lib/container/types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import {
@@ -66,7 +66,6 @@ import {
 import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
-const invokingSessions = new Set<string>()
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -811,7 +810,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     let stagedTargetDirectory: string | undefined
     let stagedTargetFiles: FileOps | undefined
     let promptDeliveryStarted = false
-    let invokingSessionKey: string | undefined
     try {
       const targetActor = agentRegistry.get(targetSlug)
       if (existingSessionId) {
@@ -822,13 +820,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        const candidateKey = `${targetSlug}\0${existingSessionId}`
-        // Nothing awaits between the check and the add: one invoke holds the session.
-        if ((await targetActor.sessions.live(existingSessionId)).isActive || invokingSessions.has(candidateKey)) {
-          return c.json({ error: 'Target session is currently running' }, 409)
-        }
-        invokingSessions.add(candidateKey)
-        invokingSessionKey = candidateKey
         stage = 'ensure_running'
         await targetActor.container.start()
         const files = targetActor.files
@@ -894,27 +885,19 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           }
         }
         promptDeliveryStarted = true
-        let delivered: DeliverResult
         try {
-          // ifIdle: the session's state is decided in the delivery's own
-          // turn; the check above only fails fast.
-          delivered = await targetActor.messages.deliver({
+          // A session in the middle of a turn takes the prompt into that turn,
+          // as a user's message does.
+          await targetActor.messages.deliver({
             sessionId: existingSessionId,
             content: deliveredPrompt,
             uuid: messageUuid,
             options: { isAutomated: true },
-            ifIdle: true,
           })
         } catch (sendError) {
           if (deliveryFailure(sendError)?.accepted === false) await discardUndelivered()
           throw sendError
         }
-        if (delivered.status === 'busy') {
-          await discardUndelivered()
-          return c.json({ error: 'Target session is currently running' }, 409)
-        }
-        invokingSessions.delete(invokingSessionKey)
-        invokingSessionKey = undefined
 
         if (sync) {
           stage = 'wait_for_idle'
@@ -1116,8 +1099,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
       })
       return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
-    } finally {
-      if (invokingSessionKey) invokingSessions.delete(invokingSessionKey)
     }
   })
 })

@@ -189,27 +189,6 @@ describe('deliver', () => {
     expect(sessions().takeCoalesced(SESSION).map((message) => message.uuid)).toEqual(['a', 'b'])
   })
 
-  it('refuses to join a running turn when asked to deliver only into an idle session', async () => {
-    await delivery().attach(SESSION)
-    sessions().markActive(SESSION)
-
-    expect(await delivery().deliver({ sessionId: SESSION, content: 'follow-up', ifIdle: true })).toEqual({ status: 'busy' })
-    expect(send()).not.toHaveBeenCalled()
-  })
-
-  it('refuses to join a running turn that only the attach reveals', async () => {
-    // Not attached (an automation's stream is released once idle), while the
-    // container runs a turn the host has not heard of: a background task's wake.
-    vi.mocked(client.subscribeToStream).mockImplementationOnce((_id: string, onMessage: (message: StreamMessage) => void) => {
-      onMessage({ type: 'message', content: { type: 'system', subtype: 'session_state_changed', state: 'running' }, timestamp: new Date(), sessionId: SESSION })
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    })
-    expect(sessions().isActive(SESSION)).toBe(false)
-
-    expect(await delivery().deliver({ sessionId: SESSION, content: 'follow-up', ifIdle: true })).toEqual({ status: 'busy' })
-    expect(send()).not.toHaveBeenCalled()
-  })
-
   it('sends only once an attach in flight is done: the turn\'s first frames have a listener', async () => {
     let ready!: () => void
     vi.mocked(client.subscribeToStream).mockImplementation(() => ({

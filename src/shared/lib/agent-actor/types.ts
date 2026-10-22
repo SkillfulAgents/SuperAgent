@@ -547,12 +547,6 @@ export interface DeliverRequest {
   cancelAwaiting?: boolean
   /** Hold the message while the session recovers from a runtime death; the recovery sends it. */
   coalesce?: boolean
-  /**
-   * Refuse to join a running turn: `busy` instead. Decided with the queued
-   * decision, after the attach (which can reveal a running turn). An append
-   * starts no turn, so it is never refused.
-   */
-  ifIdle?: boolean
   /** The `user_message` the session's viewers see, sent once it is known whether the message is queued. */
   echo?: UserMessageEcho
 }
@@ -561,8 +555,6 @@ export type DeliverResult = (
   | { status: 'sent'; queued: boolean }
   /** Held for the recovery to send. */
   | { status: 'coalesced' }
-  /** `ifIdle` and the session was running: nothing was sent. */
-  | { status: 'busy' }
 ) & {
   /** The provider the session's turns run on, once the container resolved it (the credential that served it). */
   provider?: string
