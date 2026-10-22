@@ -27,6 +27,8 @@ export interface ApiAgent {
   /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
   displaySlug: string
   name: string
+  /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
+  teamBrain?: { volumeId: string }
   /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
   avatar?: AgentAvatar | null
   description?: string

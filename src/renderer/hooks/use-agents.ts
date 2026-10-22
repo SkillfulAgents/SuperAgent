@@ -7,6 +7,9 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
+import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
+import { experimentEnabled } from '@shared/lib/experiments'
+import { useUserSettings } from './use-user-settings'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -107,6 +110,19 @@ export function useAgents<TData = ApiAgent[]>(options?: {
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: options?.poll === false ? false : 60000,
   })
+}
+
+/** The agents the sidebar and Home list: all but the Team Brain agent, which has its own sidebar item. */
+export function useListedAgents() {
+  const preparedSlug = usePreparedTeamBrainSlug()
+  // With the experiment off it is an ordinary agent again; hidden while settings load, so it never flashes into the list.
+  const { data: userSettings, isPending } = useUserSettings()
+  const teamBrainOn = isPending || experimentEnabled(userSettings?.experiments, 'team-brain')
+  const withoutTeamBrain = useCallback(
+    (agents: ApiAgent[]) => agents.filter((agent) => !(teamBrainOn && agent.teamBrain) && agent.slug !== preparedSlug),
+    [preparedSlug, teamBrainOn],
+  )
+  return useAgents({ select: withoutTeamBrain })
 }
 
 export function useAgent(slug: string | null) {

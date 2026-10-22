@@ -20,6 +20,6 @@ export const EXPERIMENTS = [
   {
     id: 'team-brain',
     name: 'Team Brain',
-    description: 'Adds Team Brain to the sidebar: a shared wiki an agent builds from your Slack, Notion, Drive and more, mounted as a drive on every agent. Prototype: the landing page and set-up modal only; nothing is created yet.',
+    description: 'Adds Team Brain to the sidebar: a shared wiki an agent builds from your Slack, Notion, Drive and more, mounted as a drive on the agents you choose. Set-up creates the Team Brain agent and its drive, then opens its first chat.',
   },
 ] as const satisfies readonly ExperimentDefinition[]

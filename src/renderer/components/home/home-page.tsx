@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { WidgetActionRow, WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
-import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
+import { useListedAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
@@ -902,7 +902,7 @@ function HomeEmptySkeletonBoard({
 
 export function HomePage() {
   useRenderTracker('HomePage')
-  const { data: agents, isLoading: agentsLoading } = useAgents()
+  const { data: agents, isLoading: agentsLoading } = useListedAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const isMobile = useIsMobile()

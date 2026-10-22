@@ -2,10 +2,9 @@ import { z } from 'zod'
 import { VOLUME_TYPES } from '@shared/lib/types/mount'
 
 /**
- * Team Brain (prototype): one shared, agent-maintained wiki for the whole
- * workspace, mounted as a drive on every agent. This first slice is the page
- * before anyone opts in and the set-up modal. What the modal settles is held
- * in memory for now; the set-up chat that follows it is a later change.
+ * Team Brain: one shared, agent-maintained wiki for the whole workspace, kept
+ * on a drive its agent writes and the agents given access read. These are the
+ * set-up modal's choices.
  */
 
 export const TEAM_BRAIN_SOURCE_IDS = [
@@ -41,20 +40,32 @@ export type TeamBrainSchedule = (typeof TEAM_BRAIN_SCHEDULES)[number]
 export const TEAM_BRAIN_STEPS = ['location', 'agents', 'schedule', 'intake'] as const
 export type TeamBrainStep = (typeof TEAM_BRAIN_STEPS)[number]
 
-/** What an agent may do with Team Brain: read its context, write what it learns, or both. */
-export const TEAM_BRAIN_ACCESS = ['read', 'write', 'both'] as const
-export type TeamBrainAccess = (typeof TEAM_BRAIN_ACCESS)[number]
-export type TeamBrainAgentAccess = TeamBrainAccess | 'none'
+/** The Team Brain agent and drive created when step 01 is done, before Start chat. */
+export const teamBrainPreparedSchema = z.object({
+  agentSlug: z.string(),
+  volumeId: z.string(),
+  /** Where the drive is mounted inside the agent's container. */
+  brainPath: z.string(),
+  firstPrompt: z.string().optional(),
+  /** Whether everyone can add the drive. Only such a drive can go to every agent. */
+  isPublic: z.boolean(),
+})
+export type TeamBrainPrepared = z.infer<typeof teamBrainPreparedSchema>
 
-/** `off` (the page before anyone opts in) → `onboarding` (the set-up modal). */
+/** `off` (the page before anyone opts in) → `onboarding` (the set-up modal) → `launching` (after Start chat). */
 export const teamBrainStateSchema = z.object({
-  status: z.enum(['off', 'onboarding']),
+  status: z.enum(['off', 'onboarding', 'launching']),
   step: z.enum(TEAM_BRAIN_STEPS).default('location'),
   /** Where the files live. Chosen first; null until chosen. */
   location: z.enum(TEAM_BRAIN_LOCATION_IDS).nullable().default(null),
   schedule: z.enum(TEAM_BRAIN_SCHEDULES).default('daily'),
-  /** What each agent may do, by slug. An agent not listed reads and writes. */
-  agentAccess: z.record(z.string(), z.enum([...TEAM_BRAIN_ACCESS, 'none'])).default({}),
+  prepared: teamBrainPreparedSchema.nullable().default(null),
+  /** The agent just installed, before its drive makes it `prepared`. */
+  installing: z.string().nullable().default(null),
+  /** Which agents use Team Brain (read the drive, message its agent), by slug. An agent not listed does. */
+  agents: z.record(z.string(), z.boolean()).default({}),
+  /** Every agent, including ones made later: the drive goes global, read-only. */
+  everyAgent: z.boolean().default(false),
 })
 
 export type TeamBrainState = z.infer<typeof teamBrainStateSchema>

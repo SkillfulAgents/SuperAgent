@@ -373,6 +373,7 @@ function buildSettingsResponse(
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
+    teamBrain: appSettings.teamBrain,
   }
 }
 
