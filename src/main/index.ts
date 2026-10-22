@@ -68,6 +68,7 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
 import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
 import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
@@ -202,8 +203,8 @@ function pushPendingNavigation(nav: { agentSlug: string; sessionId: string | nul
 // Strong references to Notification objects so the JS GC doesn't reap them
 // while macOS is still showing them (e.g. user opens the action dropdown
 // after the banner has been on screen for a couple of seconds). When the
-// JS object is collected, the underlying NSUserNotification listeners
-// detach and macOS routes the action click into the void.
+// JS object is collected, its click/action listeners detach and the click
+// lands nowhere (the notification itself stays in Notification Center).
 //
 // macOS doesn't always fire `close` (notifications migrate silently into
 // Notification Center), so we ALSO TTL each entry. We pick a value slightly
@@ -233,6 +234,9 @@ function dismissReviewNotification(reviewId: string): void {
     reviewNotifications.delete(reviewId)
     liveNotifications.delete(n)
   }
+  // macOS posts a review under its own id (see osNotificationOptions), so it
+  // also comes down once its object has aged out of the maps above.
+  if (process.platform === 'darwin') Notification.remove(reviewNotificationId(reviewId))
 }
 
 /**
@@ -326,6 +330,12 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
+    // Electron saves this window's bounds and maximized/fullscreen state under
+    // its name and restores them here, so the size below is only the first
+    // launch's. The name is free again once the window is destroyed, which is
+    // before `closed` clears `mainWindow` and lets this run again.
+    name: 'main',
+    windowStatePersistence: true,
     width: 1280,
     height: 800,
     minWidth: 800,
@@ -649,13 +659,7 @@ ipcMain.handle('show-notification', (
   },
 ) => {
   if (!Notification.isSupported()) return
-  const notification = new Notification({
-    title,
-    body,
-    ...(actions && actions.length > 0
-      ? { actions: actions.map((a) => ({ type: 'button' as const, text: a.text })) }
-      : {}),
-  })
+  const notification = new Notification(osNotificationOptions({ title, body, actions, context }))
   notification.on('click', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
@@ -678,12 +682,7 @@ ipcMain.handle('show-notification', (
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
   // 'user_request_resolved' handler can dismiss it later.
-  const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
-  const reviewId =
-    ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
-      ? ctxForTrack.reviewId
-      : undefined
-  trackLiveNotification(notification, reviewId)
+  trackLiveNotification(notification, reviewIdOf(context))
   notification.show()
 })
 
@@ -781,10 +780,19 @@ ipcMain.handle('detect-host-browser', () => {
   return { providers: detectAllProviders() }
 })
 
-// IPC handler for opening a native directory picker
+// IPC handler for opening a native directory picker.
+// Without a defaultPath Electron opens the dialog in Downloads, and the OS no
+// longer remembers where the user last was. Start beside the last folder picked
+// this run, else in home: what gets mounted here is a project, not a download.
+let lastPickedDirectoryParent: string | null = null
 ipcMain.handle('open-directory', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
-  return result.canceled ? null : result.filePaths[0]
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
+  })
+  if (result.canceled) return null
+  lastPickedDirectoryParent = path.dirname(result.filePaths[0])
+  return result.filePaths[0]
 })
 
 // IPC handler for revealing a path in the OS file manager.
@@ -1431,18 +1439,9 @@ function startNotificationListener(): void {
           const context = data.actionContext as
             | { agentSlug?: string; sessionId?: string | null; kind?: string; reviewId?: string }
             | undefined
-          const notification = new Notification({
-            title: data.title,
-            body: data.body,
-            ...(actions && actions.length > 0
-              ? {
-                  actions: actions.map((a) => ({
-                    type: 'button' as const,
-                    text: a.text,
-                  })),
-                }
-              : {}),
-          })
+          const notification = new Notification(
+            osNotificationOptions({ title: data.title, body: data.body, actions, context }),
+          )
           notification.on('click', () => {
             // Queue navigation so the renderer routes the user to the
             // right session on mount. Also queue the click event itself
@@ -1475,11 +1474,7 @@ function startNotificationListener(): void {
           notification.on('close', () => {
             liveNotifications.delete(notification)
           })
-          const reviewId =
-            context?.kind === 'proxy_review' && typeof context.reviewId === 'string'
-              ? context.reviewId
-              : undefined
-          trackLiveNotification(notification, reviewId)
+          trackLiveNotification(notification, reviewIdOf(context))
           notification.show()
         }
       }
