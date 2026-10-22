@@ -4133,6 +4133,44 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     )
   })
 
+  it.each([true, false])('parses multipart uploads over HTTP with overrideGlobalObjects=%s', async (overrideGlobalObjects) => {
+    // Exercise the root adapter with optimized and native globals. Both must
+    // parse an adapter-owned multipart request, not just the native Request
+    // constructed by app.request().
+    const originalGlobals = { Request: globalThis.Request, Response: globalThis.Response }
+    const server = createServer(getRequestListener(app.fetch, { overrideGlobalObjects }))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const content = Buffer.from(Array.from({ length: 256 * 1024 }, (_, i) => i % 251))
+      const formData = new FormData()
+      formData.append('file', new File([content], 'report.bin', { type: 'application/octet-stream' }))
+      formData.append('relativePath', 'nested/report.bin')
+      const port = (server.address() as AddressInfo).port
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/agents/test-agent/upload-file`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({
+        success: true,
+        path: '/workspace/uploads/nested/report.bin',
+        filename: 'report.bin',
+        size: content.byteLength,
+      })
+      const sink = mockCreateWriteStream.mock.results[0]!.value as MemoryWriteStream
+      expect(Buffer.concat(sink.chunks)).toEqual(content)
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve())
+        server.closeAllConnections()
+      })
+      globalThis.Request = originalGlobals.Request
+      globalThis.Response = originalGlobals.Response
+    }
+  })
+
   it('uploads an empty file', async () => {
     const formData = new FormData()
     formData.append('file', new File([], 'empty.txt', { type: 'text/plain' }))
