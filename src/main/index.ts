@@ -214,6 +214,24 @@ function pushPendingNavigation(nav: { agentSlug: string; sessionId: string | nul
 // click would 404. (Review S1.)
 const NOTIFICATION_TTL_MS = 6 * 60 * 1000
 const liveNotifications = new Set<Notification>()
+// macOS has no API that reports the user's notification toggle for this app,
+// so the result of the last delivery is the only signal.
+let osNotificationsBlocked = false
+function setOsNotificationsBlocked(blocked: boolean): void {
+  if (osNotificationsBlocked === blocked) return
+  osNotificationsBlocked = blocked
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('os-notifications-blocked-change', blocked)
+  }
+}
+function watchNotificationDelivery(notification: Notification): void {
+  if (process.platform !== 'darwin') return
+  notification.on('show', () => setOsNotificationsBlocked(false))
+  notification.on('failed', (_event, error) => {
+    console.warn('[Notifications] macOS did not show a notification:', error)
+    setOsNotificationsBlocked(true)
+  })
+}
 // Track notifications by reviewId so we can dismiss the OS notification
 // when the underlying review resolves (in-app, by another viewer, or by
 // timeout). Without this, stale "API Request Review" notifications linger
@@ -683,8 +701,11 @@ ipcMain.handle('show-notification', (
   // Track by reviewId if this is a proxy-review notification, so the SSE
   // 'user_request_resolved' handler can dismiss it later.
   trackLiveNotification(notification, reviewIdOf(context))
+  watchNotificationDelivery(notification)
   notification.show()
 })
+
+ipcMain.handle('get-os-notifications-blocked', () => osNotificationsBlocked)
 
 // Renderer pulls queued click/action events that were captured while the
 // window was closed (notifications shown by the main-process SSE fallback).
@@ -1475,6 +1496,7 @@ function startNotificationListener(): void {
             liveNotifications.delete(notification)
           })
           trackLiveNotification(notification, reviewIdOf(context))
+          watchNotificationDelivery(notification)
           notification.show()
         }
       }
