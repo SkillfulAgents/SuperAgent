@@ -223,14 +223,14 @@ export async function runBrowserUpload(
   }
 }
 
-// Runs in the page. Window capture fires before site handlers, which often clear the input.
+// Runs in the page. Root capture beats site handlers that clear the input; window misses shadow DOM (change isn't composed).
 export function recordFileInputChange(element: any, key: string): void {
   const store = globalThis as typeof globalThis & Record<string, UploadVerification | null>
   store[key] = null
-  const win = element.ownerDocument.defaultView
+  const root = element.getRootNode()
   const onChange = (event: { target: unknown }) => {
     if (event.target !== element) return
-    win.removeEventListener('change', onChange, true)
+    root.removeEventListener('change', onChange, true)
     const uploadedFile = element.files?.[0] ?? null
     store[key] = {
       count: element.files?.length ?? 0,
@@ -238,7 +238,7 @@ export function recordFileInputChange(element: any, key: string): void {
       size: uploadedFile?.size ?? null,
     }
   }
-  win.addEventListener('change', onChange, true)
+  root.addEventListener('change', onChange, true)
 }
 
 export async function uploadToFileInput({

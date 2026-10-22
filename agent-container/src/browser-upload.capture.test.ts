@@ -31,6 +31,27 @@ describe('recordFileInputChange', () => {
     })
   })
 
+  it('records the file for an input inside a shadow root', () => {
+    const host = document.createElement('upload-widget')
+    document.body.appendChild(host)
+    const input = document.createElement('input')
+    input.type = 'file'
+    host.attachShadow({ mode: 'open' }).appendChild(input)
+
+    input.addEventListener('change', () => setFiles(input, []))
+
+    recordFileInputChange(input, 'shadow-key')
+
+    setFiles(input, [new File(['photo bytes'], 'kitchen.jpg', { type: 'image/jpeg' })])
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect((globalThis as Record<string, unknown>)['shadow-key']).toEqual({
+      count: 1,
+      name: 'kitchen.jpg',
+      size: 11,
+    })
+  })
+
   it('ignores change events from other inputs', () => {
     const target = document.createElement('input')
     const other = document.createElement('input')
