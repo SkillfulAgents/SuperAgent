@@ -28,13 +28,20 @@ function isBuiltInService(service: string): service is BuiltInService {
   return Object.hasOwn(BUILT_IN_SERVICES, service)
 }
 
-/** The toolkit a proxied host serves. A host several toolkits share resolves only when its path names one. */
+/** Name the API service, even when a broader toolkit can authenticate to its host. */
 function toolkitFor(host: string, path: string): string | null {
-  const candidates = Object.keys(TOOLKIT_ALLOWED_HOSTS).filter((toolkit) => isHostAllowed(toolkit, host))
+  const matching = Object.keys(TOOLKIT_ALLOWED_HOSTS).filter((toolkit) => isHostAllowed(toolkit, host))
+  const normalizedHost = host.toLowerCase()
+  const exact = matching.filter((toolkit) => TOOLKIT_ALLOWED_HOSTS[toolkit].includes(normalizedHost))
+  const candidates = exact.length > 0 ? exact : matching
   if (candidates.length === 1) return candidates[0]
+  // Composite and bot toolkits can share a service's dedicated host. A unique
+  // canonical host still names that service; shared hosts such as Graph do not.
+  const byHost = candidates.filter((toolkit) => SCOPE_MAPS[toolkit]?.apiHost === normalizedHost)
+  if (byHost.length === 1) return byHost[0]
   const byPath = candidates.filter((toolkit) => {
     const basePath = SCOPE_MAPS[toolkit]?.basePath
-    return !!basePath && path.startsWith(basePath)
+    return !!basePath && basePath !== '/' && (path === basePath || path.startsWith(`${basePath}/`))
   })
   return byPath.length === 1 ? byPath[0] : null
 }
