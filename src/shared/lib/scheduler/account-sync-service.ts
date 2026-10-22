@@ -28,7 +28,7 @@ class AccountSyncService {
   private startupTimeoutId: NodeJS.Timeout | null = null
   private isRunning = false
   private isProcessing = false
-  private pollIntervalMs = 5 * 60 * 1000
+  readonly pollIntervalMs = 5 * 60 * 1000
   private startupDelayMs = 10_000
 
   async start(): Promise<void> {

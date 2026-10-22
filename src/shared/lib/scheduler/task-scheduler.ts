@@ -49,7 +49,7 @@ async function isRunBusy(actor: AgentActor, sessionId: string): Promise<boolean>
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null
   private isRunning = false
-  private pollIntervalMs = 60000 // Check every minute
+  readonly pollIntervalMs = 60000 // Check every minute
   private isProcessing = false // Prevent concurrent execution
 
   /**
@@ -116,7 +116,7 @@ class TaskScheduler {
   /**
    * Execute all tasks that are due.
    */
-  private async executeOverdueTasks(): Promise<void> {
+  async executeOverdueTasks(): Promise<void> {
     // Prevent concurrent execution
     if (this.isProcessing) {
       console.log('[TaskScheduler] Already processing, skipping this cycle')

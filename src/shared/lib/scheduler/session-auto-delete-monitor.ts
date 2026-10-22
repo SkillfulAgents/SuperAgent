@@ -15,7 +15,7 @@ class SessionAutoDeleteMonitor {
   private startupTimeoutId: NodeJS.Timeout | null = null
   private isRunning = false
   private isProcessing = false
-  private pollIntervalMs = 4 * 60 * 60 * 1000 // Every 4 hours
+  readonly pollIntervalMs = 4 * 60 * 60 * 1000 // Every 4 hours
   private startupDelayMs = 30_000 // 30 seconds after startup
 
   async start(): Promise<void> {
@@ -58,7 +58,7 @@ class SessionAutoDeleteMonitor {
     console.log('[SessionAutoDeleteMonitor] Monitor stopped')
   }
 
-  private async cleanupAllAgents(): Promise<void> {
+  async cleanupAllAgents(): Promise<void> {
     if (this.isProcessing) return
     this.isProcessing = true
 
