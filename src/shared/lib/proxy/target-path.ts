@@ -25,7 +25,8 @@
  *  - Encoded slashes (`%2F`) are separators, decoded to `/` before matching
  *    and forwarding (how the proxy has always treated them), except on hosts
  *    whose API takes them as data inside one segment (GitLab's
- *    `projects/group%2Fproject`), where they stay encoded in both views.
+ *    `projects/group%2Fproject` or a Sheets A1 range), where they stay encoded
+ *    in both views.
  *  - Everything else is forwarded exactly as the client encoded it: `%23`,
  *    `%3F`, `%20` (including boundary spaces), `%40`, UTF-8, a trailing slash.
  *    Encoded data never becomes query/fragment syntax or trimmable whitespace
@@ -38,7 +39,7 @@ export type TargetPath =
   | { ok: false; error: string; rawPath: string }
 
 /** Hosts whose API reads `%2F` as data within a segment, not as a separator. */
-const ENCODED_SLASH_HOSTS = new Set(['gitlab.com'])
+const ENCODED_SLASH_HOSTS = new Set(['gitlab.com', 'sheets.googleapis.com'])
 
 /** Decoding rounds checked for hidden dot segments (`%252e` needs two). */
 const DOT_SEGMENT_DECODE_DEPTH = 3
