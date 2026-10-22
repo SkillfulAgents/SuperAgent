@@ -3,7 +3,7 @@ import { ChevronDown } from 'lucide-react'
 import PostalMime, { type Email } from 'postal-mime'
 import { PersonAvatar } from '@renderer/components/agent-integrations/messages/message-parts'
 import { ClampedBody, EmailHtml, WebAddresses, webAddresses, withImages } from './email-html'
-import type { RequestLook } from './request-looks'
+import type { CustomPreview } from './custom-previews'
 
 /** A Gmail send as far as the card's copy of the request shows it. */
 export interface GmailSend {
@@ -41,7 +41,7 @@ export async function readGmailSend(requestBody: string): Promise<GmailSend | un
   if (!raw) return undefined
   const cut = !raw[2]
   const base64 = raw[1].replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
-  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- the look treats a rejection as no preview
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- the custom preview treats a rejection as none
   const bytes = Uint8Array.from(atob(base64.slice(0, base64.length - (base64.length % 4))), (char) => char.charCodeAt(0))
   // A recipient header past the cut would be missing from the card.
   if (cut && !/\r?\n\r?\n/.test(new TextDecoder('latin1').decode(bytes))) return undefined
@@ -184,7 +184,7 @@ export function GmailSendView({ email }: { email: GmailSend }) {
   )
 }
 
-function GmailSendLook({ requestBody }: { requestBody: string }) {
+function GmailSendPreview({ requestBody }: { requestBody: string }) {
   const [email, setEmail] = useState<GmailSend>()
   useEffect(() => {
     let current = true
@@ -194,10 +194,10 @@ function GmailSendLook({ requestBody }: { requestBody: string }) {
   return email ? <GmailSendView email={email} /> : null
 }
 
-export const gmailSendLook: RequestLook = {
+export const gmailSendCustomPreview: CustomPreview = {
   toolkit: 'gmail',
   method: 'POST',
   path: /^gmail\/v1\/users\/[^/]+\/messages\/send$/,
   title: 'Allow sending this email from Gmail?',
-  Look: GmailSendLook,
+  Preview: GmailSendPreview,
 }
