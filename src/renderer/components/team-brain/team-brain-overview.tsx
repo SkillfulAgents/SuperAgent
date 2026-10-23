@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { ArrowUpRight, Check, ChevronDown, PanelRightClose, Plus, Settings2 } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
+import { ArrowUpRight, Check, ChevronDown, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
@@ -32,7 +32,6 @@ import { HomeCollapsible } from '@renderer/components/agents/agent-home/home-col
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { toast } from 'sonner'
-import { DrawerShell } from '@renderer/components/tray/drawer-shell'
 import { formatNextSync, formatSince, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { StatusToggle } from '@renderer/components/triggers/status-toggle'
@@ -48,8 +47,8 @@ const PREVIEW_SLUG = 'team-brain'
 /**
  * Team Brain once it is set up: its home page, for its agent. The app's file
  * drawer sits beside it (set up as on Agent Home) so a page in the drive opens
- * like any other file, with its settings in a drawer of the same kind; one
- * drawer shows at a time. The agent and where its drive lives are real; the
+ * like any other file, and its settings open as a second column; the file
+ * drawer and the settings never show together. The agent and where its drive lives are real; the
  * drive's pages, the sync summaries and the sync status are mock for now (see
  * `team-brain-live.ts`).
  */
@@ -61,7 +60,6 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
         <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
           <OverviewBody agent={agent} settingsOpen={settingsOpen} onSettingsOpenChange={setSettingsOpen} />
           <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
-          <SettingsDrawer agent={agent} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>
@@ -79,7 +77,7 @@ function useTeamBrainLocation(agentSlug: string) {
 /**
  * How it is doing, the drive it keeps and what each sync filed into it. The levers
  * (sources, schedule, which agents share it) are a button away, in the
- * settings drawer.
+ * settings panel, which makes the page two columns.
  */
 function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: ApiAgent; settingsOpen: boolean; onSettingsOpenChange: (open: boolean) => void }) {
   const { state } = useTeamBrain()
@@ -100,68 +98,147 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
     if (!settingsOpen) closeFiles()
     onSettingsOpenChange(!settingsOpen)
   }
-  // A click on the page behind an open drawer puts it away, unless it is what opened one: a [data-drawer-opener],
-  // or a page on the tree, whose click the tree keeps to itself. A page clicked while another is showing swaps the
-  // file rather than closing the drawer and opening it again.
+  // A click on the page behind the file drawer puts it away, unless it is what opened one: a [data-drawer-opener], or
+  // a page on the tree, whose click the tree keeps to itself. A page clicked while another is showing swaps the file
+  // rather than closing the drawer and opening it again. Settings beside the page stay open; floating over it, they
+  // close as the drawer does.
   const closeDrawersOnClickOff = (event: ReactMouseEvent) => {
-    if (!filesOpen && !settingsOpen) return
-    if (event.target instanceof Element && event.target.closest('[data-drawer-opener]')) return
+    const target = event.target
+    // Only the page itself: a popover's click (the composer's model picker, a picker in the panel) bubbles here
+    // through React from outside this element.
+    if (!(target instanceof Element) || !event.currentTarget.contains(target)) return
+    if (target.closest('[data-drawer-opener]')) return
     closeFiles()
-    onSettingsOpenChange(false)
+    // Narrower than xl the panel floats over the page and covers its settings button, so a click off it closes it.
+    if (settingsOpen && !wide && !target.closest('#team-brain-settings')) onSettingsOpenChange(false)
   }
 
-  const { scrollRef, treeRef, treeTop, treeHeight } = useStickyTree()
+  const { scrollRef, treeRef, treeTop, treeHeight, viewHeight } = useStickyTree()
+  const { ref: dockRef, stuck: docked } = useStuck(scrollRef, treeTop)
+  const wide = useMediaQuery(SETTINGS_BESIDE_PAGE)
+  // The panel stays out while it fades away after closing.
+  const [settingsClosing, setSettingsClosing] = useState(false)
+  useEffect(() => {
+    if (settingsOpen) setSettingsClosing(true)
+  }, [settingsOpen])
+  const showSettings = settingsOpen || settingsClosing
+  const settingsClosed = useCallback(() => setSettingsClosing(false), [])
 
   // What an agent told Team Brain between syncs is credited to a real agent that uses it.
   const writer = agents.find((a) => usesTeamBrain(state, a.slug))
 
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
-    <div className="flex min-h-0 flex-1 flex-col bg-background" onClick={closeDrawersOnClickOff}>
-      <SettingsPageContainer className="max-w-[1040px] space-y-8" scrollContainerRef={scrollRef}>
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff}>
+      <SettingsPageContainer className={cn(PAGE_WIDTH, 'space-y-8')} scrollContainerRef={scrollRef}>
         {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
             view down to where the composer peeks in and stays where it is as the page scrolls, so what follows passes over it. */}
         <div ref={treeRef} className="sticky z-0" style={{ top: treeTop }} data-testid="team-brain-tree-layer">
           <TeamBrainRadial drive={drive} onOpenFile={openPage} height={treeHeight} />
         </div>
 
-        <div className="relative z-10 mx-auto w-full max-w-[720px] space-y-3">
-          {/* No heading of its own: the nav bar names the page, so this is just how Team Brain is doing, riding above
-              the composer at its width. */}
-          <header className="flex flex-wrap items-center justify-between gap-4" data-testid="team-brain-overview">
-            <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="team-brain-status">
-              <span className={cn('inline-block h-1.5 w-1.5 rounded-full', live.syncPaused ? 'bg-muted-foreground' : 'bg-green-500')} aria-hidden="true" />
-              {live.syncPaused ? 'Paused' : 'Active'} · Synced {formatSince(live.lastSyncAt)}
-            </p>
-            {/* Opens the settings drawer: where it lives, the schedule, sources, agents, turning it off. */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={toggleSettings}
-              aria-label="Team Brain settings"
-              aria-expanded={settingsOpen}
-              aria-controls="team-brain-settings"
-              data-testid="team-brain-menu"
-              data-drawer-opener
-            >
-              <Settings2 />
-            </Button>
-          </header>
-          {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
-              composer is, so the tree shows through it as it passes over. */}
-          <TeamBrainHomeComposer agent={agent} />
-        </div>
+        {/* The page's own column. With settings open it makes room for them on the right from xl, as Agent Home's two
+            columns do, while the tree behind stays exactly where it is. */}
+        <div
+          // Makes room on the panel's own curves (globals.css), so the two move as one.
+          className={cn('team-brain-column relative space-y-8', settingsOpen && 'xl:pr-[392px]')}
+          data-settings={settingsOpen ? 'open' : 'closed'}
+          data-testid="team-brain-column"
+        >
+          {/* The status row and composer peek in at the foot of the view, pass over the tree as the page scrolls and then
+              stick at the top, level with the settings panel, while sync summaries go on scrolling under them. */}
+          <div
+            ref={dockRef}
+            className="sticky z-20 mx-auto w-full max-w-[720px] space-y-3"
+            style={{ top: treeTop }}
+            data-stuck={docked || undefined}
+            data-testid="team-brain-dock"
+          >
+            {/* No heading of its own: the nav bar names the page, so this is just how Team Brain is doing, riding above
+                the composer at its width. */}
+            <header className="relative flex flex-wrap items-center justify-between gap-4" data-testid="team-brain-overview">
+              {/* Once stuck, the page from the top of the view down to the composer, so summaries scrolling up go under
+                  the composer instead of showing round the status row. Only then: on its way up it would blank out a
+                  strip of the tree. */}
+              <div aria-hidden="true" className="team-brain-dock-cover pointer-events-none absolute -inset-x-6 -bottom-7 -z-10 bg-background" style={{ top: -treeTop }} />
+              <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="team-brain-status">
+                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', live.syncPaused ? 'bg-muted-foreground' : 'bg-green-500')} aria-hidden="true" />
+                {live.syncPaused ? 'Paused' : 'Active'} · Synced {formatSince(live.lastSyncAt)}
+              </p>
+              {/* Opens the settings panel: where it lives, the schedule, sources, agents, turning it off. */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={toggleSettings}
+                aria-label="Team Brain settings"
+                aria-expanded={settingsOpen}
+                aria-controls="team-brain-settings"
+                data-testid="team-brain-menu"
+                data-drawer-opener
+              >
+                <Settings2 />
+              </Button>
+            </header>
+            {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
+                composer is, so the tree shows through it as it passes over. */}
+            <TeamBrainHomeComposer agent={agent} />
+          </div>
 
-        {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
-            shows through it, blurred, as it passes over. */}
-        <div className="relative z-10 mx-auto w-full max-w-[720px] rounded-3xl border border-border/60 bg-background/60 px-6 pb-8 pt-8 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]">
-          <TeamBrainSyncSummaries drive={drive} schedule={state.schedule} lastSyncAt={live.lastSyncAt} writer={writer ?? null} onOpenFile={openPage} />
+          {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
+              shows through it, blurred, as it passes over. */}
+          <div className="relative z-10 mx-auto w-full max-w-[720px] rounded-3xl border border-border/60 bg-background/60 px-6 pb-8 pt-8 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]">
+            <TeamBrainSyncSummaries drive={drive} schedule={state.schedule} lastSyncAt={live.lastSyncAt} writer={writer ?? null} onOpenFile={openPage} />
+          </div>
+
+          {showSettings && wide && (
+            // Beside the page, in the room the column makes: level with the status row, it scrolls with the column and
+            // then sticks at the top, and slides out from behind the column's glass (it sits beneath it).
+            <div className="pointer-events-none absolute inset-y-0 right-0 z-0 !mt-0 w-[360px]">
+              <SettingsPanel
+                agent={agent}
+                placement="beside"
+                open={settingsOpen}
+                onClose={() => onSettingsOpenChange(false)}
+                onClosed={settingsClosed}
+                style={{ top: treeTop, maxHeight: Math.max(viewHeight - treeTop - 24, 320) }}
+              />
+            </div>
+          )}
         </div>
       </SettingsPageContainer>
+      {showSettings && !wide && (
+        // Narrower there is no room beside the page, so it floats over it, lined up with the page's own width; it stays
+        // put as the page scrolls and the tree shows through its glass.
+        <div className="pointer-events-none absolute inset-0 z-30">
+          <div className={cn('mx-auto flex h-full w-full justify-end px-6 pb-6 pt-10', PAGE_WIDTH)}>
+            <SettingsPanel agent={agent} placement="over" open={settingsOpen} onClose={() => onSettingsOpenChange(false)} onClosed={settingsClosed} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+
+/** Where settings fit beside the page, as Agent Home's two columns do (Tailwind's xl). */
+const SETTINGS_BESIDE_PAGE = '(min-width: 1280px)'
+
+/** Whether `query` matches, following the window as it resizes (as `useIsMobile` does for its one width). */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches ?? false)
+  useEffect(() => {
+    const list = window.matchMedia?.(query)
+    if (!list) return
+    const onChange = () => setMatches(list.matches)
+    onChange()
+    list.addEventListener('change', onChange)
+    return () => list.removeEventListener('change', onChange)
+  }, [query])
+  return matches
+}
+
+/** The page's width, the same with settings open or not, so the tree never moves. */
+const PAGE_WIDTH = 'max-w-[1040px]'
 
 /** How much shows at the foot of the view before scrolling (the status row and the composer's top), and the shortest the tree gets. */
 const COMPOSER_PEEK = 124
@@ -176,16 +253,19 @@ function useStickyTree() {
   const treeRef = useRef<HTMLDivElement>(null)
   const [treeTop, setTreeTop] = useState(0)
   const [treeHeight, setTreeHeight] = useState(680)
+  const [viewHeight, setViewHeight] = useState(0)
 
   useLayoutEffect(() => {
     const scroller = scrollRef.current
     const tree = treeRef.current
     if (!scroller || !tree) return
     const measure = () => {
-      // Where the tree starts in the page: it comes first, so at the page's top padding. Read off the padding, since a
-      // stuck tree's own offset is where it is stuck, not where it starts.
-      const top = Math.round(parseFloat(getComputedStyle(tree.parentElement ?? tree).paddingTop) || 0)
+      // Where the tree starts in the page: it comes first, so at the page's top padding. Read off the page's own
+      // container, since a stuck tree's own offset is where it is stuck, not where it starts.
+      const page = scroller.firstElementChild
+      const top = page ? Math.round(parseFloat(getComputedStyle(page).paddingTop) || 0) : 0
       setTreeTop(top)
+      setViewHeight(scroller.clientHeight)
       // The page's 32px gap sits between the tree and the composer.
       setTreeHeight(Math.max(MIN_TREE_HEIGHT, Math.round(scroller.clientHeight - top - 32 - COMPOSER_PEEK)))
     }
@@ -196,15 +276,52 @@ function useStickyTree() {
     return () => observer.disconnect()
   }, [])
 
-  return { scrollRef, treeRef, treeTop, treeHeight }
+  return { scrollRef, treeRef, treeTop, treeHeight, viewHeight }
 }
+
+/** Whether an element sticky at `top` in the scroller is stuck there, rather than in its place on the page. */
+function useStuck(scrollRef: RefObject<HTMLDivElement | null>, top: number) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [stuck, setStuck] = useState(false)
+  useEffect(() => {
+    const root = scrollRef.current
+    const element = ref.current
+    if (!root || !element || typeof IntersectionObserver === 'undefined') return
+    // Watch a view 1px shorter at the top than where it sticks: stuck, it pokes 1px above it. Still on its way up, it
+    // can be cut off too, by the foot of the view, so it counts as stuck only when it is the top that is cut.
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.rootBounds) return
+      setStuck(entry.intersectionRatio < 1 && entry.boundingClientRect.top <= entry.rootBounds.top)
+    }, { root, rootMargin: `-${top + 1}px 0px 0px 0px`, threshold: 1 })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [scrollRef, top])
+  return { ref, stuck }
+}
+
+/** How long the panel takes to slide out (see its classes), after which it is taken away. */
+const PANEL_FADE_MS = 300
 
 /**
  * Where Team Brain lives, how it syncs, what it reads and which agents share
- * it, in the app's side drawer over the page (as files open here). It stays
- * mounted while it slides shut, then empties; Escape closes it.
+ * it: a floating glass panel at the page's right, as tall as its cards (its
+ * cards scroll inside it when the view is shorter). Beside the page it slides
+ * out from behind the page's column and back in under it; floating over the
+ * page it slides in from the right edge and back out. Either way it eases to a
+ * stop, and is then taken away (`onClosed`). It has no close button of its own: the settings button beside
+ * the status line toggles it, Escape closes it, and where it floats over the
+ * page (narrower than xl) so does a click off it.
  */
-function SettingsDrawer({ agent, open, onClose }: { agent: ApiAgent; open: boolean; onClose: () => void }) {
+function SettingsPanel({ agent, placement, open, onClose, onClosed, style }: {
+  agent: ApiAgent
+  /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
+  placement: 'beside' | 'over'
+  open: boolean
+  onClose: () => void
+  /** The panel has slid out and can go. */
+  onClosed: () => void
+  style?: CSSProperties
+}) {
   const { state: live } = useTeamBrainLive()
   const { data: agents = [] } = useListedAgents()
   const deleteAgent = useDeleteAgent()
@@ -215,10 +332,12 @@ function SettingsDrawer({ agent, open, onClose }: { agent: ApiAgent; open: boole
     deleteAgent.mutate(agent.slug, {
       onError: (error) => toast.error('Could not turn off Team Brain', { description: error instanceof Error ? error.message : undefined }),
     })
-  const [mounted, setMounted] = useState(open)
+  // Gone once it has faded: on a timer rather than transitionend, which never comes under reduced motion.
   useEffect(() => {
-    if (open) setMounted(true)
-  }, [open])
+    if (open) return
+    const done = setTimeout(onClosed, PANEL_FADE_MS + 50)
+    return () => clearTimeout(done)
+  }, [open, onClosed])
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
@@ -229,52 +348,37 @@ function SettingsDrawer({ agent, open, onClose }: { agent: ApiAgent; open: boole
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [open, onClose, confirmOff])
   return (
-    <DrawerShell
-      isOpen={open}
-      storageKey="team_brain_settings_drawer_width"
-      wideOverlay
-      defaultWidth={380}
-      onTransitionEnd={(event) => {
-        if (!open && event.target === event.currentTarget) setMounted(false)
-      }}
-    >
-      {mounted && (
-        // One off-white for the whole panel, header and all, so its white cards stand out.
-        <div id="team-brain-settings" className="flex min-h-0 flex-1 flex-col bg-[#fbfbfb] dark:bg-background" data-testid="team-brain-settings">
-          <div className="flex shrink-0 select-none items-center gap-2 border-b border-border/40 px-4 py-2 text-sm text-muted-foreground">
-            <Settings2 className="h-4 w-4 shrink-0" />
-            <span className="flex-1 truncate text-xs font-medium">Settings</span>
-            <button
-              type="button"
-              className="rounded p-0.5 transition-colors hover:bg-muted"
-              onClick={onClose}
-              title="Hide settings"
-              aria-label="Hide settings"
-              data-testid="team-brain-settings-close"
-            >
-              <PanelRightClose className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-            <TeamBrainDetails agentSlug={agent.slug} />
-            <SourcesSection sources={live.sources} lastSyncAt={live.lastSyncAt} />
-            <AgentsSection agents={agents} />
-          </div>
-          {/* Pinned to the foot of the drawer, below everything that scrolls; as wide as the cards, red only in its words until hovered. */}
-          <div className="shrink-0 border-t border-border/40 p-4">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-9 w-full text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => setConfirmOff(true)}
-              disabled={deleteAgent.isPending}
-              data-testid="team-brain-turn-off"
-            >
-              Turn off Team Brain
-            </Button>
-          </div>
-        </div>
+    <aside
+      id="team-brain-settings"
+      aria-label="Settings"
+      style={style}
+      data-placement={placement}
+      className={cn(
+        placement === 'beside' ? 'sticky w-full' : 'max-h-full w-[360px] max-w-full self-start',
+        'pointer-events-auto flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-background/70 shadow-[0_8px_40px_rgba(15,23,42,0.12),0_2px_10px_-4px_rgba(15,23,42,0.1)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55 dark:shadow-[0_8px_40px_rgba(0,0,0,0.4),0_2px_12px_-4px_rgba(0,0,0,0.3)]',
+        // The slide's curves are in globals.css, beside the page column's.
+        open ? 'team-brain-settings-in' : 'team-brain-settings-out',
       )}
+      data-testid="team-brain-settings"
+    >
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        <TeamBrainDetails agentSlug={agent.slug} />
+        <SourcesSection sources={live.sources} lastSyncAt={live.lastSyncAt} />
+        <AgentsSection agents={agents} />
+      </div>
+      {/* Pinned to the foot of the panel, below everything that scrolls; as wide as the cards, red only in its words until hovered. */}
+      <div className="shrink-0 border-t border-border/40 p-4">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 w-full text-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => setConfirmOff(true)}
+          disabled={deleteAgent.isPending}
+          data-testid="team-brain-turn-off"
+        >
+          Turn off Team Brain
+        </Button>
+      </div>
       <AlertDialog open={confirmOff} onOpenChange={setConfirmOff}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -292,7 +396,7 @@ function SettingsDrawer({ agent, open, onClose }: { agent: ApiAgent; open: boole
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </DrawerShell>
+    </aside>
   )
 }
 

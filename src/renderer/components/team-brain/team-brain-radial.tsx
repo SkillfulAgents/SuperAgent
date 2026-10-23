@@ -346,6 +346,17 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
     moveTo(0, to, { ms: ENTRY.settleMs, ease: easeOutCubic, onDone: () => setSettling(false) })
   }, [width, fit, entering, fittedView, applyView, moveTo])
 
+  // The frame narrowing or widening later (a column opening beside the page) settles the whole tree onto its new
+  // size, unless a branch is chosen; then it keeps its view.
+  const lastWidth = useRef(0)
+  useEffect(() => {
+    if (width === 0) return
+    const previous = lastWidth.current
+    lastWidth.current = width
+    if (!fitted.current || previous === 0 || previous === width || selectedRef.current) return
+    moveTo(turnRef.current, fittedView(), { ms: 300 })
+  }, [width, fittedView, moveTo])
+
   // Scroll and pinch zoom around the pointer. Not a React handler: those are passive, so the page would scroll too.
   useEffect(() => {
     const svg = svgRef.current

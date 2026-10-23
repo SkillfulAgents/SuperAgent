@@ -748,6 +748,61 @@ html[data-keyboard-open] [data-composer-footer] {
   mask-composite: intersect;
 }
 
+/* Team Brain's settings panel (team-brain-overview.tsx) slides in from the
+   page's right edge and eases to a stop, an ease-out with a long tail, and
+   slides back out accelerating away. The page's column makes room for it on
+   the same curves, so the two move as one. */
+@keyframes team-brain-settings-in {
+  from { transform: translateX(calc(100% + 24px)); opacity: 0.5; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.team-brain-settings-in {
+  animation: team-brain-settings-in 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Out by an animation too, not a transition: going from the in-animation's
+   held frame to a transition snaps instead of sliding. */
+@keyframes team-brain-settings-out {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(calc(100% + 24px)); opacity: 0.5; }
+}
+.team-brain-settings-out {
+  pointer-events: none;
+  animation: team-brain-settings-out 300ms cubic-bezier(0.55, 0, 1, 0.45) both;
+}
+/* Beside the page it comes out from behind the page's column instead, and
+   goes back under it, on the same curves. */
+@keyframes team-brain-settings-from-column {
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes team-brain-settings-into-column {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-100%); opacity: 0; }
+}
+.team-brain-settings-in[data-placement="beside"] { animation-name: team-brain-settings-from-column; }
+.team-brain-settings-out[data-placement="beside"] { animation-name: team-brain-settings-into-column; }
+.team-brain-column {
+  transition: padding 300ms cubic-bezier(0.55, 0, 1, 0.45);
+}
+.team-brain-column[data-settings="open"] {
+  transition-duration: 450ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* The page behind Team Brain's docked status row, shown once the dock sticks at
+   the top: solid down to the composer, then gone over the composer's rounded
+   top, so summaries going under it don't show at its corners. */
+.team-brain-dock-cover {
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
+[data-stuck] .team-brain-dock-cover { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .team-brain-settings-in, .team-brain-settings-out { animation: none; }
+  .team-brain-column, .team-brain-dock-cover { transition: none; }
+}
+
 /* Team Brain's radial tree opening (`ENTRY` in team-brain-radial.tsx): every
    timing is per element, as `--arrive-at` (when the signal reaches a node) or
    `--grow-at` / `--grow-ms` (when it leaves along a branch and how long it

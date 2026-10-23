@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const { app, openExternalUrl } = vi.hoisted(() => ({
+const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
+  // Whether the window is wide enough (xl) for settings to sit beside the page rather than float over it.
+  screenSize: { wide: true, listeners: new Set<() => void>() },
   app: {
     agents: [
       { slug: 'writer', displaySlug: 'writer', name: 'Writer', status: 'running', avatar: null },
@@ -56,7 +58,22 @@ const BRAIN: ApiAgent = {
 beforeEach(() => {
   resetTeamBrainState()
   resetTeamBrainLive()
+  screenSize.wide = true
+  screenSize.listeners.clear()
+  window.matchMedia = ((query: string) => ({
+    get matches() { return query === '(min-width: 1280px)' ? screenSize.wide : false },
+    media: query, onchange: null, addListener: () => {}, removeListener: () => {},
+    addEventListener: (_: string, listener: () => void) => screenSize.listeners.add(listener),
+    removeEventListener: (_: string, listener: () => void) => screenSize.listeners.delete(listener),
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
 })
+
+/** Resize the window across xl. */
+function setWide(wide: boolean) {
+  screenSize.wide = wide
+  act(() => screenSize.listeners.forEach((listener) => listener()))
+}
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
@@ -116,7 +133,7 @@ describe('TeamBrainOverview', () => {
     width.mockRestore()
   })
 
-  it('keeps its settings in a drawer: sync, schedule, where it lives, sources and agents', async () => {
+  it('keeps its settings in a column beside the page: sync, schedule, where it lives, sources and agents', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     // Details live in the settings drawer, opened from the settings button.
     await userEvent.click(screen.getByTestId('team-brain-menu'))
@@ -149,20 +166,31 @@ describe('TeamBrainOverview', () => {
     expect(screen.queryByRole('listbox', { name: 'Schedule' })).toBeNull()
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
 
-    // A page opened from the tree takes the drawer's place; Settings brings it back, and its own button hides it.
+    // A page opened from the tree takes the panel's place; the settings button brings it back and hides it again.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('README.md (own source)')
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     await userEvent.click(screen.getByTestId('team-brain-menu'))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
-    await userEvent.click(screen.getByTestId('team-brain-settings-close'))
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
 
-    // A click on the page behind a drawer puts it away; one on a page swaps the file and keeps it open.
+    // Beside the page (a wide window), a click on the page leaves settings open; the settings button hides them.
     await userEvent.click(screen.getByTestId('team-brain-menu'))
     await userEvent.click(screen.getByTestId('team-brain-status'))
+    expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    // Floating over the page (a narrower window), where it covers the settings button, a click off it closes it;
+    // a click in it does not.
+    setWide(false)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByText('Storage location'))
+    expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(screen.getByTestId('team-brain-status'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
+    setWide(true)
+    // A click on the page behind the file drawer puts it away; one on a page swaps the file and keeps it open.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
     await userEvent.click(screen.getByTestId('team-brain-sync-page-customers/acme'))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
