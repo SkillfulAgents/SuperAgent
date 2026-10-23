@@ -73,3 +73,7 @@ src/shared/lib/task-manager-integrations/github/github-agent-integration.test.ts
 src/shared/lib/task-manager-integrations/github/mcp.test.ts
 src/shared/lib/services/notification-service-mentions.test.ts
 src/shared/lib/services/connection-sync-service.resume.test.ts
+src/shared/lib/auth/password-session.integration.test.ts
+src/shared/lib/auth/oidc.integration.test.ts
+src/shared/lib/auth/oidc-issuer-policy.integration.test.ts
+src/shared/lib/auth/oidc-discovery-timeout.integration.test.ts
