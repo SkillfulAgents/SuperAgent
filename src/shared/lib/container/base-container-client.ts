@@ -75,11 +75,16 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
     '/usr/bin',
     '/opt/podman/bin',
     '/Applications/Docker.app/Contents/Resources/bin',
+    // Per-user installs: Docker Desktop's "User" mode, OrbStack, Rancher Desktop.
+    path.join(os.homedir(), '.docker', 'bin'),
+    path.join(os.homedir(), '.orbstack', 'bin'),
+    path.join(os.homedir(), '.rd', 'bin'),
   ],
   linux: [
     '/usr/local/bin',
     '/usr/bin',
     '/opt/podman/bin',
+    path.join(os.homedir(), '.rd', 'bin'),
   ],
   win32: [
     'C:\\Program Files\\Docker\\Docker\\resources\\bin',
