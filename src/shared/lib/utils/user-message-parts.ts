@@ -1,4 +1,5 @@
 import { parseAttachedFiles, parseMountedFolders } from './attached-files'
+import { parseDictationNote } from './dictation-note'
 import { parseMentions, type Mention } from './mentions'
 import { parseSenderPrefix } from './sender-prefix'
 
@@ -17,13 +18,15 @@ export interface UserMessageParts {
 
 /**
  * Peel the structured blocks the app appends to a user message out of its
- * text: the sender prefix, then the mentions block, then the attached-files
- * block, then the mounted-folders block. Both the bubble and the notification
- * summary render the leftover text.
+ * text: the sender prefix, then the dictation note (which is only for the
+ * agent), then the mentions block, then the attached-files block, then the
+ * mounted-folders block. Both the bubble and the notification summary render
+ * the leftover text.
  */
 export function parseUserMessageParts(rawText: string): UserMessageParts {
   const { sender, cleanText: afterSender } = parseSenderPrefix(rawText)
-  const { cleanText: afterMentions, mentions, silent } = parseMentions(afterSender)
+  const { cleanText: afterNote } = parseDictationNote(afterSender)
+  const { cleanText: afterMentions, mentions, silent } = parseMentions(afterNote)
   const { cleanText: afterFiles, attachedFiles } = parseAttachedFiles(afterMentions)
   const { cleanText: text, mountedFolders } = parseMountedFolders(afterFiles)
   return { sender, mentions, silent, attachedFiles, mountedFolders, text }
