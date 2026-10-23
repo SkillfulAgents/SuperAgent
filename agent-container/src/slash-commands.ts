@@ -18,11 +18,15 @@ const SUPPORTED_BUILTIN_COMMANDS: ReadonlySet<string> = new Set(['compact']);
 
 /** Names and aliases of the CLI built-ins that Gamut does not support. */
 export function unsupportedBuiltinCommands(commands: readonly SlashCommand[]): Set<string> {
+  // The CLI runs a command named like an alias instead of the alias's built-in.
+  const commandNames = new Set(commands.map((command) => command.name));
   const names = new Set<string>();
   for (const command of commands) {
     if (!command.builtin || SUPPORTED_BUILTIN_COMMANDS.has(command.name)) continue;
     names.add(command.name);
-    for (const alias of command.aliases ?? []) names.add(alias);
+    for (const alias of command.aliases ?? []) {
+      if (!commandNames.has(alias)) names.add(alias);
+    }
   }
   return names;
 }

@@ -19,6 +19,13 @@ describe('unsupportedBuiltinCommands', () => {
   it('lists unsupported built-ins with their aliases, and leaves skills, custom commands and supported built-ins out', () => {
     expect([...unsupportedBuiltinCommands(CLI_COMMANDS)].sort()).toEqual(['clear', 'context', 'model', 'new', 'reset']);
   });
+
+  it('leaves out an alias that a skill uses as its name, because the CLI runs the skill', () => {
+    const commands = [...CLI_COMMANDS, { name: 'reset', description: 'Reset the weekly board (project)', argumentHint: '' }];
+    const unsupported = unsupportedBuiltinCommands(commands);
+    expect([...unsupported].sort()).toEqual(['clear', 'context', 'model', 'new']);
+    expect(makeUnsupportedCommandInert('/reset weekly', unsupported)).toBe('/reset weekly');
+  });
 });
 
 describe('makeUnsupportedCommandInert', () => {
