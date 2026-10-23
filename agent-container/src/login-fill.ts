@@ -9,7 +9,7 @@
  * or be moved by the page, so the focused element must also sit exactly
  * where the CLI says the ref's element is.
  */
-import { callOnElement, locateFocusedElement, type CdpConnection, type CdpEvent, type LocatedElement } from './login-cdp'
+import { callOnElement, callOnElementWith, locateFocusedElement, type CdpConnection, type CdpEvent, type LocatedElement } from './login-cdp'
 import {
   CLICK_IN_PAGE_FUNCTION,
   FILL_PAGE_STATE_FUNCTION,
@@ -551,17 +551,22 @@ export async function awaitPageActivity(
 /**
  * Click the submit control from inside the page — for a button a banner
  * covers, where the CLI refuses the click. Located like a field, and only
- * clicked while its frame is still on the expected origin.
+ * clicked while its frame is still on the expected origin and the last field
+ * filled is still there to see, in the same document.
  */
 export async function clickSubmitInPage(
   deps: LoginFillDeps,
   cdp: CdpConnection,
   submitRef: string,
   origin: string,
+  written: WrittenField[],
 ): Promise<boolean> {
+  const kept = written.filter((field) => field.kept)
+  const anchor = kept[kept.length - 1]
+  if (!anchor) return false
   const located = await locateRef(deps, cdp, submitRef)
   if ('problem' in located || located.element.description.origin !== origin) return false
-  const clicked = await callOnElement<string>(cdp, located.element, CLICK_IN_PAGE_FUNCTION, [origin]).catch(() => null)
+  const clicked = await callOnElementWith<string>(cdp, located.element, anchor.element, CLICK_IN_PAGE_FUNCTION, [origin]).catch(() => null)
   return clicked === 'clicked'
 }
 

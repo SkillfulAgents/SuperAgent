@@ -13,7 +13,7 @@ import {
   type WriteFieldResult,
 } from './login-form-script'
 
-vi.mock('./login-cdp', () => ({ locateFocusedElement: vi.fn(), callOnElement: vi.fn() }))
+vi.mock('./login-cdp', () => ({ locateFocusedElement: vi.fn(), callOnElement: vi.fn(), callOnElementWith: vi.fn() }))
 const cdpModule = await import('./login-cdp')
 const {
   awaitPageActivity, clickSubmitInPage, fillLogin, heldStates, lastFieldHasFocus, normalizeCode, pageActivityNow, PageWatch, prepareLogin,
@@ -110,11 +110,21 @@ beforeEach(() => {
       if (el.state && 'error' in el.state) throw new Error(el.state.error)
       return (el.state ?? { submitted: false, connected: true, origin: 'https://github.com' }) as never
     }
-    if (fn === CLICK_IN_PAGE_FUNCTION) return (el.clicked ?? 'clicked') as never
     if (fn === STILL_FOCUSED_FUNCTION) return (el.focused ?? true) as never
     throw new Error('unexpected page function')
   })
+  inPageClicks.length = 0
+  vi.mocked(cdpModule.callOnElementWith).mockImplementation(async (_cdp, located, other, fn: string) => {
+    if (located.frameId !== other.frameId) throw new Error('The elements are in different frames')
+    if (fn !== CLICK_IN_PAGE_FUNCTION) throw new Error('unexpected page function')
+    const ref = located.objectId.slice(4)
+    inPageClicks.push({ ref, with: other.objectId.slice(4) })
+    return (page[ref].clicked ?? 'clicked') as never
+  })
 })
+
+/** In-page clicks: the button's ref, and the field the click was bound to. */
+const inPageClicks: Array<{ ref: string; with: string }> = []
 
 const fields = [
   { ref: '@e3', kind: 'username' as const, label: 'Username or email address' },
@@ -455,11 +465,27 @@ describe('after the writes', () => {
 
   it('clicks the submit control from the page only when it is located on the expected origin', async () => {
     page['@e9'] = { description: element('button') }
-    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com')).resolves.toBe(true)
-    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://other.example')).resolves.toBe(false)
+    const written = [field('@e3', 0), field('@e6', 1)]
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com', written)).resolves.toBe(true)
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://other.example', written)).resolves.toBe(false)
     page['@e9'].clicked = 'origin_changed'
-    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com')).resolves.toBe(false)
-    await expect(clickSubmitInPage(deps, cdp, '@e99', 'https://github.com')).resolves.toBe(false)
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com', written)).resolves.toBe(false)
+    await expect(clickSubmitInPage(deps, cdp, '@e99', 'https://github.com', written)).resolves.toBe(false)
+  })
+
+  it('binds the click to the last field kept, so a ref resolved again on the next step clicks nothing', async () => {
+    page['@e9'] = { description: element('button') }
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com', [field('@e3', 0), field('@e6', 1), field('@e7', 2, false)])).resolves.toBe(true)
+    expect(inPageClicks).toEqual([{ ref: '@e9', with: '@e6' }])
+
+    // The page's answer when that field is gone, hidden or in another document.
+    page['@e9'].clicked = 'moved_on'
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com', [field('@e6', 1)])).resolves.toBe(false)
+    page['@e9'].clicked = undefined
+    // The field in another frame than the button, or no field kept at all.
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com', [{ ...field('@e6', 1), element: located('@e6', 'F1') }])).resolves.toBe(false)
+    await expect(clickSubmitInPage(deps, cdp, '@e9', 'https://github.com', [field('@e6', 1, false)])).resolves.toBe(false)
+    expect(inPageClicks).toHaveLength(2)
   })
 
   it('says whether Enter would land in the last field written', async () => {

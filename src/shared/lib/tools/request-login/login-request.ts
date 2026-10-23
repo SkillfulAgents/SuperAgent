@@ -96,6 +96,19 @@ export function siteLabel(origin: string): string {
   }
 }
 
+/**
+ * A one-time code as the page's field takes it, from what was typed or pasted
+ * ("123 456", "123-456"): spaces always go, hyphens go for a numeric field
+ * (as the container writes it), and only then does the field's length limit
+ * apply — to the code, not the separators.
+ */
+export function compactLoginCode(value: string, field: Pick<LoginContextField, 'inputType' | 'inputMode' | 'maxLength'>): string {
+  const compact = value.replace(/\s+/g, '')
+  const numeric = field.inputType === 'number' || field.inputType === 'tel' || field.inputMode === 'numeric'
+  const code = numeric ? compact.replace(/-/g, '') : compact
+  return field.maxLength > 1 ? code.slice(0, field.maxLength) : code
+}
+
 /** Plain HTTP to anything but this machine: what is typed travels unencrypted. */
 export function isInsecureOrigin(origin: string): boolean {
   try {

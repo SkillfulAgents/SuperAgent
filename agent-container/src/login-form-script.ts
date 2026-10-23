@@ -299,13 +299,17 @@ export const FILL_PAGE_STATE_FUNCTION = `function (fillId) {
 }`
 
 /**
- * Click `this` (the submit control) from the page, after checking the frame
- * is still on the expected origin — for a button a banner covers, where the
- * CLI's click refuses rather than land on the banner.
+ * Click `this` (the submit control) from the page — for a button a banner
+ * covers, where the CLI's click refuses rather than land on the banner. Only
+ * on the expected origin, and only while `field` (one just filled) is still in
+ * the same document and on screen: the ref behind `this` was resolved again,
+ * and a stale ref names the next step's button by role and name.
  */
-export const CLICK_IN_PAGE_FUNCTION = `function (expectedOrigin) {
+export const CLICK_IN_PAGE_FUNCTION = `function (expectedOrigin, field) {
   if (location.origin !== expectedOrigin) return 'origin_changed';
   if (!this.isConnected) return 'detached';
+  if (!field || !field.isConnected || field.ownerDocument !== this.ownerDocument) return 'moved_on';
+  if (typeof field.checkVisibility === 'function' && !field.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return 'moved_on';
   this.click();
   return 'clicked';
 }`

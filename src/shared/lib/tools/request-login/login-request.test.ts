@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fillLoginBodySchema, isInsecureOrigin, loginContextSchema, siteLabel, summarizeLoginFields } from './login-request'
+import { compactLoginCode, fillLoginBodySchema, isInsecureOrigin, loginContextSchema, siteLabel, summarizeLoginFields } from './login-request'
 import { requestLoginDef } from './definition'
 
 describe('login request helpers', () => {
@@ -42,6 +42,16 @@ describe('login request helpers', () => {
     expect(siteLabel('https://github.com:443')).toBe('github.com')
     expect(siteLabel('http://intranet.example:8080')).toBe('intranet.example:8080')
     expect(siteLabel('not a url')).toBe('not a url')
+  })
+
+  it('compacts a code as the page takes it, limiting the code rather than what was pasted', () => {
+    const numeric = { inputType: 'text', inputMode: 'numeric', maxLength: 6 }
+    expect(compactLoginCode('123 456', numeric)).toBe('123456')
+    expect(compactLoginCode(' 123-456 ', numeric)).toBe('123456')
+    expect(compactLoginCode('1234567', numeric)).toBe('123456')
+    // A text field may use hyphens in its codes; one-character boxes set no limit.
+    expect(compactLoginCode('AB-12 34', { inputType: 'text', inputMode: '', maxLength: -1 })).toBe('AB-1234')
+    expect(compactLoginCode('123 456', { inputType: 'tel', inputMode: '', maxLength: 1 })).toBe('123456')
   })
 
   it('flags plain HTTP, except on this machine', () => {

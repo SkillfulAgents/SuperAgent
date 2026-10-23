@@ -24,7 +24,7 @@ const writeField = (0, eval)(`(${WRITE_FIELD_FUNCTION})`) as Write
 const describeElement = (0, eval)(`(${DESCRIBE_ELEMENT_FUNCTION})`) as (this: Element) => FocusedElementDescription
 const holdsValue = (0, eval)(`(${HOLDS_VALUE_FUNCTION})`) as (this: Element, value: string, kind?: LoginFieldKind, types?: readonly string[]) => HeldState
 const pageState = (0, eval)(`(${FILL_PAGE_STATE_FUNCTION})`) as (this: Element, fillId: string) => FillPageState
-const clickInPage = (0, eval)(`(${CLICK_IN_PAGE_FUNCTION})`) as (this: Element, origin: string) => string
+const clickInPage = (0, eval)(`(${CLICK_IN_PAGE_FUNCTION})`) as (this: Element, origin: string, field: Element) => string
 const stillFocused = (0, eval)(`(${STILL_FOCUSED_FUNCTION})`) as (this: Element, origin: string) => boolean
 
 const BOX = { x: 10, y: 20, width: 200, height: 30 }
@@ -304,14 +304,33 @@ describe('login page functions', () => {
   })
 
   it('clicks the submit control from the page only on the expected origin', () => {
-    document.body.innerHTML = '<button id="b">Sign in</button>'
+    document.body.innerHTML = '<input id="f"><button id="b">Sign in</button>'
     const button = document.getElementById('b')!
+    const field = document.getElementById('f')!
     const clicked = vi.fn()
     button.addEventListener('click', clicked)
-    expect(clickInPage.call(button, 'https://evil.example')).toBe('origin_changed')
+    expect(clickInPage.call(button, 'https://evil.example', field)).toBe('origin_changed')
     expect(clicked).not.toHaveBeenCalled()
-    expect(clickInPage.call(button, location.origin)).toBe('clicked')
+    expect(clickInPage.call(button, location.origin, field)).toBe('clicked')
     expect(clicked).toHaveBeenCalledTimes(1)
+  })
+
+  it('clicks nothing once the field just filled is gone, hidden or in another document', () => {
+    document.body.innerHTML = '<input id="f"><button id="b">Continue</button>'
+    const button = document.getElementById('b')!
+    const field = document.getElementById('f')!
+    const clicked = vi.fn()
+    button.addEventListener('click', clicked)
+
+    const elsewhere = document.implementation.createHTMLDocument('next step')
+    elsewhere.body.innerHTML = '<input>'
+    expect(clickInPage.call(button, location.origin, elsewhere.querySelector('input')!)).toBe('moved_on')
+    expect(clickInPage.call(button, location.origin, null as unknown as Element)).toBe('moved_on')
+    Object.assign(field, { checkVisibility: () => false })
+    expect(clickInPage.call(button, location.origin, field)).toBe('moved_on')
+    field.remove()
+    expect(clickInPage.call(button, location.origin, field)).toBe('moved_on')
+    expect(clicked).not.toHaveBeenCalled()
   })
 
   it('says whether Enter would land in the field, on the expected origin', () => {

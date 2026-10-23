@@ -251,6 +251,25 @@ describe('LoginRequestItem', () => {
     expect(mockToast.warning).not.toHaveBeenCalled()
   })
 
+  it('keeps every digit of a code pasted with separators, applying the page\'s limit to the code', async () => {
+    const user = userEvent.setup()
+    contextIs({ fields: [{ kind: 'otp', label: 'Verification code', inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6 }] })
+    render(<LoginRequestItem {...props({ fields: [{ kind: 'otp', label: 'Verification code' }] })} />)
+    const code = await ready()
+    expect(code).not.toHaveAttribute('maxlength')
+
+    await user.click(code)
+    await user.paste('123 456')
+    expect(code).toHaveValue('123456')
+    await user.clear(code)
+    await user.paste('123-4567')
+    expect(code).toHaveValue('123456')
+
+    await user.click(screen.getByTestId('login-submit'))
+    await waitFor(() => expect(posted('/fill-login')).toHaveLength(1))
+    expect(posted('/fill-login')[0].values).toEqual(['123456'])
+  })
+
   it('says so where it outlives the card when nothing went into the page', async () => {
     const user = userEvent.setup()
     routes[`${BASE}/fill-login`] = () => json(200, { success: true, filled: 0, failed: 2, submitted: false, problems: ['Password: @e6 is not visible'] })

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inputManager } from './input-manager'
 import { forgetInjectedSecrets, redactInjectedSecrets, REDACTED } from './injected-secrets'
 import { forgetAllPreparedLogins, getPreparedLogin, putPreparedLogin } from './login-requests'
-import type { LoginFillDeps, PreparedLogin, WrittenField } from './login-fill'
+import type { LoginFillDeps, PageActivity, PreparedLogin, WrittenField } from './login-fill'
 import type { LoginFillReport } from './login-schema'
 
 vi.mock('./login-fill', () => ({
@@ -17,7 +17,7 @@ vi.mock('./login-fill', () => ({
   PageWatch: { start: vi.fn() },
 }))
 const fill = await import('./login-fill')
-const { registerLoginRoutes } = await import('./login-routes')
+const { clickSubmit, registerLoginRoutes } = await import('./login-routes')
 
 const cdp = { close: vi.fn() }
 const watch = { cover: vi.fn(async () => {}), close: vi.fn() }
@@ -374,7 +374,10 @@ describe('POST /browser/login/fill', () => {
       return { ok: true, submitted: { via: 'click-in-page', ref: '@e7', clickError: 'covered' }, observation: {} }
     })
     await post('/browser/login/fill', fillBody())
-    expect(vi.mocked(fill.clickSubmitInPage).mock.calls[0].slice(2)).toEqual(['@e7', 'https://github.com'])
+    const [, , clickRef, clickOrigin, clickWritten] = vi.mocked(fill.clickSubmitInPage).mock.calls[0]
+    expect([clickRef, clickOrigin]).toEqual(['@e7', 'https://github.com'])
+    // Bound to the fields this fill wrote, the same ones the activity checks read.
+    expect(clickWritten).toBe(vi.mocked(fill.pageActivityNow).mock.calls[0][1])
     expect(vi.mocked(fill.lastFieldHasFocus).mock.calls[0][2]).toBe('https://github.com')
     const [, writtenFields, fillId, pageWatch] = vi.mocked(fill.pageActivityNow).mock.calls[0]
     expect(writtenFields).toHaveLength(2)
@@ -403,5 +406,39 @@ describe('POST /browser/login/fill', () => {
     expect(getPreparedLogin('tu-1')).not.toBeNull()
     // Not stuck "in flight": a retry runs.
     expect((await post('/browser/login/fill', fillBody())).status).toBe(200)
+  })
+})
+
+describe('clickSubmit', () => {
+  const plan = () => ({ stillCurrent: vi.fn(async (): Promise<PageActivity | null> => null), clickInPage: vi.fn(async () => true) })
+  const covered = { exitCode: 1, stdout: "✗ Element '@e7' is covered by <div#cookie-banner> at its click point" }
+
+  it('clicks through the CLI, and nothing else when that worked', async () => {
+    const steps = plan()
+    await expect(clickSubmit(steps, '@e7', async () => ({ exitCode: 0, stdout: 'Clicked' }))).resolves.toEqual({ clicked: 'cli', result: { exitCode: 0, stdout: 'Clicked' } })
+    expect(steps.stillCurrent).not.toHaveBeenCalled()
+    expect(steps.clickInPage).not.toHaveBeenCalled()
+  })
+
+  it('tries the page only when a banner covered the button', async () => {
+    const steps = plan()
+    const failed = { exitCode: 1, stdout: "✗ Element '@e7' not found" }
+    await expect(clickSubmit(steps, '@e7', async () => failed)).resolves.toEqual({ clicked: null, result: failed })
+    expect(steps.clickInPage).not.toHaveBeenCalled()
+
+    await expect(clickSubmit(steps, '@e7', async () => covered)).resolves.toEqual({ clicked: 'in-page', cliError: covered.stdout })
+    steps.clickInPage.mockResolvedValueOnce(false)
+    await expect(clickSubmit(steps, '@e7', async () => covered)).resolves.toEqual({ clicked: null, result: covered })
+  })
+
+  it('clicks nothing from the page once the page moved on during the CLI attempt', async () => {
+    const steps = plan()
+    // Current before the CLI's attempt; moved on by the time it gave up.
+    steps.stillCurrent.mockResolvedValueOnce({ kind: 'navigation', url: 'https://github.com/sessions/two-factor' })
+    await expect(clickSubmit(steps, '@e7', async () => covered)).resolves.toEqual({
+      clicked: null,
+      activity: { kind: 'navigation', url: 'https://github.com/sessions/two-factor' },
+    })
+    expect(steps.clickInPage).not.toHaveBeenCalled()
   })
 })

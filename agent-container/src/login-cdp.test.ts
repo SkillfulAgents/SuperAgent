@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { CdpConnection, callOnElement, locateFocusedElement } from './login-cdp'
+import { CdpConnection, callOnElement, callOnElementWith, locateFocusedElement } from './login-cdp'
 import { DESCRIBE_ELEMENT_FUNCTION } from './login-form-script'
 
 /** A handler's way to leave a call unanswered. */
@@ -309,5 +309,40 @@ describe('callOnElement', () => {
     const waiting = callOnElement(cdp, { sessionId: undefined, objectId: 'obj:F0' }, 'function (v) { return v }', ['hunter2-pass'])
     cdp.close()
     await expect(waiting).rejects.toThrow('Runtime.callFunctionOn: CDP connection closed')
+  })
+})
+
+describe('callOnElementWith', () => {
+  const button = { sessionId: undefined, objectId: 'obj:button', frameId: 'F0' }
+  const field = { sessionId: undefined, objectId: 'obj:field', frameId: 'F0' }
+  const handler: Handler = (method, params) => {
+    if (method === 'DOM.describeNode') {
+      if (params.objectId === 'obj:gone') throw new Error('Could not find object with given id')
+      return { node: { backendNodeId: params.objectId === 'obj:button' ? 11 : 12 } }
+    }
+    if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 }
+    if (method === 'DOM.resolveNode') return { object: { objectId: `ctx${params.executionContextId}:${params.backendNodeId}` } }
+    if (method === 'Runtime.callFunctionOn') return { result: { value: 'clicked' } }
+    return {}
+  }
+
+  it('resolves both elements into one fresh world of their frame, the other passed as an object', async () => {
+    fake = await fakeCdp(handler)
+    const cdp = await CdpConnection.open({ id: 'T1', wsUrl: fake.url, requiresSession: false })
+    const result = await callOnElementWith(cdp, button, field, 'function (origin, field) { return "clicked" }', ['https://github.com'])
+    cdp.close()
+    expect(result).toBe('clicked')
+    expect(fake.calls.filter((c) => c.method === 'Page.createIsolatedWorld').map((c) => c.params.frameId)).toEqual(['F0'])
+    const call = fake.calls.find((c) => c.method === 'Runtime.callFunctionOn')!
+    expect(call.params).toMatchObject({ objectId: 'ctx7:11', arguments: [{ value: 'https://github.com' }, { objectId: 'ctx7:12' }] })
+  })
+
+  it('throws, calling nothing, for elements in two frames or one gone with its document', async () => {
+    fake = await fakeCdp(handler)
+    const cdp = await CdpConnection.open({ id: 'T1', wsUrl: fake.url, requiresSession: false })
+    await expect(callOnElementWith(cdp, button, { ...field, frameId: 'F1' }, 'function () {}', [])).rejects.toThrow('The elements are in different frames')
+    await expect(callOnElementWith(cdp, button, { ...field, objectId: 'obj:gone' }, 'function () {}', [])).rejects.toThrow('Could not find object with given id')
+    cdp.close()
+    expect(fake.calls.some((c) => c.method === 'Runtime.callFunctionOn')).toBe(false)
   })
 })

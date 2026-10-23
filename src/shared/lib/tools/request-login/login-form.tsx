@@ -7,6 +7,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from '../requests/decline-button'
 import { BrowserCredentialPicker } from '../request-browser-input/browser-credential-picker'
 import {
+  compactLoginCode,
   isInsecureOrigin,
   loginFillResultSchema,
   siteLabel,
@@ -275,10 +276,15 @@ export function LoginForm({
                 name: `${field.kind}-${index}`,
                 value: values[index] ?? '',
                 disabled: !located || busy,
-                maxLength: field.maxLength && field.maxLength > 1 ? field.maxLength : undefined,
+                // A code's limit applies once its separators are gone: a pasted
+                // "123 456" would otherwise lose its last digit to a limit of 6.
+                maxLength: field.kind !== 'otp' && field.maxLength && field.maxLength > 1 ? field.maxLength : undefined,
                 'aria-describedby': error ? errorId : undefined,
                 onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
-                  const next = event.target.value
+                  const typed = event.target.value
+                  const next = field.kind === 'otp'
+                    ? compactLoginCode(typed, { inputType: field.inputType ?? '', inputMode: field.inputMode ?? '', maxLength: field.maxLength ?? -1 })
+                    : typed
                   setValues((current) => {
                     const copy = [...current]
                     copy[index] = next

@@ -56,7 +56,7 @@ import type { LoginFillDeps, PageActivity } from './login-fill';
 import type { FieldBox } from './login-form-script';
 import { forgetAllPreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
-import { registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
+import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -3343,15 +3343,12 @@ function loginFillDeps(): LoginFillDeps {
   };
 }
 
-/** The CLI refused a click because something else is over the target (a banner). */
-const CLICK_INTERCEPTED = /covered by|intercept|obscured/i;
-
 /**
  * Submit a filled sign-in form: click the agent's submit ref through the CLI
  * (trusted input); when a banner covers it, click it from the page instead;
  * with no submit ref, press Enter — only while focus is still in the last
  * field written, so Enter cannot land in another document or field.
- * Right before either, the page is checked once more: one that moved on by
+ * Right before each try, the page is checked once more: one that moved on by
  * itself gets nothing (the CLI resolves a stale ref by role and name, on
  * whatever page is there by then).
  */
@@ -3368,17 +3365,21 @@ async function submitLoginForm(plan: SubmitPlan): Promise<SubmitOutcome> {
       activity = await plan.stillCurrent();
       if (activity) return { exitCode: 0, stdout: '' };
       if (submitRef) {
-        const clicked = await withRefRestore(submitRef, () => execBrowser(['click', submitRef, ...(useHumanInput(before) ? ['--human'] : [])], cdpUrl));
-        if (clicked.exitCode === 0) {
+        const click = await clickSubmit(plan, submitRef, (ref) => withRefRestore(ref, () => execBrowser(['click', ref, ...(useHumanInput(before) ? ['--human'] : [])], cdpUrl)));
+        if (click.clicked === 'cli') {
           submitted = { via: 'click', ref: submitRef };
-          return clicked;
+          return click.result;
         }
-        if (CLICK_INTERCEPTED.test(clicked.stdout) && await plan.clickInPage()) {
-          submitted = { via: 'click-in-page', ref: submitRef, clickError: firstLine(clicked.stdout) };
+        if (click.clicked === 'in-page') {
+          submitted = { via: 'click-in-page', ref: submitRef, clickError: firstLine(click.cliError) };
           return { exitCode: 0, stdout: '' };
         }
-        error = `clicking ${submitRef} failed: ${firstLine(clicked.stdout)}`;
-        return clicked;
+        if ('activity' in click) {
+          activity = click.activity;
+          return { exitCode: 0, stdout: '' };
+        }
+        error = `clicking ${submitRef} failed: ${firstLine(click.result.stdout)}`;
+        return click.result;
       }
       if (!(await plan.enterLandsInField())) {
         error = 'Enter was not pressed: focus is no longer in the last field filled';

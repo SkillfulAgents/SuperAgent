@@ -14,6 +14,7 @@ import { chromium, type BrowserContext, type Frame, type Locator, type Page } fr
 import { CdpConnection, callOnElement, locateFocusedElement } from './login-cdp'
 import {
   awaitPageActivity,
+  clickSubmitInPage,
   fillLogin,
   heldStates,
   lastFieldHasFocus,
@@ -146,6 +147,26 @@ const PAGES: Record<string, string> = {
     <input id="c" inputmode="numeric" maxlength="6">
     <script>
       document.getElementById('c').addEventListener('input', (e) => { if (e.target.value.length === 6) setTimeout(() => { location.href = '/login.html?next=1'; }, 50); });
+    </script>`,
+  // An email step whose Continue button a banner covers; nextStep() swaps in
+  // the password step, with a button of the same name, in the same document.
+  '/covered.html': `<!doctype html><title>Sign in</title>
+    <section id="step1"><label for="email">Email</label><input id="email" type="email" autocomplete="username">
+      <span style="position:relative;display:inline-block"><button type="button" data-step="1">Continue</button>
+      <span style="position:absolute;inset:0;background:rgba(0,0,0,.4)"></span></span></section>
+    <div id="log"></div>
+    <script>
+      document.addEventListener('click', (e) => {
+        const button = e.target.closest('button');
+        if (button) document.getElementById('log').textContent += 'step' + button.dataset.step + ';';
+      });
+      function nextStep(mode) {
+        const first = document.getElementById('step1');
+        if (mode === 'remove') first.remove(); else first.style.display = 'none';
+        const second = document.createElement('section');
+        second.innerHTML = '<label for="pw">Password</label><input id="pw" type="password"><button type="button" data-step="2">Continue</button>';
+        document.body.prepend(second);
+      }
     </script>`,
 }
 
@@ -454,5 +475,32 @@ describe.skipIf(!CHROMIUM)('request_login in real Chromium', { timeout: 30_000 }
     }
     // A password field masks itself; the write restyles neither field.
     expect(await page.locator('#u, #p').evaluateAll((els) => els.map((el) => (el as HTMLElement).style.cssText))).toEqual(['', ''])
+  })
+
+  it('clicks a covered button from the page only while the step it filled is still there', async () => {
+    // The submit ref resolves by role and name, as a stale agent-browser ref does.
+    const run = async (moveOn: 'stay' | 'remove' | 'hide' | 'navigate') => {
+      await page.goto(site('127.0.0.1', '/covered.html'))
+      refs.clear()
+      refs.set('@e1', page.locator('#email'))
+      refs.set('@e9', page.getByRole('button', { name: 'Continue' }))
+      const prepared = await prepareLogin(deps, [{ ref: '@e1', kind: 'username', label: 'Email' }])
+      if (!prepared.ok) throw new Error('not prepared')
+      const cdp = await deps.connect()
+      try {
+        const { written } = await fillLogin(deps, cdp, prepared, ['erin@example.com'], `fill-covered-${moveOn}`)
+        // The page moves on by itself while the CLI's click is refused.
+        if (moveOn === 'navigate') await page.goto(site('127.0.0.1', '/covered.html?next=1'))
+        else if (moveOn !== 'stay') await page.evaluate((mode) => (window as unknown as { nextStep(mode: string): void }).nextStep(mode), moveOn)
+        const clicked = await clickSubmitInPage(deps, cdp, '@e9', prepared.origin, written)
+        return { clicked, log: await page.locator('#log').textContent() }
+      } finally {
+        cdp.close()
+      }
+    }
+    await expect(run('stay')).resolves.toEqual({ clicked: true, log: 'step1;' })
+    await expect(run('remove')).resolves.toEqual({ clicked: false, log: '' })
+    await expect(run('hide')).resolves.toEqual({ clicked: false, log: '' })
+    await expect(run('navigate')).resolves.toEqual({ clicked: false, log: '' })
   })
 })

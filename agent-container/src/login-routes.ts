@@ -50,6 +50,41 @@ export interface SubmitPlan {
   enterLandsInField(): Promise<boolean>
 }
 
+/** The CLI's answer to a command. */
+export interface CliResult {
+  exitCode: number
+  stdout: string
+}
+
+/** The CLI refused a click because something else is over the target (a banner). */
+const CLICK_INTERCEPTED = /covered by|intercept|obscured/i
+
+export type SubmitClick<R extends CliResult> =
+  | { clicked: 'cli'; result: R }
+  | { clicked: 'in-page'; cliError: string }
+  | { clicked: null; activity: PageActivity }
+  | { clicked: null; result: R }
+
+/**
+ * Click the submit ref through the CLI; when a banner covers it, from inside
+ * the page instead. The CLI's attempt takes its time, so the page is checked
+ * once more before that second try: one that moved on by itself meanwhile
+ * gets nothing.
+ */
+export async function clickSubmit<R extends CliResult>(
+  plan: Pick<SubmitPlan, 'stillCurrent' | 'clickInPage'>,
+  submitRef: string,
+  cliClick: (ref: string) => Promise<R>,
+): Promise<SubmitClick<R>> {
+  const result = await cliClick(submitRef)
+  if (result.exitCode === 0) return { clicked: 'cli', result }
+  if (!CLICK_INTERCEPTED.test(result.stdout)) return { clicked: null, result }
+  const activity = await plan.stillCurrent()
+  if (activity) return { clicked: null, activity }
+  if (await plan.clickInPage()) return { clicked: 'in-page', cliError: result.stdout }
+  return { clicked: null, result }
+}
+
 export type SubmitOutcome =
   | { ok: true; submitted: NonNullable<LoginFillReport['submitted']>; observation: Record<string, unknown> }
   | { ok: true; submitted: null; activity: PageActivity; observation: Record<string, unknown> }
@@ -265,7 +300,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
               const outcome = await deps.submit({
                 submitRef,
                 stillCurrent: () => pageActivityNow(cdp, written, fillId, pageWatch, refOf),
-                clickInPage: () => (submitRef ? clickSubmitInPage(fillDeps, cdp, submitRef, prepared.origin) : Promise.resolve(false)),
+                clickInPage: () => (submitRef ? clickSubmitInPage(fillDeps, cdp, submitRef, prepared.origin, written) : Promise.resolve(false)),
                 enterLandsInField: () => lastFieldHasFocus(cdp, written, prepared.origin),
               })
               if (!outcome.ok) {

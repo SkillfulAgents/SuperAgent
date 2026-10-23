@@ -290,3 +290,41 @@ export async function callOnElement<T>(
   if (response.exceptionDetails) throw new Error('The page function threw')
   return response.result?.value as T
 }
+
+/**
+ * Call a page function on `element` with `other` as its last argument. Objects
+ * from two worlds cannot meet in one call, so both are resolved into one fresh
+ * isolated world of their frame. Throws when they are in different frames, or
+ * when either is gone with its document.
+ */
+export async function callOnElementWith<T>(
+  cdp: CdpConnection,
+  element: Pick<LocatedElement, 'sessionId' | 'objectId' | 'frameId'>,
+  other: Pick<LocatedElement, 'sessionId' | 'objectId' | 'frameId'>,
+  functionDeclaration: string,
+  args: unknown[],
+): Promise<T> {
+  if (element.sessionId !== other.sessionId || element.frameId !== other.frameId) throw new Error('The elements are in different frames')
+  const { sessionId } = element
+  const backendNodeOf = async (objectId: string) =>
+    (await cdp.send<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId }, sessionId)).node.backendNodeId
+  const nodes = await Promise.all([backendNodeOf(element.objectId), backendNodeOf(other.objectId)])
+  const executionContextId = await isolatedWorld(cdp, element.frameId, sessionId)
+  const [target, argument] = await Promise.all(nodes.map(async (backendNodeId) => {
+    const { object } = await cdp.send<{ object: { objectId?: string } }>('DOM.resolveNode', { backendNodeId, executionContextId }, sessionId)
+    if (!object.objectId) throw new Error('An element could not be resolved')
+    return object.objectId
+  }))
+  const response = await cdp.send<{ result?: { value?: T }; exceptionDetails?: unknown }>(
+    'Runtime.callFunctionOn',
+    {
+      objectId: target,
+      functionDeclaration,
+      arguments: [...args.map((value) => ({ value })), { objectId: argument }],
+      returnByValue: true,
+    },
+    sessionId,
+  )
+  if (response.exceptionDetails) throw new Error('The page function threw')
+  return response.result?.value as T
+}
