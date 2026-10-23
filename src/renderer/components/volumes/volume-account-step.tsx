@@ -1,19 +1,20 @@
-import { lazy, Suspense, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
 import type { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
+import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
+import { LoginButton } from '@renderer/components/connections/login-button'
+import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
 import type { VolumeDetails } from './volume-details-schema'
 
-const IntegrationDirectoryDialog = lazy(async () => {
-  const module = await import('@renderer/components/connections/integration-directory-dialog')
-  return { default: module.IntegrationDirectoryDialog }
-})
-
 /** The account step of a remote source's setup: choose a connected account of its
- * toolkit, or connect one in the existing directory dialog. */
+ * toolkit, or connect one here, straight into the provider's sign-in. With no account
+ * yet there is nothing to choose, so there is no list, just Connect; a first account
+ * connected here moves straight on to the next step. A lone usable account is chosen
+ * for you. */
 export function VolumeAccountStep({ toolkit, label, accounts, accountId, active, onSelect, onNext, onBack, onCancel }: {
   toolkit: string
   label: string
@@ -25,28 +26,58 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
   onBack: () => void
   onCancel: () => void
 }) {
-  const [connecting, setConnecting] = useState(false)
-  return <>
-    <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (active) onNext() }}>
-      <div className="space-y-2">
-        <Label htmlFor={`volume-${toolkit}-account`}>{label} account</Label>
-        <Select value={accountId} onValueChange={onSelect} disabled={accounts.isLoading}>
-          <SelectTrigger id={`volume-${toolkit}-account`}><SelectValue placeholder={accounts.isLoading ? 'Loading accounts…' : 'Select an account'} /></SelectTrigger>
-          <SelectContent>
-            {accounts.data?.accounts.map(item => <SelectItem key={item.id} value={item.id} disabled={item.status !== 'active'}>
-              {item.displayName}{item.status !== 'active' ? ' (reconnect in Connections)' : ''}
-            </SelectItem>)}
-          </SelectContent>
-        </Select>
-        {accounts.error && <div><p role="alert" className="text-sm text-destructive">Could not load {label} accounts.</p><Button type="button" variant="ghost" size="sm" onClick={() => { void accounts.refetch() }}>Try again</Button></div>}
-        {!accounts.isLoading && !accounts.error && accounts.data?.accounts.length === 0 && <p className="text-sm text-muted-foreground">Connect your first {label} account to continue.</p>}
-      </div>
-      <Button type="button" variant="outline" className="w-full" onClick={() => setConnecting(true)}><Plus className="h-4 w-4" />Connect {label} account</Button>
-      <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
-    </form>
-    {connecting && <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading connections…</p>}><IntegrationDirectoryDialog open onOpenChange={setConnecting} initialTab="apis" initialFilter={label}
-      onApiConnected={connection => { if (connection.toolkit === toolkit) onSelect(connection.accountId) }} /></Suspense>}
-  </>
+  const list = accounts.data?.accounts ?? []
+  const loaded = !accounts.isLoading && !accounts.error
+  const hasAccounts = loaded && list.length > 0
+
+  // A first account goes straight on once the refreshed list has it and it is usable.
+  const [advanceTo, setAdvanceTo] = useState<string | null>(null)
+  const firstAccount = useRef(false)
+  const onConnected = useCallback(({ accountId: id, toolkit: connected }: NewApiConnection) => {
+    if (connected !== toolkit) return
+    onSelect(id)
+    if (firstAccount.current) setAdvanceTo(id)
+  }, [toolkit, onSelect])
+  const { connect, connecting, canCancel, cancel, error } = useConnectAccount({ location: 'drive_setup', onConnected })
+  const pending = connecting === toolkit
+
+  useEffect(() => {
+    if (!advanceTo || advanceTo !== accountId || !active) return
+    setAdvanceTo(null)
+    onNext()
+  }, [advanceTo, accountId, active, onNext])
+
+  const lone = loaded && list.length === 1 && list[0].status === 'active' ? list[0].id : null
+  useEffect(() => {
+    if (lone && !accountId) onSelect(lone)
+  }, [lone, accountId, onSelect])
+
+  return <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (active) onNext() }}>
+    {accounts.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading {label} accounts…</p>}
+    {accounts.error && <div><p role="alert" className="text-sm text-destructive">Could not load {label} accounts.</p><Button type="button" variant="ghost" size="sm" onClick={() => { void accounts.refetch() }}>Try again</Button></div>}
+    {hasAccounts && <div className="space-y-2">
+      <Label htmlFor={`volume-${toolkit}-account`}>{label} account</Label>
+      <Select value={accountId} onValueChange={onSelect}>
+        <SelectTrigger id={`volume-${toolkit}-account`}><SelectValue placeholder="Select an account" /></SelectTrigger>
+        <SelectContent>
+          {list.map(item => <SelectItem key={item.id} value={item.id} disabled={item.status !== 'active'}>
+            {item.displayName}{item.status !== 'active' ? ' (reconnect in Connections)' : ''}
+          </SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>}
+    <div className="space-y-1">
+      <LoginButton type="button" variant={hasAccounts ? 'outline' : 'default'} className="w-full" icon={<Plus className="h-4 w-4" />}
+        label={hasAccounts ? `Connect another ${label} account` : `Connect ${label}`} pendingLabel={`Connecting ${label}…`}
+        pending={pending} canCancel={pending && canCancel} onCancel={cancel} cancelSide="none"
+        disabled={accounts.isLoading || (connecting !== null && !pending)}
+        onClick={() => { firstAccount.current = !hasAccounts; void connect(toolkit) }} data-testid={`volume-${toolkit}-connect`} />
+      {/* The button is full width, so its Cancel sits under it. */}
+      <div className="flex justify-center"><LoginWindowCancel visible={pending && canCancel} onCancel={cancel} testId={`volume-${toolkit}-connect-cancel`} /></div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    </div>
+    <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
+  </form>
 }
 
 /** The details step of a remote source's setup: the chosen account, the name and access
