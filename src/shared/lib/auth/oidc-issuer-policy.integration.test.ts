@@ -111,6 +111,12 @@ describe('configured issuer pin', () => {
     oidc.state.discoveryUnavailable = true
     const context = await getAuth().$context
     expect(context.socialProviders).toHaveLength(0)
+    expect(oidc.state.discoveryRequests).toBe(0)
+    const unavailable = await signIn(mode)
+    expect(unavailable.status).toBe(404)
+    expect(oidc.state.discoveryRequests).toBe(1)
+    expect(context.socialProviders).toHaveLength(0)
+    expect(await testDb.select().from(authSession)).toHaveLength(0)
     oidc.state.discoveryUnavailable = false
     await assertRejected(await signIn(mode), 'OIDC_ISSUER_MISMATCH')
     expect(oidc.state.discoveryRequests).toBe(2)

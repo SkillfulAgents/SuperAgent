@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { admin, bearer, genericOAuth } from 'better-auth/plugins'
+import { admin, bearer } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
@@ -13,6 +13,7 @@ import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
 import { getGenericOAuthProviderConfigs } from './provider-config'
+import { lazyGenericOAuth } from './lazy-generic-oauth'
 import { oidcIssuerPolicy } from './oidc-issuer-policy'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
@@ -49,7 +50,7 @@ function createAuthInstance() {
   const authSettings = resolveAuthSettings(settings.auth)
   const oauthProviders = getGenericOAuthProviderConfigs()
   const oauthPlugin = oauthProviders.length > 0
-    ? genericOAuth({
+    ? lazyGenericOAuth({
         config: oauthProviders,
       })
     : null

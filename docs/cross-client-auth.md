@@ -241,6 +241,21 @@ requires the successful callback's `iss` parameter, including after a failed
 discovery recovers. It runs after discovery's retry hook and before code
 exchange or account provisioning.
 
+Provider discovery is lazy: creating or resetting the auth instance performs
+no discovery requests. `lazy-generic-oauth.ts` seeds Better Auth 1.7.12's
+pending-provider map and retains its request hook, so only the requested SSO
+provider is discovered. That hook shares concurrent attempts and applies a
+10-second abort signal through the response-body read. A stalled provider
+therefore cannot hold up password login, existing bearer sessions, mobile
+renewal, or another provider's SSO. Platform grant verification still performs
+its separate JWKS lookup when its key cache is cold. Keep the exact Better Auth
+pin and the discovery timeout/isolation tests when changing the upstream
+init-context contract this adapter uses.
+
+The application stays on Zod 4.3.x; Better Auth and its core package install
+their own compatible Zod dependencies. This avoids changing validation across
+unrelated application contracts as part of the auth migration.
+
 No account schema migration is required from 1.6. An OAuth login already in
 flight at cutover must be restarted: 1.7 namespaces stored state identifiers,
 and the old state also has no nonce. Do not relax state or nonce validation to

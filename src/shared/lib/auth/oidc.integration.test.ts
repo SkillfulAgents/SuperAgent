@@ -200,16 +200,19 @@ describe('OIDC rejection boundaries', () => {
     expect(oidc.state.authorizations).toHaveLength(0)
   })
 
-  it('recovers after failed startup discovery without restarting the app', async () => {
+  it('recovers after failed first-use discovery without restarting the app', async () => {
     oidc.state.discoveryUnavailable = true
     await getAuth().$context
+    expect(oidc.state.discoveryRequests).toBe(0)
     const failed = await request('sign-in/social', { provider: 'platform', callbackURL: `${BASE}/` })
     expect(failed.status).toBe(404)
+    expect(oidc.state.discoveryRequests).toBe(1)
+    await assertNoIdentity()
     oidc.state.discoveryUnavailable = false
     const finish = await completeOidcLogin(handleAuthRequest, BASE)
     expect(finish.headers.get('location')).toBe(`${BASE}/`)
     expect(await testDb.select().from(authSession)).toHaveLength(1)
-    expect(oidc.state.discoveryRequests).toBeGreaterThanOrEqual(2)
+    expect(oidc.state.discoveryRequests).toBe(2)
   })
 })
 
